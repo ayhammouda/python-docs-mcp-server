@@ -1,0 +1,81 @@
+# Project State
+
+## Project Reference
+
+See: .planning/PROJECT.md (updated 2026-04-15)
+
+**Core value:** LLMs can answer Python stdlib questions with precise, section-level evidence instead of flooding their context with full doc pages — closing a specific gap that general-purpose doc MCPs (Context7, DeepWiki) do not cover well for the Python stdlib.
+**Current focus:** Phase 1 — Foundation & Stdio Hygiene & Symbol Slice
+
+## Current Position
+
+Phase: 1 of 8 (Foundation & Stdio Hygiene & Symbol Slice)
+Plan: 0 of TBD in current phase
+Status: Ready to plan
+Last activity: 2026-04-15 — Roadmap created; 91 v1 requirements mapped across 8 phases; Phase 4 flagged for deeper research before planning.
+
+Progress: [░░░░░░░░░░] 0%
+
+## Performance Metrics
+
+**Velocity:**
+- Total plans completed: 0
+- Average duration: —
+- Total execution time: —
+
+**By Phase:**
+
+| Phase | Plans | Total | Avg/Plan |
+|-------|-------|-------|----------|
+| - | - | - | - |
+
+**Recent Trend:**
+- Last 5 plans: —
+- Trend: —
+
+*Updated after each plan completion*
+
+## Accumulated Context
+
+### Decisions
+
+Decisions are logged in PROJECT.md Key Decisions table.
+Recent decisions from research + roadmap creation:
+
+- Option A (tools only; no MCP resource templates) — URIs appear as identifier strings in hit bodies instead.
+- v0.1.0 documents "restart required" after rebuild (no SIGHUP / ReloadableConnection until v1.1).
+- Windows is best-effort — uses `platformdirs` + `pathlib`, not verified on every release.
+- Use FastMCP `lifespan` + typed `AppContext` dataclass as DI root (replaces implicit module-globals wiring).
+- `_meta["anthropic/maxResultSizeChars"] = 16000` on `get_docs` (empirical starting point; revisit after integration testing).
+
+### Pending Todos
+
+None yet.
+
+### Blockers/Concerns
+
+From research (must be addressed in specific phases):
+
+- **Phase 4 upstream drift risk:** CPython Sphinx JSON build is the most fragile upstream dependency. Phase 4 is flagged for `/gsd-research-phase 4` before planning — re-verify Sphinx pins in `cpython/3.12|3.13/Doc/requirements.txt`, custom extension serialization, and real end-to-end build time.
+- **7 research blockers** mapped into specific phases (see `.planning/research/SUMMARY.md#BLOCKERS`):
+  - B1 (FTS5 tokenizer fix) — Phase 2, must land before Phase 4 content ingestion
+  - B2 (`fts5_escape()` 100% coverage) — Phase 3
+  - B3 (`os.dup2()` fd 1 redirection + sentinel test) — Phase 1
+  - B4 (CPython Sphinx JSON build with pinned venv + per-doc failure handling) — Phase 4
+  - B5 (Reader-handle stale after rename — documented restart) — Phase 4
+  - B6 (Pydantic schema snapshot test) — Phase 1
+  - B7 (`synonyms.yaml` inside package + wheel content check) — Phases 1+6
+
+## Deferred Items
+
+Items acknowledged and carried forward from previous milestone close:
+
+| Category | Item | Status | Deferred At |
+|----------|------|--------|-------------|
+| *(none)* | | | |
+
+## Session Continuity
+
+Last session: 2026-04-15
+Stopped at: Roadmap creation complete — ROADMAP.md, STATE.md, REQUIREMENTS.md traceability populated. Phase 1 is ready for `/gsd-plan-phase 1`.
+Resume file: None

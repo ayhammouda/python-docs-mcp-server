@@ -37,7 +37,7 @@ FastMCP-based stdio server with exactly 3 tools.
 
 ### Storage & Schema (STOR)
 
-Must land in Phase 2, BEFORE any ingestion (tokenizer changes would require a full rebuild).
+Split across Phase 1 (connection factory + platform-aware FTS5 check + platformdirs) and Phase 2 (schema tables + FTS5 tokenizer fix + uniqueness constraints + idempotent bootstrap). Phase 2 must land BEFORE any content ingestion (tokenizer changes would require a full rebuild).
 
 - [ ] **STOR-01**: `schema.sql` defines `doc_sets`, `documents`, `sections`, `symbols`, `examples`, `synonyms`, `redirects`, `ingestion_runs` tables per build guide §7
 - [ ] **STOR-02**: `sections_fts`, `symbols_fts`, `examples_fts` use `tokenize = "unicode61 remove_diacritics 2 tokenchars '._'"` — Porter stemming is NOT applied (preserves Python identifier search)
@@ -220,14 +220,123 @@ Explicitly excluded. Documented to prevent scope creep.
 
 ## Traceability
 
-Empty initially — populated during roadmap creation.
+Every v1 requirement is mapped to exactly one phase. Coverage validated 2026-04-15 at roadmap creation.
 
 **Coverage:**
-- v1 requirements: 79 total
-- Mapped to phases: 0 (to be filled by `gsd-roadmapper`)
-- Unmapped: 79 ⚠️ (will resolve after roadmap)
+- v1 requirements: 91 total
+- Mapped to phases: 91 ✓
+- Unmapped: 0
+
+### By Phase
+
+| Phase | Count | Requirements |
+|-------|-------|--------------|
+| 1. Foundation & Stdio Hygiene & Symbol Slice | 26 | HYGN-01, HYGN-02, HYGN-03, HYGN-04, HYGN-05, HYGN-06, SRVR-01, SRVR-02, SRVR-05, SRVR-06, SRVR-09, SRVR-10, SRVR-11, SRVR-12, STOR-06, STOR-07, STOR-08, STOR-10, INGR-I-01, INGR-I-02, INGR-I-03, INGR-I-04, INGR-I-05, INGR-I-06, CLI-01, CLI-03 |
+| 2. Schema & Storage | 6 | STOR-01, STOR-02, STOR-03, STOR-04, STOR-05, STOR-09 |
+| 3. Retrieval Layer | 10 | RETR-01, RETR-02, RETR-03, RETR-04, RETR-05, RETR-06, RETR-07, RETR-08, RETR-09, SRVR-08 |
+| 4. Sphinx JSON Ingestion & Atomic-Swap Publishing | 15 | INGR-C-01, INGR-C-02, INGR-C-03, INGR-C-04, INGR-C-05, INGR-C-06, INGR-C-07, INGR-C-08, INGR-C-09, PUBL-01, PUBL-02, PUBL-03, PUBL-04, PUBL-05, PUBL-06 |
+| 5. Services, Tool Polish & Caching | 9 | SRVR-03, SRVR-04, SRVR-07, OPS-01, OPS-02, OPS-03, OPS-04, OPS-05, PUBL-07 |
+| 6. Multi-Version & Packaging Correctness | 10 | MVER-01, MVER-02, MVER-03, MVER-04, MVER-05, PKG-01, PKG-02, PKG-03, PKG-04, PKG-06 |
+| 7. Stability Tests & Release Polish | 10 | TEST-01, TEST-02, TEST-03, TEST-04, TEST-05, TEST-06, CLI-02, SHIP-03, SHIP-04, SHIP-05 |
+| 8. Ship | 5 | SHIP-01, SHIP-02, SHIP-06, PKG-05, PKG-07 |
+
+### By Requirement
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| HYGN-01 | Phase 1 | Pending |
+| HYGN-02 | Phase 1 | Pending |
+| HYGN-03 | Phase 1 | Pending |
+| HYGN-04 | Phase 1 | Pending |
+| HYGN-05 | Phase 1 | Pending |
+| HYGN-06 | Phase 1 | Pending |
+| SRVR-01 | Phase 1 | Pending |
+| SRVR-02 | Phase 1 | Pending |
+| SRVR-03 | Phase 5 | Pending |
+| SRVR-04 | Phase 5 | Pending |
+| SRVR-05 | Phase 1 | Pending |
+| SRVR-06 | Phase 1 | Pending |
+| SRVR-07 | Phase 5 | Pending |
+| SRVR-08 | Phase 3 | Pending |
+| SRVR-09 | Phase 1 | Pending |
+| SRVR-10 | Phase 1 | Pending |
+| SRVR-11 | Phase 1 | Pending |
+| SRVR-12 | Phase 1 | Pending |
+| STOR-01 | Phase 2 | Pending |
+| STOR-02 | Phase 2 | Pending |
+| STOR-03 | Phase 2 | Pending |
+| STOR-04 | Phase 2 | Pending |
+| STOR-05 | Phase 2 | Pending |
+| STOR-06 | Phase 1 | Pending |
+| STOR-07 | Phase 1 | Pending |
+| STOR-08 | Phase 1 | Pending |
+| STOR-09 | Phase 2 | Pending |
+| STOR-10 | Phase 1 | Pending |
+| RETR-01 | Phase 3 | Pending |
+| RETR-02 | Phase 3 | Pending |
+| RETR-03 | Phase 3 | Pending |
+| RETR-04 | Phase 3 | Pending |
+| RETR-05 | Phase 3 | Pending |
+| RETR-06 | Phase 3 | Pending |
+| RETR-07 | Phase 3 | Pending |
+| RETR-08 | Phase 3 | Pending |
+| RETR-09 | Phase 3 | Pending |
+| INGR-I-01 | Phase 1 | Pending |
+| INGR-I-02 | Phase 1 | Pending |
+| INGR-I-03 | Phase 1 | Pending |
+| INGR-I-04 | Phase 1 | Pending |
+| INGR-I-05 | Phase 1 | Pending |
+| INGR-I-06 | Phase 1 | Pending |
+| INGR-C-01 | Phase 4 | Pending |
+| INGR-C-02 | Phase 4 | Pending |
+| INGR-C-03 | Phase 4 | Pending |
+| INGR-C-04 | Phase 4 | Pending |
+| INGR-C-05 | Phase 4 | Pending |
+| INGR-C-06 | Phase 4 | Pending |
+| INGR-C-07 | Phase 4 | Pending |
+| INGR-C-08 | Phase 4 | Pending |
+| INGR-C-09 | Phase 4 | Pending |
+| PUBL-01 | Phase 4 | Pending |
+| PUBL-02 | Phase 4 | Pending |
+| PUBL-03 | Phase 4 | Pending |
+| PUBL-04 | Phase 4 | Pending |
+| PUBL-05 | Phase 4 | Pending |
+| PUBL-06 | Phase 4 | Pending |
+| PUBL-07 | Phase 5 | Pending |
+| MVER-01 | Phase 6 | Pending |
+| MVER-02 | Phase 6 | Pending |
+| MVER-03 | Phase 6 | Pending |
+| MVER-04 | Phase 6 | Pending |
+| MVER-05 | Phase 6 | Pending |
+| PKG-01 | Phase 6 | Pending |
+| PKG-02 | Phase 6 | Pending |
+| PKG-03 | Phase 6 | Pending |
+| PKG-04 | Phase 6 | Pending |
+| PKG-05 | Phase 8 | Pending |
+| PKG-06 | Phase 6 | Pending |
+| PKG-07 | Phase 8 | Pending |
+| CLI-01 | Phase 1 | Pending |
+| CLI-02 | Phase 7 | Pending |
+| CLI-03 | Phase 1 | Pending |
+| OPS-01 | Phase 5 | Pending |
+| OPS-02 | Phase 5 | Pending |
+| OPS-03 | Phase 5 | Pending |
+| OPS-04 | Phase 5 | Pending |
+| OPS-05 | Phase 5 | Pending |
+| TEST-01 | Phase 7 | Pending |
+| TEST-02 | Phase 7 | Pending |
+| TEST-03 | Phase 7 | Pending |
+| TEST-04 | Phase 7 | Pending |
+| TEST-05 | Phase 7 | Pending |
+| TEST-06 | Phase 7 | Pending |
+| SHIP-01 | Phase 8 | Pending |
+| SHIP-02 | Phase 8 | Pending |
+| SHIP-03 | Phase 7 | Pending |
+| SHIP-04 | Phase 7 | Pending |
+| SHIP-05 | Phase 7 | Pending |
+| SHIP-06 | Phase 8 | Pending |
 
 ---
 
 *Requirements defined: 2026-04-15*
-*Last updated: 2026-04-15 after initial definition*
+*Last updated: 2026-04-15 after roadmap creation (traceability populated)*
