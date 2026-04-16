@@ -81,6 +81,7 @@ class TestPyprojectDeps:
             "platformdirs",
             "pyyaml",
             "markdownify",
+            "beautifulsoup4",
         ]
         for dep_name in required_dep_names:
             assert dep_name in pyproject, f"Missing dependency: {dep_name}"
