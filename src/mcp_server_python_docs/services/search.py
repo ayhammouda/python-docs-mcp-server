@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from mcp_server_python_docs.errors import VersionNotFoundError
 from mcp_server_python_docs.models import SearchDocsResult
 from mcp_server_python_docs.services.observability import log_tool_call
 from mcp_server_python_docs.retrieval.query import (
@@ -34,6 +35,29 @@ class SearchService:
         # Note: _symbol_exists uses direct SQL (not the version-scoped symbol
         # cache) because classify_query's callback has no version context.
 
+    def _resolve_version(self, version: str | None) -> str | None:
+        """Resolve and validate version. Returns None if version was None (use all versions).
+
+        Raises VersionNotFoundError for unknown versions (MVER-03).
+        """
+        if version is None:
+            return None
+        row = self._db.execute(
+            "SELECT version FROM doc_sets WHERE version = ?",
+            (version,),
+        ).fetchone()
+        if row is None:
+            available = [
+                r[0]
+                for r in self._db.execute(
+                    "SELECT version FROM doc_sets ORDER BY version"
+                ).fetchall()
+            ]
+            raise VersionNotFoundError(
+                f"version {version!r} not found; available: {available}"
+            )
+        return version
+
     def _symbol_exists(self, name: str) -> bool:
         """Check if a symbol name exists in the symbols table."""
         row = self._db.execute(
@@ -55,6 +79,9 @@ class SearchService:
         Routes queries through classifier -> synonym expansion -> FTS5 or
         symbol fast-path. Returns SearchDocsResult with hits list.
         """
+        # Validate version if explicitly provided (MVER-03)
+        resolved_version = self._resolve_version(version)
+
         # Track synonym expansion for observability (OPS-01)
         original_tokens = set(query.lower().split()) if query.strip() else set()
         expanded = expand_synonyms(query, self._synonyms)
@@ -65,7 +92,7 @@ class SearchService:
 
         # Symbol fast-path: skip FTS5 entirely
         if kind == "symbol" or (kind == "auto" and query_type == "symbol"):
-            hits = lookup_symbols_exact(self._db, query, version, max_results)
+            hits = lookup_symbols_exact(self._db, query, resolved_version, max_results)
             if hits:
                 self._last_resolution = "exact"
                 return SearchDocsResult(hits=hits)
@@ -79,17 +106,17 @@ class SearchService:
 
         # Route to appropriate FTS5 table based on kind
         if kind == "section":
-            hits = search_sections(self._db, match_expr, version, max_results)
+            hits = search_sections(self._db, match_expr, resolved_version, max_results)
         elif kind == "example":
-            hits = search_examples(self._db, match_expr, version, max_results)
+            hits = search_examples(self._db, match_expr, resolved_version, max_results)
         elif kind == "page":
             # Page search uses sections with broader matching
-            hits = search_sections(self._db, match_expr, version, max_results)
+            hits = search_sections(self._db, match_expr, resolved_version, max_results)
         else:
             # kind == "auto": try sections first, fall back to symbols FTS
-            hits = search_sections(self._db, match_expr, version, max_results)
+            hits = search_sections(self._db, match_expr, resolved_version, max_results)
             if not hits:
-                hits = search_symbols(self._db, match_expr, version, max_results)
+                hits = search_symbols(self._db, match_expr, resolved_version, max_results)
 
         self._last_resolution = "fts"
         return SearchDocsResult(hits=hits)
