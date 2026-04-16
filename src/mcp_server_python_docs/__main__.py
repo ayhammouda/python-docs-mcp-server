@@ -346,6 +346,7 @@ def doctor() -> None:
     """Check environment health and report issues (CLI-02)."""
     import shutil
     import sqlite3
+    from pathlib import Path
 
     from mcp_server_python_docs.storage.db import get_cache_dir, get_index_path
 
