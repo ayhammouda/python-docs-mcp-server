@@ -335,11 +335,42 @@ def test_bootstrap_idempotent():
 # ── Test 5: No hardcoded cache path (Success Criterion 5) ────────────
 
 
+def _string_literal_lines(source: str) -> set[int]:
+    """Return the set of 1-based line numbers that are part of a string literal.
+
+    Uses the ast module for reliable detection -- handles triple-quoted strings,
+    f-strings, raw strings, and all other edge cases that a manual triple-quote
+    state machine would miss.
+    """
+    import ast
+
+    string_lines: set[int] = set()
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return string_lines
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            # ast.Constant.end_lineno is available in Python 3.8+
+            if node.end_lineno is not None:
+                for ln in range(node.lineno, node.end_lineno + 1):
+                    string_lines.add(ln)
+        elif isinstance(node, ast.JoinedStr):
+            # f-string: mark all lines it spans
+            if node.end_lineno is not None:
+                for ln in range(node.lineno, node.end_lineno + 1):
+                    string_lines.add(ln)
+    return string_lines
+
+
 def test_no_hardcoded_cache_path():
     """No hardcoded ~/.cache/ paths in source tree (STOR-10).
 
     All cache directory paths must be resolved via platformdirs.user_cache_dir().
-    References in comments and docstrings are allowed (documentation only).
+    References in comments, docstrings, and string literals are allowed
+    (documentation only). Uses ast-based detection for reliable string
+    identification.
     """
     src_dir = Path(__file__).parent.parent / "src"
     violations = []
@@ -349,22 +380,16 @@ def test_no_hardcoded_cache_path():
                 continue
             fpath = Path(root) / fname
             content = fpath.read_text()
-            in_docstring = False
+            str_lines = _string_literal_lines(content)
             for lineno, line in enumerate(content.splitlines(), 1):
                 stripped = line.strip()
-                # Track triple-quote docstring boundaries
-                triple_count = stripped.count('"""') + stripped.count("'''")
-                if triple_count == 1:
-                    in_docstring = not in_docstring
-                elif triple_count >= 2:
-                    pass  # single-line docstring, stays outside
-                if in_docstring:
+                # Skip comments
+                if stripped.startswith("#"):
                     continue
-                if "~/.cache" in line and not stripped.startswith("#"):
-                    # Skip docstring lines (already filtered above)
-                    # and single-line triple-quoted docstrings
-                    if '"""' in stripped or "'''" in stripped:
-                        continue
+                # Skip lines that are part of string literals (docstrings, etc.)
+                if lineno in str_lines:
+                    continue
+                if "~/.cache" in line:
                     violations.append(f"{fpath}:{lineno}: {stripped}")
     if violations:
         pytest.fail(

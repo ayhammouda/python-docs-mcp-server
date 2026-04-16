@@ -114,6 +114,12 @@ def bootstrap_schema(conn: sqlite3.Connection) -> None:
     the tokenizer configuration matches the current schema.sql. This is safe
     because FTS5 external-content tables are derived data that can be rebuilt
     from canonical tables via the 'rebuild' command.
+
+    Warning:
+        This function uses ``executescript()``, which issues an implicit
+        ``COMMIT`` before executing the DDL. Do not call ``bootstrap_schema()``
+        while a transaction with uncommitted writes is in progress -- those
+        writes will be silently committed.
     """
     # Drop FTS5 virtual tables first so they can be recreated with the
     # correct tokenizer. IF NOT EXISTS would skip recreation if the table
