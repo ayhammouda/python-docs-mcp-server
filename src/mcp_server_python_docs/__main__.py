@@ -118,6 +118,15 @@ def build_index(versions: str, skip_content: bool) -> None:
         logger.error("No valid versions specified. Example: --versions 3.13")
         raise SystemExit(1)
 
+    # Validate version format before sorting (CR-03, WR-04)
+    for v in version_list:
+        parts = v.split(".")
+        if len(parts) != 2 or not all(p.isdigit() for p in parts):
+            logger.error(
+                "Invalid version format %r. Expected 'X.Y' (e.g., 3.13)", v
+            )
+            raise SystemExit(1)
+
     # Determine default version: highest version number (MVER-02)
     sorted_versions = sorted(version_list, key=lambda v: [int(x) for x in v.split(".")])
     default_version = sorted_versions[-1]
@@ -228,7 +237,12 @@ def build_index(versions: str, skip_content: bool) -> None:
                             version,
                             result.stderr[-2000:] if result.stderr else "(no output)",
                         )
-                        any_version_succeeded = True  # symbols still ingested
+                        logger.warning(
+                            "Symbols were ingested for %s but sections/examples "
+                            "will be missing. Smoke tests may fail.",
+                            version,
+                        )
+                        any_version_succeeded = True
                         continue
 
                     logger.info("sphinx-build complete for Python %s", version)

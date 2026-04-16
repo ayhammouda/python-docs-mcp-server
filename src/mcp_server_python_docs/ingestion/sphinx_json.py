@@ -398,6 +398,13 @@ def populate_synonyms(conn: sqlite3.Connection) -> int:
     with importlib.resources.as_file(ref) as path:
         data = yaml.safe_load(path.read_text())
 
+    if not isinstance(data, dict):
+        from mcp_server_python_docs.errors import IngestionError
+
+        raise IngestionError(
+            f"synonyms.yaml must be a YAML mapping, got {type(data).__name__}"
+        )
+
     count = 0
     for concept, expansion in data.items():
         if isinstance(expansion, list):

@@ -111,6 +111,14 @@ def ingest_inventory(
     # Clear existing symbols for this doc_set (re-ingestion support)
     conn.execute("DELETE FROM symbols WHERE doc_set_id = ?", (doc_set_id,))
 
+    # Validate version format before URL construction (WR-04)
+    import re
+
+    if not re.match(r"^\d+\.\d+$", version):
+        from mcp_server_python_docs.errors import IngestionError
+
+        raise IngestionError(f"Invalid version format: {version!r}")
+
     # Download and parse objects.inv (INGR-I-01)
     url = f"https://docs.python.org/{version}/objects.inv"
     logger.info(f"Downloading {url}...")
@@ -141,7 +149,7 @@ def ingest_inventory(
         anchor_part = uri.split("#", 1)[1] if "#" in uri else None
 
         conn.execute(
-            "INSERT OR REPLACE INTO symbols "
+            "INSERT OR IGNORE INTO symbols "
             "(doc_set_id, qualified_name, normalized_name, module, "
             "symbol_type, uri, anchor) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",

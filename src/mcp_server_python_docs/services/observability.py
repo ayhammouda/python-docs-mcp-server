@@ -30,7 +30,8 @@ def _format_logfmt(**fields: Any) -> str:
         elif isinstance(value, float):
             parts.append(f"{key}={value:.1f}")
         elif isinstance(value, str) and " " in value:
-            parts.append(f'{key}="{value}"')
+            escaped = str(value).replace('"', '\\"')
+            parts.append(f'{key}="{escaped}"')
         else:
             parts.append(f"{key}={value}")
     return " ".join(parts)
