@@ -11,6 +11,7 @@ import sqlite3
 from mcp_server_python_docs.errors import PageNotFoundError, VersionNotFoundError
 from mcp_server_python_docs.models import GetDocsResult
 from mcp_server_python_docs.retrieval.budget import apply_budget
+from mcp_server_python_docs.services.cache import create_section_cache
 from mcp_server_python_docs.services.observability import log_tool_call
 
 
@@ -23,6 +24,7 @@ class ContentService:
 
     def __init__(self, db: sqlite3.Connection) -> None:
         self._db = db
+        self._get_section = create_section_cache(db)
 
     def _resolve_version(self, version: str | None) -> str:
         """Resolve version to actual version string. Defaults to latest (is_default=1)."""
@@ -87,24 +89,25 @@ class ContentService:
         doc_title = doc_row["title"]
 
         if anchor is not None:
-            # Section-level retrieval
-            section_row = self._db.execute(
-                """
-                SELECT heading, content_text
-                FROM sections
-                WHERE document_id = ? AND anchor = ?
-                LIMIT 1
-                """,
+            # Section-level retrieval — use cache for repeat reads (OPS-04)
+            id_row = self._db.execute(
+                "SELECT id FROM sections WHERE document_id = ? AND anchor = ? LIMIT 1",
                 (doc_id, anchor),
             ).fetchone()
 
-            if section_row is None:
+            if id_row is None:
                 raise PageNotFoundError(
                     f"Section {anchor!r} not found in {slug!r} v{resolved_version}"
                 )
 
-            full_text = section_row["content_text"] or ""
-            title = section_row["heading"] or doc_title
+            cached = self._get_section(id_row["id"])
+            if cached is not None:
+                full_text = cached.content_text
+                title = cached.heading or doc_title
+            else:
+                raise PageNotFoundError(
+                    f"Section {anchor!r} not found in {slug!r} v{resolved_version}"
+                )
         else:
             # Page-level retrieval: concatenate all sections in ordinal order
             section_rows = self._db.execute(
