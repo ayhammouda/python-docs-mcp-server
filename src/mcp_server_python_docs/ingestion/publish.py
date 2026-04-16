@@ -6,6 +6,7 @@ message to stderr.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
@@ -166,9 +167,12 @@ def run_smoke_tests(
 
             # FTS5 check: sections_fts is searchable
             try:
-                row = conn.execute(
-                    'SELECT 1 FROM sections_fts WHERE sections_fts MATCH \'"asyncio"\' LIMIT 1'
-                ).fetchone()
+                with contextlib.closing(
+                    conn.execute(
+                        'SELECT 1 FROM sections_fts WHERE sections_fts MATCH \'"asyncio"\' LIMIT 1'
+                    )
+                ) as cursor:
+                    row = cursor.fetchone()
                 if row:
                     messages.append("OK: fts5: sections_fts searchable")
                 else:
@@ -182,9 +186,12 @@ def run_smoke_tests(
         else:
             messages.append("OK: content checks skipped for symbol-only build")
             try:
-                row = conn.execute(
-                    'SELECT 1 FROM symbols_fts WHERE symbols_fts MATCH \'"asyncio"\' LIMIT 1'
-                ).fetchone()
+                with contextlib.closing(
+                    conn.execute(
+                        'SELECT 1 FROM symbols_fts WHERE symbols_fts MATCH \'"asyncio"\' LIMIT 1'
+                    )
+                ) as cursor:
+                    row = cursor.fetchone()
                 if row:
                     messages.append("OK: fts5: symbols_fts searchable")
                 else:

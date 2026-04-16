@@ -8,6 +8,7 @@ Receives sqlite3.Connection as parameter -- does not import storage.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import sqlite3
 
@@ -68,24 +69,26 @@ def search_sections(
         List of SymbolHit with kind="section" and FTS5 snippets.
     """
     try:
-        cursor = conn.execute(
-            """
-            SELECT s.id, s.heading, s.uri, s.anchor,
-                   d.version, doc.slug,
-                   bm25(sections_fts, 10.0, 1.0) as score,
-                   snippet(sections_fts, 1, '**', '**', '...', 32) as snippet_text
-            FROM sections_fts
-            JOIN sections s ON sections_fts.rowid = s.id
-            JOIN documents doc ON s.document_id = doc.id
-            JOIN doc_sets d ON doc.doc_set_id = d.id
-            WHERE sections_fts MATCH ?
-              AND (? IS NULL OR d.version = ?)
-            ORDER BY bm25(sections_fts, 10.0, 1.0)
-            LIMIT ?
-            """,
-            (match_expr, version, version, max_results),
-        )
-        rows = cursor.fetchall()
+        with contextlib.closing(
+            conn.execute(
+                """
+                SELECT s.id, s.heading, s.uri, s.anchor,
+                       d.version, doc.slug,
+                       bm25(sections_fts, 10.0, 1.0) as score,
+                       snippet(sections_fts, 1, '**', '**', '...', 32) as snippet_text
+                FROM sections_fts
+                JOIN sections s ON sections_fts.rowid = s.id
+                JOIN documents doc ON s.document_id = doc.id
+                JOIN doc_sets d ON doc.doc_set_id = d.id
+                WHERE sections_fts MATCH ?
+                  AND (? IS NULL OR d.version = ?)
+                ORDER BY bm25(sections_fts, 10.0, 1.0)
+                LIMIT ?
+                """,
+                (match_expr, version, version, max_results),
+            )
+        ) as cursor:
+            rows = cursor.fetchall()
     except sqlite3.OperationalError:
         logger.warning("FTS5 query failed for sections: %r", match_expr)
         return []
@@ -127,23 +130,25 @@ def search_symbols(
         List of SymbolHit with kind from symbol_type.
     """
     try:
-        cursor = conn.execute(
-            """
-            SELECT sym.id, sym.qualified_name, sym.symbol_type, sym.uri,
-                   sym.anchor, sym.module, d.version,
-                   bm25(symbols_fts, 10.0, 1.0) as score,
-                   snippet(symbols_fts, 0, '**', '**', '...', 32) as snippet_text
-            FROM symbols_fts
-            JOIN symbols sym ON symbols_fts.rowid = sym.id
-            JOIN doc_sets d ON sym.doc_set_id = d.id
-            WHERE symbols_fts MATCH ?
-              AND (? IS NULL OR d.version = ?)
-            ORDER BY bm25(symbols_fts, 10.0, 1.0)
-            LIMIT ?
-            """,
-            (match_expr, version, version, max_results),
-        )
-        rows = cursor.fetchall()
+        with contextlib.closing(
+            conn.execute(
+                """
+                SELECT sym.id, sym.qualified_name, sym.symbol_type, sym.uri,
+                       sym.anchor, sym.module, d.version,
+                       bm25(symbols_fts, 10.0, 1.0) as score,
+                       snippet(symbols_fts, 0, '**', '**', '...', 32) as snippet_text
+                FROM symbols_fts
+                JOIN symbols sym ON symbols_fts.rowid = sym.id
+                JOIN doc_sets d ON sym.doc_set_id = d.id
+                WHERE symbols_fts MATCH ?
+                  AND (? IS NULL OR d.version = ?)
+                ORDER BY bm25(symbols_fts, 10.0, 1.0)
+                LIMIT ?
+                """,
+                (match_expr, version, version, max_results),
+            )
+        ) as cursor:
+            rows = cursor.fetchall()
     except sqlite3.OperationalError:
         logger.warning("FTS5 query failed for symbols: %r", match_expr)
         return []
@@ -183,26 +188,28 @@ def search_examples(
         List of SymbolHit with kind="example" or "doctest".
     """
     try:
-        cursor = conn.execute(
-            """
-            SELECT e.id, e.code, e.is_doctest,
-                   s.heading, s.uri as section_uri, s.anchor,
-                   d.version, doc.slug,
-                   bm25(examples_fts) as score,
-                   snippet(examples_fts, 0, '**', '**', '...', 32) as snippet_text
-            FROM examples_fts
-            JOIN examples e ON examples_fts.rowid = e.id
-            JOIN sections s ON e.section_id = s.id
-            JOIN documents doc ON s.document_id = doc.id
-            JOIN doc_sets d ON doc.doc_set_id = d.id
-            WHERE examples_fts MATCH ?
-              AND (? IS NULL OR d.version = ?)
-            ORDER BY bm25(examples_fts)
-            LIMIT ?
-            """,
-            (match_expr, version, version, max_results),
-        )
-        rows = cursor.fetchall()
+        with contextlib.closing(
+            conn.execute(
+                """
+                SELECT e.id, e.code, e.is_doctest,
+                       s.heading, s.uri as section_uri, s.anchor,
+                       d.version, doc.slug,
+                       bm25(examples_fts) as score,
+                       snippet(examples_fts, 0, '**', '**', '...', 32) as snippet_text
+                FROM examples_fts
+                JOIN examples e ON examples_fts.rowid = e.id
+                JOIN sections s ON e.section_id = s.id
+                JOIN documents doc ON s.document_id = doc.id
+                JOIN doc_sets d ON doc.doc_set_id = d.id
+                WHERE examples_fts MATCH ?
+                  AND (? IS NULL OR d.version = ?)
+                ORDER BY bm25(examples_fts)
+                LIMIT ?
+                """,
+                (match_expr, version, version, max_results),
+            )
+        ) as cursor:
+            rows = cursor.fetchall()
     except sqlite3.OperationalError:
         logger.warning("FTS5 query failed for examples: %r", match_expr)
         return []
@@ -249,20 +256,22 @@ def lookup_symbols_exact(
         query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     )
 
-    cursor = conn.execute(
-        """
-        SELECT s.qualified_name, s.symbol_type, s.uri, s.anchor,
-               s.module, d.version
-        FROM symbols s
-        JOIN doc_sets d ON s.doc_set_id = d.id
-        WHERE (s.qualified_name = ? OR s.qualified_name LIKE ? ESCAPE '\\')
-          AND (? IS NULL OR d.version = ?)
-        ORDER BY CASE WHEN s.qualified_name = ? THEN 0 ELSE 1 END
-        LIMIT ?
-        """,
-        (query, f"%{escaped_query}%", version, version, query, max_results),
-    )
-    rows = cursor.fetchall()
+    with contextlib.closing(
+        conn.execute(
+            """
+            SELECT s.qualified_name, s.symbol_type, s.uri, s.anchor,
+                   s.module, d.version
+            FROM symbols s
+            JOIN doc_sets d ON s.doc_set_id = d.id
+            WHERE (s.qualified_name = ? OR s.qualified_name LIKE ? ESCAPE '\\')
+              AND (? IS NULL OR d.version = ?)
+            ORDER BY CASE WHEN s.qualified_name = ? THEN 0 ELSE 1 END
+            LIMIT ?
+            """,
+            (query, f"%{escaped_query}%", version, version, query, max_results),
+        )
+    ) as cursor:
+        rows = cursor.fetchall()
 
     return [
         SymbolHit(

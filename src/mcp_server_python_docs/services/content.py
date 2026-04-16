@@ -6,6 +6,7 @@ No MCP types imported — dependency rule enforced.
 """
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 
 from mcp_server_python_docs.errors import PageNotFoundError
@@ -48,16 +49,19 @@ class ContentService:
         resolved_version = self._resolve_version(version)
 
         # Find the document
-        doc_row = self._db.execute(
-            """
-            SELECT d.id, d.title, d.slug
-            FROM documents d
-            JOIN doc_sets ds ON d.doc_set_id = ds.id
-            WHERE d.slug = ? AND ds.version = ?
-            LIMIT 1
-            """,
-            (slug, resolved_version),
-        ).fetchone()
+        with contextlib.closing(
+            self._db.execute(
+                """
+                SELECT d.id, d.title, d.slug
+                FROM documents d
+                JOIN doc_sets ds ON d.doc_set_id = ds.id
+                WHERE d.slug = ? AND ds.version = ?
+                LIMIT 1
+                """,
+                (slug, resolved_version),
+            )
+        ) as cursor:
+            doc_row = cursor.fetchone()
 
         if doc_row is None:
             raise PageNotFoundError(
@@ -69,10 +73,13 @@ class ContentService:
 
         if anchor is not None:
             # Section-level retrieval — use cache for repeat reads (OPS-04)
-            id_row = self._db.execute(
-                "SELECT id FROM sections WHERE document_id = ? AND anchor = ? LIMIT 1",
-                (doc_id, anchor),
-            ).fetchone()
+            with contextlib.closing(
+                self._db.execute(
+                    "SELECT id FROM sections WHERE document_id = ? AND anchor = ? LIMIT 1",
+                    (doc_id, anchor),
+                )
+            ) as cursor:
+                id_row = cursor.fetchone()
 
             if id_row is None:
                 raise PageNotFoundError(
@@ -89,15 +96,18 @@ class ContentService:
                 )
         else:
             # Page-level retrieval: concatenate all sections in ordinal order
-            section_rows = self._db.execute(
-                """
-                SELECT heading, content_text
-                FROM sections
-                WHERE document_id = ?
-                ORDER BY ordinal
-                """,
-                (doc_id,),
-            ).fetchall()
+            with contextlib.closing(
+                self._db.execute(
+                    """
+                    SELECT heading, content_text
+                    FROM sections
+                    WHERE document_id = ?
+                    ORDER BY ordinal
+                    """,
+                    (doc_id,),
+                )
+            ) as cursor:
+                section_rows = cursor.fetchall()
 
             if not section_rows:
                 full_text = ""
