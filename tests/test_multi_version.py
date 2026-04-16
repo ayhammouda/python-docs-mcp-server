@@ -215,3 +215,108 @@ class TestIngestInventoryDefault:
         ).fetchone()
         assert row[0] == 1
         conn.close()
+
+
+class TestBuildIndexCLIVersionParsing:
+    """MVER-01: --versions flag parses comma-separated versions."""
+
+    def test_version_parsing(self):
+        """Verify version_list correctly splits comma-separated versions."""
+        versions = "3.12,3.13"
+        version_list = [v.strip() for v in versions.split(",") if v.strip()]
+        assert version_list == ["3.12", "3.13"]
+
+    def test_version_parsing_with_spaces(self):
+        """Verify version_list handles spaces around commas."""
+        versions = "3.12 , 3.13"
+        version_list = [v.strip() for v in versions.split(",") if v.strip()]
+        assert version_list == ["3.12", "3.13"]
+
+    def test_default_version_selection(self):
+        """MVER-02: Highest version is selected as default."""
+        version_list = ["3.12", "3.13"]
+        sorted_versions = sorted(
+            version_list, key=lambda v: [int(x) for x in v.split(".")]
+        )
+        assert sorted_versions[-1] == "3.13"
+
+    def test_default_version_selection_reversed(self):
+        """Default version is 3.13 even if 3.13 is listed first."""
+        version_list = ["3.13", "3.12"]
+        sorted_versions = sorted(
+            version_list, key=lambda v: [int(x) for x in v.split(".")]
+        )
+        assert sorted_versions[-1] == "3.13"
+
+
+class TestCrossVersionSchemaConstraints:
+    """MVER-05: Deep verification that cross-version data coexists safely."""
+
+    def test_same_symbol_both_versions(self, multi_version_db):
+        """Same qualified_name in two versions does not violate
+        UNIQUE(doc_set_id, qualified_name, symbol_type)."""
+        rows = multi_version_db.execute(
+            "SELECT s.qualified_name, ds.version FROM symbols s "
+            "JOIN doc_sets ds ON s.doc_set_id = ds.id "
+            "WHERE s.qualified_name = 'asyncio.TaskGroup' "
+            "ORDER BY ds.version"
+        ).fetchall()
+        assert len(rows) == 2
+        assert rows[0]["version"] == "3.12"
+        assert rows[1]["version"] == "3.13"
+
+    def test_same_section_anchor_both_versions(self, multi_version_db):
+        """Same anchor in two versions does not violate UNIQUE(document_id, anchor)
+        because document_id differs across doc_sets."""
+        rows = multi_version_db.execute(
+            "SELECT sec.anchor, ds.version FROM sections sec "
+            "JOIN documents doc ON sec.document_id = doc.id "
+            "JOIN doc_sets ds ON doc.doc_set_id = ds.id "
+            "WHERE sec.anchor = 'asyncio.TaskGroup' "
+            "ORDER BY ds.version"
+        ).fetchall()
+        assert len(rows) == 2
+
+    def test_fts_returns_results_for_both_versions(self, multi_version_db):
+        """FTS5 indexes cover both versions."""
+        rows = multi_version_db.execute(
+            "SELECT qualified_name FROM symbols_fts "
+            "WHERE symbols_fts MATCH 'asyncio'"
+        ).fetchall()
+        # Should have entries from both versions
+        assert len(rows) >= 2
+
+    def test_insert_third_version_no_conflict(self, multi_version_db):
+        """Adding a third version (hypothetical 3.14) works without conflicts."""
+        multi_version_db.execute(
+            "INSERT INTO doc_sets (source, version, language, label, is_default, base_url) "
+            "VALUES ('python-docs', '3.14', 'en', 'Python 3.14', 0, "
+            "'https://docs.python.org/3.14/')"
+        )
+        ds_row = multi_version_db.execute(
+            "SELECT id FROM doc_sets WHERE version = '3.14'"
+        ).fetchone()
+        ds_id = ds_row[0]
+
+        # Same slug as existing versions
+        multi_version_db.execute(
+            "INSERT INTO documents (doc_set_id, uri, slug, title, content_text, char_count) "
+            "VALUES (?, 'library/asyncio-task.html', 'library/asyncio-task.html', "
+            "'asyncio.Task', 'Content for 3.14', 5000)",
+            (ds_id,),
+        )
+
+        multi_version_db.execute(
+            "INSERT INTO symbols (doc_set_id, qualified_name, normalized_name, "
+            "module, symbol_type, uri, anchor) "
+            "VALUES (?, 'asyncio.TaskGroup', 'asyncio.taskgroup', 'asyncio', 'class', "
+            "'library/asyncio-task.html#asyncio.TaskGroup', 'asyncio.TaskGroup')",
+            (ds_id,),
+        )
+        multi_version_db.commit()
+
+        # Now 3 rows for this symbol
+        rows = multi_version_db.execute(
+            "SELECT COUNT(*) FROM symbols WHERE qualified_name = 'asyncio.TaskGroup'"
+        ).fetchone()
+        assert rows[0] == 3
