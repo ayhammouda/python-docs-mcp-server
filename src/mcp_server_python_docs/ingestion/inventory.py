@@ -30,17 +30,17 @@ def _expand_uri(obj: soi.DataObjStr) -> str:
     E.g., uri="library/asyncio-task.html#$" with name="asyncio.TaskGroup"
     becomes "library/asyncio-task.html#asyncio.TaskGroup"
     """
-    uri = obj.uri
+    uri: str = obj.uri  # type: ignore[assignment]  # sphobjinv lacks type stubs
     if "$" in uri:
-        uri = uri.replace("$", obj.name)
+        uri = uri.replace("$", obj.name)  # type: ignore[arg-type]
     return uri
 
 
 def _get_display_name(obj: soi.DataObjStr) -> str:
     """Get display name, falling back to obj.name when dispname is '-' (INGR-I-04)."""
-    if obj.dispname == "-":
-        return obj.name
-    return obj.dispname
+    if obj.dispname == "-":  # type: ignore[comparison-overlap]  # sphobjinv lacks stubs
+        return obj.name  # type: ignore[return-value]
+    return obj.dispname  # type: ignore[return-value]
 
 
 def _extract_module(qualified_name: str) -> str | None:
@@ -111,7 +111,7 @@ def ingest_inventory(conn: sqlite3.Connection, version: str) -> int:
     # Download and parse objects.inv (INGR-I-01)
     url = f"https://docs.python.org/{version}/objects.inv"
     logger.info(f"Downloading {url}...")
-    inv = soi.Inventory(url=url)
+    inv = soi.Inventory(url=url)  # type: ignore[call-arg]  # sphobjinv lacks type stubs
     logger.info(f"Downloaded {len(inv.objects)} inventory objects")
 
     # Filter to Python domain objects and collect by qualified_name

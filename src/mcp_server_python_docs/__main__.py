@@ -26,7 +26,7 @@ if hasattr(signal, "SIGPIPE"):
     signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
 # === LOGGING TO STDERR (HYGN-02) ===
-import logging
+import logging  # noqa: E402
 
 logging.basicConfig(
     stream=sys.stderr,
@@ -36,7 +36,7 @@ logging.basicConfig(
 logger = logging.getLogger("mcp_server_python_docs")
 
 # === Now safe to import everything else ===
-import click
+import click  # noqa: E402
 
 
 @click.group(invoke_without_command=True)
@@ -74,15 +74,19 @@ def serve() -> None:
 )
 def build_index(versions: str) -> None:
     """Build the documentation index from objects.inv."""
+    import platformdirs
+
     from mcp_server_python_docs.ingestion.inventory import ingest_inventory
     from mcp_server_python_docs.storage.db import (
         assert_fts5_available,
         get_readwrite_connection,
     )
 
-    import platformdirs
+    version_list = [v.strip() for v in versions.split(",") if v.strip()]
+    if not version_list:
+        logger.error("No valid versions specified. Example: --versions 3.13")
+        raise SystemExit(1)
 
-    version_list = [v.strip() for v in versions.split(",")]
     cache_dir = platformdirs.user_cache_dir("mcp-python-docs")
     os.makedirs(cache_dir, exist_ok=True)
     index_path = os.path.join(cache_dir, "index.db")

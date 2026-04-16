@@ -10,8 +10,6 @@ appear on stdout. This catches:
 import subprocess
 import sys
 
-import pytest
-
 
 class TestStdioHygiene:
     """Verify stdout contains only MCP protocol messages."""

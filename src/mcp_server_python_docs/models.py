@@ -9,7 +9,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-
 # --- search_docs models ---
 
 
@@ -25,7 +24,10 @@ class SearchDocsInput(BaseModel):
     )
     kind: Literal["auto", "page", "symbol", "section", "example"] = Field(
         default="auto",
-        description="Search type. Use 'symbol' for API lookups, 'example' for code samples, 'auto' otherwise.",
+        description=(
+            "Search type. Use 'symbol' for API lookups, "
+            "'example' for code samples, 'auto' otherwise."
+        ),
     )
     max_results: int = Field(
         default=5,

@@ -6,7 +6,6 @@ then queries via the search_docs path.
 
 These tests require internet access for the initial objects.inv download.
 """
-import sqlite3
 import tempfile
 from pathlib import Path
 

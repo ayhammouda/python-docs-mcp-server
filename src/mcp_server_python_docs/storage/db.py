@@ -63,6 +63,11 @@ def get_readwrite_connection(path: str | Path) -> sqlite3.Connection:
 def assert_fts5_available(conn: sqlite3.Connection) -> None:
     """Check FTS5 availability with platform-aware error message (STOR-08).
 
+    Works on both read-only and read-write connections:
+    - RW: attempts CREATE/DROP of a temp FTS5 table (definitive check)
+    - RO: falls back to PRAGMA compile_options when CREATE fails due to
+      readonly mode (not a missing-FTS5 error)
+
     Raises FTS5UnavailableError with actionable guidance:
     - Linux x86-64: suggests pysqlite3-binary
     - macOS/Windows/ARM: suggests uv python install or python.org
@@ -70,7 +75,15 @@ def assert_fts5_available(conn: sqlite3.Connection) -> None:
     try:
         conn.execute("CREATE VIRTUAL TABLE _fts5_check USING fts5(x)")
         conn.execute("DROP TABLE _fts5_check")
+        return  # FTS5 confirmed via CREATE
     except sqlite3.OperationalError as e:
+        error_msg = str(e).lower()
+        # If the error is about readonly (not missing FTS5), check compile_options
+        if "readonly" in error_msg or "read-only" in error_msg:
+            opts = [row[0] for row in conn.execute("PRAGMA compile_options")]
+            if "ENABLE_FTS5" in opts:
+                return  # FTS5 is compiled in
+        # FTS5 genuinely unavailable -- build platform-specific hint
         system = platform.system()
         machine = platform.machine()
         if system == "Linux" and machine == "x86_64":

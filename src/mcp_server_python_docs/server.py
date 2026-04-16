@@ -14,9 +14,9 @@ from typing import Literal
 import platformdirs
 import yaml
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.types import ToolAnnotations
 
 from mcp_server_python_docs.app_context import AppContext
-from mcp_server_python_docs.errors import FTS5UnavailableError, IndexNotBuiltError
 from mcp_server_python_docs.models import SearchDocsResult, SymbolHit
 
 logger = logging.getLogger(__name__)
@@ -95,11 +95,11 @@ def create_server() -> FastMCP:
     )
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "openWorldHint": False,
-        }
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            openWorldHint=False,
+        )
     )
     def search_docs(
         query: str,
@@ -118,14 +118,23 @@ def create_server() -> FastMCP:
                 f"search_docs: kind={kind} routes to symbol fast-path in Phase 1"
             )
 
-        # Query the symbols table directly
+        # Query the symbols table with version filtering via doc_sets join
         db = app_ctx.db
+
+        # Escape LIKE wildcards in user input (% and _) to prevent
+        # unintended pattern matching while preserving parameterized queries
+        escaped_query = (
+            query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+
         cursor = db.execute(
-            "SELECT qualified_name, symbol_type, uri, anchor FROM symbols "
-            "WHERE qualified_name = ? OR qualified_name LIKE ? "
-            "ORDER BY CASE WHEN qualified_name = ? THEN 0 ELSE 1 END "
+            "SELECT s.qualified_name, s.symbol_type, s.uri, s.anchor, d.version "
+            "FROM symbols s JOIN doc_sets d ON s.doc_set_id = d.id "
+            "WHERE (s.qualified_name = ? OR s.qualified_name LIKE ? ESCAPE '\\') "
+            "AND (? IS NULL OR d.version = ?) "
+            "ORDER BY CASE WHEN s.qualified_name = ? THEN 0 ELSE 1 END "
             "LIMIT ?",
-            (query, f"%{query}%", query, max_results),
+            (query, f"%{escaped_query}%", version, version, query, max_results),
         )
         rows = cursor.fetchall()
 
@@ -146,9 +155,8 @@ def create_server() -> FastMCP:
             symbol_type = row["symbol_type"]
             uri = row["uri"]
             anchor = row["anchor"]
+            hit_version = row["version"]
 
-            # Determine version from doc_sets join (simplified for Phase 1)
-            hit_version = version or "3.13"
             hits.append(
                 SymbolHit(
                     uri=uri,
