@@ -8,7 +8,6 @@ Verifies:
 """
 import importlib.resources
 
-import pytest
 import yaml
 
 
