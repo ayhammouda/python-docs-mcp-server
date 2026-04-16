@@ -280,14 +280,16 @@ def publish_index(build_db_path: Path, version: str) -> bool:
     from mcp_server_python_docs.storage.db import get_readwrite_connection
 
     conn = get_readwrite_connection(build_db_path)
-    run_id = record_ingestion_run(
-        conn,
-        source="python-docs",
-        version=version,
-        status="smoke_testing",
-        artifact_hash=artifact_hash,
-    )
-    conn.close()
+    try:
+        run_id = record_ingestion_run(
+            conn,
+            source="python-docs",
+            version=version,
+            status="smoke_testing",
+            artifact_hash=artifact_hash,
+        )
+    finally:
+        conn.close()
 
     # Run smoke tests (PUBL-03)
     passed, messages = run_smoke_tests(build_db_path)
@@ -297,24 +299,29 @@ def publish_index(build_db_path: Path, version: str) -> bool:
     if not passed:
         # Update run status to failed
         conn = get_readwrite_connection(build_db_path)
-        conn.execute(
-            "UPDATE ingestion_runs SET status = ?, notes = ?, finished_at = CURRENT_TIMESTAMP "
-            "WHERE id = ?",
-            ("failed", "\n".join(messages), run_id),
-        )
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute(
+                "UPDATE ingestion_runs SET status = ?, notes = ?, "
+                "finished_at = CURRENT_TIMESTAMP WHERE id = ?",
+                ("failed", "\n".join(messages), run_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
         logger.error("Smoke tests failed — not publishing")
         return False
 
     # Update run status to published
     conn = get_readwrite_connection(build_db_path)
-    conn.execute(
-        "UPDATE ingestion_runs SET status = ?, finished_at = CURRENT_TIMESTAMP WHERE id = ?",
-        ("published", run_id),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            "UPDATE ingestion_runs SET status = ?, "
+            "finished_at = CURRENT_TIMESTAMP WHERE id = ?",
+            ("published", run_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
     # Atomic swap (PUBL-04)
     atomic_swap(build_db_path)
