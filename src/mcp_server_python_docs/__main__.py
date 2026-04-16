@@ -72,35 +72,210 @@ def serve() -> None:
     required=True,
     help="Comma-separated Python versions (e.g., 3.12,3.13)",
 )
-def build_index(versions: str) -> None:
-    """Build the documentation index from objects.inv."""
-    import platformdirs
+@click.option(
+    "--skip-content",
+    is_flag=True,
+    help="Skip Sphinx JSON build, only ingest objects.inv symbols",
+)
+def build_index(versions: str, skip_content: bool) -> None:
+    """Build the documentation index from objects.inv and Sphinx JSON."""
+    import shutil
+    import subprocess
+    import tempfile
+    import venv
+    from pathlib import Path
 
     from mcp_server_python_docs.ingestion.inventory import ingest_inventory
+    from mcp_server_python_docs.ingestion.publish import (
+        generate_build_path,
+        publish_index,
+    )
+    from mcp_server_python_docs.ingestion.sphinx_json import (
+        ingest_sphinx_json_dir,
+        populate_synonyms,
+        rebuild_fts_indexes,
+    )
     from mcp_server_python_docs.storage.db import (
         assert_fts5_available,
+        bootstrap_schema,
         get_readwrite_connection,
     )
+
+    # Version tag mapping: CPython git tag and Sphinx constraints (INGR-C-02)
+    VERSION_CONFIG: dict[str, dict[str, str]] = {
+        "3.12": {"tag": "v3.12.13", "sphinx_pin": "sphinx~=8.2.0"},
+        "3.13": {"tag": "v3.13.12", "sphinx_pin": "sphinx<9.0.0"},
+    }
 
     version_list = [v.strip() for v in versions.split(",") if v.strip()]
     if not version_list:
         logger.error("No valid versions specified. Example: --versions 3.13")
         raise SystemExit(1)
 
-    cache_dir = platformdirs.user_cache_dir("mcp-python-docs")
-    os.makedirs(cache_dir, exist_ok=True)
-    index_path = os.path.join(cache_dir, "index.db")
+    # Build into a timestamped artifact, not directly to index.db (PUBL-01)
+    build_db_path = generate_build_path()
+    logger.info("Building index at %s", build_db_path)
 
-    conn = get_readwrite_connection(index_path)
+    conn = get_readwrite_connection(build_db_path)
+    bootstrap_schema(conn)
     assert_fts5_available(conn)
 
+    any_version_succeeded = False
+
     for version in version_list:
-        logger.info(f"Ingesting objects.inv for Python {version}...")
-        count = ingest_inventory(conn, version)
-        logger.info(f"Ingested {count} symbols for Python {version}")
+        try:
+            # === Objects.inv ingestion (existing — INGR-I-*) ===
+            logger.info("Ingesting objects.inv for Python %s...", version)
+            count = ingest_inventory(conn, version)
+            logger.info("Ingested %d symbols for Python %s", count, version)
+
+            if skip_content:
+                any_version_succeeded = True
+                continue
+
+            # === Content ingestion (INGR-C-01 through INGR-C-03) ===
+            config = VERSION_CONFIG.get(version)
+            if not config:
+                logger.warning(
+                    "No CPython build config for %s, skipping content ingestion",
+                    version,
+                )
+                any_version_succeeded = True
+                continue
+
+            # Clone CPython source at pinned tag (INGR-C-01)
+            clone_dir = tempfile.mkdtemp(prefix=f"cpython-{version}-")
+            try:
+                logger.info(
+                    "Cloning CPython %s into %s...", config["tag"], clone_dir
+                )
+                subprocess.run(
+                    [
+                        "git", "clone", "--depth", "1",
+                        "--branch", config["tag"],
+                        "https://github.com/python/cpython.git",
+                        clone_dir,
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
+                # Create dedicated Sphinx venv (INGR-C-02)
+                venv_dir = os.path.join(clone_dir, "_sphinx_venv")
+                logger.info("Creating Sphinx venv at %s...", venv_dir)
+                venv.create(venv_dir, with_pip=True)
+                pip_path = os.path.join(venv_dir, "bin", "pip")
+
+                # Install Sphinx with the version pin for this CPython branch
+                subprocess.run(
+                    [pip_path, "install", config["sphinx_pin"]],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
+                # Install remaining Doc/requirements.txt deps
+                doc_reqs = os.path.join(clone_dir, "Doc", "requirements.txt")
+                if os.path.exists(doc_reqs):
+                    subprocess.run(
+                        [pip_path, "install", "-r", doc_reqs],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    )
+
+                # Run sphinx-build -b json directly (INGR-C-03)
+                # Never use 'make json' — that target does not exist
+                sphinx_build = os.path.join(venv_dir, "bin", "sphinx-build")
+                doc_dir = os.path.join(clone_dir, "Doc")
+                json_out = os.path.join(doc_dir, "build", "json")
+
+                logger.info(
+                    "Running sphinx-build -b json for Python %s "
+                    "(this may take 3-8 minutes)...",
+                    version,
+                )
+                result = subprocess.run(
+                    [
+                        sphinx_build, "-b", "json",
+                        "-j", "auto",
+                        doc_dir, json_out,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    cwd=doc_dir,
+                )
+                if result.returncode != 0:
+                    logger.error(
+                        "sphinx-build failed for %s:\n%s",
+                        version,
+                        result.stderr[-2000:] if result.stderr else "(no output)",
+                    )
+                    any_version_succeeded = True  # symbols still ingested
+                    continue
+
+                logger.info("sphinx-build complete for Python %s", version)
+
+                # Get doc_set_id for this version
+                row = conn.execute(
+                    "SELECT id FROM doc_sets "
+                    "WHERE source='python-docs' AND version=? AND language='en'",
+                    (version,),
+                ).fetchone()
+                if row is None:
+                    logger.error("No doc_set found for version %s", version)
+                    continue
+                doc_set_id = row[0]
+
+                # Ingest fjson files (INGR-C-04 through INGR-C-07)
+                success, failures = ingest_sphinx_json_dir(
+                    conn, Path(json_out), doc_set_id
+                )
+                logger.info(
+                    "Ingested %d documents (%d failures) for Python %s",
+                    success, failures, version,
+                )
+                any_version_succeeded = True
+
+            except subprocess.CalledProcessError as e:
+                logger.error(
+                    "Subprocess failed for %s: %s\n%s",
+                    version, e, e.stderr[:2000] if e.stderr else "",
+                )
+                any_version_succeeded = True  # symbols still ingested
+            finally:
+                # Cleanup clone directory
+                shutil.rmtree(clone_dir, ignore_errors=True)
+                logger.info("Cleaned up %s", clone_dir)
+
+        except Exception as e:
+            logger.error("Error processing version %s: %s", version, e)
+            continue
+
+    if not any_version_succeeded:
+        logger.error("No versions were successfully ingested")
+        conn.close()
+        # Clean up the failed build artifact
+        if build_db_path.exists():
+            build_db_path.unlink()
+        raise SystemExit(1)
+
+    # Populate synonyms from synonyms.yaml (INGR-C-09)
+    synonym_count = populate_synonyms(conn)
+    logger.info("Populated %d synonyms", synonym_count)
+
+    # Rebuild FTS indexes (INGR-C-08)
+    rebuild_fts_indexes(conn)
 
     conn.close()
-    logger.info(f"Index built at {index_path}")
+
+    # Publish: smoke test + atomic swap (PUBL-01 through PUBL-05)
+    versions_str = ",".join(version_list)
+    success = publish_index(build_db_path, versions_str)
+    if not success:
+        logger.error("Publishing failed — smoke tests did not pass")
+        raise SystemExit(1)
 
 
 @main.command("validate-corpus")
