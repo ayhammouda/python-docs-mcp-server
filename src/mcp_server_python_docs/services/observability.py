@@ -10,6 +10,7 @@ Log format (logfmt — D-10 from Phase 1):
 from __future__ import annotations
 
 import functools
+import inspect
 import sys
 import time
 from collections.abc import Callable
@@ -66,13 +67,14 @@ def log_tool_call(tool_name: str) -> Callable:
                 "latency_ms": round(elapsed_ms, 1),
             }
 
-            # Extract version from kwargs or positional args
-            version_val = kwargs.get("version")
-            if version_val is None and args:
-                # For search: (query, version, kind, max_results)
-                # For get_docs: (slug, version, anchor, ...)
-                if len(args) >= 2:
-                    version_val = args[1]
+            # Extract version by name via inspect (WR-05: avoids fragile positional indexing)
+            try:
+                sig = inspect.signature(fn)
+                bound = sig.bind(self, *args, **kwargs)
+                bound.apply_defaults()
+                version_val = bound.arguments.get("version")
+            except (TypeError, ValueError):
+                version_val = kwargs.get("version")
             fields["version"] = version_val or "default"
 
             # Extract result-specific fields

@@ -86,6 +86,14 @@ def ingest_inventory(
     5. Handle duplicates via priority ordering (INGR-I-05)
     6. Populate symbols_fts in same transaction (INGR-I-06)
     """
+    # Validate version format first, before any DB writes (WR-02)
+    import re
+
+    if not re.match(r"^\d+\.\d+$", version):
+        from mcp_server_python_docs.errors import IngestionError
+
+        raise IngestionError(f"Invalid version format: {version!r}")
+
     bootstrap_schema(conn)
 
     # Upsert doc_set for this version
@@ -111,19 +119,11 @@ def ingest_inventory(
     # Clear existing symbols for this doc_set (re-ingestion support)
     conn.execute("DELETE FROM symbols WHERE doc_set_id = ?", (doc_set_id,))
 
-    # Validate version format before URL construction (WR-04)
-    import re
-
-    if not re.match(r"^\d+\.\d+$", version):
-        from mcp_server_python_docs.errors import IngestionError
-
-        raise IngestionError(f"Invalid version format: {version!r}")
-
     # Download and parse objects.inv (INGR-I-01)
     url = f"https://docs.python.org/{version}/objects.inv"
-    logger.info(f"Downloading {url}...")
+    logger.info("Downloading %s...", url)
     inv = soi.Inventory(url=url)  # type: ignore[call-arg]  # sphobjinv lacks type stubs
-    logger.info(f"Downloaded {len(inv.objects)} inventory objects")
+    logger.info("Downloaded %d inventory objects", len(inv.objects))
 
     # Filter to Python domain objects and collect by qualified_name
     # for duplicate resolution (INGR-I-05)
@@ -174,5 +174,5 @@ def ingest_inventory(
     conn.execute("INSERT INTO symbols_fts(symbols_fts) VALUES('rebuild')")
     conn.commit()
 
-    logger.info(f"Ingested {count} symbols for Python {version}")
+    logger.info("Ingested %d symbols for Python %s", count, version)
     return count

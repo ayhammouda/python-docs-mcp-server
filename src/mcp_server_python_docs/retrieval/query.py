@@ -86,20 +86,35 @@ def classify_query(
     return "fts"
 
 
+def _build_concept_patterns(
+    synonyms: dict[str, list[str]],
+) -> dict[str, re.Pattern[str]]:
+    """Pre-compile word-boundary regex patterns for multi-word synonym concepts."""
+    patterns: dict[str, re.Pattern[str]] = {}
+    for concept in synonyms:
+        if " " in concept:
+            patterns[concept] = re.compile(r"\b" + re.escape(concept) + r"\b")
+    return patterns
+
+
 def expand_synonyms(
     query: str,
     synonyms: dict[str, list[str]],
+    *,
+    _concept_patterns: dict[str, re.Pattern[str]] | None = None,
 ) -> set[str]:
     """Expand query using synonym table for concept search (RETR-05).
 
-    Checks each token and the full query against the synonym table.
-    Returns a set of terms including the original tokens plus any
-    expansion values.
+    Checks each token and multi-word phrases against the synonym table.
+    Single-word concepts use exact token matching. Multi-word concepts
+    use word-boundary regex to avoid substring false positives (CR-01).
 
     Args:
         query: User search query.
         synonyms: Mapping of concept -> list of expansion terms.
             Loaded from synonyms.yaml at startup.
+        _concept_patterns: Pre-compiled regex patterns for multi-word
+            concepts. Built lazily on first call if not provided.
 
     Returns:
         Set of terms (original + expansions). Empty set if query
@@ -112,15 +127,20 @@ def expand_synonyms(
     tokens = query.lower().split()
     expanded = set(tokens)
 
-    # Check individual tokens against synonym keys
+    # Single-word concepts: exact token match (no substring false positives)
     for token in tokens:
         if token in synonyms:
             expanded.update(synonyms[token])
 
-    # Check multi-word concepts (e.g., "http requests", "file io")
+    # Multi-word concepts: word-boundary regex match (CR-01 fix)
+    if _concept_patterns is None:
+        _concept_patterns = _build_concept_patterns(synonyms)
     query_lower = query.lower()
     for concept, expansions in synonyms.items():
-        if concept in query_lower:
+        if " " not in concept:
+            continue
+        pattern = _concept_patterns.get(concept)
+        if pattern and pattern.search(query_lower):
             expanded.update(expansions)
 
     return expanded
@@ -129,6 +149,8 @@ def expand_synonyms(
 def build_match_expression(
     query: str,
     synonyms: dict[str, list[str]],
+    *,
+    _concept_patterns: dict[str, re.Pattern[str]] | None = None,
 ) -> str:
     """Build a complete FTS5 MATCH expression with synonym expansion.
 
@@ -138,6 +160,7 @@ def build_match_expression(
     Args:
         query: User search query.
         synonyms: Synonym mapping for expansion.
+        _concept_patterns: Pre-compiled regex patterns for multi-word concepts.
 
     Returns:
         FTS5-safe MATCH expression string.
@@ -146,7 +169,7 @@ def build_match_expression(
     if not query:
         return '""'
 
-    expanded = expand_synonyms(query, synonyms)
+    expanded = expand_synonyms(query, synonyms, _concept_patterns=_concept_patterns)
     original_tokens = set(query.lower().split())
 
     # If expansion added new terms, OR-join all terms
