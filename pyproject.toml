@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mcp-server-python-docs"
+version = "0.1.0"
+description = "A read-only, version-aware MCP retrieval server over Python standard library documentation"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+authors = [
+    { name = "Aymen Hammouda", email = "hammouda.aymen@gmail.com" },
+]
+keywords = ["mcp", "python", "documentation", "llm", "claude"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Documentation",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "mcp>=1.27.0,<2.0.0",
+    "sphobjinv>=2.4,<3.0",
+    "pydantic>=2.0.0,<3.0",
+    "click>=8.1.7,<9.0",
+    "platformdirs>=4.0",
+    "pyyaml>=6.0,<7.0",
+]
+
+[project.optional-dependencies]
+pysqlite3 = ["pysqlite3-binary>=0.5.4"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "pyright>=1.1",
+]
+
+[project.scripts]
+mcp-server-python-docs = "mcp_server_python_docs.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcp_server_python_docs"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pyright]
+typeCheckingMode = "standard"
+pythonVersion = "3.12"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

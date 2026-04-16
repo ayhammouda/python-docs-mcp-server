@@ -1,0 +1,194 @@
+# Python stdlib concept synonym/expansion table
+# Format: concept: [expansion terms]
+# Used for query expansion before FTS5 search
+# ~150 curated entries covering major Python stdlib concepts
+
+# Concurrency & Parallelism
+parallel: [concurrent, multiprocessing, threading, asyncio, concurrent.futures, parallel execution]
+async: [asyncio, await, coroutine, async for, async with, event loop, asynchronous]
+threading: [thread, threading, Thread, Lock, RLock, Semaphore, Barrier, Event, Condition]
+multiprocessing: [multiprocessing, Process, Pool, Queue, Pipe, shared memory]
+concurrent: [concurrent.futures, ThreadPoolExecutor, ProcessPoolExecutor, Future, Executor]
+subprocess: [subprocess, subprocess.run, subprocess.Popen, shlex, shell command]
+event loop: [asyncio, asyncio.run, asyncio.get_event_loop, AbstractEventLoop]
+coroutine: [asyncio, async def, await, coroutine, Task, gather]
+task group: [asyncio.TaskGroup, asyncio.gather, asyncio.wait, task management]
+synchronization: [Lock, RLock, Semaphore, Event, Condition, Barrier, threading]
+future: [concurrent.futures, Future, asyncio.Future, result, exception]
+
+# Data Serialization
+json: [json, json.loads, json.dumps, json.load, json.dump, JSON parsing]
+parse json: [json, json.loads, json.load, JSON decoding]
+serialize json: [json, json.dumps, json.dump, JSON encoding]
+csv: [csv, csv.reader, csv.writer, csv.DictReader, csv.DictWriter, delimiter]
+xml: [xml, xml.etree.ElementTree, xml.dom, xml.sax, XML parsing]
+html parsing: [html.parser, HTMLParser, html, html.entities]
+serialization: [json, marshal, object serialization, data format]
+struct: [struct, struct.pack, struct.unpack, binary data, byte packing]
+base64: [base64, base64.b64encode, base64.b64decode, encoding]
+configparser: [configparser, ConfigParser, ini file, configuration]
+toml: [tomllib, tomllib.load, TOML parsing]
+
+# File System & I/O
+file io: [open, pathlib, os.path, io, shutil, fileinput, file reading, file writing]
+path: [pathlib, pathlib.Path, os.path, path manipulation, file path]
+pathlib: [pathlib, Path, PurePath, PosixPath, WindowsPath]
+temp files: [tempfile, TemporaryFile, NamedTemporaryFile, mkdtemp, temporary]
+glob: [glob, glob.glob, fnmatch, pattern matching, file search]
+shutil: [shutil, shutil.copy, shutil.move, shutil.rmtree, file operations]
+directory: [os, os.listdir, os.scandir, os.walk, pathlib, directory listing]
+file copy: [shutil.copy, shutil.copy2, shutil.copytree, file duplication]
+file delete: [os.remove, os.unlink, shutil.rmtree, pathlib.Path.unlink]
+read file: [open, read, readline, readlines, pathlib.Path.read_text]
+write file: [open, write, writelines, pathlib.Path.write_text]
+binary io: [io, io.BytesIO, io.BufferedReader, io.BufferedWriter, binary]
+text io: [io, io.StringIO, io.TextIOWrapper, text stream]
+
+# Networking & Web
+http: [http, http.client, http.server, urllib, urllib.request, HTTP]
+http requests: [urllib, http.client, urllib.request, urllib.parse, URL fetch]
+socket: [socket, socket.socket, TCP, UDP, network programming]
+ssl: [ssl, ssl.create_default_context, TLS, certificate, HTTPS]
+email: [email, email.message, smtplib, imaplib, email parsing]
+url: [urllib, urllib.parse, urlparse, urlencode, URL manipulation]
+ftp: [ftplib, FTP, file transfer]
+http server: [http.server, HTTPServer, SimpleHTTPRequestHandler]
+url parsing: [urllib.parse, urlparse, urljoin, quote, unquote]
+ip address: [ipaddress, IPv4Address, IPv6Address, ip_network]
+
+# Text Processing
+string: [str, string, string formatting, string methods, text]
+string formatting: [str.format, f-string, format, printf, string interpolation]
+regex: [re, regular expression, pattern, re.match, re.search, re.findall, re.sub]
+text processing: [string, textwrap, difflib, unicodedata, text manipulation]
+unicode: [unicodedata, codecs, encoding, utf-8, character, codepoint]
+encoding: [codecs, encode, decode, utf-8, ascii, latin-1, chardet]
+template: [string.Template, string formatting, placeholder]
+textwrap: [textwrap, textwrap.wrap, textwrap.dedent, text wrapping]
+difflib: [difflib, SequenceMatcher, unified_diff, context_diff]
+translate: [str.translate, str.maketrans, character mapping]
+
+# Data Structures
+list: [list, append, extend, insert, sort, sorted, sequence]
+dict: [dict, dictionary, mapping, keys, values, items, defaultdict]
+set: [set, frozenset, intersection, union, difference, symmetric_difference]
+tuple: [tuple, namedtuple, immutable sequence]
+collections: [collections, deque, defaultdict, OrderedDict, Counter, ChainMap, namedtuple]
+deque: [collections.deque, double-ended queue, appendleft, popleft]
+counter: [collections.Counter, counting, most_common, frequency]
+defaultdict: [collections.defaultdict, default factory, missing key]
+ordered dict: [collections.OrderedDict, ordered dictionary, insertion order]
+named tuple: [collections.namedtuple, typing.NamedTuple, named fields]
+array: [array, array.array, typed array, numeric array]
+queue: [queue, Queue, LifoQueue, PriorityQueue, SimpleQueue]
+heap: [heapq, heappush, heappop, priority queue, heap]
+bisect: [bisect, bisect_left, bisect_right, insort, sorted insertion]
+chain map: [collections.ChainMap, nested scopes, mapping chain]
+
+# Date & Time
+date time: [datetime, time, calendar, zoneinfo, timedelta, timezone]
+datetime: [datetime, datetime.datetime, datetime.date, datetime.time, datetime.timedelta]
+time: [time, time.time, time.sleep, time.monotonic, time.perf_counter]
+calendar: [calendar, calendar.month, weekday, leap year]
+timezone: [zoneinfo, ZoneInfo, timezone, datetime.timezone, UTC]
+timedelta: [datetime.timedelta, time difference, duration]
+
+# Type System
+type hint: [typing, annotation, generic, TypeVar, Protocol, Union, Optional]
+typing: [typing, List, Dict, Set, Tuple, Optional, Union, Any, Generic]
+protocol: [typing.Protocol, structural subtyping, duck typing, ABC]
+generic: [typing.Generic, TypeVar, ParamSpec, type variable]
+dataclass: [dataclasses, dataclass, field, asdict, astuple]
+enum: [enum, Enum, IntEnum, Flag, auto, enumeration]
+abstract: [abc, ABC, abstractmethod, abstract base class]
+type checking: [typing, TYPE_CHECKING, runtime type, mypy, pyright]
+annotated: [typing.Annotated, type annotation, metadata]
+type alias: [typing.TypeAlias, type, NewType]
+
+# Testing
+testing: [unittest, pytest, mock, doctest, unittest.mock, test]
+unittest: [unittest, TestCase, setUp, tearDown, assert, test runner]
+mock: [unittest.mock, Mock, MagicMock, patch, side_effect]
+doctest: [doctest, doctest.testmod, interactive example, docstring test]
+assert: [assert, assertEqual, assertTrue, assertRaises, assertion]
+
+# Math & Numbers
+math: [math, math.sqrt, math.ceil, math.floor, math.log, mathematics]
+decimal: [decimal, Decimal, precision, rounding, financial]
+fractions: [fractions, Fraction, rational number, numerator, denominator]
+random: [random, random.choice, random.randint, random.shuffle, random.sample]
+statistics: [statistics, mean, median, stdev, variance, statistical]
+complex: [complex, cmath, complex number, imaginary]
+number: [int, float, complex, decimal, fractions, numeric]
+infinity: [math.inf, float inf, math.isinf, infinite]
+
+# Functional Programming
+itertools: [itertools, chain, product, permutations, combinations, cycle, repeat]
+functools: [functools, lru_cache, partial, reduce, wraps, total_ordering]
+operator: [operator, itemgetter, attrgetter, methodcaller, operator overloading]
+contextlib: [contextlib, contextmanager, suppress, redirect_stdout, ExitStack]
+context manager: [contextlib, with statement, __enter__, __exit__, contextmanager]
+decorator: [functools.wraps, decorator pattern, wrapper function]
+lambda: [lambda, anonymous function, inline function]
+map filter: [map, filter, reduce, list comprehension, generator expression]
+partial: [functools.partial, partial application, currying]
+cache: [functools.lru_cache, functools.cache, memoization, caching]
+
+# OS & System
+os: [os, os.path, os.environ, os.getcwd, operating system]
+platform: [platform, sys.platform, os.name, system information]
+signal: [signal, signal.signal, SIGINT, SIGTERM, signal handler]
+environment: [os.environ, os.getenv, environment variable, env]
+process: [os, os.getpid, os.fork, multiprocessing, process management]
+permissions: [os.chmod, os.chown, stat, file permissions, access]
+system info: [platform, sys, os.uname, machine, processor]
+working directory: [os.getcwd, os.chdir, pathlib.Path.cwd]
+symlink: [os.symlink, os.readlink, symbolic link, pathlib.Path.symlink_to]
+
+# Debugging & Inspection
+logging: [logging, logger, getLogger, basicConfig, log level, handler]
+warnings: [warnings, warn, DeprecationWarning, filter, simplefilter]
+traceback: [traceback, traceback.format_exc, traceback.print_exc, stack trace]
+pdb: [pdb, breakpoint, debugger, pdb.set_trace, step, continue]
+inspect: [inspect, inspect.signature, inspect.getmembers, introspection]
+ast: [ast, abstract syntax tree, ast.parse, ast.dump, code analysis]
+dis: [dis, disassemble, bytecode, opcode, instruction]
+gc: [gc, garbage collector, gc.collect, gc.get_objects, memory]
+tracemalloc: [tracemalloc, memory tracking, memory leak, allocation]
+profiling: [cProfile, profile, pstats, timeit, performance measurement]
+weakref: [weakref, WeakRef, weak reference, reference counting]
+
+# Security & Cryptography
+hashlib: [hashlib, md5, sha256, sha512, hash, digest, checksum]
+secrets: [secrets, token_hex, token_urlsafe, secure random, password]
+hmac: [hmac, message authentication, HMAC, digest, signature]
+password: [hashlib, secrets, password hashing, salt]
+
+# CLI & Arguments
+argparse: [argparse, ArgumentParser, add_argument, parse_args, command line]
+command line: [argparse, sys.argv, click, CLI, command line interface]
+getopt: [getopt, option parsing, command line options]
+shlex: [shlex, shlex.split, shell parsing, command splitting]
+
+# Compression & Archives
+zip: [zipfile, ZipFile, compression, archive, extract]
+tar: [tarfile, TarFile, tar archive, gzip, bzip2]
+gzip: [gzip, GzipFile, compression, decompress]
+compression: [zlib, gzip, bz2, lzma, compress, decompress]
+
+# Copy & Comparison
+copy: [copy, copy.copy, copy.deepcopy, shallow copy, deep copy]
+comparison: [operator, functools.total_ordering, __eq__, __lt__, rich comparison]
+pprint: [pprint, pprint.pprint, pretty print, formatted output]
+repr: [repr, __repr__, __str__, string representation]
+
+# Internationalization
+locale: [locale, localization, number format, currency format]
+gettext: [gettext, translation, internationalization, i18n]
+
+# Networking Protocols
+xmlrpc: [xmlrpc, xmlrpc.client, xmlrpc.server, RPC, remote procedure call]
+
+# Database
+sqlite: [sqlite3, sqlite3.connect, SQL, database, cursor, execute]
+dbm: [dbm, dbm.open, key-value store, persistent dictionary]
