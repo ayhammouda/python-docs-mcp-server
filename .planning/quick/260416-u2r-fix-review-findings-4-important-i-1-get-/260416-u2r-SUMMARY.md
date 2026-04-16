@@ -153,3 +153,7 @@ Verified by direct inspection:
 - `grep -rn detected_python_source src tests` returns zero matches.
 - `pyproject.toml` shows `beautifulsoup4` and `markdownify` only under `[project.optional-dependencies].build`.
 - Runtime simulation confirmed `_ensure_build_deps()` raises actionable `ImportError` with the install hint when both deps are missing.
+
+## Round 3 Ratifications
+
+**I-3 (case-insensitive symbol lookup) — `COLLATE NOCASE` vs `normalized_name`.** Round 3 review flagged that the Task 9 fix in `retrieval/ranker.py::lookup_symbols_exact` uses `WHERE qualified_name = ? COLLATE NOCASE` rather than querying the already-populated `normalized_name` column. The two approaches are correctness-equivalent: `normalized_name` stores the lower-cased form of `qualified_name`, so `WHERE normalized_name = LOWER(?)` would return the same result set. Neither column has an index covering this exact-match scan today (`symbols` only indexes `(doc_set_id, qualified_name)`-style composites), so neither approach pays a planned-performance penalty over the other in v0.1.0 — the symbol fast-path is already gated on the query being a short dotted name, which keeps the scan row-count tiny in practice. Adding `CREATE INDEX idx_symbols_normalized ON symbols(normalized_name)` plus switching the query to `LOWER(?)` is a clean v1.1 change once real symbol-lookup query volume is measured; the schema already reserves the column, so there's no migration cost. **Disposition:** ratified as-is for v0.1.0, deferred to v1.1.
