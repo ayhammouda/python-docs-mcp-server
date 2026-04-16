@@ -136,3 +136,24 @@ class ListVersionsResult(BaseModel):
     versions: list[VersionInfo] = Field(
         description="Available documentation versions",
     )
+
+
+# --- detect_python_version models ---
+
+
+class DetectPythonVersionResult(BaseModel):
+    """Output from detect_python_version tool."""
+
+    detected_version: str = Field(
+        description="Python major.minor detected from the user's environment (e.g. '3.13')"
+    )
+    source: str = Field(
+        description="How the version was detected: '.python-version file', 'python3 in PATH', or 'server runtime'"
+    )
+    matched_index_version: str | None = Field(
+        default=None,
+        description="The detected version if it matches an indexed doc set, otherwise null",
+    )
+    is_default: bool = Field(
+        description="Whether this detected version is being used as the default for get_docs"
+    )
