@@ -284,9 +284,51 @@ def build_index(versions: str, skip_content: bool) -> None:
 
 
 @main.command("validate-corpus")
-def validate_corpus() -> None:
-    """Validate the current index (stub for Phase 5)."""
-    logger.info("validate-corpus: not yet implemented (Phase 5)")
+@click.option(
+    "--db-path",
+    default=None,
+    type=click.Path(),
+    help="Path to index database. Defaults to the standard cache location.",
+)
+def validate_corpus(db_path: str | None) -> None:
+    """Validate the current index by running smoke tests.
+
+    Runs the same smoke-test suite used during build-index publishing.
+    Exits 0 if all checks pass, non-zero if any fail.
+    """
+    from pathlib import Path
+
+    from mcp_server_python_docs.ingestion.publish import run_smoke_tests
+    from mcp_server_python_docs.storage.db import get_index_path
+
+    if db_path is not None:
+        target = Path(db_path)
+    else:
+        target = get_index_path()
+
+    if not target.exists():
+        logger.error("Index not found at %s", target)
+        logger.error("Run: mcp-server-python-docs build-index --versions 3.13")
+        raise SystemExit(1)
+
+    logger.info("Validating corpus at %s", target)
+
+    passed, messages = run_smoke_tests(target)
+
+    for msg in messages:
+        if msg.startswith("OK:"):
+            logger.info("  %s", msg)
+        elif msg.startswith("WARN:"):
+            logger.warning("  %s", msg)
+        else:
+            logger.error("  %s", msg)
+
+    if passed:
+        logger.info("Corpus validation PASSED")
+        raise SystemExit(0)
+    else:
+        logger.error("Corpus validation FAILED")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
