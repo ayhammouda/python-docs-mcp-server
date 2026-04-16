@@ -130,7 +130,7 @@ def extract_sections(body_html: str, doc_uri: str) -> list[dict]:
             if isinstance(sibling, Tag):
                 # Check if this tag contains the next heading
                 if next_heading is not None and sibling.find(
-                    re.compile(r"^h[1-6]$"), id=next_heading.get("id")
+                    re.compile(r"^h[1-6]$"), id=str(next_heading.get("id", ""))
                 ):
                     break
                 content_parts.append(str(sibling))
@@ -183,7 +183,7 @@ def extract_code_blocks(body_html: str) -> list[dict]:
     )
 
     for i, div in enumerate(highlight_divs):
-        classes = div.get("class", [])
+        classes = div.get("class") or []
         class_str = " ".join(classes) if isinstance(classes, list) else str(classes)
 
         is_doctest = 1 if "highlight-pycon" in class_str else 0
@@ -297,7 +297,9 @@ def ingest_fjson_file(
                     section["char_count"],
                 ),
             )
-            section_id_by_anchor[section["anchor"]] = cursor.lastrowid
+            row_id = cursor.lastrowid
+            assert row_id is not None
+            section_id_by_anchor[section["anchor"]] = row_id
 
         # Extract and insert code blocks
         code_blocks = extract_code_blocks(body_html)
