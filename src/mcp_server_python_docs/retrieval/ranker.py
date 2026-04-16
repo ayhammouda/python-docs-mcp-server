@@ -87,7 +87,7 @@ def search_sections(
         )
         rows = cursor.fetchall()
     except sqlite3.OperationalError:
-        logger.warning(f"FTS5 query failed for sections: {match_expr!r}")
+        logger.warning("FTS5 query failed for sections: %r", match_expr)
         return []
 
     hits = [
@@ -145,7 +145,7 @@ def search_symbols(
         )
         rows = cursor.fetchall()
     except sqlite3.OperationalError:
-        logger.warning(f"FTS5 query failed for symbols: {match_expr!r}")
+        logger.warning("FTS5 query failed for symbols: %r", match_expr)
         return []
 
     hits = [
@@ -204,7 +204,7 @@ def search_examples(
         )
         rows = cursor.fetchall()
     except sqlite3.OperationalError:
-        logger.warning(f"FTS5 query failed for examples: {match_expr!r}")
+        logger.warning("FTS5 query failed for examples: %r", match_expr)
         return []
 
     hits = [

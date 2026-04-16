@@ -76,7 +76,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
     # Load synonyms from package data (SRVR-11, SRVR-12)
     synonyms = _load_synonyms()
-    logger.info(f"Loaded {len(synonyms)} synonym entries")
+    logger.info("Loaded %d synonym entries", len(synonyms))
 
     # Open read-only connection (STOR-06, STOR-07)
     db = sqlite3.connect(f"file:{index_path}?mode=ro", uri=True)
@@ -93,7 +93,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     except Exception:
         # HYGN-05: log lifespan errors, write last-error.log
         error_msg = traceback.format_exc()
-        logger.error(f"Lifespan error: {error_msg}")
+        logger.error("Lifespan error: %s", error_msg)
         try:
             error_log = cache_dir / "last-error.log"
             error_log.write_text(error_msg)
