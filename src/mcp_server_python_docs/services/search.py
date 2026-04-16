@@ -9,6 +9,7 @@ from __future__ import annotations
 import sqlite3
 
 from mcp_server_python_docs.models import SearchDocsResult
+from mcp_server_python_docs.services.observability import log_tool_call
 from mcp_server_python_docs.retrieval.query import (
     build_match_expression,
     classify_query,
@@ -39,6 +40,7 @@ class SearchService:
         ).fetchone()
         return row is not None
 
+    @log_tool_call("search_docs")
     def search(
         self,
         query: str,

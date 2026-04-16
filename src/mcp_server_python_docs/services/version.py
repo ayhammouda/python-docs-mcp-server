@@ -9,6 +9,7 @@ from __future__ import annotations
 import sqlite3
 
 from mcp_server_python_docs.models import ListVersionsResult, VersionInfo
+from mcp_server_python_docs.services.observability import log_tool_call
 
 
 class VersionService:
@@ -21,6 +22,7 @@ class VersionService:
     def __init__(self, db: sqlite3.Connection) -> None:
         self._db = db
 
+    @log_tool_call("list_versions")
     def list_versions(self) -> ListVersionsResult:
         """List all available documentation versions from doc_sets table."""
         rows = self._db.execute(
