@@ -38,15 +38,21 @@ def detect_python_version() -> tuple[str, str]:
         Tuple of (major_minor, source) where major_minor is like '3.13'
         and source describes how it was detected.
     """
-    # 1. .python-version file (pyenv / mise / rtx)
+    # 1. .python-version file (pyenv / mise / rtx) — bounded read (M-3)
     pv_file = Path.cwd() / ".python-version"
     if pv_file.is_file():
         try:
-            first_line = pv_file.read_text().strip().splitlines()[0].strip()
-            version = _parse_major_minor(first_line)
-            if version:
-                logger.info("Detected Python %s from .python-version", version)
-                return version, ".python-version file"
+            with pv_file.open("r", encoding="utf-8", errors="replace") as f:
+                # Version strings are ~10 bytes. 1024 is generous and bounds
+                # memory use for hostile/accidentally-huge files.
+                raw = f.read(1024)
+            stripped = raw.strip()
+            first_line = stripped.splitlines()[0].strip() if stripped else ""
+            if first_line:
+                version = _parse_major_minor(first_line)
+                if version:
+                    logger.info("Detected Python %s from .python-version", version)
+                    return version, ".python-version file"
         except Exception:
             pass
 
