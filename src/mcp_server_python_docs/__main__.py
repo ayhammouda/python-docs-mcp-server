@@ -165,7 +165,12 @@ def build_index(versions: str, skip_content: bool) -> None:
                 venv_dir = os.path.join(clone_dir, "_sphinx_venv")
                 logger.info("Creating Sphinx venv at %s...", venv_dir)
                 venv.create(venv_dir, with_pip=True)
-                pip_path = os.path.join(venv_dir, "bin", "pip")
+                # Use Scripts/ on Windows, bin/ elsewhere
+                scripts_dir = os.path.join(
+                    venv_dir,
+                    "Scripts" if sys.platform == "win32" else "bin",
+                )
+                pip_path = os.path.join(scripts_dir, "pip")
 
                 # Install Sphinx with the version pin for this CPython branch
                 subprocess.run(
@@ -187,7 +192,7 @@ def build_index(versions: str, skip_content: bool) -> None:
 
                 # Run sphinx-build -b json directly (INGR-C-03)
                 # Never use 'make json' — that target does not exist
-                sphinx_build = os.path.join(venv_dir, "bin", "sphinx-build")
+                sphinx_build = os.path.join(scripts_dir, "sphinx-build")
                 doc_dir = os.path.join(clone_dir, "Doc")
                 json_out = os.path.join(doc_dir, "build", "json")
 
