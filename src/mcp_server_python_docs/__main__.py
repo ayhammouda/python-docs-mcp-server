@@ -48,7 +48,7 @@ def main(ctx: click.Context, show_version: bool) -> None:
         from mcp_server_python_docs import __version__
 
         click.echo(f"mcp-server-python-docs {__version__}", err=True)
-        raise SystemExit(0)
+        ctx.exit(0)
     if ctx.invoked_subcommand is None:
         ctx.invoke(serve)
 
