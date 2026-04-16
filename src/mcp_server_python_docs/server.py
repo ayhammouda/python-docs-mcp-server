@@ -24,11 +24,10 @@ from mcp_server_python_docs.errors import (
     SymbolNotFoundError,
     VersionNotFoundError,
 )
-from mcp_server_python_docs.models import SearchDocsResult, SymbolHit
+from mcp_server_python_docs.models import SearchDocsResult
 from mcp_server_python_docs.retrieval.query import (
     build_match_expression,
     classify_query,
-    fts5_escape,
 )
 from mcp_server_python_docs.retrieval.ranker import (
     lookup_symbols_exact,
