@@ -295,6 +295,66 @@ def test_classify_query_uppercase_not_module():
 
 
 # ---------------------------------------------------------------------------
+# classify_query — M-5 gating tests (no DB call for garbage inputs)
+# ---------------------------------------------------------------------------
+
+
+def test_classify_query_empty_does_not_call_symbol_fn():
+    """M-5: empty query must not hit the DB callback at all."""
+    from unittest.mock import MagicMock
+
+    mock = MagicMock(return_value=True)
+    assert classify_query("", mock) == "fts"
+    mock.assert_not_called()
+
+
+def test_classify_query_whitespace_only_does_not_call_symbol_fn():
+    """M-5: whitespace-only query strips to empty and must not hit the DB."""
+    from unittest.mock import MagicMock
+
+    mock = MagicMock(return_value=True)
+    assert classify_query("   ", mock) == "fts"
+    mock.assert_not_called()
+
+
+def test_classify_query_length_one_does_not_call_symbol_fn():
+    """M-5: single-character identifier-shaped tokens short-circuit to fts
+    without querying the symbol table. Stdlib module names are all >= 2 chars."""
+    from unittest.mock import MagicMock
+
+    mock = MagicMock(return_value=True)
+    assert classify_query("a", mock) == "fts"
+    mock.assert_not_called()
+
+
+def test_classify_query_length_two_module_calls_symbol_fn():
+    """M-5: length-2 identifier-shaped tokens are valid candidates (os, io, re)."""
+    from unittest.mock import MagicMock
+
+    mock = MagicMock(return_value=True)
+    assert classify_query("os", mock) == "symbol"
+    mock.assert_called_once_with("os")
+
+
+def test_classify_query_dotted_skips_symbol_fn():
+    """M-5: dotted names take the fast-path and must NOT call the DB callback."""
+    from unittest.mock import MagicMock
+
+    mock = MagicMock(return_value=True)
+    assert classify_query("asyncio.TaskGroup", mock) == "symbol"
+    mock.assert_not_called()
+
+
+def test_classify_query_multiword_skips_symbol_fn():
+    """M-5: multi-word (non-dotted) queries never match _MODULE_PATTERN so the DB is skipped."""
+    from unittest.mock import MagicMock
+
+    mock = MagicMock(return_value=True)
+    assert classify_query("  foo bar  ", mock) == "fts"
+    mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # expand_synonyms tests (RETR-05)
 # ---------------------------------------------------------------------------
 

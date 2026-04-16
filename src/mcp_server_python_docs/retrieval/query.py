@@ -76,13 +76,19 @@ def classify_query(
     query = query.strip()
     if not query:
         return "fts"
-    # Dotted names are always symbol-shaped
+    # Dotted names are always symbol-shaped — skip the DB lookup entirely.
     if "." in query:
         return "symbol"
     # Single-word module names (re, os, sys) -- only if they exist
-    # in the symbol table to avoid false positives
-    if _MODULE_PATTERN.match(query) and symbol_exists_fn(query):
-        return "symbol"
+    # in the symbol table to avoid false positives.
+    # M-5: length gate short-circuits the DB call for trivially-invalid
+    # single-character tokens that are overwhelmingly stop-word garbage
+    # (stdlib module names are all >=2 chars: io, os, re).
+    if _MODULE_PATTERN.match(query):
+        if len(query) < 2:
+            return "fts"
+        if symbol_exists_fn(query):
+            return "symbol"
     return "fts"
 
 
