@@ -181,13 +181,16 @@ class TestContentService:
         result = svc.get_docs(slug="library/asyncio-task.html")
         assert result.version == "3.13"
 
-    def test_get_docs_returns_empty_content_for_symbols_only_doc(self, populated_db):
-        """I-1: a document row with no sections returns empty content, not a raise.
+    def test_get_docs_falls_back_to_document_content_text_when_no_sections(
+        self, populated_db
+    ):
+        """I-1 (Round 3): when a document has zero sections, get_docs must fall
+        back to the documents.content_text column rather than returning empty.
 
         Scenario: symbol-only builds (or pathological ingestion) can end up with a
         documents row whose sections table has no matching rows. The service must
-        return a structured GetDocsResult with content='', char_count=0,
-        truncated=False — not raise PageNotFoundError.
+        return a structured GetDocsResult whose content is the document-level
+        content_text, not the empty string.
         """
         db = populated_db
         row = db.execute("SELECT id FROM doc_sets LIMIT 1").fetchone()
@@ -196,10 +199,11 @@ class TestContentService:
             "UPDATE doc_sets SET built_at = '2026-04-16T00:00:00' WHERE id = ?",
             (doc_set_id,),
         )
-        # Seed a document with empty content and ZERO sections.
+        # Seed a document with 'hello world' content and ZERO sections.
         db.execute(
             "INSERT INTO documents (doc_set_id, uri, slug, title, content_text, char_count) "
-            "VALUES (?, 'library/empty.html', 'library/empty.html', 'Empty Page', '', 0)",
+            "VALUES (?, 'library/empty.html', 'library/empty.html', 'Empty Page', "
+            "'hello world', 11)",
             (doc_set_id,),
         )
         db.commit()
@@ -207,8 +211,8 @@ class TestContentService:
         svc = ContentService(db)
         result = svc.get_docs(slug="library/empty.html")
         assert isinstance(result, GetDocsResult)
-        assert result.content == ""
-        assert result.char_count == 0
+        assert result.content == "hello world"
+        assert result.char_count == 11
         assert result.truncated is False
         assert result.next_start_index is None
         assert result.anchor is None
