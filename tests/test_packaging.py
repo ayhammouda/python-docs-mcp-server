@@ -39,7 +39,7 @@ class TestWheelContent:
             names = zf.namelist()
         synonym_paths = [n for n in names if n.endswith("data/synonyms.yaml")]
         assert len(synonym_paths) == 1, (
-            f"synonyms.yaml not found in wheel. Wheel contents:\n"
+            "synonyms.yaml not found in wheel. Wheel contents:\n"
             + "\n".join(sorted(names))
         )
         assert "mcp_server_python_docs/data/synonyms.yaml" in synonym_paths[0]
@@ -50,7 +50,7 @@ class TestWheelContent:
             names = zf.namelist()
         schema_paths = [n for n in names if n.endswith("storage/schema.sql")]
         assert len(schema_paths) >= 1, (
-            f"schema.sql not found in wheel. Wheel contents:\n"
+            "schema.sql not found in wheel. Wheel contents:\n"
             + "\n".join(sorted(names))
         )
 

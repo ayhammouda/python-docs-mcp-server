@@ -61,15 +61,24 @@ def fts_db():
         "'asyncio Task', 'Documentation about asyncio tasks and TaskGroup', 50)"
     )
     conn.execute(
-        "INSERT INTO sections (id, document_id, uri, anchor, heading, level, ordinal, content_text, char_count) "
-        "VALUES (1, 1, 'library/asyncio-task.html#asyncio.TaskGroup', 'asyncio.TaskGroup', "
-        "'asyncio.TaskGroup', 2, 1, "
-        "'A context manager that holds a group of tasks. Tasks can be added with create_task. All tasks are awaited on exit.', 100)"
+        "INSERT INTO sections"
+        " (id, document_id, uri, anchor, heading, level, ordinal,"
+        " content_text, char_count) "
+        "VALUES (1, 1, 'library/asyncio-task.html#asyncio.TaskGroup',"
+        " 'asyncio.TaskGroup', 'asyncio.TaskGroup', 2, 1, "
+        "'A context manager that holds a group of tasks."
+        " Tasks can be added with create_task."
+        " All tasks are awaited on exit.', 100)"
     )
     conn.execute(
-        "INSERT INTO sections (id, document_id, uri, anchor, heading, level, ordinal, content_text, char_count) "
-        "VALUES (2, 1, 'library/asyncio-task.html#introduction', 'introduction', "
-        "'Introduction', 1, 0, 'This page describes asyncio tasks and how to use TaskGroup for concurrent execution.', 80)"
+        "INSERT INTO sections"
+        " (id, document_id, uri, anchor, heading, level, ordinal,"
+        " content_text, char_count) "
+        "VALUES (2, 1, 'library/asyncio-task.html#introduction',"
+        " 'introduction', "
+        "'Introduction', 1, 0,"
+        " 'This page describes asyncio tasks and how to use"
+        " TaskGroup for concurrent execution.', 80)"
     )
     conn.execute(
         "INSERT INTO symbols (id, doc_set_id, qualified_name, normalized_name, module, "

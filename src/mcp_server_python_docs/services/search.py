@@ -9,8 +9,6 @@ from __future__ import annotations
 import sqlite3
 
 from mcp_server_python_docs.models import SearchDocsResult
-from mcp_server_python_docs.services.observability import log_tool_call
-from mcp_server_python_docs.services.version_resolution import resolve_version_permissive
 from mcp_server_python_docs.retrieval.query import (
     build_match_expression,
     classify_query,
@@ -22,10 +20,13 @@ from mcp_server_python_docs.retrieval.ranker import (
     search_sections,
     search_symbols,
 )
+from mcp_server_python_docs.services.observability import log_tool_call
+from mcp_server_python_docs.services.version_resolution import resolve_version_permissive
 
 
 class SearchService:
-    """Search service dispatching queries through classifier, synonym expansion, and FTS5/symbol fast-path."""
+    """Search service dispatching queries through classifier, synonym expansion,
+    and FTS5/symbol fast-path."""
 
     def __init__(self, db: sqlite3.Connection, synonyms: dict[str, list[str]]) -> None:
         self._db = db
