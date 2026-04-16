@@ -6,8 +6,7 @@ OPS-01, OPS-02, OPS-03, OPS-04, OPS-05, PUBL-07.
 from __future__ import annotations
 
 import io
-import sys
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -22,10 +21,9 @@ from mcp_server_python_docs.services.cache import (
     create_symbol_cache,
 )
 from mcp_server_python_docs.services.content import ContentService
-from mcp_server_python_docs.services.observability import _format_logfmt, log_tool_call
+from mcp_server_python_docs.services.observability import _format_logfmt
 from mcp_server_python_docs.services.search import SearchService
 from mcp_server_python_docs.services.version import VersionService
-
 
 # === Fixtures ===
 
@@ -274,6 +272,23 @@ class TestObservability:
         assert "tool=get_docs" in output
         assert "truncated=" in output
 
+    def test_log_tool_call_logs_exceptions(self, populated_with_content):
+        """Failed service calls still emit structured error logs."""
+        svc = ContentService(populated_with_content)
+        stderr_capture = io.StringIO()
+        with patch(
+            "mcp_server_python_docs.services.observability.sys.stderr",
+            stderr_capture,
+        ):
+            with pytest.raises(PageNotFoundError):
+                svc.get_docs(
+                    slug="library/asyncio-task.html",
+                    anchor="missing-section",
+                )
+        output = stderr_capture.getvalue()
+        assert "tool=get_docs" in output
+        assert "error=PageNotFoundError" in output
+
     def test_log_tool_call_version_service(self, populated_with_content):
         """VersionService.list_versions logs with result_count."""
         svc = VersionService(populated_with_content)
@@ -393,6 +408,62 @@ class TestToolRegistration:
         server = create_server()
         tools = server._tool_manager._tools
         assert len(tools) == 4
+
+    def test_runtime_tool_schemas_include_input_constraints(self):
+        import anyio
+
+        from mcp_server_python_docs.server import create_server
+
+        server = create_server()
+
+        async def _list_tools():
+            return await server.list_tools()
+
+        schemas = {tool.name: tool.inputSchema for tool in anyio.run(_list_tools)}
+
+        search_docs = schemas["search_docs"]["properties"]
+        assert search_docs["query"]["maxLength"] == 500
+        assert search_docs["max_results"]["minimum"] == 1
+        assert search_docs["max_results"]["maximum"] == 20
+
+        get_docs = schemas["get_docs"]["properties"]
+        assert get_docs["slug"]["maxLength"] == 500
+        assert get_docs["max_chars"]["minimum"] == 100
+        assert get_docs["max_chars"]["maximum"] == 50000
+        assert get_docs["start_index"]["minimum"] == 0
+
+    def test_app_lifespan_closes_db_on_pre_yield_error(self, tmp_path):
+        import anyio
+        from mcp.server.fastmcp import FastMCP
+
+        from mcp_server_python_docs.server import app_lifespan
+
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        (cache_dir / "index.db").write_text("")
+        fake_db = Mock()
+
+        async def _enter_lifespan():
+            async with app_lifespan(FastMCP("test")):
+                pytest.fail("lifespan should not reach yield")
+
+        with patch(
+            "mcp_server_python_docs.server.platformdirs.user_cache_dir",
+            return_value=str(cache_dir),
+        ), patch(
+            "mcp_server_python_docs.server._load_synonyms",
+            return_value={},
+        ), patch(
+            "mcp_server_python_docs.server.get_readonly_connection",
+            return_value=fake_db,
+        ), patch(
+            "mcp_server_python_docs.server._assert_fts5",
+            side_effect=RuntimeError("fts unavailable"),
+        ):
+            with pytest.raises(RuntimeError, match="fts unavailable"):
+                anyio.run(_enter_lifespan)
+
+        fake_db.close.assert_called_once()
 
 
 # === validate-corpus Tests ===

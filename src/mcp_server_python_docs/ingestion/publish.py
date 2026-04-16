@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 def generate_build_path() -> Path:
     """Generate a timestamped build artifact path (PUBL-01).
 
-    Returns a path like ``~/.cache/mcp-python-docs/build-20260416-143022.db``.
+    Returns a path like ``~/.cache/mcp-python-docs/build-20260416-143022-123456.db``.
     Creates the cache directory if it does not exist.
 
     Returns:
@@ -34,7 +34,7 @@ def generate_build_path() -> Path:
     """
     cache_dir = get_cache_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     return cache_dir / f"build-{timestamp}.db"
 
 

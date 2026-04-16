@@ -13,13 +13,14 @@ import traceback
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import platformdirs
 import yaml
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
+from pydantic import Field
 
 from mcp_server_python_docs.app_context import AppContext
 from mcp_server_python_docs.detection import detect_python_version, match_to_indexed
@@ -81,50 +82,51 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     # Open read-only connection (STOR-06, STOR-07)
     db = get_readonly_connection(index_path)
 
-    # Check FTS5 (STOR-08)
-    _assert_fts5(db)
-
-    # Construct service instances (Phase 5 — service layer wiring)
-    search_svc = SearchService(db, synonyms)
-    content_svc = ContentService(db)
-    version_svc = VersionService(db)
-
-    # Detect user's Python version and match to indexed versions
-    detected_ver, detected_src = detect_python_version()
-    indexed_versions = [
-        r[0] for r in db.execute("SELECT version FROM doc_sets ORDER BY version").fetchall()
-    ]
-    matched = match_to_indexed(detected_ver, indexed_versions)
-    if matched:
-        logger.info("User Python %s matches indexed version — using as default", matched)
-    else:
-        logger.info(
-            "User Python %s not in index %s — using normal default",
-            detected_ver,
-            indexed_versions,
-        )
-
     try:
-        yield AppContext(
-            db=db,
-            index_path=index_path,
-            synonyms=synonyms,
-            search_service=search_svc,
-            content_service=content_svc,
-            version_service=version_svc,
-            detected_python_version=matched,
-            detected_python_source=detected_src,
-        )
-    except Exception:
-        # HYGN-05: log lifespan errors, write last-error.log, re-raise original
-        error_msg = traceback.format_exc()
-        logger.error("Lifespan error: %s", error_msg)
+        # Check FTS5 (STOR-08)
+        _assert_fts5(db)
+
+        # Construct service instances (Phase 5 — service layer wiring)
+        search_svc = SearchService(db, synonyms)
+        content_svc = ContentService(db)
+        version_svc = VersionService(db)
+
+        # Detect user's Python version and match to indexed versions
+        detected_ver, detected_src = detect_python_version()
+        indexed_versions = [
+            r[0] for r in db.execute("SELECT version FROM doc_sets ORDER BY version").fetchall()
+        ]
+        matched = match_to_indexed(detected_ver, indexed_versions)
+        if matched:
+            logger.info("User Python %s matches indexed version — using as default", matched)
+        else:
+            logger.info(
+                "User Python %s not in index %s — using normal default",
+                detected_ver,
+                indexed_versions,
+            )
+
         try:
-            error_log = cache_dir / "last-error.log"
-            error_log.write_text(error_msg)
+            yield AppContext(
+                db=db,
+                index_path=index_path,
+                synonyms=synonyms,
+                search_service=search_svc,
+                content_service=content_svc,
+                version_service=version_svc,
+                detected_python_version=matched,
+                detected_python_source=detected_src,
+            )
         except Exception:
-            pass
-        raise
+            # HYGN-05: log lifespan errors, write last-error.log, re-raise original
+            error_msg = traceback.format_exc()
+            logger.error("Lifespan error: %s", error_msg)
+            try:
+                error_log = cache_dir / "last-error.log"
+                error_log.write_text(error_msg)
+            except Exception:
+                pass
+            raise
     finally:
         db.close()
 
@@ -137,6 +139,47 @@ _TOOL_ANNOTATIONS = ToolAnnotations(
     openWorldHint=False,
 )
 
+SearchQueryParam = Annotated[
+    str,
+    Field(
+        max_length=500,
+        description="Search query - Python symbol (asyncio.TaskGroup) or concept (parse json)",
+    ),
+]
+VersionParam = Annotated[
+    str | None,
+    Field(description="Python version (e.g. '3.13'). Defaults to latest."),
+]
+SearchKindParam = Annotated[
+    Literal["auto", "page", "symbol", "section", "example"],
+    Field(
+        description=(
+            "Search type. Use 'symbol' for API lookups, "
+            "'example' for code samples, 'auto' otherwise."
+        )
+    ),
+]
+MaxResultsParam = Annotated[
+    int,
+    Field(ge=1, le=20, description="Maximum number of results to return."),
+]
+SlugParam = Annotated[
+    str,
+    Field(max_length=500, description="Page slug (e.g. 'library/asyncio-task.html')"),
+]
+AnchorParam = Annotated[
+    str | None,
+    Field(description="Section anchor for section-only retrieval"),
+]
+MaxCharsParam = Annotated[
+    int,
+    Field(ge=100, le=50000, description="Maximum characters to return"),
+]
+StartIndexParam = Annotated[
+    int,
+    Field(ge=0, description="Start position for pagination"),
+]
+
 
 def create_server() -> FastMCP:
     """Create and configure the FastMCP server."""
@@ -147,10 +190,10 @@ def create_server() -> FastMCP:
 
     @mcp.tool(annotations=_TOOL_ANNOTATIONS)
     def search_docs(
-        query: str,
-        version: str | None = None,
-        kind: Literal["auto", "page", "symbol", "section", "example"] = "auto",
-        max_results: int = 5,
+        query: SearchQueryParam,
+        version: VersionParam = None,
+        kind: SearchKindParam = "auto",
+        max_results: MaxResultsParam = 5,
         ctx: Context = None,  # type: ignore[assignment]
     ) -> SearchDocsResult:
         """Search Python documentation. Use kind='symbol' for API lookups
@@ -168,11 +211,11 @@ def create_server() -> FastMCP:
 
     @mcp.tool(annotations=_TOOL_ANNOTATIONS)
     def get_docs(
-        slug: str,
-        version: str | None = None,
-        anchor: str | None = None,
-        max_chars: int = 8000,
-        start_index: int = 0,
+        slug: SlugParam,
+        version: VersionParam = None,
+        anchor: AnchorParam = None,
+        max_chars: MaxCharsParam = 8000,
+        start_index: StartIndexParam = 0,
         ctx: Context = None,  # type: ignore[assignment]
     ) -> GetDocsResult:
         """Retrieve a documentation page or specific section. Provide anchor for
@@ -214,7 +257,6 @@ def create_server() -> FastMCP:
         matches an indexed documentation set."""
         app_ctx: AppContext = ctx.request_context.lifespan_context
         detected_ver = app_ctx.detected_python_version
-        detected_src = app_ctx.detected_python_source or "unknown"
 
         # Re-run detection to get the raw version even if it didn't match
         from mcp_server_python_docs.detection import detect_python_version as _detect

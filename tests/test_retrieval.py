@@ -13,6 +13,7 @@ from mcp_server_python_docs.errors import (
     SymbolNotFoundError,
     VersionNotFoundError,
 )
+from mcp_server_python_docs.models import SymbolHit
 from mcp_server_python_docs.retrieval.budget import apply_budget
 from mcp_server_python_docs.retrieval.query import (
     build_match_expression,
@@ -27,8 +28,6 @@ from mcp_server_python_docs.retrieval.ranker import (
     search_sections,
     search_symbols,
 )
-from mcp_server_python_docs.models import SymbolHit
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -347,6 +346,14 @@ def test_build_match_expression_with_synonyms():
     assert '"parallel"' in result
 
 
+def test_build_match_expression_keeps_original_multiword_query():
+    """Multi-word synonym expansion keeps the original AND query as an option."""
+    result = build_match_expression("parse json", SAMPLE_SYNONYMS)
+    assert result.startswith('"parse" "json"')
+    assert "OR" in result
+    assert '"json.loads"' in result
+
+
 def test_build_match_expression_without_synonyms():
     """Build expression without matches produces plain escaped query."""
     result = build_match_expression("unknown query", SAMPLE_SYNONYMS)
@@ -607,10 +614,11 @@ def test_budget_start_beyond_length():
 
 
 def test_budget_zero_max_chars():
-    """Zero max_chars returns empty with truncation flag."""
+    """Zero max_chars returns empty without pagination hints."""
     text, truncated, next_idx = apply_budget("hello", 0)
     assert text == ""
-    assert truncated is True
+    assert truncated is False
+    assert next_idx is None
 
 
 def test_budget_single_char():
