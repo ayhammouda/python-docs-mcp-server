@@ -9,6 +9,7 @@ from __future__ import annotations
 import sqlite3
 
 from mcp_server_python_docs.models import SearchDocsResult
+from mcp_server_python_docs.services.cache import create_symbol_cache
 from mcp_server_python_docs.services.observability import log_tool_call
 from mcp_server_python_docs.retrieval.query import (
     build_match_expression,
@@ -31,6 +32,7 @@ class SearchService:
         self._synonyms = synonyms
         self._last_synonym_expanded: bool = False
         self._last_resolution: str = "none"
+        self._resolve_symbol = create_symbol_cache(db)
 
     def _symbol_exists(self, name: str) -> bool:
         """Check if a symbol name exists in the symbols table."""
