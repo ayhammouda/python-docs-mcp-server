@@ -81,7 +81,7 @@ def serve() -> None:
 @click.option(
     "--skip-content",
     is_flag=True,
-    help="Skip Sphinx JSON build, only ingest objects.inv symbols",
+    help="Skip Sphinx JSON build and publish a symbol-only index (search_docs only).",
 )
 def build_index(versions: str, skip_content: bool) -> None:
     """Build the documentation index from objects.inv and Sphinx JSON."""
@@ -239,7 +239,8 @@ def build_index(versions: str, skip_content: bool) -> None:
                         )
                         logger.warning(
                             "Version %s has SYMBOLS ONLY (sphinx-build failed). "
-                            "search_docs will work but get_docs will return empty pages.",
+                            "search_docs will work but get_docs will fail until content "
+                            "ingestion succeeds.",
                             version,
                         )
                         any_version_succeeded = True
@@ -301,7 +302,7 @@ def build_index(versions: str, skip_content: bool) -> None:
 
     # Publish: smoke test + atomic swap (PUBL-01 through PUBL-05)
     versions_str = ",".join(version_list)
-    success = publish_index(build_db_path, versions_str)
+    success = publish_index(build_db_path, versions_str, require_content=not skip_content)
     if not success:
         logger.error("Publishing failed — smoke tests did not pass")
         raise SystemExit(1)
@@ -323,7 +324,7 @@ def validate_corpus(db_path: str | None) -> None:
     from pathlib import Path
 
     from mcp_server_python_docs.ingestion.publish import run_smoke_tests
-    from mcp_server_python_docs.storage.db import get_index_path
+    from mcp_server_python_docs.storage.db import get_index_path, get_readonly_connection
 
     if db_path is not None:
         target = Path(db_path)
@@ -337,7 +338,22 @@ def validate_corpus(db_path: str | None) -> None:
 
     logger.info("Validating corpus at %s", target)
 
-    passed, messages = run_smoke_tests(target)
+    # Auto-detect symbol-only builds from the last published ingestion run
+    require_content = True
+    try:
+        ro_conn = get_readonly_connection(target)
+        row = ro_conn.execute(
+            "SELECT notes FROM ingestion_runs "
+            "WHERE status = 'published' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        ro_conn.close()
+        if row and row[0] and "build_mode=symbol_only" in row[0]:
+            require_content = False
+            logger.info("Detected symbol-only build — skipping content checks")
+    except Exception:
+        pass  # If we can't read the metadata, default to full validation
+
+    passed, messages = run_smoke_tests(target, require_content=require_content)
 
     for msg in messages:
         if msg.startswith("OK:"):

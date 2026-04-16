@@ -79,6 +79,39 @@ class TestSHA256:
 
 
 class TestSmokeTests:
+    def _create_symbols_only_db(self, db_path: Path) -> None:
+        """Helper: create a DB with symbols but no documents or sections."""
+        conn = get_readwrite_connection(db_path)
+        bootstrap_schema(conn)
+
+        conn.execute(
+            "INSERT INTO doc_sets (source, version, language, label, is_default, base_url) "
+            "VALUES ('python-docs', '3.13', 'en', 'Python 3.13', 1, "
+            "'https://docs.python.org/3.13/')"
+        )
+
+        for i in range(2100):
+            qualified_name = f"mod{i}.func{i}"
+            if i == 0:
+                qualified_name = "asyncio.TaskGroup"
+            conn.execute(
+                "INSERT INTO symbols (doc_set_id, qualified_name, normalized_name, "
+                "module, symbol_type, uri, anchor) "
+                "VALUES (1, ?, ?, ?, 'function', ?, ?)",
+                (
+                    qualified_name,
+                    qualified_name.lower(),
+                    qualified_name.rsplit(".", 1)[0],
+                    f"lib/m.html#f{i}",
+                    f"f{i}",
+                ),
+            )
+
+        conn.commit()
+        conn.execute("INSERT INTO symbols_fts(symbols_fts) VALUES('rebuild')")
+        conn.commit()
+        conn.close()
+
     def _create_populated_db(self, db_path: Path) -> None:
         """Helper: create a DB with enough data to pass smoke tests."""
         conn = get_readwrite_connection(db_path)
@@ -143,6 +176,73 @@ class TestSmokeTests:
         passed, messages = run_smoke_tests(db_path)
         assert passed is False
         assert any("FAIL" in m for m in messages)
+
+    def test_symbols_only_passes_when_content_not_required(self, tmp_path):
+        """Symbol-only builds can publish when content checks are disabled."""
+        db_path = tmp_path / "symbols-only.db"
+        self._create_symbols_only_db(db_path)
+        passed, messages = run_smoke_tests(db_path, require_content=False)
+        assert passed is True
+        assert "OK: content checks skipped for symbol-only build" in messages
+
+    def test_symbols_only_fails_when_content_required(self, tmp_path):
+        """Symbol-only builds still fail the default full-content smoke tests."""
+        db_path = tmp_path / "symbols-only-default.db"
+        self._create_symbols_only_db(db_path)
+        passed, messages = run_smoke_tests(db_path)
+        assert passed is False
+        assert any("documents" in msg for msg in messages)
+
+
+    def test_symbol_only_mode_persisted_for_validation(self, tmp_path):
+        """Published symbol-only indexes record build_mode in ingestion_runs notes.
+
+        This ensures validate-corpus can auto-detect the build mode and skip
+        content checks (P2 fix for publish/validate consistency).
+        """
+        from mcp_server_python_docs.ingestion.publish import publish_index
+
+        db_path = tmp_path / "symbols-only-publish.db"
+        self._create_symbols_only_db(db_path)
+
+        # Publish with require_content=False (symbol-only mode)
+        success = publish_index(db_path, "3.13", require_content=False)
+        assert success is True
+
+        # Read back the ingestion_runs notes from the published index
+        from mcp_server_python_docs.storage.db import get_index_path
+
+        published = get_index_path()
+        conn = get_readonly_connection(published)
+        row = conn.execute(
+            "SELECT notes FROM ingestion_runs "
+            "WHERE status = 'published' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+
+        assert row is not None
+        assert "build_mode=symbol_only" in row[0]
+
+
+class TestReadOnlyConnection:
+    def test_can_query_existing_db(self, tmp_path):
+        """Read-only helper can open and query a database without write PRAGMAs."""
+        db_path = tmp_path / "readonly.db"
+        conn = get_readwrite_connection(db_path)
+        bootstrap_schema(conn)
+        conn.execute(
+            "INSERT INTO doc_sets (source, version, language, label, is_default, base_url) "
+            "VALUES ('python-docs', '3.13', 'en', 'Python 3.13', 1, "
+            "'https://docs.python.org/3.13/')"
+        )
+        conn.commit()
+        conn.close()
+
+        ro_conn = get_readonly_connection(db_path)
+        row = ro_conn.execute("SELECT COUNT(*) FROM doc_sets").fetchone()
+        ro_conn.close()
+
+        assert row[0] == 1
 
 
 # ── Atomic swap tests (PUBL-04) ──
