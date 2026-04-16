@@ -1,0 +1,71 @@
+{
+  "description": "Output from get_docs tool.",
+  "properties": {
+    "content": {
+      "description": "Documentation content in markdown",
+      "title": "Content",
+      "type": "string"
+    },
+    "slug": {
+      "description": "Page slug",
+      "title": "Slug",
+      "type": "string"
+    },
+    "title": {
+      "description": "Page or section title",
+      "title": "Title",
+      "type": "string"
+    },
+    "version": {
+      "description": "Python version",
+      "title": "Version",
+      "type": "string"
+    },
+    "anchor": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Section anchor if section-level",
+      "title": "Anchor"
+    },
+    "char_count": {
+      "description": "Total character count of full content",
+      "title": "Char Count",
+      "type": "integer"
+    },
+    "truncated": {
+      "default": false,
+      "description": "Whether content was truncated",
+      "title": "Truncated",
+      "type": "boolean"
+    },
+    "next_start_index": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Next start_index for pagination, if truncated",
+      "title": "Next Start Index"
+    }
+  },
+  "required": [
+    "content",
+    "slug",
+    "title",
+    "version",
+    "char_count"
+  ],
+  "title": "GetDocsResult",
+  "type": "object"
+}

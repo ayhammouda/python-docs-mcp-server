@@ -1,0 +1,87 @@
+{
+  "$defs": {
+    "SymbolHit": {
+      "description": "A single search result hit.",
+      "properties": {
+        "uri": {
+          "description": "Documentation URI path",
+          "title": "Uri",
+          "type": "string"
+        },
+        "title": {
+          "description": "Display title",
+          "title": "Title",
+          "type": "string"
+        },
+        "kind": {
+          "description": "Hit type: class, function, method, module, etc.",
+          "title": "Kind",
+          "type": "string"
+        },
+        "snippet": {
+          "default": "",
+          "description": "Brief excerpt or description",
+          "title": "Snippet",
+          "type": "string"
+        },
+        "score": {
+          "default": 0.0,
+          "description": "Relevance score",
+          "title": "Score",
+          "type": "number"
+        },
+        "version": {
+          "description": "Python version this hit belongs to",
+          "title": "Version",
+          "type": "string"
+        },
+        "slug": {
+          "default": "",
+          "description": "Page slug for get_docs follow-up",
+          "title": "Slug",
+          "type": "string"
+        },
+        "anchor": {
+          "default": "",
+          "description": "Section anchor for get_docs follow-up",
+          "title": "Anchor",
+          "type": "string"
+        }
+      },
+      "required": [
+        "uri",
+        "title",
+        "kind",
+        "version"
+      ],
+      "title": "SymbolHit",
+      "type": "object"
+    }
+  },
+  "description": "Output from search_docs tool.",
+  "properties": {
+    "hits": {
+      "description": "Search result hits",
+      "items": {
+        "$ref": "#/$defs/SymbolHit"
+      },
+      "title": "Hits",
+      "type": "array"
+    },
+    "note": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Informational note (e.g., limited search mode)",
+      "title": "Note"
+    }
+  },
+  "title": "SearchDocsResult",
+  "type": "object"
+}

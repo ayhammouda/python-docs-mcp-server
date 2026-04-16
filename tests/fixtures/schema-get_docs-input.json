@@ -1,0 +1,56 @@
+{
+  "description": "Input parameters for get_docs tool.",
+  "properties": {
+    "slug": {
+      "description": "Page slug (e.g. 'library/asyncio-task.html')",
+      "title": "Slug",
+      "type": "string"
+    },
+    "version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Python version. Defaults to latest.",
+      "title": "Version"
+    },
+    "anchor": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Section anchor for section-only retrieval",
+      "title": "Anchor"
+    },
+    "max_chars": {
+      "default": 8000,
+      "description": "Maximum characters to return",
+      "maximum": 50000,
+      "minimum": 100,
+      "title": "Max Chars",
+      "type": "integer"
+    },
+    "start_index": {
+      "default": 0,
+      "description": "Start position for pagination",
+      "minimum": 0,
+      "title": "Start Index",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "slug"
+  ],
+  "title": "GetDocsInput",
+  "type": "object"
+}
