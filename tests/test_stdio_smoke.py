@@ -135,7 +135,9 @@ class TestStdioSmoke:
             "XDG_CACHE_HOME": str(self.tmp_dir),
         }
 
-    def _run_server_with_input(self, stdin_data: bytes, timeout: int = 15) -> subprocess.CompletedProcess:
+    def _run_server_with_input(
+        self, stdin_data: bytes, timeout: int = 15,
+    ) -> subprocess.CompletedProcess:
         """Run the server subprocess with the given stdin and return the result."""
         return subprocess.run(
             [sys.executable, "-m", "mcp_server_python_docs", "serve"],
@@ -167,14 +169,15 @@ class TestStdioSmoke:
 
         # Find the tools/list response
         tools_resp = _find_response(responses, 2)
-        if tools_resp is not None:
-            assert "result" in tools_resp, f"tools/list error: {tools_resp}"
-            tool_names = [t["name"] for t in tools_resp["result"].get("tools", [])]
-            assert "search_docs" in tool_names
-            assert "get_docs" in tool_names
-            assert "list_versions" in tool_names
-            # HYGN-06: no nextCursor
-            assert "nextCursor" not in tools_resp["result"]
+        if tools_resp is None:
+            pytest.skip("Server exited before returning tools/list response")
+        assert "result" in tools_resp, f"tools/list error: {tools_resp}"
+        tool_names = [t["name"] for t in tools_resp["result"].get("tools", [])]
+        assert "search_docs" in tool_names
+        assert "get_docs" in tool_names
+        assert "list_versions" in tool_names
+        # HYGN-06: no nextCursor
+        assert "nextCursor" not in tools_resp["result"]
 
     def test_search_docs_round_trip(self):
         """search_docs tool call returns a result without crashing."""
@@ -200,10 +203,11 @@ class TestStdioSmoke:
 
         # Find the tools/call response
         call_resp = _find_response(responses, 2)
-        if call_resp is not None:
-            assert "result" in call_resp, f"tools/call error: {call_resp}"
-            content = call_resp["result"].get("content", [])
-            assert len(content) >= 1, "search_docs returned no content"
+        if call_resp is None:
+            pytest.skip("Server exited before returning search_docs response")
+        assert "result" in call_resp, f"tools/call error: {call_resp}"
+        content = call_resp["result"].get("content", [])
+        assert len(content) >= 1, "search_docs returned no content"
 
     def test_list_versions_round_trip(self):
         """list_versions tool call returns version data."""
@@ -227,8 +231,9 @@ class TestStdioSmoke:
             assert "_raw" not in resp, f"Stdout pollution: {resp.get('_raw')}"
 
         call_resp = _find_response(responses, 2)
-        if call_resp is not None:
-            assert "result" in call_resp, f"tools/call error: {call_resp}"
+        if call_resp is None:
+            pytest.skip("Server exited before returning list_versions response")
+        assert "result" in call_resp, f"tools/call error: {call_resp}"
 
     def test_all_stdout_is_valid_jsonrpc(self):
         """Every byte on stdout is part of a valid JSON-RPC message."""
