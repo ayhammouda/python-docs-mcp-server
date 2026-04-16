@@ -1,0 +1,49 @@
+{
+  "description": "Input parameters for search_docs tool.",
+  "properties": {
+    "query": {
+      "description": "Search query - Python symbol (asyncio.TaskGroup) or concept (parse json)",
+      "title": "Query",
+      "type": "string"
+    },
+    "version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Python version (e.g. '3.13'). Defaults to latest.",
+      "title": "Version"
+    },
+    "kind": {
+      "default": "auto",
+      "description": "Search type. Use 'symbol' for API lookups, 'example' for code samples, 'auto' otherwise.",
+      "enum": [
+        "auto",
+        "page",
+        "symbol",
+        "section",
+        "example"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "max_results": {
+      "default": 5,
+      "description": "Maximum number of results to return.",
+      "maximum": 20,
+      "minimum": 1,
+      "title": "Max Results",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "query"
+  ],
+  "title": "SearchDocsInput",
+  "type": "object"
+}

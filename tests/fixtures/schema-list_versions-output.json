@@ -1,0 +1,59 @@
+{
+  "$defs": {
+    "VersionInfo": {
+      "description": "Information about an available Python version.",
+      "properties": {
+        "version": {
+          "description": "Python version string (e.g. '3.13')",
+          "title": "Version",
+          "type": "string"
+        },
+        "language": {
+          "default": "en",
+          "description": "Documentation language",
+          "title": "Language",
+          "type": "string"
+        },
+        "label": {
+          "description": "Display label",
+          "title": "Label",
+          "type": "string"
+        },
+        "is_default": {
+          "description": "Whether this is the default version",
+          "title": "Is Default",
+          "type": "boolean"
+        },
+        "built_at": {
+          "description": "When this version's index was built",
+          "title": "Built At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "label",
+        "is_default",
+        "built_at"
+      ],
+      "title": "VersionInfo",
+      "type": "object"
+    }
+  },
+  "description": "Output from list_versions tool.",
+  "properties": {
+    "versions": {
+      "description": "Available documentation versions",
+      "items": {
+        "$ref": "#/$defs/VersionInfo"
+      },
+      "title": "Versions",
+      "type": "array"
+    }
+  },
+  "required": [
+    "versions"
+  ],
+  "title": "ListVersionsResult",
+  "type": "object"
+}
