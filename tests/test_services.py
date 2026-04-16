@@ -119,6 +119,50 @@ class TestSearchService:
         svc.search("http", kind="section")
         assert svc._last_synonym_expanded is True
 
+    def test_search_does_not_classify_for_non_symbol_kinds(
+        self, populated_with_content, monkeypatch
+    ):
+        """M-5 (Round 3): for kind in ('section','example','page') the service
+        must not invoke classify_query / _symbol_exists at all — the DB
+        round-trip is pure waste when the result will never be consumed."""
+        from unittest.mock import MagicMock
+
+        svc = SearchService(populated_with_content, {})
+        mock_symbol_exists = MagicMock(return_value=True)
+        monkeypatch.setattr(svc, "_symbol_exists", mock_symbol_exists)
+
+        svc.search(query="socket", kind="section", max_results=5)
+        mock_symbol_exists.assert_not_called()
+
+        svc.search(query="socket", kind="example", max_results=5)
+        mock_symbol_exists.assert_not_called()
+
+        svc.search(query="socket", kind="page", max_results=5)
+        mock_symbol_exists.assert_not_called()
+
+    def test_search_classifies_for_auto_and_symbol_kinds(
+        self, populated_with_content, monkeypatch
+    ):
+        """M-5 (Round 3) positive control: for kind in ('auto','symbol') the
+        service still invokes classify_query / _symbol_exists — the gate must
+        not regress the fast-path routing."""
+        from unittest.mock import MagicMock
+
+        svc = SearchService(populated_with_content, {})
+        mock_symbol_exists = MagicMock(return_value=False)
+        monkeypatch.setattr(svc, "_symbol_exists", mock_symbol_exists)
+
+        # 'socket' is a lowercase identifier that matches _MODULE_PATTERN and
+        # passes the length>=2 short-circuit, so classify_query WILL call
+        # symbol_exists_fn. Dotted queries take the dot branch without calling
+        # the fn, so we use a single-word identifier instead.
+        svc.search(query="socket", kind="auto", max_results=5)
+        assert mock_symbol_exists.called
+
+        mock_symbol_exists.reset_mock()
+        svc.search(query="socket", kind="symbol", max_results=5)
+        assert mock_symbol_exists.called
+
 
 # === ContentService Tests ===
 
