@@ -47,6 +47,20 @@ def _load_synonyms() -> dict[str, list[str]]:
     return {k: v for k, v in data.items() if isinstance(v, list)}
 
 
+def _require_ctx(ctx: Context | None) -> Context:
+    """Guard against FastMCP failing to inject ctx (M-4).
+
+    FastMCP default-injects Context at runtime, but test harnesses,
+    mis-configured transports, and future SDK changes could leave ctx as
+    None. Raising a ToolError here gives clients a structured error
+    instead of an ambiguous ``AttributeError: 'NoneType' object has no
+    attribute 'request_context'``.
+    """
+    if ctx is None:
+        raise ToolError("MCP context unavailable")
+    return ctx
+
+
 def _assert_fts5(conn: sqlite3.Connection) -> None:
     """Check FTS5 availability with platform-aware error (STOR-08)."""
     from mcp_server_python_docs.storage.db import assert_fts5_available
@@ -193,12 +207,13 @@ def create_server() -> FastMCP:
         version: VersionParam = None,
         kind: SearchKindParam = "auto",
         max_results: MaxResultsParam = 5,
-        ctx: Context = None,  # type: ignore[assignment]
+        ctx: Context | None = None,
     ) -> SearchDocsResult:
         """Search Python documentation. Use kind='symbol' for API lookups
         (asyncio.TaskGroup), kind='example' for code samples, kind='auto' otherwise.
         When version is omitted, searches across all versions. Pass the version
         from each hit's version field to get_docs for consistent results."""
+        ctx = _require_ctx(ctx)
         app_ctx: AppContext = ctx.request_context.lifespan_context
         try:
             return app_ctx.search_service.search(query, version, kind, max_results)
@@ -215,10 +230,11 @@ def create_server() -> FastMCP:
         anchor: AnchorParam = None,
         max_chars: MaxCharsParam = 8000,
         start_index: StartIndexParam = 0,
-        ctx: Context = None,  # type: ignore[assignment]
+        ctx: Context | None = None,
     ) -> GetDocsResult:
         """Retrieve a documentation page or specific section. Provide anchor for
         section-only retrieval (much cheaper). Pagination via start_index."""
+        ctx = _require_ctx(ctx)
         app_ctx: AppContext = ctx.request_context.lifespan_context
         # Auto-default to detected Python version when no version specified
         if version is None and app_ctx.detected_python_version:
@@ -235,9 +251,10 @@ def create_server() -> FastMCP:
 
     @mcp.tool(annotations=_TOOL_ANNOTATIONS)
     def list_versions(
-        ctx: Context = None,  # type: ignore[assignment]
+        ctx: Context | None = None,
     ) -> ListVersionsResult:
         """List Python documentation versions available in this index."""
+        ctx = _require_ctx(ctx)
         app_ctx: AppContext = ctx.request_context.lifespan_context
         try:
             return app_ctx.version_service.list_versions()
@@ -249,11 +266,12 @@ def create_server() -> FastMCP:
 
     @mcp.tool(annotations=_TOOL_ANNOTATIONS)
     def detect_python_version(
-        ctx: Context = None,  # type: ignore[assignment]
+        ctx: Context | None = None,
     ) -> DetectPythonVersionResult:
         """Detect the Python version in the user's environment.
         Returns the detected version, how it was found, and whether it
         matches an indexed documentation set."""
+        ctx = _require_ctx(ctx)
         app_ctx: AppContext = ctx.request_context.lifespan_context
         detected_ver = app_ctx.detected_python_version
 
