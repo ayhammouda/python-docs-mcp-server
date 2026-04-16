@@ -28,11 +28,21 @@ def get_index_path() -> Path:
     return get_cache_dir() / "index.db"
 
 
-def _set_pragmas(conn: sqlite3.Connection) -> None:
-    """Set required PRAGMAs on a connection (STOR-07)."""
-    conn.execute("PRAGMA journal_mode = WAL")
+def _set_common_pragmas(conn: sqlite3.Connection) -> None:
+    """Set PRAGMAs that are safe for both read-only and read-write connections."""
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _set_readonly_pragmas(conn: sqlite3.Connection) -> None:
+    """Set PRAGMAs for read-only serving connections (STOR-07)."""
+    _set_common_pragmas(conn)
+
+
+def _set_readwrite_pragmas(conn: sqlite3.Connection) -> None:
+    """Set PRAGMAs for read-write ingestion connections (STOR-07)."""
+    conn.execute("PRAGMA journal_mode = WAL")
+    _set_common_pragmas(conn)
 
 
 def get_readonly_connection(path: str | Path) -> sqlite3.Connection:
@@ -42,7 +52,7 @@ def get_readonly_connection(path: str | Path) -> sqlite3.Connection:
     """
     path = Path(path)
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
-    _set_pragmas(conn)
+    _set_readonly_pragmas(conn)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -56,7 +66,7 @@ def get_readwrite_connection(path: str | Path) -> sqlite3.Connection:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
-    _set_pragmas(conn)
+    _set_readwrite_pragmas(conn)
     conn.row_factory = sqlite3.Row
     return conn
 

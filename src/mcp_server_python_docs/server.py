@@ -27,6 +27,7 @@ from mcp_server_python_docs.models import GetDocsResult, ListVersionsResult, Sea
 from mcp_server_python_docs.services.content import ContentService
 from mcp_server_python_docs.services.search import SearchService
 from mcp_server_python_docs.services.version import VersionService
+from mcp_server_python_docs.storage.db import get_readonly_connection
 
 logger = logging.getLogger(__name__)
 
@@ -72,11 +73,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     logger.info("Loaded %d synonym entries", len(synonyms))
 
     # Open read-only connection (STOR-06, STOR-07)
-    db = sqlite3.connect(f"file:{index_path}?mode=ro", uri=True, check_same_thread=False)
-    db.execute("PRAGMA journal_mode = WAL")
-    db.execute("PRAGMA synchronous = NORMAL")
-    db.execute("PRAGMA foreign_keys = ON")
-    db.row_factory = sqlite3.Row
+    db = get_readonly_connection(index_path)
 
     # Check FTS5 (STOR-08)
     _assert_fts5(db)

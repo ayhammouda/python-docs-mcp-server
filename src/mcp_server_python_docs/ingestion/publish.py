@@ -90,19 +90,23 @@ def record_ingestion_run(
     return cursor.lastrowid  # type: ignore[return-value]
 
 
-def run_smoke_tests(db_path: Path) -> tuple[bool, list[str]]:
+def run_smoke_tests(
+    db_path: Path,
+    *,
+    require_content: bool = True,
+) -> tuple[bool, list[str]]:
     """Run smoke tests against a newly built database (PUBL-03).
 
     Validates that the index has sufficient data to be useful:
     - doc_sets table has at least 1 row
-    - documents table has at least 10 rows
-    - sections table has at least 50 rows
     - symbols table has at least 1000 rows
-    - Spot-check: an asyncio-related document exists
-    - FTS5 check: sections_fts is searchable
+    - For content builds: documents/sections are populated and sections_fts is searchable
+    - For symbol-only builds: symbols_fts is searchable
 
     Args:
         db_path: Path to the database to test.
+        require_content: When True, enforce document/section checks suitable for
+            full-content builds. When False, validate a symbol-only build.
 
     Returns:
         Tuple of (passed, messages). ``passed`` is True only if ALL
@@ -125,22 +129,6 @@ def run_smoke_tests(db_path: Path) -> tuple[bool, list[str]]:
             messages.append(f"FAIL: doc_sets: {count} rows (need >= 1)")
             passed = False
 
-        # Check documents
-        count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
-        if count >= 10:
-            messages.append(f"OK: documents: {count} rows")
-        else:
-            messages.append(f"FAIL: documents: {count} rows (need >= 10)")
-            passed = False
-
-        # Check sections
-        count = conn.execute("SELECT COUNT(*) FROM sections").fetchone()[0]
-        if count >= 50:
-            messages.append(f"OK: sections: {count} rows")
-        else:
-            messages.append(f"FAIL: sections: {count} rows (need >= 50)")
-            passed = False
-
         # Check symbols
         count = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
         if count >= 1000:
@@ -149,31 +137,64 @@ def run_smoke_tests(db_path: Path) -> tuple[bool, list[str]]:
             messages.append(f"FAIL: symbols: {count} rows (need >= 1000)")
             passed = False
 
-        # Spot-check: asyncio document exists
-        row = conn.execute(
-            "SELECT 1 FROM documents WHERE slug LIKE '%asyncio%' LIMIT 1"
-        ).fetchone()
-        if row:
-            messages.append("OK: spot-check: asyncio document found")
-        else:
-            messages.append("FAIL: spot-check: no asyncio document found")
-            passed = False
+        if require_content:
+            # Check documents
+            count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+            if count >= 10:
+                messages.append(f"OK: documents: {count} rows")
+            else:
+                messages.append(f"FAIL: documents: {count} rows (need >= 10)")
+                passed = False
 
-        # FTS5 check: sections_fts is searchable
-        try:
+            # Check sections
+            count = conn.execute("SELECT COUNT(*) FROM sections").fetchone()[0]
+            if count >= 50:
+                messages.append(f"OK: sections: {count} rows")
+            else:
+                messages.append(f"FAIL: sections: {count} rows (need >= 50)")
+                passed = False
+
+            # Spot-check: asyncio document exists
             row = conn.execute(
-                "SELECT 1 FROM sections_fts WHERE sections_fts MATCH '\"asyncio\"' LIMIT 1"
+                "SELECT 1 FROM documents WHERE slug LIKE '%asyncio%' LIMIT 1"
             ).fetchone()
             if row:
-                messages.append("OK: fts5: sections_fts searchable")
+                messages.append("OK: spot-check: asyncio document found")
             else:
-                messages.append(
-                    "WARN: fts5: sections_fts has no asyncio matches"
-                    " (may be OK for partial builds)"
-                )
-        except sqlite3.OperationalError as e:
-            messages.append(f"FAIL: fts5: sections_fts query failed: {e}")
-            passed = False
+                messages.append("FAIL: spot-check: no asyncio document found")
+                passed = False
+
+            # FTS5 check: sections_fts is searchable
+            try:
+                row = conn.execute(
+                    'SELECT 1 FROM sections_fts WHERE sections_fts MATCH \'"asyncio"\' LIMIT 1'
+                ).fetchone()
+                if row:
+                    messages.append("OK: fts5: sections_fts searchable")
+                else:
+                    messages.append(
+                        "WARN: fts5: sections_fts has no asyncio matches"
+                        " (may be OK for partial builds)"
+                    )
+            except sqlite3.OperationalError as e:
+                messages.append(f"FAIL: fts5: sections_fts query failed: {e}")
+                passed = False
+        else:
+            messages.append("OK: content checks skipped for symbol-only build")
+            try:
+                row = conn.execute(
+                    'SELECT 1 FROM symbols_fts WHERE symbols_fts MATCH \'"asyncio"\' LIMIT 1'
+                ).fetchone()
+                if row:
+                    messages.append("OK: fts5: symbols_fts searchable")
+                else:
+                    messages.append(
+                        "WARN: fts5: symbols_fts has no asyncio matches"
+                        " (unexpected for stdlib builds)"
+                    )
+            except sqlite3.OperationalError as e:
+                messages.append(f"FAIL: fts5: symbols_fts query failed: {e}")
+                passed = False
 
     except Exception as e:
         messages.append(f"FAIL: Unexpected error during smoke tests: {e}")
@@ -259,7 +280,12 @@ def print_restart_message() -> None:
     )
 
 
-def publish_index(build_db_path: Path, version: str) -> bool:
+def publish_index(
+    build_db_path: Path,
+    version: str,
+    *,
+    require_content: bool = True,
+) -> bool:
     """Orchestrate the full publish pipeline.
 
     1. Compute SHA256 of the build artifact
@@ -271,6 +297,7 @@ def publish_index(build_db_path: Path, version: str) -> bool:
     Args:
         build_db_path: Path to the build artifact database.
         version: Version string for the ingestion run record.
+        require_content: Whether publish validation should require content tables.
 
     Returns:
         True if publishing succeeded, False if smoke tests failed.
@@ -282,6 +309,7 @@ def publish_index(build_db_path: Path, version: str) -> bool:
     # Record ingestion run
     from mcp_server_python_docs.storage.db import get_readwrite_connection
 
+    build_notes = "build_mode=symbol_only" if not require_content else None
     conn = get_readwrite_connection(build_db_path)
     try:
         run_id = record_ingestion_run(
@@ -290,12 +318,13 @@ def publish_index(build_db_path: Path, version: str) -> bool:
             version=version,
             status="smoke_testing",
             artifact_hash=artifact_hash,
+            notes=build_notes,
         )
     finally:
         conn.close()
 
     # Run smoke tests (PUBL-03)
-    passed, messages = run_smoke_tests(build_db_path)
+    passed, messages = run_smoke_tests(build_db_path, require_content=require_content)
     for msg in messages:
         logger.info("Smoke test: %s", msg)
 
@@ -314,13 +343,13 @@ def publish_index(build_db_path: Path, version: str) -> bool:
         logger.error("Smoke tests failed — not publishing")
         return False
 
-    # Update run status to published
+    # Update run status to published (preserve build_mode note)
     conn = get_readwrite_connection(build_db_path)
     try:
         conn.execute(
-            "UPDATE ingestion_runs SET status = ?, "
+            "UPDATE ingestion_runs SET status = ?, notes = ?, "
             "finished_at = CURRENT_TIMESTAMP WHERE id = ?",
-            ("published", run_id),
+            ("published", build_notes, run_id),
         )
         conn.commit()
     finally:
