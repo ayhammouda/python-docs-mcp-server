@@ -174,8 +174,10 @@ def build_match_expression(
 
     # If expansion added new terms, OR-join all terms
     if expanded != original_tokens:
+        original_query = fts5_escape(query)
         escaped_terms = [fts5_escape(term) for term in sorted(expanded)]
-        return " OR ".join(escaped_terms)
+        extra_terms = [term for term in escaped_terms if term != original_query]
+        return " OR ".join([original_query, *extra_terms])
 
     # No expansion -- use plain escaped query (implicit AND)
     return fts5_escape(query)

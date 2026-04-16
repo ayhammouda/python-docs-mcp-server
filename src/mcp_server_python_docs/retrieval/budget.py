@@ -31,7 +31,7 @@ def apply_budget(
         next_start_index is None when not truncated (all remaining text fits).
     """
     if not text or max_chars <= 0:
-        return ("", bool(text), 0 if text else None)
+        return ("", False, None)
 
     if start_index >= len(text):
         return ("", False, None)

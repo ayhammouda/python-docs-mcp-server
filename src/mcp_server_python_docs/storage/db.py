@@ -84,8 +84,8 @@ def assert_fts5_available(conn: sqlite3.Connection) -> None:
     - macOS/Windows/ARM: suggests uv python install or python.org
     """
     try:
-        conn.execute("CREATE VIRTUAL TABLE _fts5_check USING fts5(x)")
-        conn.execute("DROP TABLE _fts5_check")
+        conn.execute("CREATE VIRTUAL TABLE temp._fts5_check USING fts5(x)")
+        conn.execute("DROP TABLE temp._fts5_check")
         return  # FTS5 confirmed via CREATE
     except sqlite3.OperationalError as e:
         error_msg = str(e).lower()

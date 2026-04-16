@@ -9,13 +9,40 @@ Entry point with stdio hygiene. The order of operations is load-bearing:
 # === STDIO HYGIENE (HYGN-01, B3 blocker) ===
 # These MUST be the first imports and operations, before anything
 # that might write to stdout.
+import atexit
 import os
 import signal
 import sys
 
 # Save the real stdout fd for the MCP framer, then redirect fd 1 to stderr.
 # After this, any print() or write to fd 1 goes to stderr, not the MCP pipe.
-_real_stdout_fd = os.dup(1)
+_saved_stdout_fd: int | None = os.dup(1)
+
+
+def _close_saved_stdout_fd() -> None:
+    """Close the saved stdout fd when the CLI exits without serving."""
+    global _saved_stdout_fd
+    if _saved_stdout_fd is None:
+        return
+    try:
+        os.close(_saved_stdout_fd)
+    except OSError:
+        pass
+    finally:
+        _saved_stdout_fd = None
+
+
+def _consume_saved_stdout_fd() -> int:
+    """Hand off the saved stdout fd to the stdio MCP transport."""
+    global _saved_stdout_fd
+    if _saved_stdout_fd is None:
+        raise RuntimeError("Saved stdout fd is not available")
+    fd = _saved_stdout_fd
+    _saved_stdout_fd = None
+    return fd
+
+
+atexit.register(_close_saved_stdout_fd)
 os.dup2(2, 1)
 sys.stdout = sys.stderr
 
@@ -59,12 +86,13 @@ def serve() -> None:
     from mcp_server_python_docs.server import create_server
 
     mcp_server = create_server()
+    saved_stdout_fd = _consume_saved_stdout_fd()
 
     # Restore the real stdout fd for MCP protocol framing.
     # By this point all imports are done — no third-party code will
     # print to stdout during MCP communication.
-    os.dup2(_real_stdout_fd, 1)
-    os.close(_real_stdout_fd)
+    os.dup2(saved_stdout_fd, 1)
+    os.close(saved_stdout_fd)
 
     try:
         mcp_server.run(transport="stdio")
