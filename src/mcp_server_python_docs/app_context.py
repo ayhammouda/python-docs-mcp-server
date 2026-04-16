@@ -25,3 +25,5 @@ class AppContext:
     content_service: ContentService
     version_service: VersionService
     synonyms: dict[str, list[str]] = field(default_factory=dict)
+    detected_python_version: str | None = None
+    detected_python_source: str | None = None

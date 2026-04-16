@@ -22,8 +22,14 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from mcp_server_python_docs.app_context import AppContext
+from mcp_server_python_docs.detection import detect_python_version, match_to_indexed
 from mcp_server_python_docs.errors import DocsServerError
-from mcp_server_python_docs.models import GetDocsResult, ListVersionsResult, SearchDocsResult
+from mcp_server_python_docs.models import (
+    DetectPythonVersionResult,
+    GetDocsResult,
+    ListVersionsResult,
+    SearchDocsResult,
+)
 from mcp_server_python_docs.services.content import ContentService
 from mcp_server_python_docs.services.search import SearchService
 from mcp_server_python_docs.services.version import VersionService
@@ -83,6 +89,21 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     content_svc = ContentService(db)
     version_svc = VersionService(db)
 
+    # Detect user's Python version and match to indexed versions
+    detected_ver, detected_src = detect_python_version()
+    indexed_versions = [
+        r[0] for r in db.execute("SELECT version FROM doc_sets ORDER BY version").fetchall()
+    ]
+    matched = match_to_indexed(detected_ver, indexed_versions)
+    if matched:
+        logger.info("User Python %s matches indexed version — using as default", matched)
+    else:
+        logger.info(
+            "User Python %s not in index %s — using normal default",
+            detected_ver,
+            indexed_versions,
+        )
+
     try:
         yield AppContext(
             db=db,
@@ -91,6 +112,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             search_service=search_svc,
             content_service=content_svc,
             version_service=version_svc,
+            detected_python_version=matched,
+            detected_python_source=detected_src,
         )
     except Exception:
         # HYGN-05: log lifespan errors, write last-error.log, re-raise original
@@ -155,6 +178,9 @@ def create_server() -> FastMCP:
         """Retrieve a documentation page or specific section. Provide anchor for
         section-only retrieval (much cheaper). Pagination via start_index."""
         app_ctx: AppContext = ctx.request_context.lifespan_context
+        # Auto-default to detected Python version when no version specified
+        if version is None and app_ctx.detected_python_version:
+            version = app_ctx.detected_python_version
         try:
             return app_ctx.content_service.get_docs(
                 slug, version, anchor, max_chars, start_index
@@ -178,6 +204,29 @@ def create_server() -> FastMCP:
         except Exception as e:
             logger.exception("Unexpected error in list_versions")
             raise ToolError(f"Internal error: {type(e).__name__}")
+
+    @mcp.tool(annotations=_TOOL_ANNOTATIONS)
+    def detect_python_version(
+        ctx: Context = None,  # type: ignore[assignment]
+    ) -> DetectPythonVersionResult:
+        """Detect the Python version in the user's environment.
+        Returns the detected version, how it was found, and whether it
+        matches an indexed documentation set."""
+        app_ctx: AppContext = ctx.request_context.lifespan_context
+        detected_ver = app_ctx.detected_python_version
+        detected_src = app_ctx.detected_python_source or "unknown"
+
+        # Re-run detection to get the raw version even if it didn't match
+        from mcp_server_python_docs.detection import detect_python_version as _detect
+
+        raw_ver, raw_src = _detect()
+
+        return DetectPythonVersionResult(
+            detected_version=raw_ver,
+            source=raw_src,
+            matched_index_version=detected_ver,
+            is_default=detected_ver is not None,
+        )
 
     # SRVR-07: _meta hint for get_docs tool.
     # FastMCP 1.27 does not expose a public API for setting _meta on tool
