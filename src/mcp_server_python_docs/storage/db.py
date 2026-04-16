@@ -41,7 +41,7 @@ def get_readonly_connection(path: str | Path) -> sqlite3.Connection:
     Uses SQLite URI mode with ?mode=ro to prevent accidental writes.
     """
     path = Path(path)
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
     _set_pragmas(conn)
     conn.row_factory = sqlite3.Row
     return conn

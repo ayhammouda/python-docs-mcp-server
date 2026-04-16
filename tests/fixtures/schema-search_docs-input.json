@@ -3,6 +3,7 @@
   "properties": {
     "query": {
       "description": "Search query - Python symbol (asyncio.TaskGroup) or concept (parse json)",
+      "maxLength": 500,
       "title": "Query",
       "type": "string"
     },

@@ -16,7 +16,8 @@ class SearchDocsInput(BaseModel):
     """Input parameters for search_docs tool."""
 
     query: str = Field(
-        description="Search query - Python symbol (asyncio.TaskGroup) or concept (parse json)"
+        max_length=500,
+        description="Search query - Python symbol (asyncio.TaskGroup) or concept (parse json)",
     )
     version: str | None = Field(
         default=None,
@@ -69,7 +70,10 @@ class SearchDocsResult(BaseModel):
 class GetDocsInput(BaseModel):
     """Input parameters for get_docs tool."""
 
-    slug: str = Field(description="Page slug (e.g. 'library/asyncio-task.html')")
+    slug: str = Field(
+        max_length=500,
+        description="Page slug (e.g. 'library/asyncio-task.html')",
+    )
     version: str | None = Field(
         default=None,
         description="Python version. Defaults to latest.",

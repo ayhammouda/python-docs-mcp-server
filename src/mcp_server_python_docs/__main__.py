@@ -238,8 +238,8 @@ def build_index(versions: str, skip_content: bool) -> None:
                             result.stderr[-2000:] if result.stderr else "(no output)",
                         )
                         logger.warning(
-                            "Symbols were ingested for %s but sections/examples "
-                            "will be missing. Smoke tests may fail.",
+                            "Version %s has SYMBOLS ONLY (sphinx-build failed). "
+                            "search_docs will work but get_docs will return empty pages.",
                             version,
                         )
                         any_version_succeeded = True

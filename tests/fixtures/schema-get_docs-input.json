@@ -3,6 +3,7 @@
   "properties": {
     "slug": {
       "description": "Page slug (e.g. 'library/asyncio-task.html')",
+      "maxLength": 500,
       "title": "Slug",
       "type": "string"
     },

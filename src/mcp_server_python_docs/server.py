@@ -72,7 +72,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     logger.info("Loaded %d synonym entries", len(synonyms))
 
     # Open read-only connection (STOR-06, STOR-07)
-    db = sqlite3.connect(f"file:{index_path}?mode=ro", uri=True)
+    db = sqlite3.connect(f"file:{index_path}?mode=ro", uri=True, check_same_thread=False)
     db.execute("PRAGMA journal_mode = WAL")
     db.execute("PRAGMA synchronous = NORMAL")
     db.execute("PRAGMA foreign_keys = ON")
@@ -113,6 +113,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 _TOOL_ANNOTATIONS = ToolAnnotations(
     readOnlyHint=True,
     destructiveHint=False,
+    idempotentHint=True,
     openWorldHint=False,
 )
 
@@ -141,6 +142,9 @@ def create_server() -> FastMCP:
             return app_ctx.search_service.search(query, version, kind, max_results)
         except DocsServerError as e:
             raise ToolError(str(e))
+        except Exception as e:
+            logger.exception("Unexpected error in search_docs")
+            raise ToolError(f"Internal error: {type(e).__name__}")
 
     @mcp.tool(annotations=_TOOL_ANNOTATIONS)
     def get_docs(
@@ -160,6 +164,9 @@ def create_server() -> FastMCP:
             )
         except DocsServerError as e:
             raise ToolError(str(e))
+        except Exception as e:
+            logger.exception("Unexpected error in get_docs")
+            raise ToolError(f"Internal error: {type(e).__name__}")
 
     @mcp.tool(annotations=_TOOL_ANNOTATIONS)
     def list_versions(
@@ -171,6 +178,9 @@ def create_server() -> FastMCP:
             return app_ctx.version_service.list_versions()
         except DocsServerError as e:
             raise ToolError(str(e))
+        except Exception as e:
+            logger.exception("Unexpected error in list_versions")
+            raise ToolError(f"Internal error: {type(e).__name__}")
 
     # SRVR-07: _meta hint for get_docs tool.
     # FastMCP 1.27 does not expose a public API for setting _meta on tool
