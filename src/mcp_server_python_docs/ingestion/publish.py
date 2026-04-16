@@ -167,7 +167,10 @@ def run_smoke_tests(db_path: Path) -> tuple[bool, list[str]]:
             if row:
                 messages.append("OK: fts5: sections_fts searchable")
             else:
-                messages.append("WARN: fts5: sections_fts has no asyncio matches (may be OK for partial builds)")
+                messages.append(
+                    "WARN: fts5: sections_fts has no asyncio matches"
+                    " (may be OK for partial builds)"
+                )
         except sqlite3.OperationalError as e:
             messages.append(f"FAIL: fts5: sections_fts query failed: {e}")
             passed = False
