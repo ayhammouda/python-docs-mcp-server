@@ -1,0 +1,111 @@
+"""Tests for the doctor CLI subcommand (CLI-02).
+
+All tests spawn a real subprocess to verify the doctor command's behavior,
+matching the pattern from test_stdio_hygiene.py.
+"""
+import os
+import subprocess
+import sys
+import tempfile
+
+
+class TestDoctor:
+    """Verify doctor subcommand behavior."""
+
+    def test_doctor_runs_without_error(self):
+        """doctor command runs and produces output on stderr."""
+        result = subprocess.run(
+            [sys.executable, "-m", "mcp_server_python_docs", "doctor"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        # May exit 0 or 1 depending on index presence, but should not crash
+        assert result.returncode in (0, 1)
+        assert "Python version" in result.stderr
+        assert "SQLite FTS5" in result.stderr
+        assert "Cache directory" in result.stderr
+
+    def test_doctor_no_stdout(self):
+        """All doctor output goes to stderr, nothing to stdout."""
+        result = subprocess.run(
+            [sys.executable, "-m", "mcp_server_python_docs", "doctor"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert result.stdout == "", f"doctor produced stdout: {result.stdout!r}"
+
+    def test_doctor_checks_python_version(self):
+        """Doctor reports PASS for Python version (we run on >= 3.12)."""
+        result = subprocess.run(
+            [sys.executable, "-m", "mcp_server_python_docs", "doctor"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert "PASS: Python version" in result.stderr
+
+    def test_doctor_checks_fts5(self):
+        """Doctor reports PASS for FTS5 (test environment has FTS5)."""
+        result = subprocess.run(
+            [sys.executable, "-m", "mcp_server_python_docs", "doctor"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert "PASS: SQLite FTS5" in result.stderr
+
+    def test_doctor_checks_disk_space(self):
+        """Doctor reports PASS for disk space (test systems have > 1 GB)."""
+        result = subprocess.run(
+            [sys.executable, "-m", "mcp_server_python_docs", "doctor"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert "PASS: Disk space" in result.stderr
+
+    def test_doctor_reports_missing_index(self):
+        """Doctor reports FAIL for Index database when pointed at empty dir."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = subprocess.run(
+                [sys.executable, "-m", "mcp_server_python_docs", "doctor"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                env={
+                    **os.environ,
+                    "HOME": tmpdir,
+                    "XDG_CACHE_HOME": tmpdir,
+                },
+            )
+            assert "FAIL: Index database" in result.stderr
+            assert "build-index" in result.stderr
+
+    def test_doctor_exit_code_on_failure(self):
+        """Doctor exits with code 1 when any probe fails."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = subprocess.run(
+                [sys.executable, "-m", "mcp_server_python_docs", "doctor"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                env={
+                    **os.environ,
+                    "HOME": tmpdir,
+                    "XDG_CACHE_HOME": tmpdir,
+                },
+            )
+            assert result.returncode == 1
+
+    def test_doctor_in_help(self):
+        """doctor appears as a subcommand in --help output."""
+        result = subprocess.run(
+            [sys.executable, "-m", "mcp_server_python_docs", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        combined = result.stdout + result.stderr
+        assert "doctor" in combined
