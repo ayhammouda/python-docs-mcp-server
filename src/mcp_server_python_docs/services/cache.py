@@ -11,6 +11,7 @@ not hashable.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from functools import lru_cache
 from typing import NamedTuple
 
@@ -36,7 +37,7 @@ class CachedSymbol(NamedTuple):
     version: str
 
 
-def create_section_cache(db: sqlite3.Connection) -> callable:
+def create_section_cache(db: sqlite3.Connection) -> Callable[[int], CachedSection | None]:
     """Create an LRU-cached section lookup function (OPS-04).
 
     Args:
@@ -70,7 +71,7 @@ def create_section_cache(db: sqlite3.Connection) -> callable:
     return get_section_cached
 
 
-def create_symbol_cache(db: sqlite3.Connection) -> callable:
+def create_symbol_cache(db: sqlite3.Connection) -> Callable[[str, str], CachedSymbol | None]:
     """Create an LRU-cached symbol resolution function (OPS-04).
 
     Args:
