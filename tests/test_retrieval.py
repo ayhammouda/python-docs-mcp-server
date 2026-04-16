@@ -585,8 +585,9 @@ def test_budget_combining_at_boundary():
     # Result should be clean -- no orphaned combining marks
     if len(result) > 0:
         last_cat = unicodedata.category(result[-1])
-        # Last char should not be a combining mark without seeing its base
-        # (which is fine since we include the base)
+        assert not last_cat.startswith("M"), (
+            f"Last char is orphaned combining mark (category {last_cat})"
+        )
 
 
 def test_budget_empty_text():
