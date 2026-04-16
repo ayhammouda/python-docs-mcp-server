@@ -9,8 +9,6 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-import pytest
-
 from mcp_server_python_docs.ingestion.publish import (
     atomic_swap,
     compute_sha256,
@@ -24,7 +22,6 @@ from mcp_server_python_docs.storage.db import (
     get_readonly_connection,
     get_readwrite_connection,
 )
-
 
 # ── Build path tests (PUBL-01) ──
 

@@ -7,9 +7,7 @@ per-document failure isolation (INGR-C-06), code block extraction
 """
 from __future__ import annotations
 
-import json
 import shutil
-from pathlib import Path
 
 import pytest
 
@@ -24,8 +22,6 @@ from mcp_server_python_docs.ingestion.sphinx_json import (
     populate_synonyms,
     rebuild_fts_indexes,
 )
-from mcp_server_python_docs.storage.db import bootstrap_schema, get_readwrite_connection
-
 
 # ── fjson parsing tests (INGR-C-04) ──
 
