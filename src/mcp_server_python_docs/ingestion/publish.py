@@ -353,6 +353,9 @@ def publish_index(
                 ("failed", "\n".join(messages), run_id),
             )
             conn.commit()
+            # Round 3: finalize WAL here too so the failed build_db leaves no
+            # -wal/-shm sidecars even though we're not swapping it in.
+            finalize_for_swap(conn)
             logger.error("Smoke tests failed — not publishing")
             return False
 
