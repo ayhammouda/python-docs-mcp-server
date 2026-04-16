@@ -130,37 +130,38 @@ def ingest_inventory(conn: sqlite3.Connection, version: str) -> int:
         if key not in best_symbols or priority < best_symbols[key][1]:
             best_symbols[key] = (obj, priority)
 
-    # Insert symbols in a transaction (INGR-I-06)
+    # Insert symbols (INGR-I-02)
     count = 0
-    with conn:
-        for name, (obj, _priority) in best_symbols.items():
-            uri = _expand_uri(obj)
-            module = _extract_module(name)
-            anchor_part = uri.split("#", 1)[1] if "#" in uri else None
+    for name, (obj, _priority) in best_symbols.items():
+        uri = _expand_uri(obj)
+        module = _extract_module(name)
+        anchor_part = uri.split("#", 1)[1] if "#" in uri else None
 
-            conn.execute(
-                "INSERT OR REPLACE INTO symbols "
-                "(doc_set_id, qualified_name, normalized_name, module, "
-                "symbol_type, uri, anchor) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    doc_set_id,
-                    name,
-                    _normalize_name(name),
-                    module,
-                    obj.role,
-                    uri,
-                    anchor_part,
-                ),
-            )
-            count += 1
-
-        # Populate symbols_fts from symbols table (INGR-I-06)
-        conn.execute("DELETE FROM symbols_fts")
         conn.execute(
-            "INSERT INTO symbols_fts(rowid, qualified_name, module) "
-            "SELECT id, qualified_name, module FROM symbols"
+            "INSERT OR REPLACE INTO symbols "
+            "(doc_set_id, qualified_name, normalized_name, module, "
+            "symbol_type, uri, anchor) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                doc_set_id,
+                name,
+                _normalize_name(name),
+                module,
+                obj.role,
+                uri,
+                anchor_part,
+            ),
         )
+        count += 1
+
+    conn.commit()
+
+    # Rebuild symbols_fts from symbols table (INGR-I-06)
+    # For external-content FTS5 tables, use the 'rebuild' command instead of
+    # DELETE + INSERT. The rebuild command re-reads all content from the
+    # content table and repopulates the FTS index atomically.
+    conn.execute("INSERT INTO symbols_fts(symbols_fts) VALUES('rebuild')")
+    conn.commit()
 
     logger.info(f"Ingested {count} symbols for Python {version}")
     return count
