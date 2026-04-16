@@ -65,12 +65,15 @@ def _normalize_name(name: str) -> str:
     return name.strip().lower()
 
 
-def ingest_inventory(conn: sqlite3.Connection, version: str) -> int:
+def ingest_inventory(
+    conn: sqlite3.Connection, version: str, *, is_default: bool = False
+) -> int:
     """Download objects.inv for a Python version and populate symbols.
 
     Args:
         conn: Read-write SQLite connection
         version: Python version string (e.g., "3.13")
+        is_default: Whether this version is the default for queries (MVER-02)
 
     Returns:
         Number of symbols inserted
@@ -95,7 +98,7 @@ def ingest_inventory(conn: sqlite3.Connection, version: str) -> int:
             version,
             "en",
             f"Python {version}",
-            1,  # is_default (Phase 6 handles multi-version default logic)
+            1 if is_default else 0,
             f"https://docs.python.org/{version}/",
         ),
     )

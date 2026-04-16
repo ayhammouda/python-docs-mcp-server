@@ -40,9 +40,15 @@ import click  # noqa: E402
 
 
 @click.group(invoke_without_command=True)
+@click.option("--version", "show_version", is_flag=True, help="Show version and exit.")
 @click.pass_context
-def main(ctx: click.Context) -> None:
+def main(ctx: click.Context, show_version: bool) -> None:
     """MCP server for Python standard library documentation."""
+    if show_version:
+        from mcp_server_python_docs import __version__
+
+        click.echo(f"mcp-server-python-docs {__version__}", err=True)
+        raise SystemExit(0)
     if ctx.invoked_subcommand is None:
         ctx.invoke(serve)
 
@@ -112,6 +118,10 @@ def build_index(versions: str, skip_content: bool) -> None:
         logger.error("No valid versions specified. Example: --versions 3.13")
         raise SystemExit(1)
 
+    # Determine default version: highest version number (MVER-02)
+    sorted_versions = sorted(version_list, key=lambda v: [int(x) for x in v.split(".")])
+    default_version = sorted_versions[-1]
+
     # Build into a timestamped artifact, not directly to index.db (PUBL-01)
     build_db_path = generate_build_path()
     logger.info("Building index at %s", build_db_path)
@@ -127,7 +137,7 @@ def build_index(versions: str, skip_content: bool) -> None:
             try:
                 # === Objects.inv ingestion (existing — INGR-I-*) ===
                 logger.info("Ingesting objects.inv for Python %s...", version)
-                count = ingest_inventory(conn, version)
+                count = ingest_inventory(conn, version, is_default=(version == default_version))
                 logger.info("Ingested %d symbols for Python %s", count, version)
 
                 if skip_content:
