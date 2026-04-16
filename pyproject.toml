@@ -28,6 +28,7 @@ dependencies = [
     "click>=8.1.7,<9.0",
     "platformdirs>=4.0",
     "pyyaml>=6.0,<7.0",
+    "markdownify>=0.14,<2.0",
 ]
 
 [project.optional-dependencies]
