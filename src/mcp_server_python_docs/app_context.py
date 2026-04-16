@@ -9,6 +9,12 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from mcp_server_python_docs.services.content import ContentService
+    from mcp_server_python_docs.services.search import SearchService
+    from mcp_server_python_docs.services.version import VersionService
 
 
 @dataclass
@@ -18,3 +24,6 @@ class AppContext:
     db: sqlite3.Connection
     index_path: Path
     synonyms: dict[str, list[str]] = field(default_factory=dict)
+    search_service: SearchService | None = None
+    content_service: ContentService | None = None
+    version_service: VersionService | None = None

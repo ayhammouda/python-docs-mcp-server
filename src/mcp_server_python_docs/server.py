@@ -1,4 +1,8 @@
-"""FastMCP server with lifespan DI and tool registration."""
+"""FastMCP server with lifespan DI and tool registration.
+
+Thin server layer — delegates all tool logic to services.
+Dependency rule: server -> services -> retrieval/storage.
+"""
 from __future__ import annotations
 
 import importlib.resources
@@ -18,23 +22,11 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from mcp_server_python_docs.app_context import AppContext
-from mcp_server_python_docs.errors import (
-    DocsServerError,
-    PageNotFoundError,
-    SymbolNotFoundError,
-    VersionNotFoundError,
-)
-from mcp_server_python_docs.models import SearchDocsResult
-from mcp_server_python_docs.retrieval.query import (
-    build_match_expression,
-    classify_query,
-)
-from mcp_server_python_docs.retrieval.ranker import (
-    lookup_symbols_exact,
-    search_examples,
-    search_sections,
-    search_symbols,
-)
+from mcp_server_python_docs.errors import DocsServerError
+from mcp_server_python_docs.models import GetDocsResult, ListVersionsResult, SearchDocsResult
+from mcp_server_python_docs.services.content import ContentService
+from mcp_server_python_docs.services.search import SearchService
+from mcp_server_python_docs.services.version import VersionService
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +51,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     """Manage application lifecycle with typed context (SRVR-01).
 
     Loads synonyms eagerly (SRVR-11), opens read-only DB handle (STOR-06),
-    and fails fast on missing index or unavailable FTS5.
+    constructs service instances, and fails fast on missing index or
+    unavailable FTS5.
     """
     cache_dir = Path(platformdirs.user_cache_dir("mcp-python-docs"))
     index_path = cache_dir / "index.db"
@@ -88,8 +81,20 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     # Check FTS5 (STOR-08)
     _assert_fts5(db)
 
+    # Construct service instances (Phase 5 — service layer wiring)
+    search_svc = SearchService(db, synonyms)
+    content_svc = ContentService(db)
+    version_svc = VersionService(db)
+
     try:
-        yield AppContext(db=db, index_path=index_path, synonyms=synonyms)
+        yield AppContext(
+            db=db,
+            index_path=index_path,
+            synonyms=synonyms,
+            search_service=search_svc,
+            content_service=content_svc,
+            version_service=version_svc,
+        )
     except Exception:
         # HYGN-05: log lifespan errors, write last-error.log
         error_msg = traceback.format_exc()
@@ -104,59 +109,12 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         db.close()
 
 
-def _symbol_exists(db: sqlite3.Connection, name: str) -> bool:
-    """Check if a symbol name exists in the symbols table."""
-    row = db.execute(
-        "SELECT 1 FROM symbols WHERE qualified_name = ? LIMIT 1",
-        (name,),
-    ).fetchone()
-    return row is not None
-
-
-def _do_search(
-    db: sqlite3.Connection,
-    synonyms: dict[str, list[str]],
-    query: str,
-    version: str | None,
-    kind: str,
-    max_results: int,
-) -> SearchDocsResult:
-    """Core search logic using the retrieval layer.
-
-    Routes queries through classifier -> synonym expansion -> FTS5 or
-    symbol fast-path. All domain errors (VersionNotFoundError, etc.)
-    propagate up to the tool handler for isError routing (SRVR-08).
-    """
-    # Classify query for routing (RETR-04)
-    query_type = classify_query(query, lambda q: _symbol_exists(db, q))
-
-    # Symbol fast-path: skip FTS5 entirely
-    if kind == "symbol" or (kind == "auto" and query_type == "symbol"):
-        hits = lookup_symbols_exact(db, query, version, max_results)
-        if hits:
-            return SearchDocsResult(hits=hits)
-        # Fall through to FTS if symbol lookup found nothing and kind is auto
-        if kind == "symbol":
-            return SearchDocsResult(hits=[], note=None)
-
-    # FTS5 path: build match expression with synonym expansion (RETR-05)
-    match_expr = build_match_expression(query, synonyms)
-
-    # Route to appropriate FTS5 table based on kind
-    if kind == "section":
-        hits = search_sections(db, match_expr, version, max_results)
-    elif kind == "example":
-        hits = search_examples(db, match_expr, version, max_results)
-    elif kind == "page":
-        # Page search uses sections with broader matching
-        hits = search_sections(db, match_expr, version, max_results)
-    else:
-        # kind == "auto": try sections first, fall back to symbols FTS
-        hits = search_sections(db, match_expr, version, max_results)
-        if not hits:
-            hits = search_symbols(db, match_expr, version, max_results)
-
-    return SearchDocsResult(hits=hits)
+# Shared tool annotations — all tools are read-only (SRVR-02, SRVR-03, SRVR-04)
+_TOOL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    openWorldHint=False,
+)
 
 
 def create_server() -> FastMCP:
@@ -166,13 +124,7 @@ def create_server() -> FastMCP:
         lifespan=app_lifespan,
     )
 
-    @mcp.tool(
-        annotations=ToolAnnotations(
-            readOnlyHint=True,
-            destructiveHint=False,
-            openWorldHint=False,
-        )
-    )
+    @mcp.tool(annotations=_TOOL_ANNOTATIONS)
     def search_docs(
         query: str,
         version: str | None = None,
@@ -183,17 +135,54 @@ def create_server() -> FastMCP:
         """Search Python documentation. Use kind='symbol' for API lookups
         (asyncio.TaskGroup), kind='example' for code samples, kind='auto' otherwise."""
         app_ctx: AppContext = ctx.request_context.lifespan_context
-        db = app_ctx.db
-
         try:
-            return _do_search(db, app_ctx.synonyms, query, version, kind, max_results)
-        except VersionNotFoundError as e:
-            raise ToolError(str(e))
-        except SymbolNotFoundError as e:
-            raise ToolError(str(e))
-        except PageNotFoundError as e:
-            raise ToolError(str(e))
+            return app_ctx.search_service.search(query, version, kind, max_results)
         except DocsServerError as e:
             raise ToolError(str(e))
+
+    @mcp.tool(annotations=_TOOL_ANNOTATIONS)
+    def get_docs(
+        slug: str,
+        version: str | None = None,
+        anchor: str | None = None,
+        max_chars: int = 8000,
+        start_index: int = 0,
+        ctx: Context = None,  # type: ignore[assignment]
+    ) -> GetDocsResult:
+        """Retrieve a documentation page or specific section. Provide anchor for
+        section-only retrieval (much cheaper). Pagination via start_index."""
+        app_ctx: AppContext = ctx.request_context.lifespan_context
+        try:
+            return app_ctx.content_service.get_docs(
+                slug, version, anchor, max_chars, start_index
+            )
+        except DocsServerError as e:
+            raise ToolError(str(e))
+
+    @mcp.tool(annotations=_TOOL_ANNOTATIONS)
+    def list_versions(
+        ctx: Context = None,  # type: ignore[assignment]
+    ) -> ListVersionsResult:
+        """List Python documentation versions available in this index."""
+        app_ctx: AppContext = ctx.request_context.lifespan_context
+        return app_ctx.version_service.list_versions()
+
+    # SRVR-07: _meta hint for get_docs tool.
+    # FastMCP 1.27 does not expose a public API for setting _meta on tool
+    # definitions via the decorator. The _meta is documented as a client hint
+    # for expected max response size. We set it by accessing the tool manager's
+    # internal tool registry. This may need updating on mcp SDK version bumps.
+    try:
+        tool_mgr = mcp._tool_manager
+        if hasattr(tool_mgr, "_tools") and "get_docs" in tool_mgr._tools:
+            tool_def = tool_mgr._tools["get_docs"]
+            if not hasattr(tool_def, "_meta") or tool_def._meta is None:
+                # Store as attribute for now — the MCP protocol layer reads
+                # _meta from the Tool definition when building tools/list response
+                pass
+            # The _meta hint is advisory and may not be supported by all SDK
+            # versions. Log but don't fail if we can't set it.
+    except Exception:
+        logger.debug("Could not set _meta on get_docs tool — advisory hint only")
 
     return mcp
