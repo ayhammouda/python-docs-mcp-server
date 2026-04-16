@@ -1,6 +1,7 @@
 """SQLite connection management with RO/RW split, WAL mode, and FTS5 check."""
 from __future__ import annotations
 
+import importlib.resources
 import logging
 import platform
 import sqlite3
@@ -103,39 +104,25 @@ def assert_fts5_available(conn: sqlite3.Connection) -> None:
 
 
 def bootstrap_schema(conn: sqlite3.Connection) -> None:
-    """Create minimal schema for Phase 1 (symbols + doc_sets only).
+    """Create all tables and FTS5 indexes from schema.sql (STOR-01, STOR-09).
 
-    Full schema with sections, documents, examples, etc. lands in Phase 2.
-    This creates just enough for symbol ingestion and search.
+    Loads the complete DDL from storage/schema.sql via importlib.resources.
+    All CREATE statements use IF NOT EXISTS for idempotency -- running this
+    twice on the same database is a no-op.
+
+    FTS5 virtual tables are dropped and recreated on every bootstrap to ensure
+    the tokenizer configuration matches the current schema.sql. This is safe
+    because FTS5 external-content tables are derived data that can be rebuilt
+    from canonical tables via the 'rebuild' command.
     """
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS doc_sets (
-            id          INTEGER PRIMARY KEY,
-            source      TEXT NOT NULL DEFAULT 'python-docs',
-            version     TEXT NOT NULL,
-            language    TEXT NOT NULL DEFAULT 'en',
-            label       TEXT NOT NULL,
-            is_default  INTEGER NOT NULL DEFAULT 0,
-            base_url    TEXT,
-            built_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(source, version, language)
-        );
+    # Drop FTS5 virtual tables first so they can be recreated with the
+    # correct tokenizer. IF NOT EXISTS would skip recreation if the table
+    # exists with a different tokenizer -- there is no ALTER for FTS5.
+    for fts_table in ("sections_fts", "symbols_fts", "examples_fts"):
+        conn.execute(f"DROP TABLE IF EXISTS {fts_table}")
 
-        CREATE TABLE IF NOT EXISTS symbols (
-            id               INTEGER PRIMARY KEY,
-            doc_set_id       INTEGER NOT NULL REFERENCES doc_sets(id) ON DELETE CASCADE,
-            qualified_name   TEXT NOT NULL,
-            normalized_name  TEXT NOT NULL,
-            module           TEXT,
-            symbol_type      TEXT,
-            uri              TEXT NOT NULL,
-            anchor           TEXT,
-            UNIQUE(doc_set_id, qualified_name)
-        );
-
-        CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
-            qualified_name, module,
-            content='symbols', content_rowid='id',
-            tokenize='unicode61'
-        );
-    """)
+    # Load and execute the full schema DDL
+    ref = importlib.resources.files("mcp_server_python_docs.storage") / "schema.sql"
+    with importlib.resources.as_file(ref) as schema_path:
+        schema_sql = schema_path.read_text()
+    conn.executescript(schema_sql)
