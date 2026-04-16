@@ -71,6 +71,21 @@ def get_readwrite_connection(path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+def finalize_for_swap(conn: sqlite3.Connection) -> None:
+    """Collapse WAL back into the main DB so atomic swap sees a single file (I-2).
+
+    Must be called on a read-write connection AFTER all writes are committed
+    and BEFORE the DB file is renamed. Sequence:
+    1. ``PRAGMA wal_checkpoint(TRUNCATE)`` -- flush + zero the -wal file.
+    2. ``PRAGMA journal_mode = DELETE`` -- switch off WAL so no new -wal is
+       created by subsequent writes on this connection.
+
+    The caller is still responsible for ``conn.close()`` after this.
+    """
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.execute("PRAGMA journal_mode = DELETE")
+
+
 def assert_fts5_available(conn: sqlite3.Connection) -> None:
     """Check FTS5 availability with platform-aware error message (STOR-08).
 

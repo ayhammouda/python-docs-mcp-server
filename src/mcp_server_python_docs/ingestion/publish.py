@@ -298,8 +298,17 @@ def publish_index(
     1. Compute SHA256 of the build artifact
     2. Record ingestion run
     3. Run smoke tests
-    4. If passed: atomic swap + restart message
+    4. If passed: finalize WAL, atomic swap, restart message
     5. If failed: update run status, return False
+
+    M-7: a single read-write connection spans all three ingestion_runs
+    updates so we don't repeatedly tear down and rebuild the WAL
+    superstructure.
+
+    I-2: before atomic_swap, call finalize_for_swap() to checkpoint the WAL
+    back into the main DB file and switch journal_mode off — this prevents
+    -wal / -shm sidecars from being renamed alongside the main file and
+    leaking into the cache dir.
 
     Args:
         build_db_path: Path to the build artifact database.
@@ -309,14 +318,18 @@ def publish_index(
     Returns:
         True if publishing succeeded, False if smoke tests failed.
     """
+    from mcp_server_python_docs.storage.db import (
+        finalize_for_swap,
+        get_readwrite_connection,
+    )
+
     # Compute SHA256 (PUBL-02)
     artifact_hash = compute_sha256(build_db_path)
     logger.info("Build artifact SHA256: %s", artifact_hash)
 
-    # Record ingestion run
-    from mcp_server_python_docs.storage.db import get_readwrite_connection
-
     build_notes = "build_mode=symbol_only" if not require_content else None
+
+    # === M-7: single RW connection for all three ingestion_runs updates ===
     conn = get_readwrite_connection(build_db_path)
     try:
         run_id = record_ingestion_run(
@@ -327,38 +340,31 @@ def publish_index(
             artifact_hash=artifact_hash,
             notes=build_notes,
         )
-    finally:
-        conn.close()
 
-    # Run smoke tests (PUBL-03)
-    passed, messages = run_smoke_tests(build_db_path, require_content=require_content)
-    for msg in messages:
-        logger.info("Smoke test: %s", msg)
+        # Smoke tests open their own RO connection — that's fine; they're read-only.
+        passed, messages = run_smoke_tests(build_db_path, require_content=require_content)
+        for msg in messages:
+            logger.info("Smoke test: %s", msg)
 
-    if not passed:
-        # Update run status to failed
-        conn = get_readwrite_connection(build_db_path)
-        try:
+        if not passed:
             conn.execute(
                 "UPDATE ingestion_runs SET status = ?, notes = ?, "
                 "finished_at = CURRENT_TIMESTAMP WHERE id = ?",
                 ("failed", "\n".join(messages), run_id),
             )
             conn.commit()
-        finally:
-            conn.close()
-        logger.error("Smoke tests failed — not publishing")
-        return False
+            logger.error("Smoke tests failed — not publishing")
+            return False
 
-    # Update run status to published (preserve build_mode note)
-    conn = get_readwrite_connection(build_db_path)
-    try:
         conn.execute(
             "UPDATE ingestion_runs SET status = ?, notes = ?, "
             "finished_at = CURRENT_TIMESTAMP WHERE id = ?",
             ("published", build_notes, run_id),
         )
         conn.commit()
+
+        # === I-2: finalize WAL so atomic_swap moves only the main DB file ===
+        finalize_for_swap(conn)
     finally:
         conn.close()
 

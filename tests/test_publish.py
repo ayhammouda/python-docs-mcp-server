@@ -224,6 +224,115 @@ class TestSmokeTests:
         assert "build_mode=symbol_only" in row[0]
 
 
+# ── WAL sidecar cleanup regression (I-2 + M-7) ──
+
+
+class TestWalCleanupOnSwap:
+    """I-2: publish_index must not leak -wal or -shm sidecars into the cache dir."""
+
+    def _seed_passing_build(self, db_path: Path) -> None:
+        """Helper: create a full-content DB that passes smoke tests."""
+        conn = get_readwrite_connection(db_path)
+        bootstrap_schema(conn)
+        conn.execute(
+            "INSERT INTO doc_sets (source, version, language, label, is_default, base_url) "
+            "VALUES ('python-docs', '3.13', 'en', 'Python 3.13', 1, "
+            "'https://docs.python.org/3.13/')"
+        )
+        # >= 10 documents, one asyncio-shaped
+        for i in range(25):
+            slug = f"library/module{i}" if i != 5 else "library/asyncio-task"
+            conn.execute(
+                "INSERT INTO documents (doc_set_id, uri, slug, title, content_text, char_count) "
+                "VALUES (1, ?, ?, ?, 'content', 7)",
+                (f"{slug}.html", slug, f"Module {i}"),
+            )
+        # >= 50 sections
+        for i in range(120):
+            doc_id = (i % 25) + 1
+            conn.execute(
+                "INSERT INTO sections (document_id, uri, anchor, heading, level, "
+                "ordinal, content_text, char_count) "
+                "VALUES (?, ?, ?, ?, 1, ?, 'asyncio content', 15)",
+                (doc_id, f"test.html#s{i}", f"s{i}", f"Section {i}", i),
+            )
+        # >= 1000 symbols
+        for i in range(2100):
+            conn.execute(
+                "INSERT INTO symbols (doc_set_id, qualified_name, normalized_name, "
+                "module, symbol_type, uri, anchor) "
+                "VALUES (1, ?, ?, ?, 'function', ?, ?)",
+                (f"mod{i}.func{i}", f"mod{i}.func{i}", f"mod{i}", f"lib/m.html#f{i}", f"f{i}"),
+            )
+        conn.commit()
+        conn.execute("INSERT INTO sections_fts(sections_fts) VALUES('rebuild')")
+        conn.commit()
+        conn.close()
+
+    def test_publish_index_leaves_no_wal_sidecars(self, tmp_path, monkeypatch):
+        """I-2: after a successful publish, the target dir contains index.db only."""
+        from mcp_server_python_docs.ingestion import publish as publish_mod
+
+        target_index = tmp_path / "index.db"
+        monkeypatch.setattr(
+            "mcp_server_python_docs.storage.db.get_cache_dir",
+            lambda: tmp_path,
+        )
+        monkeypatch.setattr(
+            "mcp_server_python_docs.storage.db.get_index_path",
+            lambda: target_index,
+        )
+        # publish_mod imports get_index_path from storage.db AT CALL TIME
+        # via atomic_swap's default; also patch the local binding for safety.
+        monkeypatch.setattr(publish_mod, "get_index_path", lambda: target_index)
+
+        build_db = tmp_path / "build-wal-test.db"
+        self._seed_passing_build(build_db)
+
+        assert publish_mod.publish_index(build_db, "3.13") is True
+
+        entries = sorted(p.name for p in tmp_path.iterdir())
+        assert "index.db" in entries, f"expected index.db in {entries}"
+        wal_sidecars = [p.name for p in tmp_path.iterdir() if p.name.endswith("-wal")]
+        shm_sidecars = [p.name for p in tmp_path.iterdir() if p.name.endswith("-shm")]
+        assert not wal_sidecars, f"WAL sidecar leaked: {entries}"
+        assert not shm_sidecars, f"SHM sidecar leaked: {entries}"
+
+    def test_publish_index_second_build_replaces_cleanly(self, tmp_path, monkeypatch):
+        """I-2: a second publish also leaves no -wal/-shm; exercises the .previous path."""
+        from mcp_server_python_docs.ingestion import publish as publish_mod
+
+        target_index = tmp_path / "index.db"
+        monkeypatch.setattr(
+            "mcp_server_python_docs.storage.db.get_cache_dir",
+            lambda: tmp_path,
+        )
+        monkeypatch.setattr(
+            "mcp_server_python_docs.storage.db.get_index_path",
+            lambda: target_index,
+        )
+        monkeypatch.setattr(publish_mod, "get_index_path", lambda: target_index)
+
+        # First build
+        build_db_1 = tmp_path / "build-first.db"
+        self._seed_passing_build(build_db_1)
+        assert publish_mod.publish_index(build_db_1, "3.13") is True
+
+        # Second build — must replace index.db and push the old one to .previous.
+        build_db_2 = tmp_path / "build-second.db"
+        self._seed_passing_build(build_db_2)
+        assert publish_mod.publish_index(build_db_2, "3.13") is True
+
+        entries = sorted(p.name for p in tmp_path.iterdir())
+        assert "index.db" in entries
+        # index.db.previous is expected after the second build.
+        assert "index.db.previous" in entries
+        wal_sidecars = [p.name for p in tmp_path.iterdir() if p.name.endswith("-wal")]
+        shm_sidecars = [p.name for p in tmp_path.iterdir() if p.name.endswith("-shm")]
+        assert not wal_sidecars, f"WAL sidecar leaked after 2nd build: {entries}"
+        assert not shm_sidecars, f"SHM sidecar leaked after 2nd build: {entries}"
+
+
 class TestReadOnlyConnection:
     def test_can_query_existing_db(self, tmp_path):
         """Read-only helper can open and query a database without write PRAGMAs."""
