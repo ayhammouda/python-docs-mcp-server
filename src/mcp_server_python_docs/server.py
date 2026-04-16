@@ -92,7 +92,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         version_svc = VersionService(db)
 
         # Detect user's Python version and match to indexed versions
-        detected_ver, detected_src = detect_python_version()
+        detected_ver, _detected_src = detect_python_version()
         indexed_versions = [
             r[0] for r in db.execute("SELECT version FROM doc_sets ORDER BY version").fetchall()
         ]
@@ -115,7 +115,6 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                 content_service=content_svc,
                 version_service=version_svc,
                 detected_python_version=matched,
-                detected_python_source=detected_src,
             )
         except Exception:
             # HYGN-05: log lifespan errors, write last-error.log, re-raise original
