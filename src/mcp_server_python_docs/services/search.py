@@ -76,8 +76,14 @@ class SearchService:
         expanded = expand_synonyms(query, self._synonyms)
         self._last_synonym_expanded = expanded != original_tokens
 
-        # Classify query for routing (RETR-04)
-        query_type = classify_query(query, self._symbol_exists)
+        # Classify query for routing (RETR-04).
+        # M-5 (Round 3): only classify when the result will actually be consumed —
+        # the symbol fast-path below only triggers for kind in ("auto", "symbol"),
+        # so skip the DB round-trip entirely for "section"/"example"/"page".
+        if kind in ("auto", "symbol"):
+            query_type = classify_query(query, self._symbol_exists)
+        else:
+            query_type = "fts"
 
         # Symbol fast-path: skip FTS5 entirely
         if kind == "symbol" or (kind == "auto" and query_type == "symbol"):

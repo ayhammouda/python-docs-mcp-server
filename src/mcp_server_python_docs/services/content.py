@@ -52,7 +52,7 @@ class ContentService:
         with contextlib.closing(
             self._db.execute(
                 """
-                SELECT d.id, d.title, d.slug
+                SELECT d.id, d.title, d.slug, d.content_text
                 FROM documents d
                 JOIN doc_sets ds ON d.doc_set_id = ds.id
                 WHERE d.slug = ? AND ds.version = ?
@@ -110,7 +110,10 @@ class ContentService:
                 section_rows = cursor.fetchall()
 
             if not section_rows:
-                full_text = ""
+                # I-1 (Round 3): fall back to the document-level content_text when
+                # no sections exist (e.g. symbol-only builds). Keeps the empty-string
+                # behavior only when content_text itself is NULL/empty.
+                full_text = doc_row["content_text"] or ""
             else:
                 parts = []
                 for row in section_rows:

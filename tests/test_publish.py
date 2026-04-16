@@ -332,6 +332,56 @@ class TestWalCleanupOnSwap:
         assert not wal_sidecars, f"WAL sidecar leaked after 2nd build: {entries}"
         assert not shm_sidecars, f"SHM sidecar leaked after 2nd build: {entries}"
 
+    def test_publish_index_leaves_no_wal_sidecars_on_smoke_failure(
+        self, tmp_path, monkeypatch
+    ):
+        """Round 3: smoke-test failure path must also finalize WAL.
+
+        Forces run_smoke_tests to return (False, [...]) and asserts publish_index
+        returns False AND leaves no -wal/-shm sidecars in the cache dir.
+        """
+        from mcp_server_python_docs.ingestion import publish as publish_mod
+
+        target_index = tmp_path / "index.db"
+        monkeypatch.setattr(
+            "mcp_server_python_docs.storage.db.get_cache_dir",
+            lambda: tmp_path,
+        )
+        monkeypatch.setattr(
+            "mcp_server_python_docs.storage.db.get_index_path",
+            lambda: target_index,
+        )
+        monkeypatch.setattr(publish_mod, "get_index_path", lambda: target_index)
+
+        # Force smoke test failure regardless of DB contents.
+        monkeypatch.setattr(
+            publish_mod,
+            "run_smoke_tests",
+            lambda *args, **kwargs: (False, ["FAIL: forced for test"]),
+        )
+
+        build_db = tmp_path / "build-smoke-fail.db"
+        self._seed_passing_build(build_db)
+
+        assert publish_mod.publish_index(build_db, "3.13") is False
+
+        # No WAL/SHM sidecars anywhere in tmp_path.
+        wal_sidecars = [
+            p.name for p in tmp_path.iterdir() if p.name.endswith("-wal")
+        ]
+        shm_sidecars = [
+            p.name for p in tmp_path.iterdir() if p.name.endswith("-shm")
+        ]
+        assert not wal_sidecars, (
+            f"WAL sidecar leaked on failure path: {wal_sidecars}"
+        )
+        assert not shm_sidecars, (
+            f"SHM sidecar leaked on failure path: {shm_sidecars}"
+        )
+
+        # index.db must not have been created (atomic_swap was not reached).
+        assert not target_index.exists()
+
 
 class TestReadOnlyConnection:
     def test_can_query_existing_db(self, tmp_path):

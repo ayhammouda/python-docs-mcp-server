@@ -119,6 +119,50 @@ class TestSearchService:
         svc.search("http", kind="section")
         assert svc._last_synonym_expanded is True
 
+    def test_search_does_not_classify_for_non_symbol_kinds(
+        self, populated_with_content, monkeypatch
+    ):
+        """M-5 (Round 3): for kind in ('section','example','page') the service
+        must not invoke classify_query / _symbol_exists at all — the DB
+        round-trip is pure waste when the result will never be consumed."""
+        from unittest.mock import MagicMock
+
+        svc = SearchService(populated_with_content, {})
+        mock_symbol_exists = MagicMock(return_value=True)
+        monkeypatch.setattr(svc, "_symbol_exists", mock_symbol_exists)
+
+        svc.search(query="socket", kind="section", max_results=5)
+        mock_symbol_exists.assert_not_called()
+
+        svc.search(query="socket", kind="example", max_results=5)
+        mock_symbol_exists.assert_not_called()
+
+        svc.search(query="socket", kind="page", max_results=5)
+        mock_symbol_exists.assert_not_called()
+
+    def test_search_classifies_for_auto_and_symbol_kinds(
+        self, populated_with_content, monkeypatch
+    ):
+        """M-5 (Round 3) positive control: for kind in ('auto','symbol') the
+        service still invokes classify_query / _symbol_exists — the gate must
+        not regress the fast-path routing."""
+        from unittest.mock import MagicMock
+
+        svc = SearchService(populated_with_content, {})
+        mock_symbol_exists = MagicMock(return_value=False)
+        monkeypatch.setattr(svc, "_symbol_exists", mock_symbol_exists)
+
+        # 'socket' is a lowercase identifier that matches _MODULE_PATTERN and
+        # passes the length>=2 short-circuit, so classify_query WILL call
+        # symbol_exists_fn. Dotted queries take the dot branch without calling
+        # the fn, so we use a single-word identifier instead.
+        svc.search(query="socket", kind="auto", max_results=5)
+        assert mock_symbol_exists.called
+
+        mock_symbol_exists.reset_mock()
+        svc.search(query="socket", kind="symbol", max_results=5)
+        assert mock_symbol_exists.called
+
 
 # === ContentService Tests ===
 
@@ -181,13 +225,16 @@ class TestContentService:
         result = svc.get_docs(slug="library/asyncio-task.html")
         assert result.version == "3.13"
 
-    def test_get_docs_returns_empty_content_for_symbols_only_doc(self, populated_db):
-        """I-1: a document row with no sections returns empty content, not a raise.
+    def test_get_docs_falls_back_to_document_content_text_when_no_sections(
+        self, populated_db
+    ):
+        """I-1 (Round 3): when a document has zero sections, get_docs must fall
+        back to the documents.content_text column rather than returning empty.
 
         Scenario: symbol-only builds (or pathological ingestion) can end up with a
         documents row whose sections table has no matching rows. The service must
-        return a structured GetDocsResult with content='', char_count=0,
-        truncated=False — not raise PageNotFoundError.
+        return a structured GetDocsResult whose content is the document-level
+        content_text, not the empty string.
         """
         db = populated_db
         row = db.execute("SELECT id FROM doc_sets LIMIT 1").fetchone()
@@ -196,10 +243,11 @@ class TestContentService:
             "UPDATE doc_sets SET built_at = '2026-04-16T00:00:00' WHERE id = ?",
             (doc_set_id,),
         )
-        # Seed a document with empty content and ZERO sections.
+        # Seed a document with 'hello world' content and ZERO sections.
         db.execute(
             "INSERT INTO documents (doc_set_id, uri, slug, title, content_text, char_count) "
-            "VALUES (?, 'library/empty.html', 'library/empty.html', 'Empty Page', '', 0)",
+            "VALUES (?, 'library/empty.html', 'library/empty.html', 'Empty Page', "
+            "'hello world', 11)",
             (doc_set_id,),
         )
         db.commit()
@@ -207,8 +255,8 @@ class TestContentService:
         svc = ContentService(db)
         result = svc.get_docs(slug="library/empty.html")
         assert isinstance(result, GetDocsResult)
-        assert result.content == ""
-        assert result.char_count == 0
+        assert result.content == "hello world"
+        assert result.char_count == 11
         assert result.truncated is False
         assert result.next_start_index is None
         assert result.anchor is None
