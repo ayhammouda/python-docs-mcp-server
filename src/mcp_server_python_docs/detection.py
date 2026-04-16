@@ -18,7 +18,11 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_VERSION_RE = re.compile(r"(\d+\.\d+)")
+# Anchored on non-digit lookaround boundaries so we never over-match
+# a substring like "1.2" inside "1.23" or "11.2.3". Still accepts
+# "3.13", "Python 3.13.2", "cpython-3.13", and multi-digit major
+# versions like "11.2" (M-2).
+_VERSION_RE = re.compile(r"(?<!\d)(\d+\.\d+)(?!\d)")
 
 
 def _parse_major_minor(raw: str) -> str | None:
