@@ -13,7 +13,7 @@ v0.1.0 decomposes the 4-week build guide into 8 phases that each deliver a verif
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [ ] **Phase 1: Foundation & Stdio Hygiene & Symbol Slice** - Package skeleton, FastMCP lifespan DI, stdio hygiene, sphobjinv symbol vertical slice talking to Claude Desktop
-- [ ] **Phase 2: Schema & Storage** - schema.sql with corrected FTS5 tokenizer, composite symbol uniqueness, platformdirs cache resolution
+- [x] **Phase 2: Schema & Storage** - schema.sql with corrected FTS5 tokenizer, composite symbol uniqueness, platformdirs cache resolution (completed 2026-04-16)
 - [ ] **Phase 3: Retrieval Layer** - fts5_escape injection guard, synonym query expansion, BM25 + snippet ranking, Unicode-safe budget enforcement
 - [ ] **Phase 4: Sphinx JSON Ingestion & Atomic-Swap Publishing** - Dedicated-venv CPython builds, per-doc failure isolation, HTML-to-markdown conversion, atomic rename with rollback
 - [ ] **Phase 5: Services, Tool Polish & Caching** - get_docs / list_versions wiring, LRU caches, structured observability logging, validate-corpus CLI
@@ -135,7 +135,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation & Stdio Hygiene & Symbol Slice | 0/TBD | Not started | - |
-| 2. Schema & Storage | 0/TBD | Not started | - |
+| 2. Schema & Storage | 3/3 | Complete    | 2026-04-16 |
 | 3. Retrieval Layer | 0/TBD | Not started | - |
 | 4. Sphinx JSON Ingestion & Atomic-Swap Publishing | 0/TBD | Not started | - |
 | 5. Services, Tool Polish & Caching | 0/TBD | Not started | - |
