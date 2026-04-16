@@ -1,289 +1,314 @@
 ---
 phase: full-codebase
-reviewed: 2026-04-15T22:00:00Z
+reviewed: 2026-04-16T12:00:00Z
 depth: deep
-files_reviewed: 23
+files_reviewed: 25
 files_reviewed_list:
   - src/mcp_server_python_docs/__init__.py
   - src/mcp_server_python_docs/__main__.py
   - src/mcp_server_python_docs/app_context.py
   - src/mcp_server_python_docs/errors.py
-  - src/mcp_server_python_docs/ingestion/__init__.py
-  - src/mcp_server_python_docs/ingestion/inventory.py
-  - src/mcp_server_python_docs/ingestion/publish.py
-  - src/mcp_server_python_docs/ingestion/sphinx_json.py
   - src/mcp_server_python_docs/models.py
+  - src/mcp_server_python_docs/server.py
+  - src/mcp_server_python_docs/storage/__init__.py
+  - src/mcp_server_python_docs/storage/db.py
+  - src/mcp_server_python_docs/storage/schema.sql
+  - src/mcp_server_python_docs/services/__init__.py
+  - src/mcp_server_python_docs/services/search.py
+  - src/mcp_server_python_docs/services/content.py
+  - src/mcp_server_python_docs/services/version.py
+  - src/mcp_server_python_docs/services/version_resolution.py
+  - src/mcp_server_python_docs/services/cache.py
+  - src/mcp_server_python_docs/services/observability.py
   - src/mcp_server_python_docs/retrieval/__init__.py
   - src/mcp_server_python_docs/retrieval/budget.py
   - src/mcp_server_python_docs/retrieval/query.py
   - src/mcp_server_python_docs/retrieval/ranker.py
-  - src/mcp_server_python_docs/server.py
-  - src/mcp_server_python_docs/services/__init__.py
-  - src/mcp_server_python_docs/services/cache.py
-  - src/mcp_server_python_docs/services/content.py
-  - src/mcp_server_python_docs/services/observability.py
-  - src/mcp_server_python_docs/services/search.py
-  - src/mcp_server_python_docs/services/version.py
-  - src/mcp_server_python_docs/services/version_resolution.py
-  - src/mcp_server_python_docs/storage/__init__.py
-  - src/mcp_server_python_docs/storage/db.py
+  - src/mcp_server_python_docs/ingestion/__init__.py
+  - src/mcp_server_python_docs/ingestion/inventory.py
+  - src/mcp_server_python_docs/ingestion/sphinx_json.py
+  - src/mcp_server_python_docs/ingestion/publish.py
+  - pyproject.toml
 findings:
-  critical: 3
-  warning: 8
+  critical: 2
+  warning: 6
   info: 5
-  total: 16
+  total: 13
 status: issues_found
 ---
 
 # Full Codebase: Code Review Report
 
-**Reviewed:** 2026-04-15T22:00:00Z
+**Reviewed:** 2026-04-16T12:00:00Z
 **Depth:** deep
-**Files Reviewed:** 23
+**Files Reviewed:** 25
 **Status:** issues_found
 
 ## Summary
 
-This is a deep review of the entire mcp-server-python-docs codebase -- a read-only, version-aware MCP retrieval server over Python stdlib documentation backed by SQLite FTS5.
+Deep review of all 25 source files in mcp-server-python-docs, covering the server layer (FastMCP + lifespan DI), service layer (search, content, version), retrieval layer (FTS5 query processing, ranking, budget), ingestion layer (objects.inv, Sphinx JSON, publish pipeline), and storage layer (SQLite connection management, schema DDL).
 
-The codebase is well-structured overall. The dependency rule (server -> services -> retrieval/storage) is respected with no reverse imports. MCP types are confined to `server.py`. Stdio hygiene is carefully implemented. FTS5 escape coverage is thorough. The RO/RW connection split is correctly enforced. Error taxonomy via `errors.py` is clean.
-
-However, the deep review uncovered 3 critical issues (lifespan error handler swallows normal shutdown, `INSERT OR REPLACE` on symbols with changed UNIQUE constraint silently drops data, and version sorting crash on malformed input), 8 warnings (concurrency safety in observability state, missing `isError:true` propagation on one tool, logfmt injection, missing input validation in build-index, and others), and 5 informational items.
+Overall the codebase is well-structured with clear layer separation, proper stdio hygiene, and correct FTS5 escaping on the user-input path. Two critical issues were found: (1) synonym expansion uses substring matching that causes false positive query expansion for short concept keys, and (2) tool handlers only catch `DocsServerError`, allowing unexpected exceptions to propagate as JSON-RPC protocol errors instead of tool errors. Six warnings cover ordering bugs, missing input bounds, connection threading safety, and error handling gaps.
 
 ## Critical Issues
 
-### CR-01: Lifespan error handler catches normal server shutdown and exits with code 1
+### CR-01: Synonym Substring Matching Causes False Positive Query Expansion
 
-**File:** `src/mcp_server_python_docs/server.py:98`
-**Issue:** The `except Exception` block at line 98 wraps the `yield` in `app_lifespan`. When the MCP client disconnects normally, the FastMCP framework may raise `GeneratorExit` or other exceptions during shutdown cleanup. Since `GeneratorExit` inherits from `BaseException` (not `Exception`), it is not caught by this handler. However, `asyncio.CancelledError` (which inherits from `BaseException` in Python 3.9+ but was `Exception` in 3.8) and any framework-raised `Exception` during normal shutdown will be caught, logged as an error, written to `last-error.log`, and then force the process to exit with code 1 via `SystemExit(1)`. This means a normal MCP session teardown that raises any exception in the framework's cleanup path will appear as a crash, pollute error logs, and return a non-zero exit code.
+**File:** `src/mcp_server_python_docs/retrieval/query.py:122-124`
+**Issue:** `expand_synonyms()` uses `concept in query_lower` (Python substring containment) to match multi-word concepts against the user query. Because `synonyms.yaml` contains short concept keys like "os" (2 chars), "set" (3 chars), "url" (3 chars), "gc" (2 chars), "dis" (3 chars), "ast" (3 chars), and "ftp" (3 chars), many unrelated queries trigger false expansion. For example:
+- Query "purpose" contains "os" -- expands with `[os, os.path, os.environ, os.getcwd, operating system]`
+- Query "reset" or "offset" contains "set" -- expands with `[set, frozenset, intersection, union, ...]`
+- Query "distance" contains "dis" -- expands with `[dis, disassemble, bytecode, opcode, instruction]`
+- Query "disaster" contains "dis" and "ast" -- double false expansion
 
-The `yield` in an async context manager is the suspension point -- exceptions raised by the calling framework after the `yield` are not "lifespan errors" from the application; they are shutdown signals. This handler should be narrower.
+This corrupts search results for a significant fraction of natural-language queries, which is the primary use case for concept search. Since LLMs are the clients, degraded search quality directly undermines the tool's core value proposition.
 
-**Fix:**
+**Fix:** Use word-boundary matching instead of substring containment. Replace the substring check with a regex or token-level comparison:
+
 ```python
-try:
-    yield AppContext(
-        db=db,
-        index_path=index_path,
-        synonyms=synonyms,
-        search_service=search_svc,
-        content_service=content_svc,
-        version_service=version_svc,
-    )
-except Exception:
-    # Only log and write error file; do NOT re-raise as SystemExit(1).
-    # Let the framework decide the exit code. The DB is closed in `finally`.
-    error_msg = traceback.format_exc()
-    logger.error("Lifespan error: %s", error_msg)
-    try:
-        error_log = cache_dir / "last-error.log"
-        error_log.write_text(error_msg)
-    except Exception:
-        pass
-    raise  # Re-raise the original exception, not SystemExit
-finally:
-    db.close()
-```
+import re
 
-### CR-02: `INSERT OR REPLACE` on symbols table causes silent data loss due to UNIQUE constraint mismatch
-
-**File:** `src/mcp_server_python_docs/ingestion/inventory.py:144`
-**Issue:** The `INSERT OR REPLACE INTO symbols` statement at line 144 inserts rows with columns `(doc_set_id, qualified_name, normalized_name, module, symbol_type, uri, anchor)`. The schema's UNIQUE constraint on `symbols` is `UNIQUE(doc_set_id, qualified_name, symbol_type)` (schema.sql line 68). However, the ingestion code performs deduplication at line 122-133 by keeping only the best role per `qualified_name` (ignoring `symbol_type`). This means the dedup logic intentionally collapses `asyncio.TaskGroup` as both `class` and `data` into just the `class` entry.
-
-The problem: if the dedup logic selects a different `symbol_type` on re-ingestion (e.g., priority ordering changes or objects.inv adds a new role), `INSERT OR REPLACE` will insert a new row with the new `symbol_type` rather than replacing the old one, because the UNIQUE key includes `symbol_type`. This leaves stale rows from prior ingestion runs even though line 112 issues `DELETE FROM symbols WHERE doc_set_id = ?`. The DELETE clears the table first, so on a single run this is fine.
-
-The real issue is that the UNIQUE constraint `(doc_set_id, qualified_name, symbol_type)` allows the _same_ qualified name to appear multiple times with different symbol_types, but the Python-side dedup at lines 122-133 ensures only one entry per qualified_name. If a future code change removes the Python-side dedup or changes the priority, the `INSERT OR REPLACE` will silently insert duplicates rather than replacing. The UNIQUE constraint should match the dedup intent.
-
-**Fix:** Change the UNIQUE constraint to match the dedup granularity, or use `INSERT OR IGNORE` since the DELETE + re-insert pattern already handles updates:
-```sql
--- Option A: Match dedup intent in schema
-UNIQUE(doc_set_id, qualified_name)
-
--- Option B: Keep schema, change Python to INSERT OR IGNORE
--- (safe because DELETE precedes insertion)
-```
-
-### CR-03: Version sorting in build-index crashes on non-numeric version strings
-
-**File:** `src/mcp_server_python_docs/__main__.py:122`
-**Issue:** The lambda `key=lambda v: [int(x) for x in v.split(".")]` will raise `ValueError` if a user passes a non-numeric version string (e.g., `--versions 3.14-rc1` or `--versions latest`). This is a CLI-facing crash with no error handling. The version_list is derived from user input at line 116 with only whitespace stripping -- no format validation.
-
-**Fix:**
-```python
-# Validate version format before sorting
-for v in version_list:
-    parts = v.split(".")
-    if len(parts) != 2 or not all(p.isdigit() for p in parts):
-        logger.error(
-            "Invalid version format %r. Expected 'X.Y' (e.g., 3.13)", v
+# Pre-compile word-boundary patterns for all concepts at init time
+_concept_patterns: dict[str, re.Pattern] = {}
+for concept in synonyms:
+    if " " in concept:
+        # Multi-word: match as exact phrase with word boundaries
+        _concept_patterns[concept] = re.compile(
+            r"\b" + re.escape(concept) + r"\b"
         )
-        raise SystemExit(1)
 
-sorted_versions = sorted(version_list, key=lambda v: [int(x) for x in v.split(".")])
+# In expand_synonyms, replace lines 121-124 with:
+query_lower = query.lower()
+for concept, expansions in synonyms.items():
+    if " " not in concept:
+        continue  # Single-word concepts already handled by token match above
+    pattern = _concept_patterns.get(concept)
+    if pattern and pattern.search(query_lower):
+        expanded.update(expansions)
 ```
+
+Single-word concepts are already handled correctly by the per-token exact match at line 116-118. Only the multi-word concept matching (lines 121-124) needs the word-boundary fix. However, even the multi-word substring approach has issues: "file io" would match inside "profile io" -- the word-boundary regex fixes this too.
+
+### CR-02: Tool Handlers Only Catch DocsServerError, Non-Domain Exceptions Become Protocol Errors
+
+**File:** `src/mcp_server_python_docs/server.py:140-143, 157-162, 170-173`
+**Issue:** All three tool handlers (`search_docs`, `get_docs`, `list_versions`) wrap `DocsServerError` into `ToolError` but do not catch other exception types. If the SQLite connection becomes corrupted, if an `sqlite3.OperationalError` escapes the ranker's catch block (e.g., during `lookup_symbols_exact` which has no try/except), if an `AttributeError` occurs because a service field is `None` (the type signature allows it via `AppContext.search_service: SearchService | None = None`), or if any unexpected runtime error occurs, it will propagate as a JSON-RPC protocol error.
+
+Per the MCP specification, tool execution failures MUST return `isError: true` in the tool result, not as protocol-level errors. Protocol errors indicate a broken transport or invalid request, not a failed tool execution. An LLM client receiving a protocol error may retry indefinitely or disconnect, whereas a tool error allows it to report the failure and move on.
+
+**Fix:** Add a broad `Exception` catch after the `DocsServerError` catch in each tool handler:
+
+```python
+@mcp.tool(annotations=_TOOL_ANNOTATIONS)
+def search_docs(
+    query: str,
+    version: str | None = None,
+    kind: Literal["auto", "page", "symbol", "section", "example"] = "auto",
+    max_results: int = 5,
+    ctx: Context = None,  # type: ignore[assignment]
+) -> SearchDocsResult:
+    """..."""
+    app_ctx: AppContext = ctx.request_context.lifespan_context
+    try:
+        return app_ctx.search_service.search(query, version, kind, max_results)
+    except DocsServerError as e:
+        raise ToolError(str(e))
+    except Exception as e:
+        logger.exception("Unexpected error in search_docs")
+        raise ToolError(f"Internal error: {type(e).__name__}")
+```
+
+Note the `except Exception` catch logs the full traceback to stderr (for debugging) but only sends the exception type name to the client (to avoid leaking internal paths or stack traces).
 
 ## Warnings
 
-### WR-01: Concurrency-unsafe mutable state for observability tracking
+### WR-01: Missing Input Length Constraints on String Fields
 
-**File:** `src/mcp_server_python_docs/services/search.py:33-34`
-**Issue:** `_last_synonym_expanded` and `_last_resolution` are instance attributes on the shared `SearchService` singleton. The `log_tool_call` decorator in `observability.py` reads these attributes after the wrapped method returns (lines 82-83, 99-101). If the MCP framework processes multiple tool calls concurrently (which async frameworks can do), a second call can overwrite `_last_resolution` before the first call's `log_tool_call` wrapper reads it. This produces incorrect observability data.
+**File:** `src/mcp_server_python_docs/models.py:18-20, 72`
+**Issue:** The `query` field in `SearchDocsInput` and the `slug` field in `GetDocsInput` have no `max_length` constraint. An LLM client (or a malicious caller) could send a multi-megabyte query string that would be tokenized, synonym-expanded, and passed to FTS5 MATCH. While FTS5 has its own internal limits, processing an extremely long query string wastes CPU and memory in the Python layer (tokenization, escaping, synonym expansion loop over the full synonyms dict). Similarly, a very long `slug` string would be passed directly to a SQL query.
 
-While `mcp.run(transport="stdio")` is typically single-request, the FastMCP framework uses asyncio and could schedule multiple tool handlers if pipelining or batched requests are supported. The pattern of writing instance state in the method body and reading it in a wrapper is inherently racy.
+**Fix:** Add `max_length` constraints to string input fields:
 
-**Fix:** Return the observability metadata from the service method (e.g., as a tuple or a wrapper dataclass) rather than storing it in mutable instance state:
 ```python
-# In search.py, return metadata alongside result:
-@dataclass
-class SearchMeta:
-    resolution: str
-    synonym_expanded: bool
+query: str = Field(
+    max_length=500,
+    description="Search query - Python symbol (asyncio.TaskGroup) or concept (parse json)"
+)
 
-# The decorator can then extract metadata from the return value
-# without reading shared mutable state.
+slug: str = Field(
+    max_length=500,
+    description="Page slug (e.g. 'library/asyncio-task.html')"
+)
 ```
 
-### WR-02: `list_versions` tool does not catch `DocsServerError`
+### WR-02: Version Validation Ordering Bug in inventory.py
 
-**File:** `src/mcp_server_python_docs/server.py:169-170`
-**Issue:** The `search_docs` and `get_docs` tool handlers both catch `DocsServerError` and re-raise as `ToolError` (lines 142-143 and 161-162). The `list_versions` handler does not. If the underlying query fails (e.g., corrupted database), the exception propagates as an unhandled exception rather than a structured MCP error with `isError: true`. This is inconsistent with the error handling pattern in the other two tools.
+**File:** `src/mcp_server_python_docs/ingestion/inventory.py:92-120`
+**Issue:** The version format validation (`re.match(r"^\d+\.\d+$", version)`) at line 117 runs AFTER the `doc_sets` upsert at line 92. If an invalid version string bypasses the CLI validation (e.g., if `ingest_inventory` is called programmatically), the invalid version is written to `doc_sets` before the validation check rejects it. The version is also used in a URL f-string at line 123, but validation happens at line 117 before that.
 
-**Fix:**
+The CLI (`__main__.py:121-128`) validates version format before calling `ingest_inventory`, so this is not exploitable through the normal CLI path. However, the function's internal ordering is wrong -- validation should precede side effects.
+
+**Fix:** Move the version format validation to the top of the function, before any database writes:
+
 ```python
-@mcp.tool(annotations=_TOOL_ANNOTATIONS)
-def list_versions(
-    ctx: Context = None,  # type: ignore[assignment]
-) -> ListVersionsResult:
-    """List Python documentation versions available in this index."""
-    app_ctx: AppContext = ctx.request_context.lifespan_context
-    try:
-        return app_ctx.version_service.list_versions()
-    except DocsServerError as e:
-        raise ToolError(str(e))
+def ingest_inventory(
+    conn: sqlite3.Connection, version: str, *, is_default: bool = False
+) -> int:
+    # Validate version format first, before any DB writes
+    import re
+    if not re.match(r"^\d+\.\d+$", version):
+        from mcp_server_python_docs.errors import IngestionError
+        raise IngestionError(f"Invalid version format: {version!r}")
+
+    bootstrap_schema(conn)
+    # ... rest of function
 ```
 
-### WR-03: Logfmt value injection -- double quotes in version strings not escaped
+### WR-03: SQLite Connection Not Thread-Safe for Concurrent Async Tool Calls
 
-**File:** `src/mcp_server_python_docs/services/observability.py:33`
-**Issue:** The `_format_logfmt` function wraps string values containing spaces in double quotes (line 33) but does not escape embedded double quotes within those values. If a value contains `"`, the logfmt output will have malformed quoting: `key="value with "quotes""`. While the `version` field comes from a controlled set, the function is generic and could be called with arbitrary values. A crafted version string like `3.13" injected=true version="` would produce garbled logfmt.
+**File:** `src/mcp_server_python_docs/server.py:75, 85-87`
+**Issue:** The lifespan opens a single `sqlite3.Connection` (line 75) that is shared across all three service instances (lines 85-87). FastMCP runs synchronous tool handlers in a thread pool (via `anyio.to_thread.run_sync`). When multiple tool calls arrive concurrently, they execute in different threads sharing the same `sqlite3.Connection`. CPython's default `sqlite3.connect()` sets `check_same_thread=True`, but the URI-mode connection (`sqlite3.connect(f"file:...?mode=ro", uri=True)`) also defaults to `check_same_thread=True`. This means concurrent tool calls from different threads would raise `ProgrammingError: SQLite objects created in a thread can only be used in that same thread`.
 
-**Fix:**
+In practice, FastMCP 1.27 may or may not use threading for sync handlers (it depends on the transport and server implementation). If it does, this is a crash. If it serializes sync handlers on the event loop thread, this works but blocks the event loop.
+
+**Fix:** Pass `check_same_thread=False` when opening the read-only connection. This is safe for read-only SQLite access (no write contention):
+
 ```python
-elif isinstance(value, str) and " " in value:
-    escaped_val = str(value).replace('"', '\\"')
-    parts.append(f'{key}="{escaped_val}"')
+db = sqlite3.connect(
+    f"file:{index_path}?mode=ro",
+    uri=True,
+    check_same_thread=False,
+)
 ```
 
-### WR-04: Ingestion URL constructed from unvalidated version string
+Also apply the same fix in `storage/db.py:get_readonly_connection()`:
 
-**File:** `src/mcp_server_python_docs/ingestion/inventory.py:115`
-**Issue:** The objects.inv URL is constructed via f-string interpolation: `f"https://docs.python.org/{version}/objects.inv"`. The `version` parameter comes from CLI input. While `sphobjinv.Inventory(url=...)` will fail safely on a 404, a malicious version string with path segments (e.g., `../../admin`) could construct an unexpected URL like `https://docs.python.org/../../admin/objects.inv`. This is low-severity because the URL targets docs.python.org (which the user controls nothing about) and sphobjinv would reject non-inventory responses. However, the version string should be validated before use.
-
-**Fix:** The version format validation from CR-03 would also prevent this. Alternatively, add a guard in `ingest_inventory`:
 ```python
-if not re.match(r"^\d+\.\d+$", version):
-    raise IngestionError(f"Invalid version format: {version!r}")
+conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
 ```
 
-### WR-05: `bootstrap_schema` drops and recreates FTS5 tables using f-string -- not a SQL injection risk but fragile
+### WR-04: Lifespan Error Log Can Suppress Original Exception
 
-**File:** `src/mcp_server_python_docs/storage/db.py:128`
-**Issue:** The loop `conn.execute(f"DROP TABLE IF EXISTS {fts_table}")` uses an f-string to construct DDL. The `fts_table` values come from a hardcoded tuple `("sections_fts", "symbols_fts", "examples_fts")` on line 127, so there is no injection risk. However, this is the only SQL in the codebase that uses string interpolation rather than parameterized queries. If the hardcoded list were ever modified to include external input, it would become an injection vector. A defensive comment or assertion would make the safety property explicit.
+**File:** `src/mcp_server_python_docs/server.py:98-107`
+**Issue:** In `app_lifespan`, the `except Exception` block at line 98 catches exceptions during tool execution (between `yield` and the `finally`). It attempts to write an error log file at `cache_dir / "last-error.log"`. If the `cache_dir` does not exist (e.g., user deleted it while server was running) and the `write_text` call at line 104 raises an `OSError`, the inner `except Exception: pass` at lines 105-106 swallows that secondary error. This is correct -- the original exception is re-raised by the bare `raise` at line 107. However, the `traceback.format_exc()` at line 101 captures the traceback of the current exception context, which is fine.
 
-**Fix:** Add a defensive assertion:
+The actual concern is that the `except Exception` after `yield` catches exceptions from tool handlers, but tool handlers should have their own error handling (CR-02 above). The lifespan error handler here becomes a safety net, but it writes to a file on the filesystem during what might be a disk-full condition, adding fragility.
+
+**Fix:** This is acceptable as-is since the inner `except Exception: pass` correctly protects the re-raise. The primary fix is CR-02 (catching all exceptions in tool handlers so they rarely reach the lifespan).
+
+### WR-05: Observability Decorator Uses Fragile Positional Argument Indexing
+
+**File:** `src/mcp_server_python_docs/services/observability.py:70-76`
+**Issue:** The `log_tool_call` decorator extracts the `version` parameter by checking `args[1]` (the second positional argument after `self`). This works for the current method signatures of `SearchService.search(query, version, kind, max_results)` and `ContentService.get_docs(slug, version, anchor, ...)`, but will silently extract the wrong value if method signatures are reordered. For `VersionService.list_versions()`, which takes no arguments, `args` is empty so the fallback to `"default"` works correctly.
+
+The `_last_resolution` and `_last_synonym_expanded` state access via `hasattr(self, ...)` is similarly fragile -- it couples the decorator to internal state of the decorated class. If these attributes are renamed, logging degrades silently.
+
+**Fix:** Use `inspect.signature` to bind arguments by name rather than position:
+
 ```python
-_FTS_TABLES = frozenset({"sections_fts", "symbols_fts", "examples_fts"})
+import inspect
 
-for fts_table in _FTS_TABLES:
-    assert fts_table.isidentifier(), f"Invalid table name: {fts_table}"
-    conn.execute(f"DROP TABLE IF EXISTS {fts_table}")
+sig = inspect.signature(fn)
+bound = sig.bind(self, *args, **kwargs)
+bound.apply_defaults()
+version_val = bound.arguments.get("version")
 ```
 
-### WR-06: `_real_stdout_fd` leaked if `create_server()` raises before `os.close()`
+### WR-06: Ingestion Marks Version as Succeeded Even When Content Ingestion Fails
 
-**File:** `src/mcp_server_python_docs/__main__.py:61-67`
-**Issue:** In the `serve()` function, `create_server()` is called at line 61. If it raises an exception, `os.dup2(_real_stdout_fd, 1)` and `os.close(_real_stdout_fd)` at lines 66-67 are never reached, leaking the duplicated file descriptor. While this is a minor resource leak since the process exits on failure, it is also a correctness issue: if `create_server()` fails and execution continues (e.g., click catches the exception), fd 1 remains redirected to stderr, and the saved fd is never closed.
+**File:** `src/mcp_server_python_docs/__main__.py:244-246, 275-276`
+**Issue:** In the `build-index` command, if `sphinx-build` fails (line 234, `result.returncode != 0`), the code sets `any_version_succeeded = True` at line 245 and continues. Similarly, if a `CalledProcessError` occurs during the subprocess pipeline (line 271), it still sets `any_version_succeeded = True` at line 276. This means a version that only has symbols (from objects.inv) but no sections, examples, or full content is considered "succeeded." The smoke test at publish time checks for `sections >= 50` and `documents >= 10`, which would catch a complete failure -- but a partial failure (one version succeeds fully, another only gets symbols) would pass smoke tests while leaving one version degraded.
 
-**Fix:** Wrap in try/finally:
-```python
-@main.command()
-def serve() -> None:
-    """Start the MCP server (default command)."""
-    from mcp_server_python_docs.server import create_server
+**Fix:** Track per-version success state more granularly. At minimum, log a clear warning that distinguishes "symbols only" from "full ingestion":
 
-    mcp_server = create_server()
-
-    # Restore the real stdout fd for MCP protocol framing.
-    os.dup2(_real_stdout_fd, 1)
-    os.close(_real_stdout_fd)
-
-    try:
-        mcp_server.run(transport="stdio")
-    except BrokenPipeError:
-        pass
-```
-No change needed here since `create_server()` is synchronous and will propagate the exception before dup2. But to be safe, close the fd in a finally block at module level or in a broader scope.
-
-### WR-07: `populate_synonyms` does not validate YAML structure
-
-**File:** `src/mcp_server_python_docs/ingestion/sphinx_json.py:399-400`
-**Issue:** `yaml.safe_load(path.read_text())` returns the parsed YAML, which is then iterated as `data.items()`. If the YAML file is malformed (e.g., a list instead of a dict, or contains `null`), `data.items()` will raise `AttributeError`. The error is not caught and will surface as an unhelpful traceback during `build-index`.
-
-**Fix:**
-```python
-data = yaml.safe_load(path.read_text())
-if not isinstance(data, dict):
-    raise IngestionError(
-        f"synonyms.yaml must be a YAML mapping, got {type(data).__name__}"
-    )
-```
-
-### WR-08: `any_version_succeeded` set to True even when only symbols were ingested but content failed
-
-**File:** `src/mcp_server_python_docs/__main__.py:231`
-**Issue:** When sphinx-build fails (line 225: `result.returncode != 0`), `any_version_succeeded` is set to `True` at line 231 with the comment "symbols still ingested." Similarly at line 262 for subprocess failures. This means the build pipeline will proceed to publishing and smoke tests even when no content (sections, documents, examples) was ingested -- only symbols. The smoke tests at `run_smoke_tests()` require `documents >= 10` and `sections >= 50`, which will fail. So this is not a data-loss bug, but it means the error is caught late (at smoke test time) rather than early. The intent comment suggests this is deliberate, but the smoke tests make it effectively a delayed failure with a confusing error message ("smoke tests failed" when the real issue was "sphinx-build failed").
-
-**Fix:** Track content ingestion success separately from symbol ingestion success, and log a clear warning:
 ```python
 if result.returncode != 0:
     logger.warning(
-        "sphinx-build failed for %s -- symbols were ingested but "
-        "sections/examples will be missing. Smoke tests may fail.",
+        "Version %s has SYMBOLS ONLY (sphinx-build failed). "
+        "search_docs will work but get_docs will return empty pages.",
         version,
     )
-    any_version_succeeded = True  # symbols still usable for symbol-only search
+    any_version_succeeded = True  # symbols still usable
     continue
 ```
 
+The current code already logs a warning but the `any_version_succeeded = True` flag conflates "partially usable" with "fully succeeded."
+
 ## Info
 
-### IN-01: `_load_synonyms` and `populate_synonyms` duplicate synonym loading logic
+### IN-01: f-string Logging in ingestion/inventory.py
 
-**File:** `src/mcp_server_python_docs/server.py:34-39` and `src/mcp_server_python_docs/ingestion/sphinx_json.py:385-416`
-**Issue:** Both functions load `synonyms.yaml` via `importlib.resources`, but they parse it differently. `_load_synonyms` filters to only `dict[str, list[str]]` entries (line 39: `if isinstance(v, list)`), while `populate_synonyms` stores any expansion as a space-joined string. If a synonym entry has a scalar value (e.g., `alias: "target"`), `_load_synonyms` drops it silently while `populate_synonyms` stores it. This asymmetry could cause serve-time synonym expansion to differ from build-time population. Consider extracting a shared loader.
+**File:** `src/mcp_server_python_docs/ingestion/inventory.py:124, 126, 177`
+**Issue:** Three `logger.info()` calls use f-strings instead of lazy `%`-style formatting. F-string arguments are always evaluated, even when the log level is higher than INFO. For ingestion code that runs infrequently this has negligible impact, but it violates Python logging best practices.
 
-### IN-02: FTS5 tokenizer discrepancy between schema comments and CLAUDE.md
+**Fix:**
+```python
+logger.info("Downloading %s...", url)
+logger.info("Downloaded %d inventory objects", len(inv.objects))
+logger.info("Ingested %d symbols for Python %s", count, version)
+```
 
-**File:** `src/mcp_server_python_docs/storage/schema.sql:5-8`
-**Issue:** CLAUDE.md states the FTS5 tokenizer plan is `unicode61 porter` for `sections_fts` and `unicode61` (no porter) for `symbols_fts` and `examples_fts`. The actual schema uses the same tokenizer for all three: `unicode61 remove_diacritics 2 tokenchars '._'` with no porter stemming anywhere. The schema is internally consistent and the schema.sql comments explain the decision clearly (line 8: "Porter stemming is deliberately NOT applied"). CLAUDE.md should be updated to match the implemented schema.
+### IN-02: Missing idempotentHint in ToolAnnotations
 
-### IN-03: Unused `_SKIP_FILES` and `_SKIP_SLUGS` could be consolidated
+**File:** `src/mcp_server_python_docs/server.py:113-117`
+**Issue:** The shared `_TOOL_ANNOTATIONS` includes `readOnlyHint=True`, `destructiveHint=False`, and `openWorldHint=False`, but omits `idempotentHint=True`. All three tools are read-only queries against an immutable index and are idempotent by definition. Adding this hint allows MCP clients to optimize retry behavior.
 
-**File:** `src/mcp_server_python_docs/ingestion/sphinx_json.py:26-36`
-**Issue:** `_SKIP_FILES` filters by filename in `ingest_sphinx_json_dir` (line 364), while `_SKIP_SLUGS` filters by slug in `ingest_fjson_file` (line 255). The separation is correct but the overlap between "skip by filename" and "skip by slug" could cause confusion. For example, `searchindex.json` is filtered by `_SKIP_FILES`, but if it had a `.fjson` extension, it would need to be in `_SKIP_SLUGS` too. Minor organizational concern.
+**Fix:**
+```python
+_TOOL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    openWorldHint=False,
+    idempotentHint=True,
+)
+```
 
-### IN-04: `app_context.py` services are typed as `Optional` but always set during lifespan
+### IN-03: Missing py.typed Marker File
+
+**File:** `src/mcp_server_python_docs/` (directory)
+**Issue:** The package does not include a `py.typed` marker file (PEP 561). Without it, downstream type checkers (mypy, pyright) will not analyze the package's type annotations. All benchmark MCP server projects include this marker.
+
+**Fix:** Create an empty `src/mcp_server_python_docs/py.typed` file and ensure it is included in the wheel via `pyproject.toml`.
+
+### IN-04: services/__init__.py Docstring Inaccuracy
+
+**File:** `src/mcp_server_python_docs/services/__init__.py:5`
+**Issue:** The docstring states "No service touches SQL directly (except through storage/retrieval functions)." but all three services execute SQL directly via `self._db.execute()`: `SearchService._symbol_exists` (search.py:51), `ContentService.get_docs` (content.py:51, 72, 92), and `VersionService.list_versions` (version.py:28). The parenthetical "(except through storage/retrieval functions)" was likely added as a retroactive qualifier but the main claim is still misleading.
+
+**Fix:** Update the docstring to accurately reflect the architecture:
+
+```python
+"""Service layer -- SearchService, ContentService, VersionService.
+
+Services sit between FastMCP tool handlers and the retrieval/storage layers.
+Dependency rule: server -> services -> retrieval/storage.
+Services receive sqlite3.Connection via constructor and execute queries directly.
+No service imports MCP types.
+"""
+```
+
+### IN-05: AppContext Service Fields Typed as Optional but Never Actually None at Runtime
 
 **File:** `src/mcp_server_python_docs/app_context.py:27-29`
-**Issue:** `search_service`, `content_service`, and `version_service` are typed as `SearchService | None` with default `None`. After `app_lifespan` yields, all three are always set to non-None values. Every tool handler accesses them without None-checking (e.g., `app_ctx.search_service.search(...)`). If a tool were somehow called before lifespan completes, this would be a NoneType error. The Optional typing is technically correct (the dataclass can exist without services) but misleading at call sites. Consider a separate `InitializedAppContext` type or assert-based narrowing.
+**Issue:** `search_service`, `content_service`, and `version_service` are typed as `ServiceType | None = None`. The lifespan in `server.py:85-97` always sets all three before yielding, so they are never `None` at runtime. The `Optional` typing adds unnecessary `None` checks to static analysis and creates a false impression that callers should handle `None`. Tool handlers at `server.py:139-141` access `app_ctx.search_service.search(...)` without `None` checks, relying on the runtime invariant.
 
-### IN-05: Dead code in server.py `_meta` hint block
+**Fix:** Either make the fields non-optional (requires changing the dataclass to accept services in the constructor), or add a comment explaining the invariant. A cleaner approach:
 
-**File:** `src/mcp_server_python_docs/server.py:172-188`
-**Issue:** The `try` block at lines 177-188 attempts to set `_meta` on the `get_docs` tool definition, but the inner `if` block at lines 181-185 has a `pass` body -- it does nothing. The entire block is effectively dead code wrapped in a try/except that silently swallows all exceptions. If the intent is to set `_meta`, the `pass` should be replaced with the actual assignment. If the intent is to defer this to a future SDK version, a TODO comment would be clearer.
+```python
+@dataclass
+class AppContext:
+    db: sqlite3.Connection
+    index_path: Path
+    search_service: SearchService
+    content_service: ContentService
+    version_service: VersionService
+    synonyms: dict[str, list[str]] = field(default_factory=dict)
+```
+
+This requires the TYPE_CHECKING imports to become real imports (since the fields are no longer Optional and the class must be constructible), but it would make the type system enforce the runtime invariant.
 
 ---
 
-_Reviewed: 2026-04-15T22:00:00Z_
+_Reviewed: 2026-04-16T12:00:00Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: deep_
