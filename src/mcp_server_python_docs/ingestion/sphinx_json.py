@@ -15,12 +15,39 @@ import sqlite3
 from pathlib import Path
 
 import yaml
-from bs4 import BeautifulSoup, Tag
-from markdownify import markdownify as md
 
 from mcp_server_python_docs.errors import IngestionError
 
+# Build-only dependencies (I-4): these are moved to the [build] extras group so
+# the serve-time runtime stays lean. At import time we probe them and fall back
+# to None sentinels — _ensure_build_deps() re-raises a clear ImportError at the
+# public entry points that actually need them.
+try:
+    from bs4 import BeautifulSoup, Tag  # type: ignore[assignment]
+except ImportError:  # pragma: no cover - depends on install-time extras
+    BeautifulSoup = None  # type: ignore[assignment,misc]
+    Tag = None  # type: ignore[assignment,misc]
+
+try:
+    from markdownify import markdownify as md  # type: ignore[assignment]
+except ImportError:  # pragma: no cover - depends on install-time extras
+    md = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
+
+
+def _ensure_build_deps() -> None:
+    """Raise a clear ImportError if build-only deps are missing (I-4)."""
+    missing = []
+    if BeautifulSoup is None:
+        missing.append("beautifulsoup4")
+    if md is None:
+        missing.append("markdownify")
+    if missing:
+        raise ImportError(
+            f"build-index requires optional build deps: {', '.join(missing)}. "
+            "Install with: pip install 'mcp-server-python-docs[build]'"
+        )
 
 # Files to skip during directory ingestion (not documentation pages)
 _SKIP_FILES = {
@@ -67,6 +94,7 @@ def html_to_markdown(html: str) -> str:
     Returns:
         Markdown string with leading/trailing whitespace stripped.
     """
+    _ensure_build_deps()
     if not html or not html.strip():
         return ""
     result = md(html, heading_style="ATX", strip=["img", "script", "style"])
@@ -88,6 +116,7 @@ def extract_sections(body_html: str, doc_uri: str) -> list[dict]:
         List of section dicts with keys: anchor, heading, level, ordinal,
         content_text, char_count, uri.
     """
+    _ensure_build_deps()
     if not body_html or not body_html.strip():
         return []
 
@@ -168,6 +197,7 @@ def extract_code_blocks(body_html: str) -> list[dict]:
         List of code block dicts with keys: code, is_doctest, language,
         ordinal, section_anchor.
     """
+    _ensure_build_deps()
     if not body_html or not body_html.strip():
         return []
 
@@ -238,6 +268,7 @@ def ingest_fjson_file(
     Returns:
         True if ingestion succeeded, False if the file was skipped.
     """
+    _ensure_build_deps()
     try:
         data = parse_fjson(filepath)
 
@@ -355,6 +386,7 @@ def ingest_sphinx_json_dir(
     Returns:
         Tuple of (success_count, failure_count).
     """
+    _ensure_build_deps()
     success = 0
     failures = 0
     total = 0

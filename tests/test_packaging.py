@@ -80,11 +80,47 @@ class TestPyprojectDeps:
             "click",
             "platformdirs",
             "pyyaml",
-            "markdownify",
-            "beautifulsoup4",
         ]
         for dep_name in required_dep_names:
             assert dep_name in pyproject, f"Missing dependency: {dep_name}"
+
+    def test_build_extras_present(self):
+        """I-4: bs4/markdownify live under [project.optional-dependencies].build."""
+        pyproject = (PROJECT_ROOT / "pyproject.toml").read_text()
+        assert "[project.optional-dependencies]" in pyproject, (
+            "Expected a [project.optional-dependencies] section in pyproject.toml"
+        )
+        # Find the optional-dependencies block and assert the build extra contains both deps.
+        opt_deps_start = pyproject.index("[project.optional-dependencies]")
+        # Find the next top-level section (line starting with "[") after opt_deps_start
+        rest = pyproject[opt_deps_start:]
+        # Locate the build = [ ... ] list within the optional-dependencies section.
+        assert "build = [" in rest, (
+            "Expected a `build = [ ... ]` entry under [project.optional-dependencies]"
+        )
+        build_start = rest.index("build = [")
+        build_end = rest.index("]", build_start)
+        build_block = rest[build_start:build_end]
+        assert "beautifulsoup4" in build_block, (
+            "beautifulsoup4 must live in the [build] extra, not base deps"
+        )
+        assert "markdownify" in build_block, (
+            "markdownify must live in the [build] extra, not base deps"
+        )
+
+    def test_build_deps_not_in_base(self):
+        """I-4: bs4/markdownify must NOT appear under base [project].dependencies."""
+        pyproject = (PROJECT_ROOT / "pyproject.toml").read_text()
+        # Extract the base dependencies list only.
+        deps_start = pyproject.index("dependencies = [")
+        deps_end = pyproject.index("]", deps_start)
+        base_deps_block = pyproject[deps_start:deps_end]
+        assert "beautifulsoup4" not in base_deps_block, (
+            "beautifulsoup4 leaked into base [project].dependencies — should be [build] extra"
+        )
+        assert "markdownify" not in base_deps_block, (
+            "markdownify leaked into base [project].dependencies — should be [build] extra"
+        )
 
 
 class TestVersionFlag:

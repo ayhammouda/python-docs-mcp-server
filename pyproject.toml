@@ -28,12 +28,14 @@ dependencies = [
     "click>=8.1.7,<9.0",
     "platformdirs>=4.0",
     "pyyaml>=6.0,<7.0",
-    "markdownify>=0.14,<2.0",
-    "beautifulsoup4>=4.12,<5.0",
 ]
 
 [project.optional-dependencies]
 pysqlite3 = ["pysqlite3-binary>=0.5.4"]
+build = [
+    "beautifulsoup4>=4.12,<5.0",
+    "markdownify>=0.14,<2.0",
+]
 
 [dependency-groups]
 dev = [
