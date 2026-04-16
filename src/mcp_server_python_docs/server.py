@@ -96,7 +96,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             version_service=version_svc,
         )
     except Exception:
-        # HYGN-05: log lifespan errors, write last-error.log
+        # HYGN-05: log lifespan errors, write last-error.log, re-raise original
         error_msg = traceback.format_exc()
         logger.error("Lifespan error: %s", error_msg)
         try:
@@ -104,7 +104,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             error_log.write_text(error_msg)
         except Exception:
             pass
-        raise SystemExit(1)
+        raise
     finally:
         db.close()
 
@@ -167,24 +167,15 @@ def create_server() -> FastMCP:
     ) -> ListVersionsResult:
         """List Python documentation versions available in this index."""
         app_ctx: AppContext = ctx.request_context.lifespan_context
-        return app_ctx.version_service.list_versions()
+        try:
+            return app_ctx.version_service.list_versions()
+        except DocsServerError as e:
+            raise ToolError(str(e))
 
     # SRVR-07: _meta hint for get_docs tool.
     # FastMCP 1.27 does not expose a public API for setting _meta on tool
-    # definitions via the decorator. The _meta is documented as a client hint
-    # for expected max response size. We set it by accessing the tool manager's
-    # internal tool registry. This may need updating on mcp SDK version bumps.
-    try:
-        tool_mgr = mcp._tool_manager
-        if hasattr(tool_mgr, "_tools") and "get_docs" in tool_mgr._tools:
-            tool_def = tool_mgr._tools["get_docs"]
-            if not hasattr(tool_def, "_meta") or tool_def._meta is None:
-                # Store as attribute for now — the MCP protocol layer reads
-                # _meta from the Tool definition when building tools/list response
-                pass
-            # The _meta hint is advisory and may not be supported by all SDK
-            # versions. Log but don't fail if we can't set it.
-    except Exception:
-        logger.debug("Could not set _meta on get_docs tool — advisory hint only")
+    # definitions. Deferred until the mcp SDK adds _meta support to the
+    # decorator API or tool manager. The hint is advisory — clients work
+    # correctly without it.
 
     return mcp

@@ -124,7 +124,9 @@ def bootstrap_schema(conn: sqlite3.Connection) -> None:
     # Drop FTS5 virtual tables first so they can be recreated with the
     # correct tokenizer. IF NOT EXISTS would skip recreation if the table
     # exists with a different tokenizer -- there is no ALTER for FTS5.
-    for fts_table in ("sections_fts", "symbols_fts", "examples_fts"):
+    _FTS_TABLES = ("sections_fts", "symbols_fts", "examples_fts")
+    for fts_table in _FTS_TABLES:
+        assert fts_table.isidentifier(), f"Invalid table name: {fts_table}"
         conn.execute(f"DROP TABLE IF EXISTS {fts_table}")
 
     # Load and execute the full schema DDL
