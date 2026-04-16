@@ -17,6 +17,14 @@ Before the first release, configure PyPI Trusted Publishing:
    - Required reviewers (recommended for first release)
    - Deployment branches: only `main` tags
 
+## Notes
+
+**Python version coverage:** The release workflow builds and tests against Python 3.13 only.
+Python 3.12 is covered by the CI workflow (`ci.yml`) which runs a 2x2 matrix (3.12/3.13 x
+ubuntu/macos) on every push to `main`. Since tags are created from commits that have already
+passed CI, 3.12 compatibility is verified before the release workflow runs. This is an accepted
+trade-off to keep the release artifact pipeline simple (single Python version produces the wheel).
+
 ## Creating a Release
 
 1. Ensure all tests pass on main:
