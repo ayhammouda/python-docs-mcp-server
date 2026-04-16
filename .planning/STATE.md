@@ -5,7 +5,7 @@ milestone_name: milestone
 status: executing
 stopped_at: All phase contexts gathered (1-8)
 last_updated: "2026-04-16T08:04:51.802Z"
-last_activity: 2026-04-16 -- Phase 08 execution started
+last_activity: 2026-04-16 -- Completed quick task 260416-u2r: Fix review findings (4 Important + 8 Minor)
 progress:
   total_phases: 8
   completed_phases: 4
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 Phase: 08 (ship) — EXECUTING
 Plan: 1 of 3
 Status: Executing Phase 08
-Last activity: 2026-04-16 -- Phase 08 execution started
+Last activity: 2026-04-16 -- Completed quick task 260416-u2r: Fix review findings (4 Important + 8 Minor)
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -85,6 +85,12 @@ From research (must be addressed in specific phases):
   - B5 (Reader-handle stale after rename — documented restart) — Phase 4
   - B6 (Pydantic schema snapshot test) — Phase 1
   - B7 (`synonyms.yaml` inside package + wheel content check) — Phases 1+6
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260416-u2r | Fix review findings: 4 Important + 8 Minor (I-1..I-4, M-1..M-8) | 2026-04-16 | 23063d8 | [260416-u2r-fix-review-findings-4-important-i-1-get-](./quick/260416-u2r-fix-review-findings-4-important-i-1-get-/) |
 
 ## Deferred Items
 
