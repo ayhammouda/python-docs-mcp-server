@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Build & Test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python 3.13
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Run linter
+        run: uv run ruff check src/ tests/
+
+      - name: Run type checker
+        run: uv run pyright src/
+
+      - name: Run tests
+        run: uv run pytest --tb=short -q
+
+      - name: Build package
+        run: uv build
+
+      - name: Verify wheel contents
+        run: |
+          uv run python -c "
+          import zipfile, glob, sys
+          wheels = glob.glob('dist/*.whl')
+          if not wheels:
+              print('No wheel found')
+              sys.exit(1)
+          with zipfile.ZipFile(wheels[0]) as zf:
+              names = zf.namelist()
+              if not any('synonyms.yaml' in n for n in names):
+                  print('synonyms.yaml not found in wheel')
+                  sys.exit(1)
+              print('Wheel contents OK')
+          "
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    name: Publish to PyPI
+    environment: pypi
+    permissions:
+      id-token: write
+      contents: read
+      attestations: write
+
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'dist/*'
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    name: Create GitHub Release
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
