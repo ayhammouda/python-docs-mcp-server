@@ -148,7 +148,10 @@ class DetectPythonVersionResult(BaseModel):
         description="Python major.minor detected from the user's environment (e.g. '3.13')"
     )
     source: str = Field(
-        description="How the version was detected: '.python-version file', 'python3 in PATH', or 'server runtime'"
+        description=(
+            "How the version was detected: '.python-version file',"
+            " 'python3 in PATH', or 'server runtime'"
+        )
     )
     matched_index_version: str | None = Field(
         default=None,
