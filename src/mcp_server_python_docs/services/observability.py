@@ -42,6 +42,10 @@ def log_tool_call(tool_name: str) -> Callable:
     Extracts version, result_count, truncated, resolution path, and
     synonym_expansion from the method arguments and return value.
 
+    Note: This decorator only works with synchronous service methods.
+    If a method becomes async, the wrapper must be updated to detect
+    coroutines and await the result, otherwise timing will be wrong.
+
     Args:
         tool_name: Name of the MCP tool (search_docs, get_docs, list_versions).
     """
