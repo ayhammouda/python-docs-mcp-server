@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import sqlite3
 
-from mcp_server_python_docs.errors import PageNotFoundError, VersionNotFoundError
+from mcp_server_python_docs.errors import PageNotFoundError
 from mcp_server_python_docs.models import GetDocsResult
 from mcp_server_python_docs.retrieval.budget import apply_budget
 from mcp_server_python_docs.services.cache import create_section_cache
 from mcp_server_python_docs.services.observability import log_tool_call
+from mcp_server_python_docs.services.version_resolution import resolve_version_strict
 
 
 class ContentService:
@@ -27,34 +28,12 @@ class ContentService:
         self._get_section = create_section_cache(db)
 
     def _resolve_version(self, version: str | None) -> str:
-        """Resolve version to actual version string. Defaults to latest (is_default=1)."""
-        if version is not None:
-            row = self._db.execute(
-                "SELECT version FROM doc_sets WHERE version = ?",
-                (version,),
-            ).fetchone()
-            if row is None:
-                available = [
-                    r[0]
-                    for r in self._db.execute(
-                        "SELECT version FROM doc_sets ORDER BY version"
-                    ).fetchall()
-                ]
-                raise VersionNotFoundError(
-                    f"Version {version!r} not found; available: {available}"
-                )
-            return version
-        # Default to latest
-        row = self._db.execute(
-            "SELECT version FROM doc_sets WHERE is_default = 1 LIMIT 1"
-        ).fetchone()
-        if row is None:
-            row = self._db.execute(
-                "SELECT version FROM doc_sets ORDER BY version DESC LIMIT 1"
-            ).fetchone()
-        if row is None:
-            raise VersionNotFoundError("No versions available in index")
-        return row[0]
+        """Resolve version to a concrete version string using shared resolution logic.
+
+        Defaults to the is_default=1 version when None is passed.
+        Raises VersionNotFoundError for unknown versions (MVER-03).
+        """
+        return resolve_version_strict(self._db, version)
 
     @log_tool_call("get_docs")
     def get_docs(

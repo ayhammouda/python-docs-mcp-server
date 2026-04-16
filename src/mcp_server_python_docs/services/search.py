@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import sqlite3
 
-from mcp_server_python_docs.errors import VersionNotFoundError
 from mcp_server_python_docs.models import SearchDocsResult
 from mcp_server_python_docs.services.observability import log_tool_call
+from mcp_server_python_docs.services.version_resolution import resolve_version_permissive
 from mcp_server_python_docs.retrieval.query import (
     build_match_expression,
     classify_query,
@@ -36,27 +36,15 @@ class SearchService:
         # cache) because classify_query's callback has no version context.
 
     def _resolve_version(self, version: str | None) -> str | None:
-        """Resolve and validate version. Returns None if version was None (use all versions).
+        """Resolve and validate version using shared resolution logic.
+
+        Returns None if version was None -- search is intentionally
+        cross-version so LLMs see results from all versions and can
+        compare (CR-01 documented design decision).
 
         Raises VersionNotFoundError for unknown versions (MVER-03).
         """
-        if version is None:
-            return None
-        row = self._db.execute(
-            "SELECT version FROM doc_sets WHERE version = ?",
-            (version,),
-        ).fetchone()
-        if row is None:
-            available = [
-                r[0]
-                for r in self._db.execute(
-                    "SELECT version FROM doc_sets ORDER BY version"
-                ).fetchall()
-            ]
-            raise VersionNotFoundError(
-                f"version {version!r} not found; available: {available}"
-            )
-        return version
+        return resolve_version_permissive(self._db, version)
 
     def _symbol_exists(self, name: str) -> bool:
         """Check if a symbol name exists in the symbols table."""
