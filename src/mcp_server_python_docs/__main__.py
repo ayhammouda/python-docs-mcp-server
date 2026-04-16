@@ -325,7 +325,7 @@ def validate_corpus(db_path: str | None) -> None:
 
     if passed:
         logger.info("Corpus validation PASSED")
-        raise SystemExit(0)
+        # Return normally -- Click exits with code 0 by default
     else:
         logger.error("Corpus validation FAILED")
         raise SystemExit(1)
