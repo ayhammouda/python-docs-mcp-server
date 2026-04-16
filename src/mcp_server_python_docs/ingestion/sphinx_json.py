@@ -204,19 +204,22 @@ def extract_code_blocks(body_html: str) -> list[dict]:
     soup = BeautifulSoup(body_html, "html.parser")
     blocks: list[dict] = []
 
-    # Find all highlight divs
+    # Find all highlight divs (M-6: anchored on both ends within a class token
+    # so 'highlight-pythonfoo' / 'xhighlight-python' don't spuriously match).
     highlight_divs = soup.find_all(
         "div",
-        class_=re.compile(
-            r"highlight-(pycon|python3|python|default|pycon3)"
-        ),
+        class_=re.compile(r"^highlight-(pycon3?|python3?|default)$"),
     )
 
     for i, div in enumerate(highlight_divs):
         classes = div.get("class") or []
-        class_str = " ".join(classes) if isinstance(classes, list) else str(classes)
 
-        is_doctest = 1 if "highlight-pycon" in class_str else 0
+        # M-6: use an explicit class-name list for doctest detection instead of
+        # a loose substring check; the class list is already known-safe thanks
+        # to the anchored regex above, but defense-in-depth is cheap.
+        is_doctest = (
+            1 if any(c in ("highlight-pycon", "highlight-pycon3") for c in classes) else 0
+        )
 
         # Extract code text from the <pre> element
         pre = div.find("pre")
