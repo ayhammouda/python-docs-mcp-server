@@ -530,6 +530,37 @@ def test_lookup_symbols_prefix_match(fts_db):
         assert "asyncio" in hit.title
 
 
+# ---------------------------------------------------------------------------
+# I-3: case-insensitive symbol fast-path
+# ---------------------------------------------------------------------------
+
+
+def test_lookup_symbols_case_insensitive_lowercase(fts_db):
+    """I-3: 'asyncio.taskgroup' matches seeded 'asyncio.TaskGroup' with score 1.0."""
+    hits = lookup_symbols_exact(fts_db, "asyncio.taskgroup", None, 5)
+    assert len(hits) >= 1
+    exact = next((h for h in hits if h.title == "asyncio.TaskGroup"), None)
+    assert exact is not None, "expected asyncio.TaskGroup in hits"
+    assert exact.score == 1.0
+
+
+def test_lookup_symbols_case_insensitive_uppercase(fts_db):
+    """I-3: 'ASYNCIO.TASKGROUP' matches seeded 'asyncio.TaskGroup' with score 1.0."""
+    hits = lookup_symbols_exact(fts_db, "ASYNCIO.TASKGROUP", None, 5)
+    assert len(hits) >= 1
+    exact = next((h for h in hits if h.title == "asyncio.TaskGroup"), None)
+    assert exact is not None, "expected asyncio.TaskGroup in hits"
+    assert exact.score == 1.0
+
+
+def test_lookup_symbols_exact_case_preserves_score(fts_db):
+    """I-3: exact-case lookup still scores 1.0 (no behavior regression)."""
+    hits = lookup_symbols_exact(fts_db, "asyncio.TaskGroup", None, 5)
+    assert len(hits) >= 1
+    assert hits[0].score == 1.0
+    assert hits[0].title == "asyncio.TaskGroup"
+
+
 def test_search_examples(fts_db):
     """Example search returns hits with correct kind."""
     # Use "asyncio.TaskGroup" as full token (tokenchars '._')

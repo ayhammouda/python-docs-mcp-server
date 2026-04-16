@@ -242,6 +242,13 @@ def lookup_symbols_exact(
     Bypasses FTS5 entirely. Uses exact match first, then LIKE prefix
     match. Scores: exact match = 1.0, prefix match = 0.8.
 
+    I-3: comparison is case-insensitive via ``COLLATE NOCASE`` on both the
+    equality and the LIKE predicate. The python-side score comparison uses
+    ``.lower()`` so the ordering matches. Note: ``COLLATE NOCASE`` may
+    bypass the primary-key index; for v0.1.0 with ~20K symbols per version
+    this is acceptable. A case-insensitive index can be added in v1.1 if
+    profiling shows it matters.
+
     Args:
         conn: Read-only SQLite connection.
         query: Symbol name to look up.
@@ -255,23 +262,30 @@ def lookup_symbols_exact(
     escaped_query = (
         query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     )
+    query_lower = query.lower()
 
-    with contextlib.closing(
-        conn.execute(
-            """
-            SELECT s.qualified_name, s.symbol_type, s.uri, s.anchor,
-                   s.module, d.version
-            FROM symbols s
-            JOIN doc_sets d ON s.doc_set_id = d.id
-            WHERE (s.qualified_name = ? OR s.qualified_name LIKE ? ESCAPE '\\')
-              AND (? IS NULL OR d.version = ?)
-            ORDER BY CASE WHEN s.qualified_name = ? THEN 0 ELSE 1 END
-            LIMIT ?
-            """,
-            (query, f"%{escaped_query}%", version, version, query, max_results),
-        )
-    ) as cursor:
-        rows = cursor.fetchall()
+    try:
+        with contextlib.closing(
+            conn.execute(
+                """
+                SELECT s.qualified_name, s.symbol_type, s.uri, s.anchor,
+                       s.module, d.version
+                FROM symbols s
+                JOIN doc_sets d ON s.doc_set_id = d.id
+                WHERE (s.qualified_name = ? COLLATE NOCASE
+                       OR s.qualified_name LIKE ? ESCAPE '\\' COLLATE NOCASE)
+                  AND (? IS NULL OR d.version = ?)
+                ORDER BY CASE WHEN s.qualified_name = ? COLLATE NOCASE
+                              THEN 0 ELSE 1 END
+                LIMIT ?
+                """,
+                (query, f"%{escaped_query}%", version, version, query, max_results),
+            )
+        ) as cursor:
+            rows = cursor.fetchall()
+    except sqlite3.OperationalError:
+        logger.warning("Symbol lookup failed for %r", query)
+        return []
 
     return [
         SymbolHit(
@@ -279,7 +293,7 @@ def lookup_symbols_exact(
             title=row["qualified_name"],
             kind=row["symbol_type"] or "symbol",
             snippet="",
-            score=1.0 if row["qualified_name"] == query else 0.8,
+            score=1.0 if row["qualified_name"].lower() == query_lower else 0.8,
             version=row["version"],
             slug=row["uri"].split("#")[0] if "#" in row["uri"] else row["uri"],
             anchor=row["anchor"] or "",
