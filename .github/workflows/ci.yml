@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.12", "3.13"]
+
+    runs-on: ${{ matrix.os }}
+    name: Test (Python ${{ matrix.python-version }}, ${{ matrix.os }})
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Run linter
+        run: uv run ruff check src/ tests/
+
+      - name: Run type checker
+        run: uv run pyright src/
+
+      - name: Run tests
+        run: uv run pytest --tb=short -q
+
+      - name: Verify wheel contents
+        run: |
+          uv build
+          uv run python -c "
+          import zipfile, glob, sys
+          wheels = glob.glob('dist/*.whl')
+          if not wheels:
+              print('No wheel found')
+              sys.exit(1)
+          with zipfile.ZipFile(wheels[0]) as zf:
+              names = zf.namelist()
+              if not any('synonyms.yaml' in n for n in names):
+                  print('synonyms.yaml not found in wheel')
+                  sys.exit(1)
+              print('Wheel contents OK')
+          "
