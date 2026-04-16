@@ -11,6 +11,7 @@ import sqlite3
 from mcp_server_python_docs.errors import PageNotFoundError, VersionNotFoundError
 from mcp_server_python_docs.models import GetDocsResult
 from mcp_server_python_docs.retrieval.budget import apply_budget
+from mcp_server_python_docs.services.observability import log_tool_call
 
 
 class ContentService:
@@ -53,6 +54,7 @@ class ContentService:
             raise VersionNotFoundError("No versions available in index")
         return row[0]
 
+    @log_tool_call("get_docs")
     def get_docs(
         self,
         slug: str,
