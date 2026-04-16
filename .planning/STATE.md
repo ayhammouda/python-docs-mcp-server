@@ -5,7 +5,7 @@ milestone_name: milestone
 status: executing
 stopped_at: All phase contexts gathered (1-8)
 last_updated: "2026-04-16T08:04:51.802Z"
-last_activity: 2026-04-16 -- Completed quick task 260416-u2r: Fix review findings (4 Important + 8 Minor)
+last_activity: 2026-04-16 -- Completed quick task 260416-v0s: Close Round 3 review gaps (I-1 fallback + M-5 + finalize + I-3 note)
 progress:
   total_phases: 8
   completed_phases: 4
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 Phase: 08 (ship) — EXECUTING
 Plan: 1 of 3
 Status: Executing Phase 08
-Last activity: 2026-04-16 -- Completed quick task 260416-u2r: Fix review findings (4 Important + 8 Minor)
+Last activity: 2026-04-16 -- Completed quick task 260416-v0s: Close Round 3 review gaps (I-1 fallback + M-5 + finalize + I-3 note)
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -91,6 +91,7 @@ From research (must be addressed in specific phases):
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 260416-u2r | Fix review findings: 4 Important + 8 Minor (I-1..I-4, M-1..M-8) | 2026-04-16 | 23063d8 | [260416-u2r-fix-review-findings-4-important-i-1-get-](./quick/260416-u2r-fix-review-findings-4-important-i-1-get-/) |
+| 260416-v0s | Close Round 3 review gaps: I-1 fallback, M-5 call-site gate, finalize on failure, I-3 ratification | 2026-04-16 | 8357f38 | [260416-v0s-close-round-3-review-gaps-1-i-1-actually](./quick/260416-v0s-close-round-3-review-gaps-1-i-1-actually/) |
 
 ## Deferred Items
 
