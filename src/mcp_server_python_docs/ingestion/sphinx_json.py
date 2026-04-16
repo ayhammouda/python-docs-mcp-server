@@ -13,39 +13,46 @@ import logging
 import re
 import sqlite3
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
 
 from mcp_server_python_docs.errors import IngestionError
 
-# Build-only dependencies (I-4): these are moved to the [build] extras group so
-# the serve-time runtime stays lean. At import time we probe them and fall back
-# to None sentinels — _ensure_build_deps() re-raises a clear ImportError at the
-# public entry points that actually need them.
-try:
-    from bs4 import BeautifulSoup, Tag  # type: ignore[assignment]
-except ImportError:  # pragma: no cover - depends on install-time extras
-    BeautifulSoup = None  # type: ignore[assignment,misc]
-    Tag = None  # type: ignore[assignment,misc]
+# Build-only dependencies (I-4): these live in the [build] extras group so the
+# serve-time runtime stays lean. Static type checkers always see the real bs4
+# and markdownify types via the TYPE_CHECKING branch below; at runtime we probe
+# for availability and let _ensure_build_deps() raise a clear actionable
+# ImportError at the public entry points that actually need them.
+if TYPE_CHECKING:
+    # Always visible to static checkers — gives downstream call sites full
+    # type coverage even when the [build] extra is not installed locally.
+    from bs4 import BeautifulSoup, Tag
+    from markdownify import markdownify as md
+
+_BUILD_DEPS_AVAILABLE = True
+_BUILD_DEPS_MISSING: list[str] = []
 
 try:
-    from markdownify import markdownify as md  # type: ignore[assignment]
-except ImportError:  # pragma: no cover - depends on install-time extras
-    md = None  # type: ignore[assignment]
+    from bs4 import BeautifulSoup, Tag  # noqa: F811 - runtime re-binding
+except ImportError:  # pragma: no cover - install-time only
+    _BUILD_DEPS_AVAILABLE = False
+    _BUILD_DEPS_MISSING.append("beautifulsoup4")
+
+try:
+    from markdownify import markdownify as md  # noqa: F811 - runtime re-binding
+except ImportError:  # pragma: no cover - install-time only
+    _BUILD_DEPS_AVAILABLE = False
+    _BUILD_DEPS_MISSING.append("markdownify")
 
 logger = logging.getLogger(__name__)
 
 
 def _ensure_build_deps() -> None:
     """Raise a clear ImportError if build-only deps are missing (I-4)."""
-    missing = []
-    if BeautifulSoup is None:
-        missing.append("beautifulsoup4")
-    if md is None:
-        missing.append("markdownify")
-    if missing:
+    if not _BUILD_DEPS_AVAILABLE:
         raise ImportError(
-            f"build-index requires optional build deps: {', '.join(missing)}. "
+            f"build-index requires optional build deps: {', '.join(_BUILD_DEPS_MISSING)}. "
             "Install with: pip install 'mcp-server-python-docs[build]'"
         )
 

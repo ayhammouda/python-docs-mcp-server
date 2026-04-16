@@ -4,8 +4,6 @@ Covers M-2 (anchored version regex) and M-3 (bounded .python-version read).
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from mcp_server_python_docs.detection import (
