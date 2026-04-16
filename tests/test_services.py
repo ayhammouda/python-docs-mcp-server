@@ -181,6 +181,41 @@ class TestContentService:
         result = svc.get_docs(slug="library/asyncio-task.html")
         assert result.version == "3.13"
 
+    def test_get_docs_returns_empty_content_for_symbols_only_doc(self, populated_db):
+        """I-1: a document row with no sections returns empty content, not a raise.
+
+        Scenario: symbol-only builds (or pathological ingestion) can end up with a
+        documents row whose sections table has no matching rows. The service must
+        return a structured GetDocsResult with content='', char_count=0,
+        truncated=False — not raise PageNotFoundError.
+        """
+        db = populated_db
+        row = db.execute("SELECT id FROM doc_sets LIMIT 1").fetchone()
+        doc_set_id = row[0]
+        db.execute(
+            "UPDATE doc_sets SET built_at = '2026-04-16T00:00:00' WHERE id = ?",
+            (doc_set_id,),
+        )
+        # Seed a document with empty content and ZERO sections.
+        db.execute(
+            "INSERT INTO documents (doc_set_id, uri, slug, title, content_text, char_count) "
+            "VALUES (?, 'library/empty.html', 'library/empty.html', 'Empty Page', '', 0)",
+            (doc_set_id,),
+        )
+        db.commit()
+
+        svc = ContentService(db)
+        result = svc.get_docs(slug="library/empty.html")
+        assert isinstance(result, GetDocsResult)
+        assert result.content == ""
+        assert result.char_count == 0
+        assert result.truncated is False
+        assert result.next_start_index is None
+        assert result.anchor is None
+        assert result.slug == "library/empty.html"
+        assert result.title == "Empty Page"
+        assert result.version == "3.13"
+
 
 # === VersionService Tests ===
 
