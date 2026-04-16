@@ -133,7 +133,9 @@ def create_server() -> FastMCP:
         ctx: Context = None,  # type: ignore[assignment]
     ) -> SearchDocsResult:
         """Search Python documentation. Use kind='symbol' for API lookups
-        (asyncio.TaskGroup), kind='example' for code samples, kind='auto' otherwise."""
+        (asyncio.TaskGroup), kind='example' for code samples, kind='auto' otherwise.
+        When version is omitted, searches across all versions. Pass the version
+        from each hit's version field to get_docs for consistent results."""
         app_ctx: AppContext = ctx.request_context.lifespan_context
         try:
             return app_ctx.search_service.search(query, version, kind, max_results)
