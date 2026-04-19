@@ -1,8 +1,8 @@
 # mcp-server-python-docs
 
-A read-only, version-aware MCP server for Python standard library documentation, optimized for low-token, section-level retrieval.
+A corporate-friendly, read-only, version-aware MCP server for Python standard library documentation, optimized for low-token, section-level retrieval.
 
-It gives Claude, Cursor, and other MCP clients precise answers to Python stdlib questions without dumping whole documentation pages into the context window.
+It gives Claude, Cursor, and other MCP clients precise answers to Python stdlib questions without dumping whole documentation pages into the context window, without requiring API keys, and without depending on a hosted docs provider at query time.
 
 ## Why this exists
 
@@ -14,6 +14,14 @@ General-purpose doc retrieval is often noisy for Python stdlib questions:
 - official Python docs are the source of truth, but not packaged for MCP out of the box
 
 This server builds a local index from official Python documentation and exposes a small MCP tool surface tuned for high-signal retrieval.
+
+## Why teams like this
+
+- no API keys to provision, rotate, or justify
+- official Python docs as the source of truth
+- local index, so runtime retrieval does not depend on a third-party hosted docs API
+- read-only behavior with a simple security story
+- easy to explain in corporate environments where external dependencies raise friction
 
 ## What you get
 
@@ -118,7 +126,9 @@ The core docs surface is still intentionally small: search, retrieve, and inspec
 If you're evaluating whether this is useful in practice, the key point is simple:
 
 **this is not a generic web fetcher for Python docs.**
-It is a purpose-built MCP server for official Python documentation with exact symbol resolution, version awareness, and token-efficient section retrieval.
+It is a purpose-built MCP server for official Python documentation with exact symbol resolution, version awareness, token-efficient section retrieval, and a cleaner corporate story than API-key-based doc services.
+
+Think of it as an MCP passthrough to the official Python docs, but indexed locally so LLMs can retrieve the right section without hauling entire pages into context.
 
 ## Diagnostics
 
