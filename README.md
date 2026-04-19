@@ -1,6 +1,42 @@
 # mcp-server-python-docs
 
-A read-only, version-aware MCP server for Python standard library documentation. Gives Claude and other LLM clients precise, section-level answers to Python stdlib questions -- without flooding the context window with entire doc pages.
+A read-only, version-aware MCP server for Python standard library documentation, optimized for low-token, section-level retrieval.
+
+It gives Claude, Cursor, and other MCP clients precise answers to Python stdlib questions without dumping whole documentation pages into the context window.
+
+## Why this exists
+
+General-purpose doc retrieval is often noisy for Python stdlib questions:
+
+- symbol lookups like `asyncio.TaskGroup` need exact resolution
+- answers should be version-aware (`3.12` vs `3.13`)
+- full-page fetches waste tokens when one section is enough
+- official Python docs are the source of truth, but not packaged for MCP out of the box
+
+This server builds a local index from official Python documentation and exposes a small MCP tool surface tuned for high-signal retrieval.
+
+## What you get
+
+- exact symbol lookup from Python `objects.inv`
+- section-level retrieval with truncation and pagination
+- local SQLite + FTS5 index, no runtime web scraping
+- version-aware results across indexed Python versions
+- read-only MCP tools with deterministic behavior
+
+## Quick example
+
+**Prompt**
+
+> What does `asyncio.TaskGroup` do in Python 3.13?
+
+**Typical flow**
+
+1. `search_docs("asyncio.TaskGroup", kind="symbol", version="3.13")`
+2. call `get_docs(...)` using the slug and anchor returned by the best hit
+
+**Result**
+
+The model gets the exact symbol match and the relevant documentation section instead of a full-page dump.
 
 ## Install
 
@@ -66,13 +102,23 @@ Add to your Cursor MCP settings (`.cursor/mcp.json` in your project or global se
 
 ## Tools
 
-The server exposes three MCP tools:
+The server currently exposes four MCP tools:
 
 | Tool | Description |
 |------|-------------|
 | `search_docs` | Search Python stdlib docs by query. Supports symbol lookup (`asyncio.TaskGroup`), module search (`json`), and free-text search. Returns ranked hits with BM25 scoring and snippet excerpts. |
-| `get_docs` | Retrieve a specific documentation section by slug and optional anchor. Returns markdown content with budget-enforced truncation and pagination. |
+| `get_docs` | Retrieve a specific documentation page or section by slug and optional anchor. Returns markdown content with budget-enforced truncation and pagination. |
 | `list_versions` | List all indexed Python versions with their metadata. |
+| `detect_python_version` | Detect the user's local Python version and report whether it matches an indexed documentation version. Helpful when `get_docs` defaults to the local runtime version. |
+
+The core docs surface is still intentionally small: search, retrieve, and inspect available versions. `detect_python_version` is a convenience helper for local workflows.
+
+## Positioning
+
+If you're evaluating whether this is useful in practice, the key point is simple:
+
+**this is not a generic web fetcher for Python docs.**
+It is a purpose-built MCP server for official Python documentation with exact symbol resolution, version awareness, and token-efficient section retrieval.
 
 ## Diagnostics
 
@@ -142,7 +188,7 @@ After running `build-index` to update the documentation index, you must restart 
 
 Tested on macOS and Linux. Windows should work (uses `platformdirs` + `pathlib` for cross-platform paths) but is not verified on every release.
 
-Python 3.12 and 3.13 are supported. The index ships with documentation for both versions; queries default to 3.13 unless a specific version is requested.
+Python 3.12 and 3.13 are supported. When `search_docs` is called without a version, it searches across indexed versions. When `get_docs` is called without a version, it can default to the detected local Python runtime if a matching index exists.
 
 ## License
 
