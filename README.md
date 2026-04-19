@@ -1,5 +1,11 @@
 # mcp-server-python-docs
 
+[![CI](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/ci.yml/badge.svg)](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
+[![No API Keys](https://img.shields.io/badge/API%20keys-none-success)](README.md#why-teams-like-this)
+[![Official Python Docs](https://img.shields.io/badge/source-official%20python%20docs-informational)](https://docs.python.org/3/)
+
 A corporate-friendly, read-only, version-aware MCP server for Python standard library documentation, optimized for low-token, section-level retrieval.
 
 It gives Claude, Cursor, and other MCP clients precise answers to Python stdlib questions without dumping whole documentation pages into the context window, without requiring API keys, and without depending on a hosted docs provider at query time.
