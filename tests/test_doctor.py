@@ -7,6 +7,20 @@ import os
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
+
+
+def _isolated_cache_env(tmpdir: str) -> dict[str, str]:
+    """Build subprocess env that forces platformdirs into a temp cache root."""
+    tmp_path = Path(tmpdir)
+    overrides = {
+        "HOME": str(tmp_path),
+        "XDG_CACHE_HOME": str(tmp_path),
+        "LOCALAPPDATA": str(tmp_path / "AppData" / "Local"),
+        "APPDATA": str(tmp_path / "AppData" / "Roaming"),
+        "USERPROFILE": str(tmp_path),
+    }
+    return {**os.environ, **overrides}
 
 
 class TestDoctor:
@@ -74,11 +88,7 @@ class TestDoctor:
                 capture_output=True,
                 text=True,
                 timeout=15,
-                env={
-                    **os.environ,
-                    "HOME": tmpdir,
-                    "XDG_CACHE_HOME": tmpdir,
-                },
+                env=_isolated_cache_env(tmpdir),
             )
             assert "FAIL: Index database" in result.stderr
             assert "build-index" in result.stderr
@@ -91,11 +101,7 @@ class TestDoctor:
                 capture_output=True,
                 text=True,
                 timeout=15,
-                env={
-                    **os.environ,
-                    "HOME": tmpdir,
-                    "XDG_CACHE_HOME": tmpdir,
-                },
+                env=_isolated_cache_env(tmpdir),
             )
             assert result.returncode == 1
 
