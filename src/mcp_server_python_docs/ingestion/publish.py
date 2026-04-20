@@ -238,7 +238,7 @@ def atomic_swap(
         logger.info("Previous index backed up to %s", previous)
         previous_path = previous
 
-    os.rename(new_db_path, target_path)
+    os.replace(new_db_path, target_path)
     logger.info("New index published at %s", target_path)
 
     return previous_path
@@ -260,7 +260,7 @@ def rollback(target_path: Path | None = None) -> bool:
     previous = target_path.parent / (target_path.name + ".previous")
 
     if previous.exists():
-        os.rename(previous, target_path)
+        os.replace(previous, target_path)
         logger.info("Rolled back to previous index")
         return True
 

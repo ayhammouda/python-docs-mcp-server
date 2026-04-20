@@ -14,6 +14,10 @@ progress:
   percent: 53
 ---
 
+> Archival note: this file is historical GSD state, not current repository
+> truth. For active setup and workflow guidance, start with `README.md`,
+> `CONTRIBUTING.md`, and `AGENTS.md`.
+
 # Project State
 
 ## Project Reference

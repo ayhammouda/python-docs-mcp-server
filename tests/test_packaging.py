@@ -5,6 +5,7 @@ PKG-04 (synonyms.yaml in wheel), and PKG-06 (--version flag).
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -15,6 +16,15 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent
 
 
+def _uv_command() -> list[str]:
+    """Return a runnable uv command on platforms where Scripts may not be on PATH."""
+    uv_executable = shutil.which("uv")
+    if uv_executable is not None:
+        return [uv_executable]
+    base_executable = getattr(sys, "_base_executable", sys.executable)
+    return [base_executable, "-m", "uv"]
+
+
 class TestWheelContent:
     """PKG-04: Built wheel contains synonyms.yaml."""
 
@@ -23,7 +33,7 @@ class TestWheelContent:
         """Build the wheel using uv build and return its path."""
         dist_dir = tmp_path_factory.mktemp("dist")
         result = subprocess.run(
-            ["uv", "build", "--wheel", "--out-dir", str(dist_dir)],
+            _uv_command() + ["build", "--wheel", "--out-dir", str(dist_dir)],
             capture_output=True,
             text=True,
             cwd=str(PROJECT_ROOT),

@@ -1,141 +1,126 @@
-# Integration Test Checklist
+# Manual MCP QA Runbook
 
-Manual verification steps for mcp-server-python-docs v0.1.0.
-These tests require human execution -- they cannot be automated.
+Use this document for manual MCP validation during development and before a
+release. The goal is to verify real client behavior after the automated test
+suite passes.
+
+Release-specific sign-off still lives in [`.github/RELEASE.md`](RELEASE.md).
 
 ## Prerequisites
 
-- [ ] All CI tests pass on main branch
-- [ ] `mcp-server-python-docs doctor` reports all checks PASS
-- [ ] Index is built: `mcp-server-python-docs build-index --versions 3.12,3.13`
+- CI or local checks are green:
+  - `uv run ruff check src/ tests/`
+  - `uv run pyright src/`
+  - `uv run pytest --tb=short -q`
+- Local index build completed:
+  - `uv run mcp-server-python-docs build-index --versions 3.12,3.13`
+- Doctor passes:
+  - `uv run mcp-server-python-docs doctor`
+- If `uv` is not on `PATH`, use `python -m uv ...` instead
 
-## Test 1: Claude Desktop Integration (SHIP-01)
+## Test 1: MCP Inspector quick loop
 
-### Setup
+Use Inspector for fast local iteration before checking real clients.
 
-1. Open Claude Desktop settings (Developer > Edit Config or `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS)
-2. Add the following to `mcpServers`:
-   ```json
-   {
-     "mcpServers": {
-       "python-docs": {
-         "command": "uvx",
-         "args": ["mcp-server-python-docs"]
-       }
-     }
-   }
-   ```
-3. Restart Claude Desktop
-4. Verify the MCP server icon appears in the chat input area
-
-### Test Steps
-
-- [ ] **T1.1**: Ask Claude: "what is asyncio.TaskGroup"
-  - **Expected**: Response references `asyncio.TaskGroup` with a URI containing `library/asyncio-task.html`
-  - **Expected**: Response includes symbol information (not just generic LLM knowledge)
-  - **Actual result**: _______________
-
-- [ ] **T1.2**: Ask Claude: "how do I use pathlib.Path.glob"
-  - **Expected**: Response references `pathlib` documentation with relevant section content
-  - **Actual result**: _______________
-
-- [ ] **T1.3**: Ask Claude: "search for json parsing in Python"
-  - **Expected**: Response includes hits from the `json` module documentation
-  - **Actual result**: _______________
-
-- [ ] **T1.4**: Verify no errors in Claude Desktop developer console
-  - **Expected**: No MCP protocol errors or connection drops
-  - **Actual result**: _______________
-
-### Teardown
-
-- Remove the `python-docs` entry from `mcpServers` (or keep for ongoing use)
-
-## Test 2: Cursor Integration (SHIP-02)
-
-### Setup
-
-1. Open Cursor Settings > MCP
-2. Add a new MCP server:
-   - **Name**: python-docs
-   - **Command**: `uvx`
-   - **Args**: `mcp-server-python-docs`
-3. Verify the server shows as connected (green indicator)
-
-### Test Steps
-
-- [ ] **T2.1**: In a chat or Composer session, ask: "what is asyncio.TaskGroup"
-  - **Expected**: Response references `asyncio.TaskGroup` with documentation content
-  - **Expected**: The MCP tool call is visible in the chat
-  - **Actual result**: _______________
-
-- [ ] **T2.2**: Ask: "show me the docs for collections.OrderedDict"
-  - **Expected**: Response includes `collections.OrderedDict` documentation
-  - **Actual result**: _______________
-
-- [ ] **T2.3**: Verify the server stays connected across multiple queries
-  - **Expected**: No disconnections or "server not responding" errors
-  - **Actual result**: _______________
-
-### Teardown
-
-- Remove or disable the python-docs MCP server in Cursor settings (or keep)
-
-## Test 3: Fresh Install Verification (SHIP-06 partial)
-
-### Setup
-
-1. Create a throwaway virtualenv or use a machine without the package:
-   ```bash
-   # Option A: Fresh venv
-   uv venv /tmp/test-install && source /tmp/test-install/bin/activate
-
-   # Option B: Use uvx (isolated by default)
-   # No setup needed -- uvx creates its own isolated env
-   ```
-
-### Test Steps
-
-- [ ] **T3.1**: Install from PyPI (after package is published):
-  ```bash
-  uvx mcp-server-python-docs --version
-  ```
-  - **Expected**: Prints `0.1.0`
-  - **Actual result**: _______________
-
-- [ ] **T3.2**: Build the index:
-  ```bash
-  uvx mcp-server-python-docs build-index --versions 3.12,3.13
-  ```
-  - **Expected**: Downloads objects.inv files, builds index, prints success message
-  - **Actual result**: _______________
-
-- [ ] **T3.3**: Run doctor:
-  ```bash
-  uvx mcp-server-python-docs doctor
-  ```
-  - **Expected**: All checks PASS
-  - **Actual result**: _______________
-
-- [ ] **T3.4**: Verify the full README install flow works end-to-end
-  - **Expected**: Following README instructions from scratch produces a working server
-  - **Actual result**: _______________
-
-### Teardown
+### Start Inspector
 
 ```bash
-# Clean up throwaway venv if used
-rm -rf /tmp/test-install
+npx @modelcontextprotocol/inspector uv --directory . run mcp-server-python-docs
 ```
 
-## Sign-Off
+### Verify
 
-| Test | Pass/Fail | Tester | Date |
-|------|-----------|--------|------|
-| T1: Claude Desktop | | | |
-| T2: Cursor | | | |
-| T3: Fresh Install | | | |
+- [ ] Connect successfully over stdio
+- [ ] Confirm the tool list includes:
+  - `search_docs`
+  - `get_docs`
+  - `list_versions`
+  - `detect_python_version`
+- [ ] Call `search_docs` with query `asyncio.TaskGroup`, `kind="symbol"`, `version="3.13"`
+  - Expected: exact symbol hit with `library/asyncio-task.html`
+- [ ] Call `get_docs` for the returned slug and anchor
+  - Expected: section-level documentation, not an unrelated page dump
+- [ ] Call `list_versions`
+  - Expected: indexed versions appear with the configured default version
+- [ ] Call `detect_python_version`
+  - Expected: returns local interpreter information without breaking the session
+- [ ] Observe no protocol corruption or unexplained disconnects in Inspector
 
-**Release approved**: [ ] Yes / [ ] No -- needs fixes
+## Test 2: Claude Desktop integration
 
-**Notes**:
+### Setup
+
+1. Open Claude Desktop settings
+2. Add this server config:
+
+```json
+{
+  "mcpServers": {
+    "python-docs": {
+      "command": "uvx",
+      "args": ["mcp-server-python-docs"]
+    }
+  }
+}
+```
+
+3. Fully restart Claude Desktop
+4. Verify the MCP server appears in the chat UI
+
+### Checks
+
+- [ ] Ask: `what is asyncio.TaskGroup`
+  - Expected: response uses stdlib documentation, not only model prior knowledge
+- [ ] Ask: `how do I use pathlib.Path.glob`
+  - Expected: response cites the right docs section
+- [ ] Ask: `search for json parsing in Python`
+  - Expected: response surfaces `json` docs results
+- [ ] Check the Claude developer console
+  - Expected: no protocol errors or repeated reconnect loops
+
+## Test 3: Cursor integration
+
+### Setup
+
+1. Open Cursor MCP settings
+2. Add a server:
+   - Name: `python-docs`
+   - Command: `uvx`
+   - Args: `mcp-server-python-docs`
+3. Confirm the server shows as connected
+
+### Checks
+
+- [ ] Ask: `what is asyncio.TaskGroup`
+  - Expected: MCP tool usage is visible and the answer references the right docs
+- [ ] Ask: `show me the docs for collections.OrderedDict`
+  - Expected: response includes the relevant documentation section
+- [ ] Ask a second or third follow-up query
+  - Expected: the server stays connected across multiple calls
+
+## Test 4: Fresh install verification
+
+Use this when validating the published package or a clean local environment.
+
+On Windows, close the MCP client before rebuilding if the live index file is
+locked.
+
+### Checks
+
+- [ ] `uvx mcp-server-python-docs --version`
+  - Expected: prints the current package version
+- [ ] `uvx mcp-server-python-docs build-index --versions 3.12,3.13`
+  - Expected: index build completes successfully
+- [ ] `uvx mcp-server-python-docs doctor`
+  - Expected: all required checks pass
+- [ ] Follow the README from scratch
+  - Expected: a new user can get to a working client configuration without using `.planning/`
+
+## Evidence log
+
+| Test | Pass/Fail | Tester | Date | Notes |
+|------|-----------|--------|------|-------|
+| Inspector quick loop | | | | |
+| Claude Desktop | | | | |
+| Cursor | | | | |
+| Fresh install | | | | |

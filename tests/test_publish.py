@@ -7,7 +7,10 @@ restart message (PUBL-05), and ingestion-while-serving regression (PUBL-06).
 from __future__ import annotations
 
 import sqlite3
+import sys
 from pathlib import Path
+
+import pytest
 
 from mcp_server_python_docs.ingestion.publish import (
     atomic_swap,
@@ -343,6 +346,9 @@ class TestIngestionWhileServing:
         4. Asserts the original RO connection still works
         5. New RO connection sees new data
         """
+        if sys.platform == "win32":
+            pytest.skip("Windows locks the live SQLite file during atomic swap")
+
         index_path = tmp_path / "index.db"
 
         # Step 1: Create initial populated DB

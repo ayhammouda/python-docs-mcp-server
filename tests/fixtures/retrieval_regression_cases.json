@@ -1,0 +1,129 @@
+[
+  {
+    "id": "exact_symbol_hit",
+    "operation": "search",
+    "input": {
+      "query": "asyncio.TaskGroup",
+      "kind": "symbol",
+      "version": "3.13",
+      "max_results": 5
+    },
+    "expect": {
+      "min_hits": 1,
+      "first_hit": {
+        "title": "asyncio.TaskGroup",
+        "slug": "library/asyncio-task.html",
+        "anchor": "asyncio.TaskGroup",
+        "version": "3.13"
+      }
+    }
+  },
+  {
+    "id": "module_lookup",
+    "operation": "search",
+    "input": {
+      "query": "json parsing",
+      "kind": "section",
+      "version": "3.13",
+      "max_results": 5
+    },
+    "expect": {
+      "min_hits": 1,
+      "first_hit": {
+        "title": "JSON parsing",
+        "slug": "library/json.html",
+        "version": "3.13"
+      }
+    }
+  },
+  {
+    "id": "cross_version_distinction",
+    "operation": "search",
+    "input": {
+      "query": "asyncio.TaskGroup",
+      "kind": "symbol",
+      "version": null,
+      "max_results": 5
+    },
+    "expect": {
+      "min_hits": 2,
+      "versions": [
+        "3.12",
+        "3.13"
+      ]
+    }
+  },
+  {
+    "id": "section_retrieval_by_anchor",
+    "operation": "get_docs",
+    "input": {
+      "slug": "library/asyncio-task.html",
+      "version": "3.13",
+      "anchor": "asyncio.TaskGroup",
+      "max_chars": 8000,
+      "start_index": 0
+    },
+    "expect": {
+      "version": "3.13",
+      "anchor": "asyncio.TaskGroup",
+      "title": "asyncio.TaskGroup",
+      "content_contains": "Python 3.13 TaskGroup documentation"
+    }
+  },
+  {
+    "id": "truncation_behavior",
+    "operation": "get_docs",
+    "input": {
+      "slug": "library/asyncio-task.html",
+      "version": "3.13",
+      "max_chars": 40,
+      "start_index": 0
+    },
+    "expect": {
+      "version": "3.13",
+      "truncated": true,
+      "content_max_length": 40,
+      "next_start_index": true
+    }
+  },
+  {
+    "id": "unsupported_version",
+    "operation": "get_docs",
+    "input": {
+      "slug": "library/asyncio-task.html",
+      "version": "3.99",
+      "max_chars": 8000,
+      "start_index": 0
+    },
+    "error": "VersionNotFoundError"
+  },
+  {
+    "id": "missing_symbol",
+    "operation": "search",
+    "input": {
+      "query": "nonexistent.symbol_name",
+      "kind": "symbol",
+      "version": "3.13",
+      "max_results": 5
+    },
+    "expect": {
+      "hits": 0
+    }
+  },
+  {
+    "id": "local_version_defaulting",
+    "operation": "server_get_docs_defaulted",
+    "input": {
+      "slug": "library/asyncio-task.html",
+      "anchor": "asyncio.TaskGroup",
+      "max_chars": 8000,
+      "start_index": 0
+    },
+    "detected_python_version": "3.12",
+    "expect": {
+      "version": "3.12",
+      "anchor": "asyncio.TaskGroup",
+      "content_contains": "Python 3.12 TaskGroup documentation"
+    }
+  }
+]
