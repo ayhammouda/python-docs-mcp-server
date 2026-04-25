@@ -48,9 +48,10 @@ sys.stdout = sys.stderr
 
 # === SIGPIPE HANDLER (HYGN-03) ===
 # Ignore SIGPIPE so client disconnect doesn't crash with BrokenPipeError.
-# Windows doesn't have SIGPIPE.
-if hasattr(signal, "SIGPIPE"):
-    signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+# Windows does not expose SIGPIPE.
+sigpipe = getattr(signal, "SIGPIPE", None)
+if sigpipe is not None:
+    signal.signal(sigpipe, signal.SIG_IGN)
 
 # === LOGGING TO STDERR (HYGN-02) ===
 import logging  # noqa: E402
