@@ -37,6 +37,10 @@ findings:
 status: issues_found
 ---
 
+> Archival note: this review is a historical snapshot from the generated GSD
+> workflow. It may describe issues that have already been fixed and should not
+> be treated as current repo truth.
+
 # Full Codebase: Code Review Report
 
 **Reviewed:** 2026-04-16T12:00:00Z

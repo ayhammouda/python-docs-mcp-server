@@ -23,6 +23,30 @@ import pytest
 from mcp_server_python_docs.storage.db import bootstrap_schema, get_readwrite_connection
 
 
+def _isolated_cache_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
+    """Build subprocess env and matching platformdirs cache path."""
+    overrides = {
+        "HOME": str(tmp_path),
+        "XDG_CACHE_HOME": str(tmp_path),
+        "LOCALAPPDATA": str(tmp_path / "AppData" / "Local"),
+        "APPDATA": str(tmp_path / "AppData" / "Roaming"),
+        "USERPROFILE": str(tmp_path),
+    }
+    env = {**os.environ, **overrides}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import platformdirs; print(platformdirs.user_cache_dir('mcp-python-docs'))",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+    )
+    return env, Path(result.stdout.strip())
+
+
 def _create_test_index(cache_dir: Path) -> Path:
     """Create a minimal index.db for the server to start with."""
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -122,18 +146,8 @@ class TestStdioSmoke:
     def _setup_test_env(self, tmp_path):
         """Create a temp dir with a minimal index.db."""
         self.tmp_dir = tmp_path
-        # platformdirs resolves differently per OS; set both HOME and XDG
-        if sys.platform == "darwin":
-            self.cache_dir = self.tmp_dir / "Library" / "Caches" / "mcp-python-docs"
-        else:
-            self.cache_dir = self.tmp_dir / "mcp-python-docs"
+        self.env, self.cache_dir = _isolated_cache_env(self.tmp_dir)
         _create_test_index(self.cache_dir)
-
-        self.env = {
-            **os.environ,
-            "HOME": str(self.tmp_dir),
-            "XDG_CACHE_HOME": str(self.tmp_dir),
-        }
 
     def _run_server_with_input(
         self, stdin_data: bytes, timeout: int = 15,
