@@ -129,6 +129,8 @@ def build_index(versions: str, skip_content: bool) -> None:
         ingest_sphinx_json_dir,
         populate_synonyms,
         rebuild_fts_indexes,
+        write_json_build_requirements,
+        write_sphinx_json_sitecustomize,
     )
     from mcp_server_python_docs.storage.db import (
         assert_fts5_available,
@@ -230,10 +232,21 @@ def build_index(versions: str, skip_content: bool) -> None:
                     )
 
                     # Install remaining Doc/requirements.txt deps
-                    doc_reqs = os.path.join(clone_dir, "Doc", "requirements.txt")
-                    if os.path.exists(doc_reqs):
+                    doc_reqs = Path(clone_dir) / "Doc" / "requirements.txt"
+                    if doc_reqs.exists():
+                        json_doc_reqs = doc_reqs.with_name(
+                            "_json-build-requirements.txt"
+                        )
+                        omitted_reqs = write_json_build_requirements(
+                            doc_reqs, json_doc_reqs
+                        )
+                        if omitted_reqs:
+                            logger.info(
+                                "Omitted HTML-only Sphinx extensions for JSON build: %s",
+                                ", ".join(omitted_reqs),
+                            )
                         subprocess.run(
-                            [pip_path, "install", "-r", doc_reqs],
+                            [pip_path, "install", "-r", str(json_doc_reqs)],
                             check=True,
                             capture_output=True,
                             text=True,
@@ -244,6 +257,14 @@ def build_index(versions: str, skip_content: bool) -> None:
                     sphinx_build = os.path.join(scripts_dir, "sphinx-build")
                     doc_dir = os.path.join(clone_dir, "Doc")
                     json_out = os.path.join(doc_dir, "build", "json")
+                    sphinx_compat_dir = Path(clone_dir) / "_sphinx_json_compat"
+                    write_sphinx_json_sitecustomize(sphinx_compat_dir)
+                    sphinx_env = os.environ.copy()
+                    sphinx_env["PYTHONPATH"] = (
+                        str(sphinx_compat_dir)
+                        if not sphinx_env.get("PYTHONPATH")
+                        else f"{sphinx_compat_dir}{os.pathsep}{sphinx_env['PYTHONPATH']}"
+                    )
 
                     logger.info(
                         "Running sphinx-build -b json for Python %s "
@@ -253,12 +274,14 @@ def build_index(versions: str, skip_content: bool) -> None:
                     result = subprocess.run(
                         [
                             sphinx_build, "-b", "json",
+                            "-D", "html_theme=classic",
                             "-j", "auto",
                             doc_dir, json_out,
                         ],
                         capture_output=True,
                         text=True,
                         cwd=doc_dir,
+                        env=sphinx_env,
                     )
                     if result.returncode != 0:
                         logger.error(
