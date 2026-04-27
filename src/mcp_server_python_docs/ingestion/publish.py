@@ -11,6 +11,7 @@ import logging
 import os
 import sqlite3
 import sys
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
@@ -21,6 +22,16 @@ from mcp_server_python_docs.storage.db import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _version_sort_key(version: str) -> tuple[int, ...]:
+    """Sort dotted Python versions numerically."""
+    return tuple(int(part) for part in version.split("."))
+
+
+def parse_expected_versions(version: str) -> list[str]:
+    """Parse a comma-separated build version string."""
+    return [v.strip() for v in version.split(",") if v.strip()]
 
 
 def generate_build_path() -> Path:
@@ -94,6 +105,7 @@ def run_smoke_tests(
     db_path: Path,
     *,
     require_content: bool = True,
+    expected_versions: Iterable[str] | None = None,
 ) -> tuple[bool, list[str]]:
     """Run smoke tests against a newly built database (PUBL-03).
 
@@ -107,6 +119,9 @@ def run_smoke_tests(
         db_path: Path to the database to test.
         require_content: When True, enforce document/section checks suitable for
             full-content builds. When False, validate a symbol-only build.
+        expected_versions: Optional versions requested by the build command. When
+            present, each version must have its own expected corpus rows and the
+            highest requested version must be the default.
 
     Returns:
         Tuple of (passed, messages). ``passed`` is True only if ALL
@@ -121,13 +136,63 @@ def run_smoke_tests(
         return False, [f"FAIL: Cannot open database: {e}"]
 
     try:
+        expected_version_list = list(dict.fromkeys(expected_versions or []))
+
         # Check doc_sets
-        count = conn.execute("SELECT COUNT(*) FROM doc_sets").fetchone()[0]
+        doc_set_rows = conn.execute(
+            "SELECT id, version, is_default FROM doc_sets"
+        ).fetchall()
+        count = len(doc_set_rows)
+        present_versions = [row["version"] for row in doc_set_rows]
         if count >= 1:
             messages.append(f"OK: doc_sets: {count} rows")
         else:
             messages.append(f"FAIL: doc_sets: {count} rows (need >= 1)")
             passed = False
+
+        if expected_version_list:
+            missing_versions = [
+                version
+                for version in expected_version_list
+                if version not in present_versions
+            ]
+            if missing_versions:
+                messages.append(
+                    "FAIL: doc_sets: missing expected versions: "
+                    + ", ".join(missing_versions)
+                )
+                passed = False
+            else:
+                messages.append(
+                    "OK: doc_sets: expected versions present: "
+                    + ", ".join(expected_version_list)
+                )
+
+        versions_for_default_check = expected_version_list or present_versions
+        if versions_for_default_check:
+            expected_default = max(versions_for_default_check, key=_version_sort_key)
+            default_versions = [
+                row["version"] for row in doc_set_rows if row["is_default"]
+            ]
+            if not default_versions:
+                messages.append(
+                    f"FAIL: doc_sets: no default version (expected {expected_default})"
+                )
+                passed = False
+            elif len(default_versions) > 1:
+                messages.append(
+                    "FAIL: doc_sets: multiple default versions: "
+                    + ", ".join(default_versions)
+                )
+                passed = False
+            elif default_versions[0] != expected_default:
+                messages.append(
+                    "FAIL: doc_sets: default version is "
+                    f"{default_versions[0]} (expected {expected_default})"
+                )
+                passed = False
+            else:
+                messages.append(f"OK: doc_sets: default version is {expected_default}")
 
         # Check symbols
         count = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
@@ -136,6 +201,38 @@ def run_smoke_tests(
         else:
             messages.append(f"FAIL: symbols: {count} rows (need >= 1000)")
             passed = False
+
+        for version in expected_version_list:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM symbols "
+                "JOIN doc_sets ON doc_sets.id = symbols.doc_set_id "
+                "WHERE doc_sets.version = ?",
+                (version,),
+            ).fetchone()[0]
+            if count >= 1000:
+                messages.append(f"OK: symbols: version {version} has {count} rows")
+            else:
+                messages.append(
+                    f"FAIL: symbols: version {version} has {count} rows (need >= 1000)"
+                )
+                passed = False
+
+            row = conn.execute(
+                "SELECT 1 FROM symbols "
+                "JOIN doc_sets ON doc_sets.id = symbols.doc_set_id "
+                "WHERE doc_sets.version = ? "
+                "AND symbols.qualified_name = 'asyncio.TaskGroup' LIMIT 1",
+                (version,),
+            ).fetchone()
+            if row:
+                messages.append(
+                    f"OK: sentinel: asyncio.TaskGroup symbol found for version {version}"
+                )
+            else:
+                messages.append(
+                    f"FAIL: sentinel: asyncio.TaskGroup symbol missing for version {version}"
+                )
+                passed = False
 
         if require_content:
             # Check documents
@@ -153,6 +250,40 @@ def run_smoke_tests(
             else:
                 messages.append(f"FAIL: sections: {count} rows (need >= 50)")
                 passed = False
+
+            for version in expected_version_list:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM documents "
+                    "JOIN doc_sets ON doc_sets.id = documents.doc_set_id "
+                    "WHERE doc_sets.version = ?",
+                    (version,),
+                ).fetchone()[0]
+                if count >= 10:
+                    messages.append(
+                        f"OK: documents: version {version} has {count} rows"
+                    )
+                else:
+                    messages.append(
+                        f"FAIL: documents: version {version} has {count} rows (need >= 10)"
+                    )
+                    passed = False
+
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM sections "
+                    "JOIN documents ON documents.id = sections.document_id "
+                    "JOIN doc_sets ON doc_sets.id = documents.doc_set_id "
+                    "WHERE doc_sets.version = ?",
+                    (version,),
+                ).fetchone()[0]
+                if count >= 50:
+                    messages.append(
+                        f"OK: sections: version {version} has {count} rows"
+                    )
+                else:
+                    messages.append(
+                        f"FAIL: sections: version {version} has {count} rows (need >= 50)"
+                    )
+                    passed = False
 
             # Spot-check: asyncio document exists
             row = conn.execute(
@@ -324,7 +455,11 @@ def publish_index(
         conn.close()
 
     # Run smoke tests (PUBL-03)
-    passed, messages = run_smoke_tests(build_db_path, require_content=require_content)
+    passed, messages = run_smoke_tests(
+        build_db_path,
+        require_content=require_content,
+        expected_versions=parse_expected_versions(version),
+    )
     for msg in messages:
         logger.info("Smoke test: %s", msg)
 

@@ -10,8 +10,10 @@ from __future__ import annotations
 import importlib.resources
 import json
 import logging
+import os
 import re
 import sqlite3
+from collections.abc import Mapping
 from pathlib import Path
 
 import yaml
@@ -108,6 +110,39 @@ def write_sphinx_json_sitecustomize(output_dir: Path) -> Path:
     sitecustomize_path = output_dir / "sitecustomize.py"
     sitecustomize_path.write_text(_SPHINX_JSON_SITECUSTOMIZE, encoding="utf-8")
     return sitecustomize_path
+
+
+def make_sphinx_json_env(
+    compat_dir: Path,
+    base_env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Return an environment that loads the JSON-build compatibility shim first."""
+    env = dict(base_env) if base_env is not None else os.environ.copy()
+    existing_pythonpath = env.get("PYTHONPATH")
+    if existing_pythonpath:
+        env["PYTHONPATH"] = f"{compat_dir}{os.pathsep}{existing_pythonpath}"
+    else:
+        env["PYTHONPATH"] = str(compat_dir)
+    return env
+
+
+def build_sphinx_json_command(
+    sphinx_build: Path | str,
+    doc_dir: Path | str,
+    json_out: Path | str,
+) -> list[str]:
+    """Return the Sphinx command used for CPython JSON documentation builds."""
+    return [
+        str(sphinx_build),
+        "-b",
+        "json",
+        "-D",
+        "html_theme=classic",
+        "-j",
+        "auto",
+        str(doc_dir),
+        str(json_out),
+    ]
 
 
 def parse_fjson(filepath: Path) -> dict:

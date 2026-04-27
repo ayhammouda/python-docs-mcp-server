@@ -122,11 +122,15 @@ def build_index(versions: str, skip_content: bool) -> None:
 
     from mcp_server_python_docs.ingestion.inventory import ingest_inventory
     from mcp_server_python_docs.ingestion.publish import (
+        _version_sort_key,
         generate_build_path,
+        parse_expected_versions,
         publish_index,
     )
     from mcp_server_python_docs.ingestion.sphinx_json import (
+        build_sphinx_json_command,
         ingest_sphinx_json_dir,
+        make_sphinx_json_env,
         populate_synonyms,
         rebuild_fts_indexes,
         write_json_build_requirements,
@@ -144,7 +148,7 @@ def build_index(versions: str, skip_content: bool) -> None:
         "3.13": {"tag": "v3.13.12", "sphinx_pin": "sphinx<9.0.0"},
     }
 
-    version_list = [v.strip() for v in versions.split(",") if v.strip()]
+    version_list = parse_expected_versions(versions)
     if not version_list:
         logger.error("No valid versions specified. Example: --versions 3.13")
         raise SystemExit(1)
@@ -159,8 +163,7 @@ def build_index(versions: str, skip_content: bool) -> None:
             raise SystemExit(1)
 
     # Determine default version: highest version number (MVER-02)
-    sorted_versions = sorted(version_list, key=lambda v: [int(x) for x in v.split(".")])
-    default_version = sorted_versions[-1]
+    default_version = max(version_list, key=_version_sort_key)
 
     # Build into a timestamped artifact, not directly to index.db (PUBL-01)
     build_db_path = generate_build_path()
@@ -259,12 +262,7 @@ def build_index(versions: str, skip_content: bool) -> None:
                     json_out = os.path.join(doc_dir, "build", "json")
                     sphinx_compat_dir = Path(clone_dir) / "_sphinx_json_compat"
                     write_sphinx_json_sitecustomize(sphinx_compat_dir)
-                    sphinx_env = os.environ.copy()
-                    sphinx_env["PYTHONPATH"] = (
-                        str(sphinx_compat_dir)
-                        if not sphinx_env.get("PYTHONPATH")
-                        else f"{sphinx_compat_dir}{os.pathsep}{sphinx_env['PYTHONPATH']}"
-                    )
+                    sphinx_env = make_sphinx_json_env(sphinx_compat_dir)
 
                     logger.info(
                         "Running sphinx-build -b json for Python %s "
@@ -272,12 +270,7 @@ def build_index(versions: str, skip_content: bool) -> None:
                         version,
                     )
                     result = subprocess.run(
-                        [
-                            sphinx_build, "-b", "json",
-                            "-D", "html_theme=classic",
-                            "-j", "auto",
-                            doc_dir, json_out,
-                        ],
+                        build_sphinx_json_command(sphinx_build, doc_dir, json_out),
                         capture_output=True,
                         text=True,
                         cwd=doc_dir,
@@ -375,7 +368,10 @@ def validate_corpus(db_path: str | None) -> None:
     """
     from pathlib import Path
 
-    from mcp_server_python_docs.ingestion.publish import run_smoke_tests
+    from mcp_server_python_docs.ingestion.publish import (
+        parse_expected_versions,
+        run_smoke_tests,
+    )
     from mcp_server_python_docs.storage.db import get_index_path, get_readonly_connection
 
     if db_path is not None:
@@ -392,20 +388,28 @@ def validate_corpus(db_path: str | None) -> None:
 
     # Auto-detect symbol-only builds from the last published ingestion run
     require_content = True
+    expected_versions: list[str] | None = None
     try:
         ro_conn = get_readonly_connection(target)
         row = ro_conn.execute(
-            "SELECT notes FROM ingestion_runs "
+            "SELECT version, notes FROM ingestion_runs "
             "WHERE status = 'published' ORDER BY id DESC LIMIT 1"
         ).fetchone()
         ro_conn.close()
-        if row and row[0] and "build_mode=symbol_only" in row[0]:
+        if row and row[0]:
+            expected_versions = parse_expected_versions(row[0])
+        if row and row[1] and "build_mode=symbol_only" in row[1]:
             require_content = False
             logger.info("Detected symbol-only build — skipping content checks")
-    except Exception:
-        pass  # If we can't read the metadata, default to full validation
+    except Exception as e:
+        # If we can't read the metadata, default to full validation
+        logger.debug("Could not read ingestion_runs metadata: %s", e)
 
-    passed, messages = run_smoke_tests(target, require_content=require_content)
+    passed, messages = run_smoke_tests(
+        target,
+        require_content=require_content,
+        expected_versions=expected_versions,
+    )
 
     for msg in messages:
         if msg.startswith("OK:"):

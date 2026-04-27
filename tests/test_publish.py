@@ -120,45 +120,117 @@ class TestSmokeTests:
         conn = get_readwrite_connection(db_path)
         bootstrap_schema(conn)
 
-        # Insert doc_set
-        conn.execute(
-            "INSERT INTO doc_sets (source, version, language, label, is_default, base_url) "
-            "VALUES ('python-docs', '3.13', 'en', 'Python 3.13', 1, "
-            "'https://docs.python.org/3.13/')"
-        )
+        doc_set_ids: dict[str, int] = {}
 
-        # Insert 20+ documents (need >= 10)
-        for i in range(25):
-            slug = f"library/module{i}" if i != 5 else "library/asyncio-task"
+        # Insert doc_sets
+        for version, is_default in (("3.12", 0), ("3.13", 1)):
             conn.execute(
-                "INSERT INTO documents (doc_set_id, uri, slug, title, content_text, char_count) "
-                "VALUES (1, ?, ?, ?, 'content', 7)",
-                (f"{slug}.html", slug, f"Module {i}"),
+                "INSERT INTO doc_sets (source, version, language, label, is_default, base_url) "
+                "VALUES ('python-docs', ?, 'en', ?, ?, ?)",
+                (
+                    version,
+                    f"Python {version}",
+                    is_default,
+                    f"https://docs.python.org/{version}/",
+                ),
             )
+            doc_set_ids[version] = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
-        # Insert 100+ sections (need >= 50)
-        for i in range(120):
-            doc_id = (i % 25) + 1
-            conn.execute(
-                "INSERT INTO sections (document_id, uri, anchor, heading, level, "
-                "ordinal, content_text, char_count) "
-                "VALUES (?, ?, ?, ?, 1, ?, 'asyncio content', 15)",
-                (doc_id, f"test.html#s{i}", f"s{i}", f"Section {i}", i),
-            )
+        for version, doc_set_id in doc_set_ids.items():
+            doc_ids: list[int] = []
 
-        # Insert 2000+ symbols (need >= 1000)
-        for i in range(2100):
+            # Insert 20+ documents per expected version (need >= 10)
+            for i in range(25):
+                slug = f"library/module{i}" if i != 5 else "library/asyncio-task"
+                conn.execute(
+                    "INSERT INTO documents (doc_set_id, uri, slug, title, "
+                    "content_text, char_count) "
+                    "VALUES (?, ?, ?, ?, 'content', 7)",
+                    (doc_set_id, f"{slug}.html", slug, f"Module {i}"),
+                )
+                doc_ids.append(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+            # Insert 100+ sections per expected version (need >= 50)
+            for i in range(120):
+                doc_id = doc_ids[i % len(doc_ids)]
+                anchor = "asyncio.TaskGroup" if i == 0 else f"s{i}"
+                heading = "asyncio.TaskGroup" if i == 0 else f"Section {i}"
+                content = (
+                    "asyncio TaskGroup content"
+                    if i == 0
+                    else f"asyncio content for Python {version}"
+                )
+                conn.execute(
+                    "INSERT INTO sections (document_id, uri, anchor, heading, level, "
+                    "ordinal, content_text, char_count) "
+                    "VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
+                    (
+                        doc_id,
+                        f"test.html#{anchor}",
+                        anchor,
+                        heading,
+                        i,
+                        content,
+                        len(content),
+                    ),
+                )
+
+            # Insert 2000+ symbols per expected version (need >= 1000)
             conn.execute(
                 "INSERT INTO symbols (doc_set_id, qualified_name, normalized_name, "
                 "module, symbol_type, uri, anchor) "
-                "VALUES (1, ?, ?, ?, 'function', ?, ?)",
-                (f"mod{i}.func{i}", f"mod{i}.func{i}", f"mod{i}", f"lib/m.html#f{i}", f"f{i}"),
+                "VALUES (?, 'asyncio.TaskGroup', 'asyncio_taskgroup', 'asyncio', "
+                "'class', 'library/asyncio-task.html#asyncio.TaskGroup', "
+                "'asyncio.TaskGroup')",
+                (doc_set_id,),
             )
+            for i in range(2099):
+                conn.execute(
+                    "INSERT INTO symbols (doc_set_id, qualified_name, normalized_name, "
+                    "module, symbol_type, uri, anchor) "
+                    "VALUES (?, ?, ?, ?, 'function', ?, ?)",
+                    (
+                        doc_set_id,
+                        f"mod{i}.func{i}",
+                        f"mod{i}.func{i}",
+                        f"mod{i}",
+                        f"lib/m.html#f{i}",
+                        f"f{i}",
+                    ),
+                )
 
         conn.commit()
 
         # Rebuild FTS indexes
+        conn.execute("INSERT INTO symbols_fts(symbols_fts) VALUES('rebuild')")
         conn.execute("INSERT INTO sections_fts(sections_fts) VALUES('rebuild')")
+        conn.commit()
+        conn.close()
+
+    def _remove_version_content(self, db_path: Path, version: str) -> None:
+        """Helper: remove documents and sections for one version."""
+        conn = get_readwrite_connection(db_path)
+        conn.execute(
+            "DELETE FROM sections WHERE document_id IN ("
+            "SELECT documents.id FROM documents "
+            "JOIN doc_sets ON doc_sets.id = documents.doc_set_id "
+            "WHERE doc_sets.version = ?)",
+            (version,),
+        )
+        conn.execute(
+            "DELETE FROM documents WHERE doc_set_id = "
+            "(SELECT id FROM doc_sets WHERE version = ?)",
+            (version,),
+        )
+        conn.execute("INSERT INTO sections_fts(sections_fts) VALUES('rebuild')")
+        conn.commit()
+        conn.close()
+
+    def _remove_symbol(self, db_path: Path, qualified_name: str) -> None:
+        """Helper: remove a symbol from all versions."""
+        conn = get_readwrite_connection(db_path)
+        conn.execute("DELETE FROM symbols WHERE qualified_name = ?", (qualified_name,))
+        conn.execute("INSERT INTO symbols_fts(symbols_fts) VALUES('rebuild')")
         conn.commit()
         conn.close()
 
@@ -166,9 +238,75 @@ class TestSmokeTests:
         """Smoke tests pass on a DB with sufficient data."""
         db_path = tmp_path / "good.db"
         self._create_populated_db(db_path)
-        passed, messages = run_smoke_tests(db_path)
+        passed, messages = run_smoke_tests(
+            db_path, expected_versions=["3.12", "3.13"]
+        )
         assert passed is True
         assert any("OK" in m for m in messages)
+
+    def test_fails_when_expected_version_is_missing(self, tmp_path):
+        """Smoke tests fail when a requested build version is absent."""
+        db_path = tmp_path / "missing-version.db"
+        self._create_populated_db(db_path)
+        conn = get_readwrite_connection(db_path)
+        conn.execute("DELETE FROM doc_sets WHERE version = '3.12'")
+        conn.commit()
+        conn.close()
+
+        passed, messages = run_smoke_tests(
+            db_path, expected_versions=["3.12", "3.13"]
+        )
+
+        assert passed is False
+        assert "FAIL: doc_sets: missing expected versions: 3.12" in messages
+
+    def test_fails_when_default_version_is_not_highest_expected_version(self, tmp_path):
+        """Smoke tests fail when the default version is not the highest request."""
+        db_path = tmp_path / "wrong-default.db"
+        self._create_populated_db(db_path)
+        conn = get_readwrite_connection(db_path)
+        conn.execute(
+            "UPDATE doc_sets "
+            "SET is_default = CASE WHEN version = '3.12' THEN 1 ELSE 0 END"
+        )
+        conn.commit()
+        conn.close()
+
+        passed, messages = run_smoke_tests(
+            db_path, expected_versions=["3.12", "3.13"]
+        )
+
+        assert passed is False
+        assert "FAIL: doc_sets: default version is 3.12 (expected 3.13)" in messages
+
+    def test_fails_when_expected_version_has_no_content(self, tmp_path):
+        """Smoke tests fail when a requested version has symbols but no content corpus."""
+        db_path = tmp_path / "missing-version-content.db"
+        self._create_populated_db(db_path)
+        self._remove_version_content(db_path, "3.13")
+
+        passed, messages = run_smoke_tests(
+            db_path, expected_versions=["3.12", "3.13"]
+        )
+
+        assert passed is False
+        assert "FAIL: documents: version 3.13 has 0 rows (need >= 10)" in messages
+
+    def test_fails_when_asyncio_taskgroup_symbol_sentinel_is_missing(self, tmp_path):
+        """Smoke tests fail when the core asyncio.TaskGroup symbol sentinel is absent."""
+        db_path = tmp_path / "missing-sentinel-symbol.db"
+        self._create_populated_db(db_path)
+        self._remove_symbol(db_path, "asyncio.TaskGroup")
+
+        passed, messages = run_smoke_tests(
+            db_path, expected_versions=["3.12", "3.13"]
+        )
+
+        assert passed is False
+        assert (
+            "FAIL: sentinel: asyncio.TaskGroup symbol missing for version 3.13"
+            in messages
+        )
 
     def test_fail_on_empty_db(self, tmp_path):
         """Smoke tests fail on an empty DB."""
