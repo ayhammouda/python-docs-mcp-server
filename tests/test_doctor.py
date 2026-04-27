@@ -80,6 +80,16 @@ class TestDoctor:
         )
         assert "PASS: Disk space" in result.stderr
 
+    def test_doctor_checks_build_venv_support(self):
+        """Doctor reports whether build-index can create Sphinx venvs."""
+        result = subprocess.run(
+            [sys.executable, "-m", "mcp_server_python_docs", "doctor"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert "Build venv support" in result.stderr
+
     def test_doctor_reports_missing_index(self):
         """Doctor reports FAIL for Index database when pointed at empty dir."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -115,3 +125,54 @@ class TestDoctor:
         )
         combined = result.stdout + result.stderr
         assert "doctor" in combined
+
+
+class TestBuildVenvSupportProbe:
+    """Verify the build-index venv prerequisite probe."""
+
+    def test_probe_reports_missing_ensurepip_with_platform_package_hint(self, monkeypatch):
+        """Missing ensurepip points users to the versioned Debian/Ubuntu venv package."""
+
+        def fake_run(*args, **kwargs):
+            return subprocess.CompletedProcess(
+                args=args[0],
+                returncode=1,
+                stdout="",
+                stderr="ModuleNotFoundError: No module named 'ensurepip'",
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        from mcp_server_python_docs.diagnostics import check_build_venv_support
+
+        result = check_build_venv_support()
+
+        assert result.passed is False
+        assert "ensurepip" in result.detail
+        assert (
+            f"python{sys.version_info.major}.{sys.version_info.minor}-venv"
+            in result.detail
+        )
+
+    def test_probe_passes_when_venv_and_ensurepip_are_importable(self, monkeypatch):
+        """Available venv and ensurepip support passes the build prerequisite probe."""
+
+        def fake_run(*args, **kwargs):
+            command = args[0]
+            assert "ensurepip" in command[-1]
+            assert "venv" in command[-1]
+            return subprocess.CompletedProcess(
+                args=command,
+                returncode=0,
+                stdout="",
+                stderr="",
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        from mcp_server_python_docs.diagnostics import check_build_venv_support
+
+        result = check_build_venv_support()
+
+        assert result.passed is True
+        assert "build-index" in result.detail
