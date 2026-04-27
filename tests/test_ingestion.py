@@ -21,7 +21,69 @@ from mcp_server_python_docs.ingestion.sphinx_json import (
     parse_fjson,
     populate_synonyms,
     rebuild_fts_indexes,
+    write_json_build_requirements,
+    write_sphinx_json_sitecustomize,
 )
+
+
+class TestJsonBuildRequirements:
+    def test_omits_html_only_sphinx_extensions(self, tmp_path):
+        source = tmp_path / "requirements.txt"
+        output = tmp_path / "json-requirements.txt"
+        source.write_text(
+            "\n".join([
+                "# CPython docs requirements",
+                "sphinx==8.2.3",
+                "sphinxext-opengraph>=0.9.1",
+                "python-docs-theme>=2025.8",
+                "sphinx-notfound-page==1.0.0",
+                "-c constraints.txt",
+                "blurb",
+            ])
+            + "\n",
+            encoding="utf-8",
+        )
+
+        omitted = write_json_build_requirements(source, output)
+
+        assert omitted == [
+            "sphinxext-opengraph",
+            "python-docs-theme",
+            "sphinx-notfound-page",
+        ]
+        assert output.read_text(encoding="utf-8") == (
+            "# CPython docs requirements\n"
+            "sphinx==8.2.3\n"
+            "-c constraints.txt\n"
+            "blurb\n"
+        )
+
+    def test_matches_requirement_names_case_and_separator_insensitively(self, tmp_path):
+        source = tmp_path / "requirements.txt"
+        output = tmp_path / "json-requirements.txt"
+        source.write_text(
+            "SphinxExt.OpenGraph>=0.9; python_version >= '3.12'\n"
+            "SPHINX_NOTFOUND_PAGE==1.0\n",
+            encoding="utf-8",
+        )
+
+        omitted = write_json_build_requirements(source, output)
+
+        assert omitted == ["sphinxext-opengraph", "sphinx-notfound-page"]
+        assert output.read_text(encoding="utf-8") == ""
+
+
+class TestSphinxJsonSitecustomize:
+    def test_writes_translation_proxy_json_patch(self, tmp_path):
+        output_dir = tmp_path / "compat"
+
+        sitecustomize = write_sphinx_json_sitecustomize(output_dir)
+
+        assert sitecustomize == output_dir / "sitecustomize.py"
+        content = sitecustomize.read_text(encoding="utf-8")
+        assert "_TranslationProxy" in content
+        assert "SphinxJSONEncoder.default" in content
+
 
 # ── fjson parsing tests (INGR-C-04) ──
 

@@ -35,6 +35,80 @@ _SKIP_SLUGS = {
     "contents",
 }
 
+_HTML_ONLY_SPHINX_REQUIREMENTS = frozenset({
+    "python-docs-theme",
+    "sphinx-notfound-page",
+    "sphinxext-opengraph",
+})
+
+_SPHINX_JSON_SITECUSTOMIZE = '''"""Compatibility patch for disposable Sphinx JSON builds."""
+
+from __future__ import annotations
+
+try:
+    from sphinxcontrib.serializinghtml import jsonimpl
+except Exception:
+    jsonimpl = None
+
+if jsonimpl is not None:
+    _original_default = jsonimpl.SphinxJSONEncoder.default
+
+    def _mcp_json_default(self, obj):
+        if obj.__class__.__name__ == "_TranslationProxy":
+            return str(obj)
+        return _original_default(self, obj)
+
+    jsonimpl.SphinxJSONEncoder.default = _mcp_json_default
+'''
+
+
+def _canonical_requirement_name(line: str) -> str | None:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#") or stripped.startswith("-"):
+        return None
+
+    match = re.match(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)", line)
+    if match is None:
+        return None
+
+    return re.sub(r"[-_.]+", "-", match.group(1)).lower()
+
+
+def write_json_build_requirements(source_path: Path, output_path: Path) -> list[str]:
+    """Write CPython Doc requirements filtered for Sphinx JSON builds.
+
+    CPython's documentation requirements include optional extensions and a
+    theme package that only support HTML output. If installed, Sphinx can load
+    them during the JSON build path and fail before any .fjson files are
+    written.
+    """
+    filtered_lines: list[str] = []
+    omitted: list[str] = []
+
+    for line in source_path.read_text(encoding="utf-8").splitlines(keepends=True):
+        package_name = _canonical_requirement_name(line)
+        if package_name in _HTML_ONLY_SPHINX_REQUIREMENTS:
+            omitted.append(package_name)
+            continue
+        filtered_lines.append(line)
+
+    output_path.write_text("".join(filtered_lines), encoding="utf-8")
+    return omitted
+
+
+def write_sphinx_json_sitecustomize(output_dir: Path) -> Path:
+    """Write a temporary sitecustomize shim for Sphinx JSON builds.
+
+    Sphinx 8.2's JSON encoder does not serialize ``_TranslationProxy`` objects,
+    even though CPython docs can place them in the page context. The Sphinx venv
+    is disposable, so keep this compatibility patch isolated to the JSON build
+    subprocess via PYTHONPATH instead of mutating installed packages.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    sitecustomize_path = output_dir / "sitecustomize.py"
+    sitecustomize_path.write_text(_SPHINX_JSON_SITECUSTOMIZE, encoding="utf-8")
+    return sitecustomize_path
+
 
 def parse_fjson(filepath: Path) -> dict:
     """Load and parse a .fjson file.
