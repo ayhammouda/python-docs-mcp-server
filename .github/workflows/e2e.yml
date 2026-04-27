@@ -1,0 +1,58 @@
+name: Slow E2E
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+
+jobs:
+  installed-build-index:
+    name: Installed build-index (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13", "3.14"]
+
+    env:
+      HOME: ${{ runner.temp }}/mcp-python-docs-home
+      XDG_CACHE_HOME: ${{ runner.temp }}/mcp-python-docs-cache
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Build package
+        run: uv build
+
+      - name: Install wheel in clean virtual environment
+        run: |
+          uv run --python ${{ matrix.python-version }} python -m venv .e2e-venv
+          .e2e-venv/bin/python -m pip install --upgrade pip
+          .e2e-venv/bin/python -m pip install dist/*.whl
+          .e2e-venv/bin/mcp-server-python-docs --version
+
+      - name: Build and validate full docs index
+        run: |
+          set -o pipefail
+          .e2e-venv/bin/mcp-server-python-docs build-index --versions 3.12,3.13 \
+            2>&1 | tee "${RUNNER_TEMP}/build-index-${{ matrix.python-version }}.log"
+          .e2e-venv/bin/mcp-server-python-docs doctor
+          .e2e-venv/bin/mcp-server-python-docs validate-corpus
+
+      - name: Upload E2E logs and cache artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-python-${{ matrix.python-version }}
+          path: |
+            ${{ runner.temp }}/build-index-${{ matrix.python-version }}.log
+            ${{ runner.temp }}/mcp-python-docs-cache
+          retention-days: 7

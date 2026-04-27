@@ -16,6 +16,10 @@ Release-specific sign-off still lives in [`.github/RELEASE.md`](RELEASE.md).
   - `uv run mcp-server-python-docs build-index --versions 3.12,3.13`
 - Doctor passes:
   - `uv run mcp-server-python-docs doctor`
+- Slow E2E workflow passes when preparing a release:
+  - GitHub Actions: `Slow E2E`
+  - Expected: Python 3.13 and 3.14 jobs both complete `build-index`, `doctor`,
+    and `validate-corpus` from an installed wheel
 - If `uv` is not on `PATH`, use `python -m uv ...` instead
 
 ## Test 1: MCP Inspector quick loop
@@ -116,6 +120,24 @@ locked.
 - [ ] Follow the README from scratch
   - Expected: a new user can get to a working client configuration without using `.planning/`
 
+## Test 5: Slow E2E workflow
+
+Run this before a release and after changes to ingestion, publishing, packaging,
+or supported Python versions.
+
+### Checks
+
+- [ ] Start the `Slow E2E` workflow from GitHub Actions
+  - Expected: both Python 3.13 and Python 3.14 jobs start
+- [ ] Confirm each job installs the built wheel into a clean virtual environment
+  - Expected: the command path is the installed `mcp-server-python-docs`, not editable source
+- [ ] Confirm `build-index --versions 3.12,3.13` passes
+  - Expected: both versions produce content, not symbol-only fallback
+- [ ] Confirm `doctor` and `validate-corpus` pass
+  - Expected: corpus smoke checks include requested versions and the default version
+- [ ] Inspect uploaded logs if a job fails
+  - Expected: Sphinx/build logs are available as workflow artifacts
+
 ## Evidence log
 
 | Test | Pass/Fail | Tester | Date | Notes |
@@ -124,3 +146,4 @@ locked.
 | Claude Desktop | | | | |
 | Cursor | | | | |
 | Fresh install | | | | |
+| Slow E2E workflow | | | | |

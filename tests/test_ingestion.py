@@ -7,17 +7,23 @@ per-document failure isolation (INGR-C-06), code block extraction
 """
 from __future__ import annotations
 
+import os
+import runpy
 import shutil
+import sys
+import types
 
 import pytest
 
 from mcp_server_python_docs.errors import IngestionError
 from mcp_server_python_docs.ingestion.sphinx_json import (
+    build_sphinx_json_command,
     extract_code_blocks,
     extract_sections,
     html_to_markdown,
     ingest_fjson_file,
     ingest_sphinx_json_dir,
+    make_sphinx_json_env,
     parse_fjson,
     populate_synonyms,
     rebuild_fts_indexes,
@@ -83,6 +89,80 @@ class TestSphinxJsonSitecustomize:
         content = sitecustomize.read_text(encoding="utf-8")
         assert "_TranslationProxy" in content
         assert "SphinxJSONEncoder.default" in content
+
+    def test_translation_proxy_patch_stringifies_proxy_objects(
+        self, tmp_path, monkeypatch
+    ):
+        output_dir = tmp_path / "compat"
+        sitecustomize = write_sphinx_json_sitecustomize(output_dir)
+
+        class ProbeEncoder:
+            def default(self, obj):
+                raise TypeError(type(obj).__name__)
+
+        jsonimpl = types.ModuleType("sphinxcontrib.serializinghtml.jsonimpl")
+        jsonimpl.SphinxJSONEncoder = ProbeEncoder
+
+        serializinghtml = types.ModuleType("sphinxcontrib.serializinghtml")
+        serializinghtml.jsonimpl = jsonimpl
+
+        sphinxcontrib = types.ModuleType("sphinxcontrib")
+        sphinxcontrib.serializinghtml = serializinghtml
+
+        monkeypatch.setitem(sys.modules, "sphinxcontrib", sphinxcontrib)
+        monkeypatch.setitem(
+            sys.modules, "sphinxcontrib.serializinghtml", serializinghtml
+        )
+        monkeypatch.setitem(
+            sys.modules, "sphinxcontrib.serializinghtml.jsonimpl", jsonimpl
+        )
+
+        runpy.run_path(str(sitecustomize))
+
+        translation_proxy = type(
+            "_TranslationProxy",
+            (),
+            {"__str__": lambda self: "translated text"},
+        )()
+
+        assert ProbeEncoder().default(translation_proxy) == "translated text"
+        with pytest.raises(TypeError):
+            ProbeEncoder().default(object())
+
+    def test_sphinx_json_env_prepends_compat_dir(self, tmp_path):
+        compat_dir = tmp_path / "compat"
+
+        env = make_sphinx_json_env(compat_dir, {"PYTHONPATH": "/existing"})
+
+        assert env["PYTHONPATH"] == f"{compat_dir}{os.pathsep}/existing"
+
+    def test_sphinx_json_env_sets_compat_dir_without_existing_pythonpath(self, tmp_path):
+        compat_dir = tmp_path / "compat"
+
+        env = make_sphinx_json_env(compat_dir, {})
+
+        assert env["PYTHONPATH"] == str(compat_dir)
+
+
+class TestSphinxJsonCommand:
+    def test_build_command_uses_json_builder_and_classic_theme(self, tmp_path):
+        sphinx_build = tmp_path / "bin" / "sphinx-build"
+        doc_dir = tmp_path / "cpython" / "Doc"
+        json_out = doc_dir / "build" / "json"
+
+        command = build_sphinx_json_command(sphinx_build, doc_dir, json_out)
+
+        assert command == [
+            str(sphinx_build),
+            "-b",
+            "json",
+            "-D",
+            "html_theme=classic",
+            "-j",
+            "auto",
+            str(doc_dir),
+            str(json_out),
+        ]
 
 
 # ── fjson parsing tests (INGR-C-04) ──

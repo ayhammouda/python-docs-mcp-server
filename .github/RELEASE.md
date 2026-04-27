@@ -144,6 +144,11 @@ Complete these steps in order. Each step has a checkbox -- do not skip ahead.
   uvx mcp-server-python-docs doctor
   # All checks should PASS
   ```
+- [ ] Slow E2E workflow passes:
+  - Run GitHub Actions workflow `Slow E2E`
+  - Confirm Python 3.13 and Python 3.14 jobs both pass
+  - Confirm each job installs the built wheel, runs
+    `build-index --versions 3.12,3.13`, `doctor`, and `validate-corpus`
 - [ ] Claude Desktop test with published package:
   Configure `mcpServers` with `uvx mcp-server-python-docs` and verify
   "what is asyncio.TaskGroup" returns a correct hit
@@ -153,6 +158,7 @@ Complete these steps in order. Each step has a checkbox -- do not skip ahead.
 - [ ] GitHub Release exists with attached artifacts
 - [ ] PyPI page shows 0.1.0 with attestation
 - [ ] README install instructions verified end-to-end
+- [ ] Slow E2E workflow passed for the release candidate
 - [ ] Tag v0.1.0 exists in git
 
 **Release date**: _______________
