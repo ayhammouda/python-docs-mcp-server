@@ -434,6 +434,7 @@ def doctor() -> None:
     import sqlite3
     from pathlib import Path
 
+    from mcp_server_python_docs.diagnostics import check_build_venv_support
     from mcp_server_python_docs.storage.db import get_cache_dir, get_index_path
 
     results: list[tuple[str, bool, str]] = []  # (probe_name, passed, detail)
@@ -470,7 +471,15 @@ def doctor() -> None:
             )
     results.append(("SQLite FTS5", fts5_ok, fts5_detail))
 
-    # 3. Cache directory
+    # 3. Build-index Sphinx venv support
+    build_venv_result = check_build_venv_support()
+    results.append((
+        "Build venv support",
+        build_venv_result.passed,
+        build_venv_result.detail,
+    ))
+
+    # 4. Cache directory
     cache_dir = get_cache_dir()
     cache_exists = cache_dir.exists()
     cache_writable = False
@@ -491,7 +500,7 @@ def doctor() -> None:
         cache_ok = False
     results.append(("Cache directory", cache_ok, cache_detail))
 
-    # 4. Index database presence
+    # 5. Index database presence
     index_path = get_index_path()
     index_exists = index_path.exists()
     index_detail = str(index_path)
@@ -504,7 +513,7 @@ def doctor() -> None:
         index_detail += f" ({size_mb:.1f} MB)"
     results.append(("Index database", index_exists, index_detail))
 
-    # 5. Free disk space
+    # 6. Free disk space
     check_path = cache_dir if cache_exists else cache_dir.parent
     # Ensure path exists for disk_usage
     if not check_path.exists():

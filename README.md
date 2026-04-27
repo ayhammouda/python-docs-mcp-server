@@ -196,6 +196,10 @@ Check the local environment:
 uvx mcp-server-python-docs doctor
 ```
 
+This checks the runtime Python version, SQLite FTS5, cache/index paths, disk
+space, and whether the current interpreter has the `venv`/`ensurepip` support
+needed by `build-index`.
+
 Validate an existing index:
 
 ```bash
@@ -221,6 +225,19 @@ Install Python from [python.org](https://www.python.org/) or use:
 ```bash
 uv python install
 ```
+
+### Missing `pythonX.Y-venv` on Debian/Ubuntu
+
+If `doctor` reports that build venv support is unavailable, install the venv
+package for the same Python minor version that runs the server:
+
+```bash
+sudo apt install python3.12-venv
+```
+
+Adjust `3.12` to match the version shown by `doctor`. Without this package,
+`build-index` cannot create the disposable Sphinx environment it uses to build
+JSON documentation content.
 
 ### `uvx` cache stale
 
