@@ -16,7 +16,13 @@ import types
 import pytest
 
 from mcp_server_python_docs.errors import IngestionError
+from mcp_server_python_docs.ingestion.cpython_versions import (
+    CPYTHON_DOCS_BUILD_CONFIG,
+    SUPPORTED_DOC_VERSIONS,
+    SUPPORTED_DOC_VERSIONS_CSV,
+)
 from mcp_server_python_docs.ingestion.sphinx_json import (
+    build_sphinx_bootstrap_requirements,
     build_sphinx_json_command,
     extract_code_blocks,
     extract_sections,
@@ -30,6 +36,20 @@ from mcp_server_python_docs.ingestion.sphinx_json import (
     write_json_build_requirements,
     write_sphinx_json_sitecustomize,
 )
+
+
+class TestCPythonVersionConfig:
+    def test_supports_python_3_10_through_3_14(self):
+        assert SUPPORTED_DOC_VERSIONS == ("3.10", "3.11", "3.12", "3.13", "3.14")
+        assert SUPPORTED_DOC_VERSIONS_CSV == "3.10,3.11,3.12,3.13,3.14"
+
+    def test_supported_versions_have_pinned_docs_build_config(self):
+        assert set(CPYTHON_DOCS_BUILD_CONFIG) == set(SUPPORTED_DOC_VERSIONS)
+
+        for version in SUPPORTED_DOC_VERSIONS:
+            config = CPYTHON_DOCS_BUILD_CONFIG[version]
+            assert config["tag"].startswith(f"v{version}.")
+            assert config["sphinx_pin"].startswith("sphinx")
 
 
 class TestJsonBuildRequirements:
@@ -90,6 +110,16 @@ class TestSphinxJsonSitecustomize:
         assert "_TranslationProxy" in content
         assert "SphinxJSONEncoder.default" in content
 
+    def test_writes_imghdr_compat_module(self, tmp_path):
+        output_dir = tmp_path / "compat"
+
+        write_sphinx_json_sitecustomize(output_dir)
+
+        content = (output_dir / "imghdr.py").read_text(encoding="utf-8")
+        assert "tests = []" in content
+        assert "def what" in content
+        assert "jpeg" in content
+
     def test_translation_proxy_patch_stringifies_proxy_objects(
         self, tmp_path, monkeypatch
     ):
@@ -145,6 +175,11 @@ class TestSphinxJsonSitecustomize:
 
 
 class TestSphinxJsonCommand:
+    def test_bootstrap_requirements_include_setuptools_before_sphinx(self):
+        requirements = build_sphinx_bootstrap_requirements("sphinx==3.4.3")
+
+        assert requirements == ["setuptools<70", "sphinx==3.4.3"]
+
     def test_build_command_uses_json_builder_and_classic_theme(self, tmp_path):
         sphinx_build = tmp_path / "bin" / "sphinx-build"
         doc_dir = tmp_path / "cpython" / "Doc"

@@ -80,13 +80,13 @@ shell or use `python -m uv ...` as a fallback for local contributor commands.
 Build the local documentation index:
 
 ```bash
-uvx mcp-server-python-docs build-index --versions 3.12,3.13
+uvx mcp-server-python-docs build-index --versions 3.10,3.11,3.12,3.13,3.14
 ```
 
 If you installed the package persistently, you can drop the `uvx` prefix:
 
 ```bash
-mcp-server-python-docs build-index --versions 3.12,3.13
+mcp-server-python-docs build-index --versions 3.10,3.11,3.12,3.13,3.14
 ```
 
 This downloads Python's `objects.inv` files, clones CPython docs sources, runs
@@ -178,7 +178,7 @@ The server currently exposes four MCP tools:
 Use this server when you need:
 
 - exact Python stdlib symbol resolution
-- consistent version-aware answers across Python 3.12 and 3.13
+- consistent version-aware answers across Python 3.10 through 3.14
 - token-efficient section retrieval from official docs
 - a local, read-only MCP server with a simple operational story
 
@@ -292,7 +292,7 @@ For contributor setup and verification:
 Tested on macOS and Linux. Windows should work, but it is not verified on
 every release.
 
-Python 3.12 and 3.13 are currently supported.
+Python documentation versions 3.10 through 3.14 are currently supported.
 
 ## License
 
