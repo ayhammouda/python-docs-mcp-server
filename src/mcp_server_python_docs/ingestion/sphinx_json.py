@@ -183,7 +183,12 @@ def build_sphinx_json_command(
 
 
 def build_sphinx_bootstrap_requirements(sphinx_pin: str) -> list[str]:
-    """Return packages needed before installing CPython Doc requirements."""
+    """Return packages needed before installing CPython Doc requirements.
+
+    setuptools<70 keeps ``pkg_resources`` available, which old Sphinx
+    releases (e.g. the 3.4.x line pinned for the Python 3.10 docs build)
+    still import at startup.
+    """
     return [
         "setuptools<70",
         sphinx_pin,

@@ -15,6 +15,7 @@ import pytest
 from mcp_server_python_docs.ingestion.cpython_versions import SUPPORTED_DOC_VERSIONS
 from mcp_server_python_docs.ingestion.publish import (
     SMOKE_SENTINEL_SYMBOL,
+    _version_sort_key,
     atomic_swap,
     compute_sha256,
     generate_build_path,
@@ -127,10 +128,7 @@ class TestSmokeTests:
         bootstrap_schema(conn)
 
         doc_set_ids: dict[str, int] = {}
-        default_version = max(
-            versions,
-            key=lambda v: tuple(int(p) for p in v.split(".")),
-        )
+        default_version = max(versions, key=_version_sort_key)
 
         # Insert doc_sets
         for version in versions:
