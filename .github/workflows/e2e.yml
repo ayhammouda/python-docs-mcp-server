@@ -16,10 +16,6 @@ jobs:
       matrix:
         python-version: ["3.13", "3.14"]
 
-    env:
-      HOME: ${{ runner.temp }}/mcp-python-docs-home
-      XDG_CACHE_HOME: ${{ runner.temp }}/mcp-python-docs-cache
-
     steps:
       - uses: actions/checkout@v4
 
@@ -40,6 +36,9 @@ jobs:
           .e2e-venv/bin/mcp-server-python-docs --version
 
       - name: Build and validate full docs index
+        env:
+          HOME: ${{ runner.temp }}/mcp-python-docs-home
+          XDG_CACHE_HOME: ${{ runner.temp }}/mcp-python-docs-cache
         run: |
           set -o pipefail
           .e2e-venv/bin/mcp-server-python-docs build-index --versions 3.10,3.11,3.12,3.13,3.14 \
