@@ -66,6 +66,10 @@ logger = logging.getLogger("mcp_server_python_docs")
 # === Now safe to import everything else ===
 import click  # noqa: E402
 
+from mcp_server_python_docs.ingestion.cpython_versions import (  # noqa: E402
+    SUPPORTED_DOC_VERSIONS_CSV,
+)
+
 
 @click.group(invoke_without_command=True)
 @click.option("--version", "show_version", is_flag=True, help="Show version and exit.")
@@ -105,7 +109,7 @@ def serve() -> None:
 @click.option(
     "--versions",
     required=True,
-    help="Comma-separated Python versions (e.g., 3.12,3.13)",
+    help=f"Comma-separated Python versions (e.g., {SUPPORTED_DOC_VERSIONS_CSV})",
 )
 @click.option(
     "--skip-content",
@@ -120,6 +124,9 @@ def build_index(versions: str, skip_content: bool) -> None:
     import venv
     from pathlib import Path
 
+    from mcp_server_python_docs.ingestion.cpython_versions import (
+        CPYTHON_DOCS_BUILD_CONFIG,
+    )
     from mcp_server_python_docs.ingestion.inventory import ingest_inventory
     from mcp_server_python_docs.ingestion.publish import (
         _version_sort_key,
@@ -128,6 +135,7 @@ def build_index(versions: str, skip_content: bool) -> None:
         publish_index,
     )
     from mcp_server_python_docs.ingestion.sphinx_json import (
+        build_sphinx_bootstrap_requirements,
         build_sphinx_json_command,
         ingest_sphinx_json_dir,
         make_sphinx_json_env,
@@ -142,15 +150,12 @@ def build_index(versions: str, skip_content: bool) -> None:
         get_readwrite_connection,
     )
 
-    # Version tag mapping: CPython git tag and Sphinx constraints (INGR-C-02)
-    VERSION_CONFIG: dict[str, dict[str, str]] = {
-        "3.12": {"tag": "v3.12.13", "sphinx_pin": "sphinx~=8.2.0"},
-        "3.13": {"tag": "v3.13.12", "sphinx_pin": "sphinx<9.0.0"},
-    }
-
     version_list = parse_expected_versions(versions)
     if not version_list:
-        logger.error("No valid versions specified. Example: --versions 3.13")
+        logger.error(
+            "No valid versions specified. Example: --versions %s",
+            SUPPORTED_DOC_VERSIONS_CSV,
+        )
         raise SystemExit(1)
 
     # Validate version format before sorting (CR-03, WR-04)
@@ -188,7 +193,7 @@ def build_index(versions: str, skip_content: bool) -> None:
                     continue
 
                 # === Content ingestion (INGR-C-01 through INGR-C-03) ===
-                config = VERSION_CONFIG.get(version)
+                config = CPYTHON_DOCS_BUILD_CONFIG.get(version)
                 if not config:
                     logger.warning(
                         "No CPython build config for %s, skipping content ingestion",
@@ -226,9 +231,22 @@ def build_index(versions: str, skip_content: bool) -> None:
                     )
                     pip_path = os.path.join(scripts_dir, "pip")
 
-                    # Install Sphinx with the version pin for this CPython branch
+                    # Install Sphinx with the version pin for this CPython branch.
+                    bootstrap_requirements = build_sphinx_bootstrap_requirements(
+                        config["sphinx_pin"]
+                    )
+                    if len(bootstrap_requirements) > 1:
+                        logger.info(
+                            "Installing Sphinx bootstrap packages for Python %s: %s",
+                            version,
+                            ", ".join(bootstrap_requirements[:-1]),
+                        )
                     subprocess.run(
-                        [pip_path, "install", config["sphinx_pin"]],
+                        [
+                            pip_path,
+                            "install",
+                            *bootstrap_requirements,
+                        ],
                         check=True,
                         capture_output=True,
                         text=True,
@@ -381,7 +399,10 @@ def validate_corpus(db_path: str | None) -> None:
 
     if not target.exists():
         logger.error("Index not found at %s", target)
-        logger.error("Run: mcp-server-python-docs build-index --versions 3.13")
+        logger.error(
+            "Run: mcp-server-python-docs build-index --versions %s",
+            SUPPORTED_DOC_VERSIONS_CSV,
+        )
         raise SystemExit(1)
 
     logger.info("Validating corpus at %s", target)
@@ -506,7 +527,8 @@ def doctor() -> None:
     index_detail = str(index_path)
     if not index_exists:
         index_detail += (
-            " (not found -- run: mcp-server-python-docs build-index --versions 3.13)"
+            f" (not found -- run: mcp-server-python-docs build-index --versions "
+            f"{SUPPORTED_DOC_VERSIONS_CSV})"
         )
     else:
         size_mb = index_path.stat().st_size / (1024 * 1024)

@@ -9,16 +9,12 @@ jobs:
   installed-build-index:
     name: Installed build-index (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
 
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.13", "3.14"]
-
-    env:
-      HOME: ${{ runner.temp }}/mcp-python-docs-home
-      XDG_CACHE_HOME: ${{ runner.temp }}/mcp-python-docs-cache
 
     steps:
       - uses: actions/checkout@v4
@@ -40,9 +36,12 @@ jobs:
           .e2e-venv/bin/mcp-server-python-docs --version
 
       - name: Build and validate full docs index
+        env:
+          HOME: ${{ runner.temp }}/mcp-python-docs-home
+          XDG_CACHE_HOME: ${{ runner.temp }}/mcp-python-docs-cache
         run: |
           set -o pipefail
-          .e2e-venv/bin/mcp-server-python-docs build-index --versions 3.12,3.13 \
+          .e2e-venv/bin/mcp-server-python-docs build-index --versions 3.10,3.11,3.12,3.13,3.14 \
             2>&1 | tee "${RUNNER_TEMP}/build-index-${{ matrix.python-version }}.log"
           .e2e-venv/bin/mcp-server-python-docs doctor
           .e2e-venv/bin/mcp-server-python-docs validate-corpus
