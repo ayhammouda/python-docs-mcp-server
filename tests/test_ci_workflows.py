@@ -4,6 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
+# Keep this literal independent of SUPPORTED_DOC_VERSIONS_CSV so the test catches
+# workflow drift even if the application constant changes at the same time.
 SUPPORTED_VERSION_ARGS = "3.10,3.11,3.12,3.13,3.14"
 
 

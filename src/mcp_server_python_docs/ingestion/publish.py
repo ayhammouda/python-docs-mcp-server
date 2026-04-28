@@ -14,6 +14,7 @@ import sys
 from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
+from typing import Final
 
 from mcp_server_python_docs.storage.db import (
     get_cache_dir,
@@ -23,7 +24,7 @@ from mcp_server_python_docs.storage.db import (
 
 logger = logging.getLogger(__name__)
 
-SMOKE_SENTINEL_SYMBOL = "asyncio.run"
+SMOKE_SENTINEL_SYMBOL: Final[str] = "asyncio.run"
 
 
 def _version_sort_key(version: str) -> tuple[int, ...]:
