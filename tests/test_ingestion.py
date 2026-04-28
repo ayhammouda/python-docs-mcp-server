@@ -7,6 +7,7 @@ per-document failure isolation (INGR-C-06), code block extraction
 """
 from __future__ import annotations
 
+import io
 import os
 import runpy
 import shutil
@@ -117,8 +118,30 @@ class TestSphinxJsonSitecustomize:
 
         content = (output_dir / "imghdr.py").read_text(encoding="utf-8")
         assert "tests = []" in content
+        assert "stdlib imghdr extension hook" in content
         assert "def what" in content
         assert "jpeg" in content
+
+    def test_imghdr_compat_module_detects_sphinx_image_formats(self, tmp_path):
+        output_dir = tmp_path / "compat"
+        write_sphinx_json_sitecustomize(output_dir)
+        namespace = runpy.run_path(str(output_dir / "imghdr.py"))
+
+        what = namespace["what"]
+
+        assert what(io.BytesIO(b"\xff\xd8\xff\xe0")) == "jpeg"
+        assert what(io.BytesIO(b"\x89PNG\r\n\x1a\nextra")) == "png"
+        assert what(io.BytesIO(b"GIF89aextra")) == "gif"
+
+    def test_imghdr_compat_module_preserves_tests_hook(self, tmp_path):
+        output_dir = tmp_path / "compat"
+        write_sphinx_json_sitecustomize(output_dir)
+        namespace = runpy.run_path(str(output_dir / "imghdr.py"))
+
+        tests = namespace["tests"]
+        tests.append(lambda header, _file: "bmp" if header.startswith(b"BM") else None)
+
+        assert namespace["what"](io.BytesIO(b"BMfake")) == "bmp"
 
     def test_translation_proxy_patch_stringifies_proxy_objects(
         self, tmp_path, monkeypatch
@@ -179,6 +202,16 @@ class TestSphinxJsonCommand:
         requirements = build_sphinx_bootstrap_requirements("sphinx==3.4.3")
 
         assert requirements == ["setuptools<70", "sphinx==3.4.3"]
+
+    def test_bootstrap_requirements_include_setuptools_for_sphinx_4(self):
+        requirements = build_sphinx_bootstrap_requirements("Sphinx < 5")
+
+        assert requirements == ["setuptools<70", "Sphinx < 5"]
+
+    def test_bootstrap_requirements_skip_setuptools_for_modern_sphinx(self):
+        requirements = build_sphinx_bootstrap_requirements("sphinx~=8.2.0")
+
+        assert requirements == ["sphinx~=8.2.0"]
 
     def test_build_command_uses_json_builder_and_classic_theme(self, tmp_path):
         sphinx_build = tmp_path / "bin" / "sphinx-build"

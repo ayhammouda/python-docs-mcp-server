@@ -232,15 +232,20 @@ def build_index(versions: str, skip_content: bool) -> None:
                     pip_path = os.path.join(scripts_dir, "pip")
 
                     # Install Sphinx with the version pin for this CPython branch.
-                    # Older Sphinx releases still import pkg_resources, which
-                    # modern venvs do not always seed by default.
+                    bootstrap_requirements = build_sphinx_bootstrap_requirements(
+                        config["sphinx_pin"]
+                    )
+                    if len(bootstrap_requirements) > 1:
+                        logger.info(
+                            "Installing Sphinx bootstrap packages for Python %s: %s",
+                            version,
+                            ", ".join(bootstrap_requirements[:-1]),
+                        )
                     subprocess.run(
                         [
                             pip_path,
                             "install",
-                            *build_sphinx_bootstrap_requirements(
-                                config["sphinx_pin"]
-                            ),
+                            *bootstrap_requirements,
                         ],
                         check=True,
                         capture_output=True,
