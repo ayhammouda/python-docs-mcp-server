@@ -66,6 +66,10 @@ logger = logging.getLogger("mcp_server_python_docs")
 # === Now safe to import everything else ===
 import click  # noqa: E402
 
+from mcp_server_python_docs.ingestion.cpython_versions import (  # noqa: E402
+    SUPPORTED_DOC_VERSIONS_CSV,
+)
+
 
 @click.group(invoke_without_command=True)
 @click.option("--version", "show_version", is_flag=True, help="Show version and exit.")
@@ -105,7 +109,7 @@ def serve() -> None:
 @click.option(
     "--versions",
     required=True,
-    help="Comma-separated Python versions (e.g., 3.10,3.11,3.12,3.13,3.14)",
+    help=f"Comma-separated Python versions (e.g., {SUPPORTED_DOC_VERSIONS_CSV})",
 )
 @click.option(
     "--skip-content",
@@ -149,7 +153,8 @@ def build_index(versions: str, skip_content: bool) -> None:
     version_list = parse_expected_versions(versions)
     if not version_list:
         logger.error(
-            "No valid versions specified. Example: --versions 3.10,3.11,3.12,3.13,3.14"
+            "No valid versions specified. Example: --versions %s",
+            SUPPORTED_DOC_VERSIONS_CSV,
         )
         raise SystemExit(1)
 
@@ -390,8 +395,8 @@ def validate_corpus(db_path: str | None) -> None:
     if not target.exists():
         logger.error("Index not found at %s", target)
         logger.error(
-            "Run: mcp-server-python-docs build-index --versions "
-            "3.10,3.11,3.12,3.13,3.14"
+            "Run: mcp-server-python-docs build-index --versions %s",
+            SUPPORTED_DOC_VERSIONS_CSV,
         )
         raise SystemExit(1)
 
@@ -517,8 +522,8 @@ def doctor() -> None:
     index_detail = str(index_path)
     if not index_exists:
         index_detail += (
-            " (not found -- run: mcp-server-python-docs build-index --versions "
-            "3.10,3.11,3.12,3.13,3.14)"
+            f" (not found -- run: mcp-server-python-docs build-index --versions "
+            f"{SUPPORTED_DOC_VERSIONS_CSV})"
         )
     else:
         size_mb = index_path.stat().st_size / (1024 * 1024)
