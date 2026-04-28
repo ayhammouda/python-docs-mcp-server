@@ -14,6 +14,7 @@ import sys
 from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
+from typing import Final
 
 from mcp_server_python_docs.storage.db import (
     get_cache_dir,
@@ -22,6 +23,8 @@ from mcp_server_python_docs.storage.db import (
 )
 
 logger = logging.getLogger(__name__)
+
+SMOKE_SENTINEL_SYMBOL: Final[str] = "asyncio.run"
 
 
 def _version_sort_key(version: str) -> tuple[int, ...]:
@@ -83,7 +86,7 @@ def record_ingestion_run(
     Args:
         conn: Read-write SQLite connection.
         source: Source identifier (e.g., 'python-docs').
-        version: Version string (e.g., '3.13' or '3.12,3.13').
+        version: Version string (e.g., '3.13' or '3.10,3.11,3.12,3.13,3.14').
         status: Run status ('building', 'smoke_testing', 'published', 'failed').
         artifact_hash: SHA256 hash of the build artifact.
         notes: Optional notes about the run.
@@ -221,16 +224,18 @@ def run_smoke_tests(
                 "SELECT 1 FROM symbols "
                 "JOIN doc_sets ON doc_sets.id = symbols.doc_set_id "
                 "WHERE doc_sets.version = ? "
-                "AND symbols.qualified_name = 'asyncio.TaskGroup' LIMIT 1",
-                (version,),
+                "AND symbols.qualified_name = ? LIMIT 1",
+                (version, SMOKE_SENTINEL_SYMBOL),
             ).fetchone()
             if row:
                 messages.append(
-                    f"OK: sentinel: asyncio.TaskGroup symbol found for version {version}"
+                    f"OK: sentinel: {SMOKE_SENTINEL_SYMBOL} symbol found "
+                    f"for version {version}"
                 )
             else:
                 messages.append(
-                    f"FAIL: sentinel: asyncio.TaskGroup symbol missing for version {version}"
+                    f"FAIL: sentinel: {SMOKE_SENTINEL_SYMBOL} symbol missing "
+                    f"for version {version}"
                 )
                 passed = False
 

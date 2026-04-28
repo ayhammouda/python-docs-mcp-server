@@ -63,6 +63,42 @@ if jsonimpl is not None:
     jsonimpl.SphinxJSONEncoder.default = _mcp_json_default
 '''
 
+_IMGHDR_COMPAT_MODULE = '''"""Compatibility shim for Sphinx builds that import imghdr."""
+
+from __future__ import annotations
+
+import os
+
+
+# Preserve the stdlib imghdr extension hook for old Sphinx-related extensions.
+tests = []
+
+
+def what(file, h=None):
+    """Return an image type for the header formats old Sphinx may ask about."""
+    if h is None:
+        if isinstance(file, (str, bytes, os.PathLike)):
+            with open(file, "rb") as image_file:
+                h = image_file.read(32)
+        else:
+            position = file.tell()
+            h = file.read(32)
+            file.seek(position)
+
+    for test in tests:
+        result = test(h, file)
+        if result:
+            return result
+
+    if h.startswith(b"\\xff\\xd8"):
+        return "jpeg"
+    if h.startswith(b"\\x89PNG\\r\\n\\x1a\\n"):
+        return "png"
+    if h[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    return None
+'''
+
 
 def _canonical_requirement_name(line: str) -> str | None:
     stripped = line.strip()
@@ -109,6 +145,10 @@ def write_sphinx_json_sitecustomize(output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     sitecustomize_path = output_dir / "sitecustomize.py"
     sitecustomize_path.write_text(_SPHINX_JSON_SITECUSTOMIZE, encoding="utf-8")
+    # PYTHONPATH prepending makes this shim shadow stdlib imghdr on Python 3.12.
+    # The detected formats match the Sphinx usage we need for CPython docs builds.
+    imghdr_path = output_dir / "imghdr.py"
+    imghdr_path.write_text(_IMGHDR_COMPAT_MODULE, encoding="utf-8")
     return sitecustomize_path
 
 
@@ -143,6 +183,32 @@ def build_sphinx_json_command(
         str(doc_dir),
         str(json_out),
     ]
+
+
+def _sphinx_pin_needs_pkg_resources(sphinx_pin: str) -> bool:
+    normalized = sphinx_pin.strip().lower().replace(" ", "")
+    return normalized.startswith(
+        (
+            "sphinx==3.",
+            "sphinx==4.",
+            "sphinx~=3.",
+            "sphinx~=4.",
+            "sphinx<5",
+            "sphinx<=4",
+        )
+    )
+
+
+def build_sphinx_bootstrap_requirements(sphinx_pin: str) -> list[str]:
+    """Return packages needed before installing CPython Doc requirements.
+
+    setuptools<70 keeps ``pkg_resources`` available when old Sphinx
+    releases (e.g. the 3.4.x line pinned for the Python 3.10 docs build)
+    still import at startup.
+    """
+    if _sphinx_pin_needs_pkg_resources(sphinx_pin):
+        return ["setuptools<70", sphinx_pin]
+    return [sphinx_pin]
 
 
 def parse_fjson(filepath: Path) -> dict:

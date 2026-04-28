@@ -67,9 +67,14 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
     # Fail fast on missing index (SRVR-10)
     if not index_path.exists():
+        from mcp_server_python_docs.ingestion.cpython_versions import (
+            SUPPORTED_DOC_VERSIONS_CSV,
+        )
+
         msg = (
             f"No index found at {index_path}\n"
-            f"Run: mcp-server-python-docs build-index --versions 3.13"
+            f"Run: mcp-server-python-docs build-index --versions "
+            f"{SUPPORTED_DOC_VERSIONS_CSV}"
         )
         logger.error(msg)
         print(msg, file=sys.stderr)

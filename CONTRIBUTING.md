@@ -42,7 +42,7 @@ uv run pytest tests/test_retrieval_regression.py -q
 The server needs a local SQLite index before runtime validation:
 
 ```bash
-uv run mcp-server-python-docs build-index --versions 3.12,3.13
+uv run mcp-server-python-docs build-index --versions 3.10,3.11,3.12,3.13,3.14
 uv run mcp-server-python-docs doctor
 uv run mcp-server-python-docs validate-corpus
 ```

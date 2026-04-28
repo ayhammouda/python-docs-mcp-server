@@ -12,7 +12,10 @@ from pathlib import Path
 
 import pytest
 
+from mcp_server_python_docs.ingestion.cpython_versions import SUPPORTED_DOC_VERSIONS
 from mcp_server_python_docs.ingestion.publish import (
+    SMOKE_SENTINEL_SYMBOL,
+    _version_sort_key,
     atomic_swap,
     compute_sha256,
     generate_build_path,
@@ -96,7 +99,7 @@ class TestSmokeTests:
         for i in range(2100):
             qualified_name = f"mod{i}.func{i}"
             if i == 0:
-                qualified_name = "asyncio.TaskGroup"
+                qualified_name = SMOKE_SENTINEL_SYMBOL
             conn.execute(
                 "INSERT INTO symbols (doc_set_id, qualified_name, normalized_name, "
                 "module, symbol_type, uri, anchor) "
@@ -115,22 +118,27 @@ class TestSmokeTests:
         conn.commit()
         conn.close()
 
-    def _create_populated_db(self, db_path: Path) -> None:
+    def _create_populated_db(
+        self,
+        db_path: Path,
+        versions: tuple[str, ...] = ("3.12", "3.13"),
+    ) -> None:
         """Helper: create a DB with enough data to pass smoke tests."""
         conn = get_readwrite_connection(db_path)
         bootstrap_schema(conn)
 
         doc_set_ids: dict[str, int] = {}
+        default_version = max(versions, key=_version_sort_key)
 
         # Insert doc_sets
-        for version, is_default in (("3.12", 0), ("3.13", 1)):
+        for version in versions:
             conn.execute(
                 "INSERT INTO doc_sets (source, version, language, label, is_default, base_url) "
                 "VALUES ('python-docs', ?, 'en', ?, ?, ?)",
                 (
                     version,
                     f"Python {version}",
-                    is_default,
+                    1 if version == default_version else 0,
                     f"https://docs.python.org/{version}/",
                 ),
             )
@@ -179,10 +187,14 @@ class TestSmokeTests:
             conn.execute(
                 "INSERT INTO symbols (doc_set_id, qualified_name, normalized_name, "
                 "module, symbol_type, uri, anchor) "
-                "VALUES (?, 'asyncio.TaskGroup', 'asyncio_taskgroup', 'asyncio', "
-                "'class', 'library/asyncio-task.html#asyncio.TaskGroup', "
-                "'asyncio.TaskGroup')",
-                (doc_set_id,),
+                "VALUES (?, ?, ?, 'asyncio', "
+                "'function', 'library/asyncio-runner.html#asyncio.run', "
+                "'asyncio.run')",
+                (
+                    doc_set_id,
+                    SMOKE_SENTINEL_SYMBOL,
+                    SMOKE_SENTINEL_SYMBOL.lower(),
+                ),
             )
             for i in range(2099):
                 conn.execute(
@@ -244,6 +256,22 @@ class TestSmokeTests:
         assert passed is True
         assert any("OK" in m for m in messages)
 
+    def test_pass_on_supported_issue_5_version_range(self, tmp_path):
+        """Smoke tests accept the full supported docs version range."""
+        db_path = tmp_path / "issue-5-range.db"
+        self._create_populated_db(db_path, versions=SUPPORTED_DOC_VERSIONS)
+
+        passed, messages = run_smoke_tests(
+            db_path, expected_versions=SUPPORTED_DOC_VERSIONS
+        )
+
+        assert passed is True
+        assert (
+            "OK: doc_sets: expected versions present: 3.10, 3.11, 3.12, 3.13, 3.14"
+            in messages
+        )
+        assert "OK: doc_sets: default version is 3.14" in messages
+
     def test_fails_when_expected_version_is_missing(self, tmp_path):
         """Smoke tests fail when a requested build version is absent."""
         db_path = tmp_path / "missing-version.db"
@@ -292,11 +320,11 @@ class TestSmokeTests:
         assert passed is False
         assert "FAIL: documents: version 3.13 has 0 rows (need >= 10)" in messages
 
-    def test_fails_when_asyncio_taskgroup_symbol_sentinel_is_missing(self, tmp_path):
-        """Smoke tests fail when the core asyncio.TaskGroup symbol sentinel is absent."""
+    def test_fails_when_asyncio_run_symbol_sentinel_is_missing(self, tmp_path):
+        """Smoke tests fail when the cross-version asyncio.run sentinel is absent."""
         db_path = tmp_path / "missing-sentinel-symbol.db"
         self._create_populated_db(db_path)
-        self._remove_symbol(db_path, "asyncio.TaskGroup")
+        self._remove_symbol(db_path, SMOKE_SENTINEL_SYMBOL)
 
         passed, messages = run_smoke_tests(
             db_path, expected_versions=["3.12", "3.13"]
@@ -304,7 +332,7 @@ class TestSmokeTests:
 
         assert passed is False
         assert (
-            "FAIL: sentinel: asyncio.TaskGroup symbol missing for version 3.13"
+            f"FAIL: sentinel: {SMOKE_SENTINEL_SYMBOL} symbol missing for version 3.13"
             in messages
         )
 
