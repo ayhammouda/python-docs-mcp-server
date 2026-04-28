@@ -19,11 +19,15 @@ Before the first release, configure PyPI Trusted Publishing:
 
 ## Notes
 
-**Python version coverage:** The release workflow builds and tests against Python 3.13 only.
-Python 3.12 is covered by the CI workflow (`ci.yml`) which runs a 2x2 matrix (3.12/3.13 x
-ubuntu/macos) on every push to `main`. Since tags are created from commits that have already
-passed CI, 3.12 compatibility is verified before the release workflow runs. This is an accepted
-trade-off to keep the release artifact pipeline simple (single Python version produces the wheel).
+**Runtime coverage:** The release workflow builds and tests against Python 3.13 only.
+Python 3.12 is covered by the CI workflow (`ci.yml`) which runs a 2x2 matrix
+(3.12/3.13 x ubuntu/macos) on every push to `main`. Since tags are created
+from commits that have already passed CI, 3.12 compatibility is verified before
+the release workflow runs. This is an accepted trade-off to keep the release
+artifact pipeline simple (single Python version produces the wheel).
+
+**Documentation coverage:** The full docs index target is Python documentation
+versions 3.10 through 3.14.
 
 ## Creating a Release
 
@@ -106,7 +110,7 @@ Complete these steps in order. Each step has a checkbox -- do not skip ahead.
   First public release of mcp-server-python-docs.
 
   A read-only, version-aware MCP retrieval server over Python
-  standard library documentation (3.12 + 3.13).
+  standard library documentation (3.10 through 3.14).
 
   Installable via: uvx mcp-server-python-docs"
   ```
@@ -137,7 +141,7 @@ Complete these steps in order. Each step has a checkbox -- do not skip ahead.
   # Should print 0.1.0
 
   # Step 2: Build index
-  uvx mcp-server-python-docs build-index --versions 3.12,3.13
+  uvx mcp-server-python-docs build-index --versions 3.10,3.11,3.12,3.13,3.14
   # Should complete successfully
 
   # Step 3: Doctor check
@@ -148,7 +152,8 @@ Complete these steps in order. Each step has a checkbox -- do not skip ahead.
   - Run GitHub Actions workflow `Slow E2E`
   - Confirm Python 3.13 and Python 3.14 jobs both pass
   - Confirm each job installs the built wheel, runs
-    `build-index --versions 3.12,3.13`, `doctor`, and `validate-corpus`
+    `build-index --versions 3.10,3.11,3.12,3.13,3.14`, `doctor`, and
+    `validate-corpus`
 - [ ] Claude Desktop test with published package:
   Configure `mcpServers` with `uvx mcp-server-python-docs` and verify
   "what is asyncio.TaskGroup" returns a correct hit

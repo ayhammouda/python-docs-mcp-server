@@ -13,7 +13,7 @@ Release-specific sign-off still lives in [`.github/RELEASE.md`](RELEASE.md).
   - `uv run pyright src/`
   - `uv run pytest --tb=short -q`
 - Local index build completed:
-  - `uv run mcp-server-python-docs build-index --versions 3.12,3.13`
+  - `uv run mcp-server-python-docs build-index --versions 3.10,3.11,3.12,3.13,3.14`
 - Doctor passes:
   - `uv run mcp-server-python-docs doctor`
 - Slow E2E workflow passes when preparing a release:
@@ -113,7 +113,7 @@ locked.
 
 - [ ] `uvx mcp-server-python-docs --version`
   - Expected: prints the current package version
-- [ ] `uvx mcp-server-python-docs build-index --versions 3.12,3.13`
+- [ ] `uvx mcp-server-python-docs build-index --versions 3.10,3.11,3.12,3.13,3.14`
   - Expected: index build completes successfully
 - [ ] `uvx mcp-server-python-docs doctor`
   - Expected: all required checks pass
@@ -131,8 +131,8 @@ or supported Python versions.
   - Expected: both Python 3.13 and Python 3.14 jobs start
 - [ ] Confirm each job installs the built wheel into a clean virtual environment
   - Expected: the command path is the installed `mcp-server-python-docs`, not editable source
-- [ ] Confirm `build-index --versions 3.12,3.13` passes
-  - Expected: both versions produce content, not symbol-only fallback
+- [ ] Confirm `build-index --versions 3.10,3.11,3.12,3.13,3.14` passes
+  - Expected: all five versions produce content, not symbol-only fallback
 - [ ] Confirm `doctor` and `validate-corpus` pass
   - Expected: corpus smoke checks include requested versions and the default version
 - [ ] Inspect uploaded logs if a job fails

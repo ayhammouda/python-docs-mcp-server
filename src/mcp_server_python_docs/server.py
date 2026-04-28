@@ -69,7 +69,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     if not index_path.exists():
         msg = (
             f"No index found at {index_path}\n"
-            f"Run: mcp-server-python-docs build-index --versions 3.13"
+            "Run: mcp-server-python-docs build-index --versions "
+            "3.10,3.11,3.12,3.13,3.14"
         )
         logger.error(msg)
         print(msg, file=sys.stderr)

@@ -74,8 +74,8 @@ def match_to_indexed(
     """Match a detected version to the closest indexed version.
 
     Returns the detected version if it's in the index, otherwise None.
-    We don't guess — if 3.11 is detected but only 3.12/3.13 are indexed,
-    return None and let the normal default resolution handle it.
+    We don't guess -- if a detected version is not indexed, return None and
+    let the normal default resolution handle it.
     """
     if detected in indexed_versions:
         return detected
