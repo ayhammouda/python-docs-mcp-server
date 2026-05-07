@@ -1,0 +1,69 @@
+"""Controlled PyPI package documentation lookup tests."""
+from __future__ import annotations
+
+import json
+from urllib.error import HTTPError
+
+from mcp_server_python_docs.services.package_docs import PackageDocsService
+
+
+class _Resp:
+    def __init__(self, payload: dict):
+        self._payload = payload
+    def __enter__(self):
+        return self
+    def __exit__(self, exc_type, exc, tb):
+        return False
+    def read(self) -> bytes:
+        return json.dumps(self._payload).encode()
+
+
+def test_package_docs_uses_official_pypi_metadata_and_declared_urls():
+    seen: list[str] = []
+    def fetch(url: str, timeout: float):
+        seen.append(url)
+        return _Resp({"info": {"name": "SampleProject", "version": "4.0.0",
+            "summary": "sample", "project_url": "https://pypi.org/project/sampleproject/",
+            "home_page": "https://github.com/pypa/sampleproject",
+            "docs_url": "https://sampleproject.pypa.io/",
+            "project_urls": {"Documentation": "https://sampleproject.pypa.io/",
+                "Source": "https://github.com/pypa/sampleproject"}}})
+
+    result = PackageDocsService(fetcher=fetch).lookup("Sample_Project")
+
+    assert seen == ["https://pypi.org/pypi/sample-project/json"]
+    assert result.package == "SampleProject"
+    assert result.trust_boundary == "pypi-declared-metadata"
+    assert {s.label for s in result.sources} >= {
+        "PyPI project", "Documentation", "Homepage", "Source",
+    }
+    assert all(s.declared_by == "PyPI project metadata" for s in result.sources)
+
+
+def test_package_docs_filters_uncontrolled_urls_and_has_no_web_search_fallback():
+    def fetch(url: str, timeout: float):
+        return _Resp({"info": {"name": "demo", "version": "1.0.0",
+            "home_page": "https://demo.example/",
+            "description": "See https://random-blog.example/demo",
+            "project_urls": {"Community mirror": "https://mirror.example/demo"}}})
+
+    result = PackageDocsService(fetcher=fetch).lookup("demo")
+    urls = [s.url for s in result.sources]
+    assert "https://demo.example/" in urls
+    assert "https://random-blog.example/demo" not in urls
+    assert "https://mirror.example/demo" not in urls
+    assert "community mirror" in (result.note or "").lower()
+
+
+def test_package_docs_not_found_and_tool_annotation():
+    def missing(url: str, timeout: float):
+        raise HTTPError(url, 404, "Not Found", hdrs=None, fp=None)
+
+    result = PackageDocsService(fetcher=missing).lookup("missing-package")
+    assert result.sources == []
+    assert "not found" in (result.note or "").lower()
+
+    from mcp_server_python_docs.server import create_server
+    tool = create_server()._tool_manager._tools["lookup_package_docs"]
+    assert tool.annotations.readOnlyHint is True
+    assert tool.annotations.openWorldHint is True

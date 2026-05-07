@@ -29,9 +29,12 @@ from mcp_server_python_docs.models import (
     DetectPythonVersionResult,
     GetDocsResult,
     ListVersionsResult,
+    PackageDocsResult,
     SearchDocsResult,
 )
 from mcp_server_python_docs.services.content import ContentService
+from mcp_server_python_docs.services.package_docs import PackageDocsService
+from mcp_server_python_docs.services.persistent_cache import PersistentDocsCache
 from mcp_server_python_docs.services.search import SearchService
 from mcp_server_python_docs.services.version import VersionService
 from mcp_server_python_docs.storage.db import get_readonly_connection
@@ -86,15 +89,21 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
     # Open read-only connection (STOR-06, STOR-07)
     db = get_readonly_connection(index_path)
+    persistent_docs_cache: PersistentDocsCache | None = None
 
     try:
         # Check FTS5 (STOR-08)
         _assert_fts5(db)
 
         # Construct service instances (Phase 5 — service layer wiring)
+        persistent_docs_cache = PersistentDocsCache(
+            cache_path=cache_dir / "retrieved-docs-cache.sqlite3",
+            index_path=index_path,
+        )
         search_svc = SearchService(db, synonyms)
-        content_svc = ContentService(db)
+        content_svc = ContentService(db, persistent_cache=persistent_docs_cache)
         version_svc = VersionService(db)
+        package_docs_svc = PackageDocsService()
 
         # Detect user's Python version and match to indexed versions
         detected_ver, detected_src = detect_python_version()
@@ -119,6 +128,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                 search_service=search_svc,
                 content_service=content_svc,
                 version_service=version_svc,
+                package_docs_service=package_docs_svc,
+                persistent_docs_cache=persistent_docs_cache,
                 detected_python_version=matched,
                 detected_python_source=detected_src,
             )
@@ -133,6 +144,11 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                 pass
             raise
     finally:
+        if persistent_docs_cache is not None:
+            try:
+                persistent_docs_cache.close()
+            except Exception:
+                pass
         db.close()
 
 
@@ -142,6 +158,12 @@ _TOOL_ANNOTATIONS = ToolAnnotations(
     destructiveHint=False,
     idempotentHint=True,
     openWorldHint=False,
+)
+_PYPI_TOOL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
 )
 
 SearchQueryParam = Annotated[
@@ -183,6 +205,10 @@ MaxCharsParam = Annotated[
 StartIndexParam = Annotated[
     int,
     Field(ge=0, description="Start position for pagination"),
+]
+PackageParam = Annotated[
+    str,
+    Field(min_length=1, max_length=214, description="PyPI package/project name"),
 ]
 
 
@@ -237,6 +263,23 @@ def create_server() -> FastMCP:
             raise ToolError(str(e))
         except Exception as e:
             logger.exception("Unexpected error in get_docs")
+            raise ToolError(f"Internal error: {type(e).__name__}")
+
+    @mcp.tool(annotations=_PYPI_TOOL_ANNOTATIONS)
+    def lookup_package_docs(
+        package: PackageParam,
+        ctx: Context = None,  # type: ignore[assignment]
+    ) -> PackageDocsResult:
+        """Look up package-declared docs/homepage/source URLs via official PyPI metadata.
+
+        This is not generic web search: it only queries PyPI's JSON API and
+        returns official PyPI metadata plus package-declared project URLs.
+        """
+        app_ctx: AppContext = ctx.request_context.lifespan_context
+        try:
+            return app_ctx.package_docs_service.lookup(package)
+        except Exception as e:
+            logger.exception("Unexpected error in lookup_package_docs")
             raise ToolError(f"Internal error: {type(e).__name__}")
 
     @mcp.tool(annotations=_TOOL_ANNOTATIONS)

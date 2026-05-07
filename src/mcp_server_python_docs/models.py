@@ -160,3 +160,46 @@ class DetectPythonVersionResult(BaseModel):
     is_default: bool = Field(
         description="Whether this detected version is being used as the default for get_docs"
     )
+
+
+# --- lookup_package_docs models ---
+
+
+class PackageDocsInput(BaseModel):
+    """Input parameters for lookup_package_docs tool."""
+
+    package: str = Field(
+        min_length=1,
+        max_length=214,
+        description="PyPI package/project name (e.g. 'requests').",
+    )
+
+
+class PackageDocsSource(BaseModel):
+    """A package-declared documentation or project source URL."""
+
+    label: str = Field(description="Label from PyPI metadata or a normalized core metadata field")
+    url: str = Field(description="HTTP(S) URL declared by the package on PyPI")
+    kind: str = Field(description="Source category, such as docs, homepage, source, or pypi")
+    declared_by: str = Field(description="Where this source declaration came from")
+
+
+class PackageDocsResult(BaseModel):
+    """Output from lookup_package_docs tool."""
+
+    package: str = Field(description="Canonical package name returned by PyPI when available")
+    version: str = Field(description="Latest version reported by PyPI metadata")
+    summary: str = Field(default="", description="Package summary from PyPI metadata")
+    metadata_source: str = Field(description="Official PyPI JSON API URL used for lookup")
+    trust_boundary: str = Field(
+        default="pypi-declared-metadata",
+        description="Indicates results are limited to PyPI/project-declared metadata",
+    )
+    sources: list[PackageDocsSource] = Field(
+        default_factory=list,
+        description="Package-declared PyPI, documentation, homepage, and source URLs",
+    )
+    note: str | None = Field(
+        default=None,
+        description="Controlled-scope note, for example skipped labels or not-found details",
+    )
