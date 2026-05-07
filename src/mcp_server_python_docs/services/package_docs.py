@@ -1,0 +1,124 @@
+"""Controlled package docs lookup using official PyPI JSON metadata.
+
+Source: https://docs.pypi.org/api/json/ documents GET /pypi/<project>/json.
+"""
+from __future__ import annotations
+
+import json
+import re
+from collections.abc import Callable
+from typing import Protocol
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlparse
+from urllib.request import Request, urlopen
+
+from mcp_server_python_docs.models import PackageDocsResult, PackageDocsSource
+from mcp_server_python_docs.services.observability import log_tool_call
+
+_ALLOWED = {
+    "documentation", "docs", "homepage", "home page", "source", "source code",
+    "repository", "repo", "bug tracker", "issues", "changelog", "release notes",
+}
+_BLOCKED = ("mirror", "community", "unofficial", "tutorial", "example")
+
+
+class _HTTPResponse(Protocol):
+    def read(self) -> bytes: ...
+    def __enter__(self) -> "_HTTPResponse": ...
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool | None: ...
+
+
+Fetcher = Callable[[str, float], _HTTPResponse]
+
+
+def _default_fetcher(url: str, timeout: float) -> _HTTPResponse:
+    req = Request(
+        url,
+        headers={"Accept": "application/json", "User-Agent": "mcp-server-python-docs"},
+    )
+    return urlopen(req, timeout=timeout)
+
+
+def _normalize(name: str) -> str:
+    return quote(re.sub(r"[-_.]+", "-", name.strip().lower()), safe="-")
+
+
+def _http_url(url: object) -> str | None:
+    if not isinstance(url, str):
+        return None
+    parsed = urlparse(url.strip())
+    return url.strip() if parsed.scheme in {"http", "https"} and parsed.netloc else None
+
+
+def _source(label: str, url: object, kind: str) -> PackageDocsSource | None:
+    valid = _http_url(url)
+    if valid is None:
+        return None
+    return PackageDocsSource(label=label, url=valid, kind=kind, declared_by="PyPI project metadata")
+
+
+class PackageDocsService:
+    """Return package-declared docs/homepage/source URLs from PyPI metadata only."""
+
+    def __init__(self, fetcher: Fetcher = _default_fetcher, timeout: float = 10.0) -> None:
+        self._fetcher = fetcher
+        self._timeout = timeout
+
+    @log_tool_call("lookup_package_docs")
+    def lookup(self, package: str) -> PackageDocsResult:
+        project = _normalize(package)
+        metadata_source = f"https://pypi.org/pypi/{project}/json"
+        try:
+            with self._fetcher(metadata_source, self._timeout) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except HTTPError as e:
+            if e.code == 404:
+                return PackageDocsResult(
+                    package=package, version="", metadata_source=metadata_source,
+                    sources=[], note="Package not found on PyPI.",
+                )
+            raise
+        except (URLError, TimeoutError, json.JSONDecodeError) as e:
+            return PackageDocsResult(
+                package=package, version="", metadata_source=metadata_source,
+                sources=[], note=f"Unable to retrieve PyPI metadata: {type(e).__name__}.",
+            )
+
+        info = payload.get("info") if isinstance(payload, dict) else {}
+        info = info if isinstance(info, dict) else {}
+        sources = [
+            s for s in (
+                _source(
+                    "PyPI project",
+                    info.get("project_url") or f"https://pypi.org/project/{project}/",
+                    "pypi",
+                ),
+                _source("Documentation", info.get("docs_url"), "docs"),
+                _source("Homepage", info.get("home_page"), "homepage"),
+            ) if s is not None
+        ]
+        skipped: list[str] = []
+        project_urls = info.get("project_urls")
+        if isinstance(project_urls, dict):
+            for label, url in project_urls.items():
+                lowered = str(label).strip().lower()
+                if lowered in _ALLOWED and not any(bad in lowered for bad in _BLOCKED):
+                    found = _source(str(label), url, lowered.replace(" ", "_"))
+                    if found is not None and found not in sources:
+                        sources.append(found)
+                else:
+                    skipped.append(str(label))
+        note = None
+        if skipped:
+            note = (
+                "Ignored project URL labels outside the controlled allowlist: "
+                f"{', '.join(sorted(skipped))}."
+            )
+        return PackageDocsResult(
+            package=str(info.get("name") or package),
+            version=str(info.get("version") or ""),
+            summary=str(info.get("summary") or ""),
+            metadata_source=metadata_source,
+            sources=sources,
+            note=note,
+        )

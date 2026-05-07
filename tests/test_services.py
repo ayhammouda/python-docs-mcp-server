@@ -402,12 +402,12 @@ class TestToolRegistration:
                 annotations.openWorldHint is False
             ), f"{name} openWorldHint should be False"
 
-    def test_four_tools_registered(self):
+    def test_five_tools_registered(self):
         from mcp_server_python_docs.server import create_server
 
         server = create_server()
         tools = server._tool_manager._tools
-        assert len(tools) == 4
+        assert len(tools) == 5
 
     def test_runtime_tool_schemas_include_input_constraints(self):
         import anyio
