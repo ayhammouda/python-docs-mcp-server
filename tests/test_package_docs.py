@@ -76,6 +76,17 @@ def test_package_docs_not_found_and_tool_annotation():
     assert tool.annotations.openWorldHint is True
 
 
+def test_package_docs_reports_non_404_pypi_http_errors():
+    def rate_limited(url: str, timeout: float):
+        raise HTTPError(url, 429, "Too Many Requests", hdrs=None, fp=None)
+
+    result = PackageDocsService(fetcher=rate_limited).lookup("busy-package")
+
+    assert result.sources == []
+    assert result.metadata_source == "https://pypi.org/pypi/busy-package/json"
+    assert result.note == "PyPI returned HTTP 429."
+
+
 def test_package_docs_rejects_oversized_pypi_metadata_without_unbounded_read():
     class LargeResp:
         requested_size: int | None = None

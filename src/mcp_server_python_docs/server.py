@@ -3,8 +3,10 @@
 Thin server layer — delegates all tool logic to services.
 Dependency rule: server -> services -> retrieval/storage.
 """
+
 from __future__ import annotations
 
+import asyncio
 import importlib.resources
 import logging
 import sqlite3
@@ -256,9 +258,7 @@ def create_server() -> FastMCP:
         if version is None and app_ctx.detected_python_version:
             version = app_ctx.detected_python_version
         try:
-            return app_ctx.content_service.get_docs(
-                slug, version, anchor, max_chars, start_index
-            )
+            return app_ctx.content_service.get_docs(slug, version, anchor, max_chars, start_index)
         except DocsServerError as e:
             raise ToolError(str(e))
         except Exception as e:
@@ -266,7 +266,7 @@ def create_server() -> FastMCP:
             raise ToolError(f"Internal error: {type(e).__name__}")
 
     @mcp.tool(annotations=_PYPI_TOOL_ANNOTATIONS)
-    def lookup_package_docs(
+    async def lookup_package_docs(
         package: PackageParam,
         ctx: Context = None,  # type: ignore[assignment]
     ) -> PackageDocsResult:
@@ -277,7 +277,7 @@ def create_server() -> FastMCP:
         """
         app_ctx: AppContext = ctx.request_context.lifespan_context
         try:
-            return app_ctx.package_docs_service.lookup(package)
+            return await asyncio.to_thread(app_ctx.package_docs_service.lookup, package)
         except Exception as e:
             logger.exception("Unexpected error in lookup_package_docs")
             raise ToolError(f"Internal error: {type(e).__name__}")

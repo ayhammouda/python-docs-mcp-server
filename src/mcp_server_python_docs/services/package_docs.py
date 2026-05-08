@@ -2,6 +2,7 @@
 
 Source: https://docs.pypi.org/api/json/ documents GET /pypi/<project>/json.
 """
+
 from __future__ import annotations
 
 import json
@@ -16,8 +17,14 @@ from mcp_server_python_docs.models import PackageDocsResult, PackageDocsSource
 from mcp_server_python_docs.services.observability import log_tool_call
 
 _ALLOWED = {
-    "documentation", "docs", "homepage", "home page", "source", "source code",
-    "repository", "repo", "bug tracker", "issues", "changelog", "release notes",
+    "documentation",
+    "docs",
+    "homepage",
+    "home page",
+    "source",
+    "source code",
+    "repository",
+    "repo",
 }
 _BLOCKED = ("mirror", "community", "unofficial", "tutorial", "example")
 _PYPI_METADATA_MAX_BYTES = 5 * 1024 * 1024
@@ -89,22 +96,30 @@ class PackageDocsService:
                     )
                 payload = json.loads(data.decode("utf-8"))
         except HTTPError as e:
-            if e.code == 404:
-                return PackageDocsResult(
-                    package=package, version="", metadata_source=metadata_source,
-                    sources=[], note="Package not found on PyPI.",
-                )
-            raise
+            note = (
+                "Package not found on PyPI." if e.code == 404 else f"PyPI returned HTTP {e.code}."
+            )
+            return PackageDocsResult(
+                package=package,
+                version="",
+                metadata_source=metadata_source,
+                sources=[],
+                note=note,
+            )
         except (URLError, TimeoutError, json.JSONDecodeError) as e:
             return PackageDocsResult(
-                package=package, version="", metadata_source=metadata_source,
-                sources=[], note=f"Unable to retrieve PyPI metadata: {type(e).__name__}.",
+                package=package,
+                version="",
+                metadata_source=metadata_source,
+                sources=[],
+                note=f"Unable to retrieve PyPI metadata: {type(e).__name__}.",
             )
 
         info = payload.get("info") if isinstance(payload, dict) else {}
         info = info if isinstance(info, dict) else {}
         sources = [
-            s for s in (
+            s
+            for s in (
                 _source(
                     "PyPI project",
                     info.get("project_url") or f"https://pypi.org/project/{project}/",
@@ -112,7 +127,8 @@ class PackageDocsService:
                 ),
                 _source("Documentation", info.get("docs_url"), "docs"),
                 _source("Homepage", info.get("home_page"), "homepage"),
-            ) if s is not None
+            )
+            if s is not None
         ]
         skipped: list[str] = []
         project_urls = info.get("project_urls")
