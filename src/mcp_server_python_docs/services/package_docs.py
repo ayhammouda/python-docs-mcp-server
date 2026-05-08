@@ -20,10 +20,11 @@ _ALLOWED = {
     "repository", "repo", "bug tracker", "issues", "changelog", "release notes",
 }
 _BLOCKED = ("mirror", "community", "unofficial", "tutorial", "example")
+_PYPI_METADATA_MAX_BYTES = 5 * 1024 * 1024
 
 
 class _HTTPResponse(Protocol):
-    def read(self) -> bytes: ...
+    def read(self, size: int = -1) -> bytes: ...
     def __enter__(self) -> "_HTTPResponse": ...
     def __exit__(self, exc_type: object, exc: object, tb: object) -> bool | None: ...
 
@@ -57,6 +58,13 @@ def _source(label: str, url: object, kind: str) -> PackageDocsSource | None:
     return PackageDocsSource(label=label, url=valid, kind=kind, declared_by="PyPI project metadata")
 
 
+def _read_limited(response: _HTTPResponse) -> bytes | None:
+    data = response.read(_PYPI_METADATA_MAX_BYTES + 1)
+    if len(data) > _PYPI_METADATA_MAX_BYTES:
+        return None
+    return data
+
+
 class PackageDocsService:
     """Return package-declared docs/homepage/source URLs from PyPI metadata only."""
 
@@ -70,7 +78,16 @@ class PackageDocsService:
         metadata_source = f"https://pypi.org/pypi/{project}/json"
         try:
             with self._fetcher(metadata_source, self._timeout) as response:
-                payload = json.loads(response.read().decode("utf-8"))
+                data = _read_limited(response)
+                if data is None:
+                    return PackageDocsResult(
+                        package=package,
+                        version="",
+                        metadata_source=metadata_source,
+                        sources=[],
+                        note="PyPI metadata exceeded size limit.",
+                    )
+                payload = json.loads(data.decode("utf-8"))
         except HTTPError as e:
             if e.code == 404:
                 return PackageDocsResult(
