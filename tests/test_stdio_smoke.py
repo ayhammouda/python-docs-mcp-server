@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -131,6 +132,36 @@ def _read_responses(stdout_data: bytes) -> list[dict]:
     return responses
 
 
+def _jsonrpc_frames(stream_data: bytes) -> list[dict]:
+    """Return JSON-RPC objects parsed from a stream, ignoring log lines."""
+    frames: list[dict] = []
+    for line in stream_data.split(b"\n"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict) and parsed.get("jsonrpc") == "2.0":
+            frames.append(parsed)
+    return frames
+
+
+def _assert_protocol_on_stdout_only(result: subprocess.CompletedProcess) -> list[dict]:
+    """Assert JSON-RPC protocol frames are emitted only on stdout."""
+    responses = _read_responses(result.stdout)
+    assert responses, f"No JSON-RPC responses on stdout; stderr was: {result.stderr!r}"
+
+    for resp in responses:
+        assert "_raw" not in resp, f"Non-JSON stdout pollution: {resp.get('_raw')}"
+        assert resp.get("jsonrpc") == "2.0", f"Missing JSON-RPC frame on stdout: {resp}"
+
+    stderr_frames = _jsonrpc_frames(result.stderr)
+    assert stderr_frames == [], f"JSON-RPC frames leaked to stderr: {stderr_frames}"
+    return responses
+
+
 def _find_response(responses: list[dict], req_id: int) -> dict | None:
     """Find a JSON-RPC response matching the given request id."""
     for resp in responses:
@@ -152,14 +183,23 @@ class TestStdioSmoke:
     def _run_server_with_input(
         self, stdin_data: bytes, timeout: int = 15,
     ) -> subprocess.CompletedProcess:
-        """Run the server subprocess with the given stdin and return the result."""
-        return subprocess.run(
+        """Run the server subprocess with line-paced stdin and return the result."""
+        proc = subprocess.Popen(
             [sys.executable, "-m", "mcp_server_python_docs", "serve"],
-            input=stdin_data,
-            capture_output=True,
-            timeout=timeout,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             env=self.env,
         )
+        assert proc.stdin is not None
+        for index, line in enumerate(stdin_data.splitlines(keepends=True)):
+            proc.stdin.write(line)
+            proc.stdin.flush()
+            time.sleep(0.3 if index == 0 else 0.05)
+        proc.stdin.close()
+        proc.stdin = None
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
 
     def test_server_lists_tools_no_stdout_pollution(self):
         """Server returns tool list and stdout has no non-JSON-RPC bytes."""
@@ -175,16 +215,11 @@ class TestStdioSmoke:
 
         result = self._run_server_with_input(stdin_data)
 
-        responses = _read_responses(result.stdout)
-
-        # Every line on stdout must be valid JSON-RPC
-        for resp in responses:
-            assert "_raw" not in resp, f"Non-JSON stdout pollution: {resp.get('_raw')}"
+        responses = _assert_protocol_on_stdout_only(result)
 
         # Find the tools/list response
         tools_resp = _find_response(responses, 2)
-        if tools_resp is None:
-            pytest.skip("Server exited before returning tools/list response")
+        assert tools_resp is not None, f"Server exited before tools/list response: {responses}"
         assert "result" in tools_resp, f"tools/list error: {tools_resp}"
         tool_names = [t["name"] for t in tools_resp["result"].get("tools", [])]
         assert "search_docs" in tool_names
@@ -209,16 +244,11 @@ class TestStdioSmoke:
         )
 
         result = self._run_server_with_input(stdin_data)
-        responses = _read_responses(result.stdout)
-
-        # No stdout pollution
-        for resp in responses:
-            assert "_raw" not in resp, f"Stdout pollution: {resp.get('_raw')}"
+        responses = _assert_protocol_on_stdout_only(result)
 
         # Find the tools/call response
         call_resp = _find_response(responses, 2)
-        if call_resp is None:
-            pytest.skip("Server exited before returning search_docs response")
+        assert call_resp is not None, f"Server exited before search_docs response: {responses}"
         assert "result" in call_resp, f"tools/call error: {call_resp}"
         content = call_resp["result"].get("content", [])
         assert len(content) >= 1, "search_docs returned no content"
@@ -239,14 +269,10 @@ class TestStdioSmoke:
         )
 
         result = self._run_server_with_input(stdin_data)
-        responses = _read_responses(result.stdout)
-
-        for resp in responses:
-            assert "_raw" not in resp, f"Stdout pollution: {resp.get('_raw')}"
+        responses = _assert_protocol_on_stdout_only(result)
 
         call_resp = _find_response(responses, 2)
-        if call_resp is None:
-            pytest.skip("Server exited before returning list_versions response")
+        assert call_resp is not None, f"Server exited before list_versions response: {responses}"
         assert "result" in call_resp, f"tools/call error: {call_resp}"
 
     def test_all_stdout_is_valid_jsonrpc(self):

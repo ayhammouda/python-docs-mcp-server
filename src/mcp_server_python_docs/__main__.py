@@ -98,6 +98,10 @@ def serve() -> None:
     # print to stdout during MCP communication.
     os.dup2(saved_stdout_fd, 1)
     os.close(saved_stdout_fd)
+    # FastMCP writes JSON-RPC frames through Python's stdout object.
+    # Restore it as well as fd 1, otherwise protocol frames are emitted
+    # on stderr because module import redirected sys.stdout there.
+    sys.stdout = sys.__stdout__
 
     try:
         mcp_server.run(transport="stdio")
