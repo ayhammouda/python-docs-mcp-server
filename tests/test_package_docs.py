@@ -2,20 +2,27 @@
 from __future__ import annotations
 
 import json
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
-from mcp_server_python_docs.services.package_docs import PackageDocsService
+from mcp_server_python_docs.services.package_docs import (
+    _PYPI_METADATA_MAX_BYTES,
+    PackageDocsService,
+)
 
 
 class _Resp:
-    def __init__(self, payload: dict):
+    def __init__(self, payload: dict | bytes):
         self._payload = payload
     def __enter__(self):
         return self
     def __exit__(self, exc_type, exc, tb):
         return False
-    def read(self) -> bytes:
-        return json.dumps(self._payload).encode()
+    def read(self, size: int = -1) -> bytes:
+        if isinstance(self._payload, bytes):
+            data = self._payload
+        else:
+            data = json.dumps(self._payload).encode()
+        return data if size < 0 else data[:size]
 
 
 def test_package_docs_uses_official_pypi_metadata_and_declared_urls():
@@ -67,3 +74,46 @@ def test_package_docs_not_found_and_tool_annotation():
     tool = create_server()._tool_manager._tools["lookup_package_docs"]
     assert tool.annotations.readOnlyHint is True
     assert tool.annotations.openWorldHint is True
+
+
+def test_package_docs_rejects_oversized_pypi_metadata_without_unbounded_read():
+    class LargeResp:
+        requested_size: int | None = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, size: int = -1) -> bytes:
+            self.requested_size = size
+            assert size == _PYPI_METADATA_MAX_BYTES + 1
+            return b"x" * size
+
+    response = LargeResp()
+
+    def fetch(url: str, timeout: float):
+        return response
+
+    result = PackageDocsService(fetcher=fetch).lookup("huge-package")
+
+    assert response.requested_size == _PYPI_METADATA_MAX_BYTES + 1
+    assert result.sources == []
+    assert result.note == "PyPI metadata exceeded size limit."
+
+
+def test_package_docs_reports_retrieval_and_json_errors():
+    def unreachable(url: str, timeout: float):
+        raise URLError("network down")
+
+    network_result = PackageDocsService(fetcher=unreachable).lookup("demo")
+    assert network_result.sources == []
+    assert network_result.note == "Unable to retrieve PyPI metadata: URLError."
+
+    def invalid_json(url: str, timeout: float):
+        return _Resp(b"not json")
+
+    json_result = PackageDocsService(fetcher=invalid_json).lookup("demo")
+    assert json_result.sources == []
+    assert json_result.note == "Unable to retrieve PyPI metadata: JSONDecodeError."
