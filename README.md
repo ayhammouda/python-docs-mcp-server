@@ -215,8 +215,7 @@ it only removes cached retrieval results, not the docs index.
 `https://docs.pypi.org/api/json/` (`GET /pypi/<project>/json`) and returns only
 sources declared in that package's PyPI metadata: the PyPI project URL,
 `docs_url`, `home_page`, and allowlisted `project_urls` labels such as
-Documentation, Homepage, Source, Repository, Issues, Changelog, and Release
-Notes.
+Documentation, Homepage, Source, and Repository.
 
 The tool makes the trust boundary explicit with
 `trust_boundary="pypi-declared-metadata"`. It does not crawl pages, perform web

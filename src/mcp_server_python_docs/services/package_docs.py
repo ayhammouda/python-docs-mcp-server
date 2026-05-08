@@ -26,7 +26,6 @@ _ALLOWED = {
     "repository",
     "repo",
 }
-_BLOCKED = ("mirror", "community", "unofficial", "tutorial", "example")
 _PYPI_METADATA_MAX_BYTES = 5 * 1024 * 1024
 
 
@@ -135,7 +134,7 @@ class PackageDocsService:
         if isinstance(project_urls, dict):
             for label, url in project_urls.items():
                 lowered = str(label).strip().lower()
-                if lowered in _ALLOWED and not any(bad in lowered for bad in _BLOCKED):
+                if lowered in _ALLOWED:
                     found = _source(str(label), url, lowered.replace(" ", "_"))
                     if found is not None and found not in sources:
                         sources.append(found)
