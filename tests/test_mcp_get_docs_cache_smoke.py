@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from mcp_server_python_docs.services.persistent_cache import _NO_ANCHOR_KEY
 from mcp_server_python_docs.storage.db import bootstrap_schema, get_readwrite_connection
 from tests.test_stdio_smoke import (
     _assert_protocol_on_stdout_only,
@@ -150,7 +151,7 @@ def test_get_docs_cache_restart_and_corrupt_cache_fallback(tmp_path: Path):
     assert (version, slug, anchor, max_chars, start_index) == (
         "3.13",
         "library/json.html",
-        "\x00mcp-python-docs:no-anchor\x00",
+        _NO_ANCHOR_KEY,
         8000,
         0,
     )

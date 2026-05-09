@@ -37,8 +37,12 @@ def _document_candidates(uri: str) -> tuple[str, ...]:
 def _resolve_symbol_location(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
-) -> tuple[str, str]:
-    """Resolve a symbol row to a get_docs-compatible slug and anchor."""
+) -> tuple[str, str | None]:
+    """Resolve a symbol row to a get_docs-compatible slug and anchor.
+
+    Returns ``(slug, None)`` when the hit is page-level. ``get_docs()`` treats
+    any non-None anchor as a section lookup, so blank anchors must never leak.
+    """
     uri = str(row["uri"])
     fallback_slug = _page_uri(uri)
     fallback_anchor = str(row["anchor"] or "")
@@ -56,7 +60,7 @@ def _resolve_symbol_location(
             (section_id,),
         ).fetchone()
         if section_row is not None:
-            return section_row["slug"], section_row["anchor"] or ""
+            return section_row["slug"], (section_row["anchor"] or None)
 
     doc_row = None
     document_id = row["document_id"]
@@ -81,12 +85,12 @@ def _resolve_symbol_location(
                 break
 
     if doc_row is None:
-        return fallback_slug, fallback_anchor
+        return fallback_slug, (fallback_anchor or None)
 
     if fallback_anchor:
         section_row = conn.execute(
             """
-            SELECT anchor
+            SELECT 1
             FROM sections
             WHERE document_id = ? AND anchor = ?
             LIMIT 1
@@ -94,9 +98,9 @@ def _resolve_symbol_location(
             (doc_row["id"], fallback_anchor),
         ).fetchone()
         if section_row is not None:
-            return doc_row["slug"], section_row["anchor"] or ""
+            return doc_row["slug"], fallback_anchor
 
-    return doc_row["slug"], ""
+    return doc_row["slug"], None
 
 
 def _normalize_scores(hits: list[SymbolHit]) -> list[SymbolHit]:
@@ -182,7 +186,7 @@ def search_sections(
             score=row["score"],
             version=row["version"],
             slug=row["slug"],
-            anchor=row["anchor"],
+            anchor=row["anchor"] or None,
         )
         for row in rows
     ]
@@ -300,7 +304,7 @@ def search_examples(
             score=row["score"],
             version=row["version"],
             slug=row["slug"],
-            anchor=row["anchor"] or "",
+            anchor=row["anchor"] or None,
         )
         for row in rows
     ]

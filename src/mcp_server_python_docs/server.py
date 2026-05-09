@@ -14,10 +14,8 @@ import sys
 import traceback
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Annotated, Literal
 
-import platformdirs
 import yaml
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
@@ -39,7 +37,11 @@ from mcp_server_python_docs.services.package_docs import PackageDocsService
 from mcp_server_python_docs.services.persistent_cache import PersistentDocsCache
 from mcp_server_python_docs.services.search import SearchService
 from mcp_server_python_docs.services.version import VersionService
-from mcp_server_python_docs.storage.db import get_readonly_connection
+from mcp_server_python_docs.storage.db import (
+    get_cache_dir,
+    get_index_path,
+    get_readonly_connection,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,8 +69,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     constructs service instances, and fails fast on missing index or
     unavailable FTS5.
     """
-    cache_dir = Path(platformdirs.user_cache_dir("mcp-python-docs"))
-    index_path = cache_dir / "index.db"
+    cache_dir = get_cache_dir()
+    index_path = get_index_path()
 
     # Fail fast on missing index (SRVR-10)
     if not index_path.exists():

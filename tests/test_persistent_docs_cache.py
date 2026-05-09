@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import threading
 from pathlib import Path
 
 from mcp_server_python_docs.models import GetDocsResult
@@ -181,3 +182,61 @@ def test_invalid_cached_json_is_best_effort_miss(tmp_path: Path, caplog):
 
     assert "Persistent docs cache entry ignored" in caplog.text
     assert cache.stats().misses == 1
+
+
+def test_concurrent_puts_serialize_safely_without_lost_writes(tmp_path: Path):
+    """Concurrent put() must not race on the shared connection or stats counter.
+
+    Regression for CodeRabbit Major #2: ``check_same_thread=False`` alone does
+    not make a sqlite connection safe for concurrent ``execute()``/``commit()``
+    calls. Per the official Python sqlite3 docs, write operations must be
+    serialized by the application. The unprotected ``self._writes += 1`` also
+    races (read-modify-write across the GIL boundary), which is what this test
+    exercises deterministically.
+    """
+    _, cache = _cache(tmp_path)
+    n_threads = 20
+    n_per_thread = 50
+    expected = n_threads * n_per_thread
+    errors: list[BaseException] = []
+    err_lock = threading.Lock()
+
+    def worker(tid: int) -> None:
+        try:
+            for i in range(n_per_thread):
+                cache.put(
+                    result=GetDocsResult(
+                        content=f"c{tid}-{i}",
+                        slug=f"slug-{tid}-{i}",
+                        title="t",
+                        version="3.12",
+                        anchor=None,
+                        char_count=4,
+                    ),
+                    max_chars=500,
+                    start_index=0,
+                )
+        except BaseException as e:
+            with err_lock:
+                errors.append(e)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == [], f"Concurrent put() raised: {errors[:3]!r}"
+    assert cache.stats().writes == expected, (
+        f"writes counter raced: got {cache.stats().writes}, expected {expected}"
+    )
+    for tid in range(n_threads):
+        for i in range(n_per_thread):
+            got = cache.get(
+                version="3.12",
+                slug=f"slug-{tid}-{i}",
+                anchor=None,
+                max_chars=500,
+                start_index=0,
+            )
+            assert got is not None, f"lost concurrent write for slug-{tid}-{i}"

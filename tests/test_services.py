@@ -133,8 +133,8 @@ class TestSearchService:
         hit = SearchService(db, {}).search("json.dumps", version="3.13", kind="symbol").hits[0]
 
         assert hit.slug == "library/json"
-        assert hit.anchor == ""
-        docs = ContentService(db).get_docs(hit.slug, hit.version, hit.anchor or None)
+        assert hit.anchor is None
+        docs = ContentService(db).get_docs(hit.slug, hit.version, hit.anchor)
         assert "json.dumps guidance" in docs.content
 
     def test_search_no_results(self, populated_with_content):
@@ -483,8 +483,11 @@ class TestToolRegistration:
                 pytest.fail("lifespan should not reach yield")
 
         with patch(
-            "mcp_server_python_docs.server.platformdirs.user_cache_dir",
-            return_value=str(cache_dir),
+            "mcp_server_python_docs.server.get_cache_dir",
+            return_value=cache_dir,
+        ), patch(
+            "mcp_server_python_docs.server.get_index_path",
+            return_value=cache_dir / "index.db",
         ), patch(
             "mcp_server_python_docs.server._load_synonyms",
             return_value={},
