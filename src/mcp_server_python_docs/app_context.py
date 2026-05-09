@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from mcp_server_python_docs.services.content import ContentService
+from mcp_server_python_docs.services.package_docs import PackageDocsService
+from mcp_server_python_docs.services.persistent_cache import PersistentDocsCache
 from mcp_server_python_docs.services.search import SearchService
 from mcp_server_python_docs.services.version import VersionService
 
@@ -24,6 +26,8 @@ class AppContext:
     search_service: SearchService
     content_service: ContentService
     version_service: VersionService
+    package_docs_service: PackageDocsService = field(default_factory=PackageDocsService)
+    persistent_docs_cache: PersistentDocsCache | None = None
     synonyms: dict[str, list[str]] = field(default_factory=dict)
     detected_python_version: str | None = None
     detected_python_source: str | None = None

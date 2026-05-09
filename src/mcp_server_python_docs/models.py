@@ -48,7 +48,10 @@ class SymbolHit(BaseModel):
     score: float = Field(default=0.0, description="Relevance score")
     version: str = Field(description="Python version this hit belongs to")
     slug: str = Field(default="", description="Page slug for get_docs follow-up")
-    anchor: str = Field(default="", description="Section anchor for get_docs follow-up")
+    anchor: str | None = Field(
+        default=None,
+        description="Section anchor for get_docs follow-up; None for page-level hits",
+    )
 
 
 class SearchDocsResult(BaseModel):
@@ -159,4 +162,55 @@ class DetectPythonVersionResult(BaseModel):
     )
     is_default: bool = Field(
         description="Whether this detected version is being used as the default for get_docs"
+    )
+
+
+# --- lookup_package_docs models ---
+
+# Bounded kind vocabulary: hardcoded values from `_source` calls plus the
+# normalized members of `_ALLOWED` (with spaces → underscores) in
+# services/package_docs.py. Keep these in sync.
+PackageKind = Literal[
+    "pypi",
+    "docs",
+    "documentation",
+    "homepage",
+    "home_page",
+    "source",
+    "source_code",
+    "repository",
+    "repo",
+]
+
+
+class PackageDocsSource(BaseModel):
+    """A package-declared documentation or project source URL."""
+
+    label: str = Field(description="Label from PyPI metadata or a normalized core metadata field")
+    url: str = Field(description="HTTP(S) URL declared by the package on PyPI")
+    kind: PackageKind = Field(
+        description="Source category: pypi, docs, documentation, homepage, home_page, "
+        "source, source_code, repository, or repo"
+    )
+    declared_by: str = Field(description="Where this source declaration came from")
+
+
+class PackageDocsResult(BaseModel):
+    """Output from lookup_package_docs tool."""
+
+    package: str = Field(description="Canonical package name returned by PyPI when available")
+    version: str = Field(description="Latest version reported by PyPI metadata")
+    summary: str = Field(default="", description="Package summary from PyPI metadata")
+    metadata_source: str = Field(description="Official PyPI JSON API URL used for lookup")
+    trust_boundary: Literal["pypi-declared-metadata"] = Field(
+        default="pypi-declared-metadata",
+        description="Indicates results are limited to PyPI/project-declared metadata",
+    )
+    sources: list[PackageDocsSource] = Field(
+        default_factory=list,
+        description="Package-declared PyPI, documentation, homepage, and source URLs",
+    )
+    note: str | None = Field(
+        default=None,
+        description="Controlled-scope note, for example skipped labels or not-found details",
     )

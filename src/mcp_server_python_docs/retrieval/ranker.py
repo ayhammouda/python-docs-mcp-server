@@ -16,6 +16,93 @@ from mcp_server_python_docs.models import SymbolHit
 logger = logging.getLogger(__name__)
 
 
+def _page_uri(uri: str) -> str:
+    """Return the page part of an objects.inv URI."""
+    return uri.split("#", 1)[0]
+
+
+def _document_candidates(uri: str) -> tuple[str, ...]:
+    """Return possible document slugs for a symbol URI.
+
+    ``objects.inv`` entries use HTML paths such as ``library/json.html``,
+    while Sphinx JSON content is ingested with extensionless slugs such as
+    ``library/json``. Prefer the exact URI first, then the extensionless form.
+    """
+    page_uri = _page_uri(uri)
+    if page_uri.endswith(".html"):
+        return (page_uri, page_uri[:-5])
+    return (page_uri,)
+
+
+def _resolve_symbol_location(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+) -> tuple[str, str | None]:
+    """Resolve a symbol row to a get_docs-compatible slug and anchor.
+
+    Returns ``(slug, None)`` when the hit is page-level. ``get_docs()`` treats
+    any non-None anchor as a section lookup, so blank anchors must never leak.
+    """
+    uri = str(row["uri"])
+    fallback_slug = _page_uri(uri)
+    fallback_anchor = str(row["anchor"] or "")
+
+    section_id = row["section_id"]
+    if section_id is not None:
+        section_row = conn.execute(
+            """
+            SELECT d.slug, s.anchor
+            FROM sections s
+            JOIN documents d ON s.document_id = d.id
+            WHERE s.id = ?
+            LIMIT 1
+            """,
+            (section_id,),
+        ).fetchone()
+        if section_row is not None:
+            return section_row["slug"], (section_row["anchor"] or None)
+
+    doc_row = None
+    document_id = row["document_id"]
+    if document_id is not None:
+        doc_row = conn.execute(
+            "SELECT id, slug FROM documents WHERE id = ? LIMIT 1",
+            (document_id,),
+        ).fetchone()
+
+    if doc_row is None:
+        for candidate in _document_candidates(uri):
+            doc_row = conn.execute(
+                """
+                SELECT id, slug
+                FROM documents
+                WHERE doc_set_id = ? AND (slug = ? OR uri = ?)
+                LIMIT 1
+                """,
+                (row["doc_set_id"], candidate, candidate),
+            ).fetchone()
+            if doc_row is not None:
+                break
+
+    if doc_row is None:
+        return fallback_slug, (fallback_anchor or None)
+
+    if fallback_anchor:
+        section_row = conn.execute(
+            """
+            SELECT 1
+            FROM sections
+            WHERE document_id = ? AND anchor = ?
+            LIMIT 1
+            """,
+            (doc_row["id"], fallback_anchor),
+        ).fetchone()
+        if section_row is not None:
+            return doc_row["slug"], fallback_anchor
+
+    return doc_row["slug"], None
+
+
 def _normalize_scores(hits: list[SymbolHit]) -> list[SymbolHit]:
     """Normalize BM25 scores to [0.1, 1.0] range.
 
@@ -99,7 +186,7 @@ def search_sections(
             score=row["score"],
             version=row["version"],
             slug=row["slug"],
-            anchor=row["anchor"],
+            anchor=row["anchor"] or None,
         )
         for row in rows
     ]
@@ -129,7 +216,8 @@ def search_symbols(
     try:
         cursor = conn.execute(
             """
-            SELECT sym.id, sym.qualified_name, sym.symbol_type, sym.uri,
+            SELECT sym.id, sym.doc_set_id, sym.document_id, sym.section_id,
+                   sym.qualified_name, sym.symbol_type, sym.uri,
                    sym.anchor, sym.module, d.version,
                    bm25(symbols_fts, 10.0, 1.0) as score,
                    snippet(symbols_fts, 0, '**', '**', '...', 32) as snippet_text
@@ -148,19 +236,19 @@ def search_symbols(
         logger.warning("FTS5 query failed for symbols: %r", match_expr)
         return []
 
-    hits = [
-        SymbolHit(
+    hits = []
+    for row in rows:
+        slug, anchor = _resolve_symbol_location(conn, row)
+        hits.append(SymbolHit(
             uri=row["uri"],
             title=row["qualified_name"],
             kind=row["symbol_type"] or "symbol",
             snippet=row["snippet_text"] or "",
             score=row["score"],
             version=row["version"],
-            slug=row["uri"].split("#")[0] if "#" in row["uri"] else row["uri"],
-            anchor=row["anchor"] or "",
-        )
-        for row in rows
-    ]
+            slug=slug,
+            anchor=anchor,
+        ))
 
     return _normalize_scores(hits)
 
@@ -216,7 +304,7 @@ def search_examples(
             score=row["score"],
             version=row["version"],
             slug=row["slug"],
-            anchor=row["anchor"] or "",
+            anchor=row["anchor"] or None,
         )
         for row in rows
     ]
@@ -251,7 +339,8 @@ def lookup_symbols_exact(
 
     cursor = conn.execute(
         """
-        SELECT s.qualified_name, s.symbol_type, s.uri, s.anchor,
+        SELECT s.doc_set_id, s.document_id, s.section_id,
+               s.qualified_name, s.symbol_type, s.uri, s.anchor,
                s.module, d.version
         FROM symbols s
         JOIN doc_sets d ON s.doc_set_id = d.id
@@ -264,16 +353,17 @@ def lookup_symbols_exact(
     )
     rows = cursor.fetchall()
 
-    return [
-        SymbolHit(
+    hits = []
+    for row in rows:
+        slug, anchor = _resolve_symbol_location(conn, row)
+        hits.append(SymbolHit(
             uri=row["uri"],
             title=row["qualified_name"],
             kind=row["symbol_type"] or "symbol",
             snippet="",
             score=1.0 if row["qualified_name"] == query else 0.8,
             version=row["version"],
-            slug=row["uri"].split("#")[0] if "#" in row["uri"] else row["uri"],
-            anchor=row["anchor"] or "",
-        )
-        for row in rows
-    ]
+            slug=slug,
+            anchor=anchor,
+        ))
+    return hits
