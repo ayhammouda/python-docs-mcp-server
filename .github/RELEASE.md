@@ -41,20 +41,20 @@ versions 3.10 through 3.14.
 2. Verify the version in `pyproject.toml` is correct:
    ```bash
    grep '^version' pyproject.toml
-   # Should show: version = "0.1.0"
+   # Should show: version = "0.1.1"
    ```
 
 3. Create and push the tag:
    ```bash
-   git tag -a v0.1.0 -m "Release v0.1.0"
-   git push origin v0.1.0
+   git tag -a v0.1.1 -m "Release v0.1.1"
+   git push origin v0.1.1
    ```
 
 4. Monitor the release workflow at:
    https://github.com/<owner>/python-docs-mcp-server/actions/workflows/release.yml
 
 5. Verify the package on PyPI:
-   https://pypi.org/project/mcp-server-python-docs/0.1.0/
+   https://pypi.org/project/mcp-server-python-docs/0.1.1/
 
 ## Post-Release Verification
 
@@ -63,14 +63,14 @@ After the package is published:
 ```bash
 # In a fresh environment:
 uvx mcp-server-python-docs --version
-# Should print: 0.1.0
+# Should print: 0.1.1
 
 # Or via pipx:
 pipx run mcp-server-python-docs --version
-# Should print: 0.1.0
+# Should print: 0.1.1
 ```
 
-## v0.1.0 Release Checklist
+## v0.1.1 Release Checklist
 
 Complete these steps in order. Each step has a checkbox -- do not skip ahead.
 
@@ -81,7 +81,7 @@ Complete these steps in order. Each step has a checkbox -- do not skip ahead.
   ```bash
   uv run pytest --tb=short -q
   ```
-- [ ] Version in `pyproject.toml` is `0.1.0`:
+- [ ] Version in `pyproject.toml` is `0.1.1`:
   ```bash
   grep '^version' pyproject.toml
   ```
@@ -105,7 +105,7 @@ Complete these steps in order. Each step has a checkbox -- do not skip ahead.
 
 - [ ] Create the annotated tag:
   ```bash
-  git tag -a v0.1.0 -m "Release v0.1.0
+  git tag -a v0.1.1 -m "Release v0.1.1
 
   First public release of mcp-server-python-docs.
 
@@ -116,14 +116,14 @@ Complete these steps in order. Each step has a checkbox -- do not skip ahead.
   ```
 - [ ] Push the tag to trigger the release workflow:
   ```bash
-  git push origin v0.1.0
+  git push origin v0.1.1
   ```
 - [ ] Monitor the workflow run: https://github.com/<owner>/python-docs-mcp-server/actions/workflows/release.yml
 - [ ] Verify all three jobs pass: `build` -> `publish` -> `github-release`
 
 ### Post-Release Verification (SHIP-06)
 
-- [ ] Package visible on PyPI: https://pypi.org/project/mcp-server-python-docs/0.1.0/
+- [ ] Package visible on PyPI: https://pypi.org/project/mcp-server-python-docs/0.1.1/
 - [ ] Attestation visible on PyPI package page (look for "Provenance" badge)
 - [ ] Fresh install test:
   ```bash
@@ -132,13 +132,13 @@ Complete these steps in order. Each step has a checkbox -- do not skip ahead.
 
   # Install and verify version
   uvx mcp-server-python-docs --version
-  # Expected output: 0.1.0
+  # Expected output: 0.1.1
   ```
 - [ ] Full README flow test (from a clean environment):
   ```bash
   # Step 1: Install
   uvx mcp-server-python-docs --version
-  # Should print 0.1.0
+  # Should print 0.1.1
 
   # Step 2: Build index
   uvx mcp-server-python-docs build-index --versions 3.10,3.11,3.12,3.13,3.14
@@ -161,10 +161,10 @@ Complete these steps in order. Each step has a checkbox -- do not skip ahead.
 ### Release Complete
 
 - [ ] GitHub Release exists with attached artifacts
-- [ ] PyPI page shows 0.1.0 with attestation
+- [ ] PyPI page shows 0.1.1 with attestation
 - [ ] README install instructions verified end-to-end
 - [ ] Slow E2E workflow passed for the release candidate
-- [ ] Tag v0.1.0 exists in git
+- [ ] Tag v0.1.1 exists in git
 
 **Release date**: _______________
 **Released by**: _______________

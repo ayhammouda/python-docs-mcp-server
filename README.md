@@ -58,9 +58,33 @@ exposes a small MCP tool surface tuned for high-signal retrieval.
 The model gets the exact symbol match and the relevant documentation section
 instead of a full-page dump.
 
+## 30-second demo
+
+Ask your MCP client:
+
+> In Python 3.13, how should I use `asyncio.TaskGroup` and what changed from older asyncio patterns?
+
+The agent should use `search_docs` for the exact symbol, then `get_docs` for the
+matching section. Instead of generic web results or an entire docs page, it gets
+the official stdlib text for the requested Python version, trimmed to the useful
+section.
+
+Local source smoke test until the PyPI package is published:
+
+```bash
+uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git mcp-server-python-docs --version
+```
+
 ## Install
 
-Run it directly with `uvx`:
+Until the first PyPI release is published, run from GitHub:
+
+```bash
+uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git mcp-server-python-docs --version
+```
+
+After PyPI publishing is complete, the package will also run directly with
+`uvx`:
 
 ```bash
 uvx mcp-server-python-docs --version
@@ -80,8 +104,10 @@ shell or use `python -m uv ...` as a fallback for local contributor commands.
 Build the local documentation index:
 
 ```bash
-uvx mcp-server-python-docs build-index --versions 3.10,3.11,3.12,3.13,3.14
+uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git mcp-server-python-docs build-index --versions 3.10,3.11,3.12,3.13,3.14
 ```
+
+After PyPI publishing, `uvx mcp-server-python-docs build-index ...` is enough.
 
 If you installed the package persistently, you can drop the `uvx` prefix:
 
@@ -110,7 +136,11 @@ Add this to your Claude Desktop configuration file:
   "mcpServers": {
     "python-docs": {
       "command": "uvx",
-      "args": ["mcp-server-python-docs"]
+      "args": [
+        "--from",
+        "git+https://github.com/ayhammouda/python-docs-mcp-server.git",
+        "mcp-server-python-docs"
+      ]
     }
   }
 }
@@ -128,7 +158,11 @@ global settings):
   "mcpServers": {
     "python-docs": {
       "command": "uvx",
-      "args": ["mcp-server-python-docs"]
+      "args": [
+        "--from",
+        "git+https://github.com/ayhammouda/python-docs-mcp-server.git",
+        "mcp-server-python-docs"
+      ]
     }
   }
 }
@@ -141,7 +175,7 @@ Add this to `.codex/config.toml`:
 ```toml
 [mcp_servers.python-docs]
 command = "uvx"
-args = ["mcp-server-python-docs"]
+args = ["--from", "git+https://github.com/ayhammouda/python-docs-mcp-server.git", "mcp-server-python-docs"]
 ```
 
 ## How quality is verified
@@ -174,20 +208,21 @@ The server currently exposes five MCP tools:
 | `list_versions` | List all indexed Python versions with metadata. |
 | `detect_python_version` | Detect the user's local Python version and report whether it matches an indexed documentation version. |
 
-## When to use this instead of generic docs retrieval
+## Why not Context7 or generic docs retrieval?
 
-Use this server when you need:
+Use this server when the question is about Python's standard library and you
+want the boring answer that is actually correct:
 
-- exact Python stdlib symbol resolution
-- consistent version-aware answers across Python 3.10 through 3.14
-- token-efficient section retrieval from official docs
-- a local, read-only MCP server with a simple operational story
+- official Python docs, not scraped mirrors or mixed-source summaries
+- exact symbol resolution from `objects.inv`
+- Python-version-aware results across 3.10 through 3.14
+- token-efficient section retrieval instead of full-page dumps
+- local, read-only runtime behavior with no API keys
 
-Use a generic fetcher or broader docs MCP when you need:
-
-- arbitrary third-party package content beyond package-declared PyPI metadata
-- arbitrary web pages
-- mixed-source research across many frameworks
+Use Context7 or a generic docs fetcher when you need broader third-party library
+coverage, arbitrary web pages, or cross-framework research. This server is not a
+universal docs search engine. It is a precise stdlib retrieval tool for AI
+coding agents.
 
 ## Retrieved docs cache
 
