@@ -48,7 +48,10 @@ class SymbolHit(BaseModel):
     score: float = Field(default=0.0, description="Relevance score")
     version: str = Field(description="Python version this hit belongs to")
     slug: str = Field(default="", description="Page slug for get_docs follow-up")
-    anchor: str = Field(default="", description="Section anchor for get_docs follow-up")
+    anchor: str | None = Field(
+        default=None,
+        description="Section anchor for get_docs follow-up; None for page-level hits",
+    )
 
 
 class SearchDocsResult(BaseModel):
@@ -163,16 +166,6 @@ class DetectPythonVersionResult(BaseModel):
 
 
 # --- lookup_package_docs models ---
-
-
-class PackageDocsInput(BaseModel):
-    """Input parameters for lookup_package_docs tool."""
-
-    package: str = Field(
-        min_length=1,
-        max_length=214,
-        description="PyPI package/project name (e.g. 'requests').",
-    )
 
 
 class PackageDocsSource(BaseModel):

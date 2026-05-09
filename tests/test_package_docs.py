@@ -128,3 +128,10 @@ def test_package_docs_reports_retrieval_and_json_errors():
     json_result = PackageDocsService(fetcher=invalid_json).lookup("demo")
     assert json_result.sources == []
     assert json_result.note == "Unable to retrieve PyPI metadata: JSONDecodeError."
+
+    def invalid_utf8(url: str, timeout: float):
+        return _Resp(b"\xff\xfe\xfd")
+
+    utf8_result = PackageDocsService(fetcher=invalid_utf8).lookup("demo")
+    assert utf8_result.sources == []
+    assert utf8_result.note == "Unable to retrieve PyPI metadata: UnicodeDecodeError."

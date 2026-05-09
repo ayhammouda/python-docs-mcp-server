@@ -71,6 +71,16 @@ def _read_limited(response: _HTTPResponse) -> bytes | None:
     return data
 
 
+def _empty_result(package: str, metadata_source: str, note: str) -> PackageDocsResult:
+    return PackageDocsResult(
+        package=package,
+        version="",
+        metadata_source=metadata_source,
+        sources=[],
+        note=note,
+    )
+
+
 class PackageDocsService:
     """Return package-declared docs/homepage/source URLs from PyPI metadata only."""
 
@@ -86,32 +96,20 @@ class PackageDocsService:
             with self._fetcher(metadata_source, self._timeout) as response:
                 data = _read_limited(response)
                 if data is None:
-                    return PackageDocsResult(
-                        package=package,
-                        version="",
-                        metadata_source=metadata_source,
-                        sources=[],
-                        note="PyPI metadata exceeded size limit.",
+                    return _empty_result(
+                        package, metadata_source, "PyPI metadata exceeded size limit."
                     )
                 payload = json.loads(data.decode("utf-8"))
         except HTTPError as e:
             note = (
                 "Package not found on PyPI." if e.code == 404 else f"PyPI returned HTTP {e.code}."
             )
-            return PackageDocsResult(
-                package=package,
-                version="",
-                metadata_source=metadata_source,
-                sources=[],
-                note=note,
-            )
-        except (URLError, TimeoutError, json.JSONDecodeError) as e:
-            return PackageDocsResult(
-                package=package,
-                version="",
-                metadata_source=metadata_source,
-                sources=[],
-                note=f"Unable to retrieve PyPI metadata: {type(e).__name__}.",
+            return _empty_result(package, metadata_source, note)
+        except (URLError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as e:
+            return _empty_result(
+                package,
+                metadata_source,
+                f"Unable to retrieve PyPI metadata: {type(e).__name__}.",
             )
 
         info = payload.get("info") if isinstance(payload, dict) else {}
