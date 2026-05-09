@@ -4,6 +4,10 @@ from __future__ import annotations
 import json
 from urllib.error import HTTPError, URLError
 
+import pytest
+from pydantic import ValidationError
+
+from mcp_server_python_docs.models import PackageDocsResult, PackageDocsSource
 from mcp_server_python_docs.services.package_docs import (
     _PYPI_METADATA_MAX_BYTES,
     PackageDocsService,
@@ -135,3 +139,27 @@ def test_package_docs_reports_retrieval_and_json_errors():
     utf8_result = PackageDocsService(fetcher=invalid_utf8).lookup("demo")
     assert utf8_result.sources == []
     assert utf8_result.note == "Unable to retrieve PyPI metadata: UnicodeDecodeError."
+
+
+def test_package_docs_source_rejects_unknown_kind():
+    """``kind`` is a controlled vocabulary — unknown values must fail validation.
+
+    Regression for CodeRabbit nitpick: tightening ``kind`` from ``str`` to a
+    ``Literal`` formalizes the implicit contract enforced by the ``_ALLOWED``
+    set in package_docs.py and the hardcoded values used by ``_source``.
+    """
+    with pytest.raises(ValidationError):
+        PackageDocsSource(
+            label="bogus", url="https://x/", kind="bogus_kind", declared_by="x"
+        )
+
+
+def test_package_docs_result_rejects_unknown_trust_boundary():
+    """``trust_boundary`` is fixed at construction — divergence must fail."""
+    with pytest.raises(ValidationError):
+        PackageDocsResult(
+            package="x",
+            version="1",
+            metadata_source="https://pypi.org/pypi/x/json",
+            trust_boundary="something-else",
+        )
