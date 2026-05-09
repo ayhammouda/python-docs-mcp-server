@@ -108,7 +108,7 @@ class TestVersionFlag:
 
         assert mcp_server_python_docs.__version__ == version("mcp-server-python-docs")
 
-    def test_source_tree_import_without_installed_metadata(self):
+    def test_source_tree_import_without_installed_metadata(self, tmp_path: Path):
         """Source-tree import falls back to pyproject.toml when metadata is absent."""
         env = os.environ.copy()
         env["PYTHONPATH"] = str(PROJECT_ROOT / "src")
@@ -123,6 +123,7 @@ class TestVersionFlag:
             text=True,
             timeout=10,
             env=env,
+            cwd=str(tmp_path),
         )
         assert result.returncode == 0, (
             f"Source-tree import failed.\n"
