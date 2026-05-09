@@ -1,0 +1,30 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.ayhammouda/python-docs-mcp-server",
+  "description": "Local, read-only MCP retrieval over official Python standard library docs.",
+  "title": "Python Docs MCP Server",
+  "websiteUrl": "https://github.com/ayhammouda/python-docs-mcp-server",
+  "repository": {
+    "url": "https://github.com/ayhammouda/python-docs-mcp-server",
+    "source": "github"
+  },
+  "version": "0.1.1",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "mcp-server-python-docs",
+      "version": "0.1.1",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "status": "ready-for-validation-after-pypi-publish",
+      "notes": "PyPI package metadata is included for the official MCP Registry, but package publication is tracked separately."
+    }
+  }
+}
