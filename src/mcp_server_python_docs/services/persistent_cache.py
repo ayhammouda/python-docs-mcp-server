@@ -27,7 +27,9 @@ class PersistentDocsCache:
 
     def __init__(self, cache_path: Path, index_path: Path) -> None:
         self._cache_path = Path(cache_path)
-        self._fingerprint = self._fingerprint_index(Path(index_path))
+        # Set after fingerprint stat succeeds; stays "" if init fails so the
+        # cache disables cleanly without leaking partial state.
+        self._fingerprint = ""
         self._hits = self._misses = self._writes = 0
         # ``check_same_thread=False`` lets multiple threads share the connection,
         # but per the Python sqlite3 docs writes must still be serialized by the
@@ -36,6 +38,7 @@ class PersistentDocsCache:
         self._lock = threading.Lock()
         self._conn: sqlite3.Connection | None = None
         try:
+            self._fingerprint = self._fingerprint_index(Path(index_path))
             self._cache_path.parent.mkdir(parents=True, exist_ok=True)
             self._conn = sqlite3.connect(str(self._cache_path), check_same_thread=False)
             self._conn.execute("PRAGMA journal_mode = WAL")

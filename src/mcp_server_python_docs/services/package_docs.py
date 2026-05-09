@@ -8,12 +8,16 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
-from typing import Protocol
+from typing import Protocol, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 
-from mcp_server_python_docs.models import PackageDocsResult, PackageDocsSource
+from mcp_server_python_docs.models import (
+    PackageDocsResult,
+    PackageDocsSource,
+    PackageKind,
+)
 from mcp_server_python_docs.services.observability import log_tool_call
 
 _ALLOWED = {
@@ -57,7 +61,7 @@ def _http_url(url: object) -> str | None:
     return url.strip() if parsed.scheme in {"http", "https"} and parsed.netloc else None
 
 
-def _source(label: str, url: object, kind: str) -> PackageDocsSource | None:
+def _source(label: str, url: object, kind: PackageKind) -> PackageDocsSource | None:
     valid = _http_url(url)
     if valid is None:
         return None
@@ -133,7 +137,10 @@ class PackageDocsService:
             for label, url in project_urls.items():
                 lowered = str(label).strip().lower()
                 if lowered in _ALLOWED:
-                    found = _source(str(label), url, lowered.replace(" ", "_"))
+                    # Runtime-safe: members of `_ALLOWED` (with spaces → underscores)
+                    # are exactly the non-pypi entries in the PackageKind Literal.
+                    derived_kind = cast(PackageKind, lowered.replace(" ", "_"))
+                    found = _source(str(label), url, derived_kind)
                     if found is not None and found not in sources:
                         sources.append(found)
                 else:

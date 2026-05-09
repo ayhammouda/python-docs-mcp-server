@@ -184,6 +184,27 @@ def test_invalid_cached_json_is_best_effort_miss(tmp_path: Path, caplog):
     assert cache.stats().misses == 1
 
 
+def test_cache_disables_gracefully_when_index_missing(tmp_path: Path, caplog):
+    """Constructor must not raise when index.db is missing.
+
+    Regression for CodeRabbit Major: ``_fingerprint_index()`` calls
+    ``Path.stat()`` which raises ``FileNotFoundError``; without guarding,
+    this turns an optional cache into a startup failure for the whole server.
+    """
+    cache_path = tmp_path / "cache.sqlite3"
+    missing_index = tmp_path / "does-not-exist.db"
+    assert not missing_index.exists()
+
+    with caplog.at_level(logging.WARNING):
+        cache = PersistentDocsCache(cache_path, missing_index)
+
+    assert "Persistent docs cache disabled" in caplog.text
+    # Cache should be disabled — get returns None, put is a no-op
+    assert cache.get(
+        version="3.13", slug="x", anchor=None, max_chars=100, start_index=0
+    ) is None
+
+
 def test_concurrent_puts_serialize_safely_without_lost_writes(tmp_path: Path):
     """Concurrent put() must not race on the shared connection or stats counter.
 

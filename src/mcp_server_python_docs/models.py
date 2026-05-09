@@ -167,13 +167,31 @@ class DetectPythonVersionResult(BaseModel):
 
 # --- lookup_package_docs models ---
 
+# Bounded kind vocabulary: hardcoded values from `_source` calls plus the
+# normalized members of `_ALLOWED` (with spaces → underscores) in
+# services/package_docs.py. Keep these in sync.
+PackageKind = Literal[
+    "pypi",
+    "docs",
+    "documentation",
+    "homepage",
+    "home_page",
+    "source",
+    "source_code",
+    "repository",
+    "repo",
+]
+
 
 class PackageDocsSource(BaseModel):
     """A package-declared documentation or project source URL."""
 
     label: str = Field(description="Label from PyPI metadata or a normalized core metadata field")
     url: str = Field(description="HTTP(S) URL declared by the package on PyPI")
-    kind: str = Field(description="Source category, such as docs, homepage, source, or pypi")
+    kind: PackageKind = Field(
+        description="Source category: pypi, docs, documentation, homepage, home_page, "
+        "source, source_code, repository, or repo"
+    )
     declared_by: str = Field(description="Where this source declaration came from")
 
 
@@ -184,7 +202,7 @@ class PackageDocsResult(BaseModel):
     version: str = Field(description="Latest version reported by PyPI metadata")
     summary: str = Field(default="", description="Package summary from PyPI metadata")
     metadata_source: str = Field(description="Official PyPI JSON API URL used for lookup")
-    trust_boundary: str = Field(
+    trust_boundary: Literal["pypi-declared-metadata"] = Field(
         default="pypi-declared-metadata",
         description="Indicates results are limited to PyPI/project-declared metadata",
     )
