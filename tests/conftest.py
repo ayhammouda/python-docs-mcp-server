@@ -150,8 +150,8 @@ _STABILITY_DOCUMENTS = [
         "os.path -- Common pathname manipulations",
         [
             ("os.path.join", "os.path.join", 2, 1,
-             "Join one or more path components intelligently. If a component is an absolute path, "
-             "all previous components are thrown away."),
+             "Join one or more path components intelligently. If a component is an "
+             "absolute path, all previous components are thrown away."),
         ],
     ),
 ]

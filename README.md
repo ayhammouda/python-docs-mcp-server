@@ -164,12 +164,13 @@ Contributor commands and validation steps live in
 
 ## Tools
 
-The server currently exposes four MCP tools:
+The server currently exposes five MCP tools:
 
 | Tool | Description |
 |------|-------------|
 | `search_docs` | Search Python stdlib docs by query. Supports symbol lookup (`asyncio.TaskGroup`), module search (`json`), and free-text search. Returns ranked hits with BM25 scoring and snippet excerpts. |
-| `get_docs` | Retrieve a specific documentation page or section by slug and optional anchor. Returns markdown content with budget-enforced truncation and pagination. |
+| `get_docs` | Retrieve a specific documentation page or section by slug and optional anchor. Returns markdown content with budget-enforced truncation and pagination. Retrieved results are cached on disk by Python docs version and request identity. |
+| `lookup_package_docs` | Look up official PyPI package metadata and return package-declared documentation/homepage/source URLs. This is a controlled PyPI metadata lookup, not generic web search. |
 | `list_versions` | List all indexed Python versions with metadata. |
 | `detect_python_version` | Detect the user's local Python version and report whether it matches an indexed documentation version. |
 
@@ -184,9 +185,41 @@ Use this server when you need:
 
 Use a generic fetcher or broader docs MCP when you need:
 
-- third-party package docs outside the Python stdlib
+- arbitrary third-party package content beyond package-declared PyPI metadata
 - arbitrary web pages
 - mixed-source research across many frameworks
+
+## Retrieved docs cache
+
+`get_docs` responses are cached across MCP client/server restarts in the
+platform cache directory:
+
+```text
+<platform cache dir>/mcp-python-docs/retrieved-docs-cache.sqlite3
+```
+
+The cache stores completed `get_docs` results, including page/section content,
+for the resolved Python docs version plus request identity (`slug`, optional
+`anchor`, `max_chars`, and `start_index`). Cache misses fall back to the normal
+local index retrieval path and then write the retrieved result.
+
+Cache entries are also scoped to a fingerprint of the local `index.db` file
+(path, size, and modification timestamp). If you rebuild or replace the local
+docs index, older entries are ignored automatically instead of being returned
+for the new index generation. Deleting `retrieved-docs-cache.sqlite3` is safe;
+it only removes cached retrieval results, not the docs index.
+
+## PyPI package docs lookup
+
+`lookup_package_docs` queries the official PyPI JSON API documented at
+`https://docs.pypi.org/api/json/` (`GET /pypi/<project>/json`) and returns only
+sources declared in that package's PyPI metadata: the PyPI project URL,
+`docs_url`, `home_page`, and allowlisted `project_urls` labels such as
+Documentation, Homepage, Source, and Repository.
+
+The tool makes the trust boundary explicit with
+`trust_boundary="pypi-declared-metadata"`. It does not crawl pages, perform web
+search, or silently fall back to unofficial community mirrors.
 
 ## Diagnostics
 

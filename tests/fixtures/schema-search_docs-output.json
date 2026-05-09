@@ -42,10 +42,17 @@
           "type": "string"
         },
         "anchor": {
-          "default": "",
-          "description": "Section anchor for get_docs follow-up",
-          "title": "Anchor",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Section anchor for get_docs follow-up; None for page-level hits",
+          "title": "Anchor"
         }
       },
       "required": [

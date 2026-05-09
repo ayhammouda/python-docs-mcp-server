@@ -461,6 +461,22 @@ def test_lookup_symbols_exact_match_score(fts_db):
     assert hits[0].kind == "class"
 
 
+def test_symbol_page_only_hits_emit_none_anchor(fts_db):
+    """Page-only symbol hits expose anchor=None, not '' (regression for CodeRabbit Major #1).
+
+    The fixture's `asyncio.run` symbol has anchor='asyncio.run', but no section
+    in the document has that anchor. `_resolve_symbol_location` should fall back
+    to page-level retrieval and return None — get_docs() treats any non-None
+    anchor as a section lookup and would raise PageNotFoundError on ''.
+    """
+    hits = lookup_symbols_exact(fts_db, "asyncio.run", None, 5)
+    assert len(hits) >= 1
+    hit = next(h for h in hits if h.title == "asyncio.run")
+    assert hit.anchor is None, (
+        f"page-only symbol hit must expose anchor=None; got {hit.anchor!r}"
+    )
+
+
 def test_lookup_symbols_prefix_match(fts_db):
     """Prefix match on partial name."""
     hits = lookup_symbols_exact(fts_db, "asyncio", None, 10)

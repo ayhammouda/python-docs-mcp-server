@@ -13,6 +13,7 @@ from mcp_server_python_docs.models import GetDocsResult
 from mcp_server_python_docs.retrieval.budget import apply_budget
 from mcp_server_python_docs.services.cache import create_section_cache
 from mcp_server_python_docs.services.observability import log_tool_call
+from mcp_server_python_docs.services.persistent_cache import PersistentDocsCache
 from mcp_server_python_docs.services.version_resolution import resolve_version_strict
 
 
@@ -23,9 +24,14 @@ class ContentService:
     When omitted, returns the full page with truncation/pagination.
     """
 
-    def __init__(self, db: sqlite3.Connection) -> None:
+    def __init__(
+        self,
+        db: sqlite3.Connection,
+        persistent_cache: PersistentDocsCache | None = None,
+    ) -> None:
         self._db = db
         self._get_section = create_section_cache(db)
+        self._persistent_cache = persistent_cache
 
     def _resolve_version(self, version: str | None) -> str:
         """Resolve version to a concrete version string using shared resolution logic.
@@ -46,6 +52,17 @@ class ContentService:
     ) -> GetDocsResult:
         """Retrieve documentation content by slug, optionally narrowed to a section by anchor."""
         resolved_version = self._resolve_version(version)
+
+        if self._persistent_cache is not None:
+            cached = self._persistent_cache.get(
+                version=resolved_version,
+                slug=slug,
+                anchor=anchor,
+                max_chars=max_chars,
+                start_index=start_index,
+            )
+            if cached is not None:
+                return cached
 
         # Find the document
         doc_row = self._db.execute(
@@ -119,7 +136,7 @@ class ContentService:
             full_text, max_chars, start_index
         )
 
-        return GetDocsResult(
+        result = GetDocsResult(
             content=truncated_text,
             slug=slug,
             title=title,
@@ -129,3 +146,10 @@ class ContentService:
             truncated=is_truncated,
             next_start_index=next_idx,
         )
+        if self._persistent_cache is not None:
+            self._persistent_cache.put(
+                result=result,
+                max_chars=max_chars,
+                start_index=start_index,
+            )
+        return result

@@ -102,6 +102,41 @@ class TestSearchService:
         assert len(result.hits) >= 1
         assert result.hits[0].title == "asyncio.TaskGroup"
 
+    def test_symbol_hit_slug_is_retrievable_when_content_slug_is_extensionless(
+        self,
+        populated_db,
+    ):
+        db = populated_db
+        doc_set_id = db.execute("SELECT id FROM doc_sets LIMIT 1").fetchone()[0]
+        db.execute(
+            "INSERT INTO documents (doc_set_id, uri, slug, title, content_text, char_count) "
+            "VALUES (?, 'library/json', 'library/json', 'json', "
+            "'json page content', 17)",
+            (doc_set_id,),
+        )
+        doc_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        db.execute(
+            "INSERT INTO sections (document_id, uri, anchor, heading, level, ordinal, "
+            "content_text, char_count) VALUES (?, 'library/json', '', 'Introduction', "
+            "1, 0, 'json.dumps guidance for command line tools.', 43)",
+            (doc_id,),
+        )
+        db.execute(
+            "INSERT INTO symbols (doc_set_id, qualified_name, normalized_name, "
+            "symbol_type, uri, anchor, module) VALUES (?, 'json.dumps', "
+            "'json.dumps', 'function', 'library/json.html#json.dumps', "
+            "'json.dumps', 'json')",
+            (doc_set_id,),
+        )
+        db.commit()
+
+        hit = SearchService(db, {}).search("json.dumps", version="3.13", kind="symbol").hits[0]
+
+        assert hit.slug == "library/json"
+        assert hit.anchor is None
+        docs = ContentService(db).get_docs(hit.slug, hit.version, hit.anchor)
+        assert "json.dumps guidance" in docs.content
+
     def test_search_no_results(self, populated_with_content):
         svc = SearchService(populated_with_content, {})
         result = svc.search("nonexistent_xyz_symbol", kind="symbol")
@@ -402,12 +437,12 @@ class TestToolRegistration:
                 annotations.openWorldHint is False
             ), f"{name} openWorldHint should be False"
 
-    def test_four_tools_registered(self):
+    def test_five_tools_registered(self):
         from mcp_server_python_docs.server import create_server
 
         server = create_server()
         tools = server._tool_manager._tools
-        assert len(tools) == 4
+        assert len(tools) == 5
 
     def test_runtime_tool_schemas_include_input_constraints(self):
         import anyio
@@ -448,8 +483,11 @@ class TestToolRegistration:
                 pytest.fail("lifespan should not reach yield")
 
         with patch(
-            "mcp_server_python_docs.server.platformdirs.user_cache_dir",
-            return_value=str(cache_dir),
+            "mcp_server_python_docs.server.get_cache_dir",
+            return_value=cache_dir,
+        ), patch(
+            "mcp_server_python_docs.server.get_index_path",
+            return_value=cache_dir / "index.db",
         ), patch(
             "mcp_server_python_docs.server._load_synonyms",
             return_value={},
