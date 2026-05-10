@@ -1,5 +1,7 @@
 # mcp-server-python-docs
 
+<!-- mcp-name: io.github.ayhammouda/python-docs-mcp-server -->
+
 [![CI](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/ci.yml/badge.svg)](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
@@ -71,17 +73,21 @@ section.
 
 Local source smoke test until the PyPI package is published:
 
+<!-- PRE-PYPI: replace this temporary GitHub source command after the first PyPI publish -->
 ```bash
 uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git mcp-server-python-docs --version
 ```
+<!-- /PRE-PYPI -->
 
 ## Install
 
 Until the first PyPI release is published, run from GitHub:
 
+<!-- PRE-PYPI: replace this temporary GitHub source command after the first PyPI publish -->
 ```bash
 uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git mcp-server-python-docs --version
 ```
+<!-- /PRE-PYPI -->
 
 After PyPI publishing is complete, the package will also run directly with
 `uvx`:
@@ -103,9 +109,11 @@ shell or use `python -m uv ...` as a fallback for local contributor commands.
 
 Build the local documentation index:
 
+<!-- PRE-PYPI: replace this temporary GitHub source command after the first PyPI publish -->
 ```bash
 uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git mcp-server-python-docs build-index --versions 3.10,3.11,3.12,3.13,3.14
 ```
+<!-- /PRE-PYPI -->
 
 After PyPI publishing, `uvx mcp-server-python-docs build-index ...` is enough.
 
@@ -131,6 +139,7 @@ Add this to your Claude Desktop configuration file:
 
 **Windows:** `%APPDATA%\\Claude\\claude_desktop_config.json`
 
+<!-- PRE-PYPI: replace this temporary GitHub source command after the first PyPI publish -->
 ```json
 {
   "mcpServers": {
@@ -145,6 +154,7 @@ Add this to your Claude Desktop configuration file:
   }
 }
 ```
+<!-- /PRE-PYPI -->
 
 Restart Claude Desktop after editing the config file.
 
@@ -153,6 +163,7 @@ Restart Claude Desktop after editing the config file.
 Add this to your Cursor MCP settings (`.cursor/mcp.json` in your project or
 global settings):
 
+<!-- PRE-PYPI: replace this temporary GitHub source command after the first PyPI publish -->
 ```json
 {
   "mcpServers": {
@@ -167,16 +178,19 @@ global settings):
   }
 }
 ```
+<!-- /PRE-PYPI -->
 
 ### Codex
 
 Add this to `.codex/config.toml`:
 
+<!-- PRE-PYPI: replace this temporary GitHub source command after the first PyPI publish -->
 ```toml
 [mcp_servers.python-docs]
 command = "uvx"
 args = ["--from", "git+https://github.com/ayhammouda/python-docs-mcp-server.git", "mcp-server-python-docs"]
 ```
+<!-- /PRE-PYPI -->
 
 ## How quality is verified
 
@@ -258,7 +272,15 @@ search, or silently fall back to unofficial community mirrors.
 
 ## Diagnostics
 
-Check the local environment:
+Before PyPI publishing, run `doctor` from the GitHub source package:
+
+<!-- PRE-PYPI: replace this temporary GitHub source command after the first PyPI publish -->
+```bash
+uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git mcp-server-python-docs doctor
+```
+<!-- /PRE-PYPI -->
+
+After PyPI publishing:
 
 ```bash
 uvx mcp-server-python-docs doctor
@@ -268,7 +290,17 @@ This checks the runtime Python version, SQLite FTS5, cache/index paths, disk
 space, and whether the current interpreter has the `venv`/`ensurepip` support
 needed by `build-index`.
 
-Validate an existing index:
+Validate an existing index.
+
+Before PyPI publishing:
+
+<!-- PRE-PYPI: replace this temporary GitHub source command after the first PyPI publish -->
+```bash
+uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git mcp-server-python-docs validate-corpus
+```
+<!-- /PRE-PYPI -->
+
+After PyPI publishing:
 
 ```bash
 uvx mcp-server-python-docs validate-corpus
@@ -281,6 +313,9 @@ uvx mcp-server-python-docs validate-corpus
 If you see an error about SQLite FTS5 not being available:
 
 **Linux x86-64**
+
+After PyPI publishing, Linux x86-64 users can install the optional bundled
+SQLite package:
 
 ```bash
 pip install 'mcp-server-python-docs[pysqlite3]'
@@ -309,7 +344,7 @@ JSON documentation content.
 
 ### `uvx` cache stale
 
-If `uvx mcp-server-python-docs` runs an old version:
+After PyPI publishing, if `uvx mcp-server-python-docs` runs an old version:
 
 ```bash
 uvx --reinstall mcp-server-python-docs
@@ -361,6 +396,9 @@ Tested on macOS and Linux. Windows should work, but it is not verified on
 every release.
 
 Python documentation versions 3.10 through 3.14 are currently supported.
+
+The server requires Python 3.12+ to run. Its generated documentation corpus can
+still index Python documentation versions 3.10 through 3.14.
 
 ## License
 
