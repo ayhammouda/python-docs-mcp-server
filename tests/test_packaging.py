@@ -5,10 +5,12 @@ PKG-04 (synonyms.yaml in wheel), and PKG-06 (--version flag).
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
 import zipfile
+from importlib.metadata import version
 from pathlib import Path
 
 import pytest
@@ -100,8 +102,38 @@ class TestPyprojectDeps:
 class TestVersionFlag:
     """PKG-06: --version flag prints version."""
 
+    def test_module_version_matches_package_metadata(self):
+        """__version__ stays in sync with installed package metadata."""
+        import mcp_server_python_docs
+
+        assert mcp_server_python_docs.__version__ == version("mcp-server-python-docs")
+
+    def test_source_tree_import_without_installed_metadata(self, tmp_path: Path):
+        """Source-tree import falls back to pyproject.toml when metadata is absent."""
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(PROJECT_ROOT / "src")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-S",
+                "-c",
+                "import mcp_server_python_docs; print(mcp_server_python_docs.__version__)",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
+            cwd=str(tmp_path),
+        )
+        assert result.returncode == 0, (
+            f"Source-tree import failed.\n"
+            f"stdout: {result.stdout!r}\n"
+            f"stderr: {result.stderr!r}"
+        )
+        assert result.stdout.strip() == version("mcp-server-python-docs")
+
     def test_version_flag_output(self):
-        """--version prints 0.1.0."""
+        """--version prints the installed package metadata version."""
         result = subprocess.run(
             [sys.executable, "-m", "mcp_server_python_docs", "--version"],
             capture_output=True,
@@ -110,8 +142,9 @@ class TestVersionFlag:
         )
         # Version output goes to stderr due to stdio hygiene
         combined = result.stdout + result.stderr
-        assert "0.1.0" in combined, (
-            f"Expected '0.1.0' in output.\n"
+        expected = version("mcp-server-python-docs")
+        assert expected in combined, (
+            f"Expected {expected!r} in output.\n"
             f"stdout: {result.stdout!r}\n"
             f"stderr: {result.stderr!r}"
         )
@@ -140,7 +173,7 @@ class TestInstallability:
         )
         assert result.returncode == 0
         combined = result.stdout + result.stderr
-        assert "0.1.0" in combined
+        assert version("mcp-server-python-docs") in combined
 
     def test_entry_point_module_exists(self):
         """The entry-point module is importable."""
