@@ -124,6 +124,10 @@ uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git python-d
 After PyPI publishing, `uvx python-docs-mcp-server build-index ...` is enough.
 <!-- /PRE-PYPI -->
 
+<!-- PRE-PYPI: after the first PyPI publish, drop this "After PyPI publishing" heading so the section reads simply as "## First run" -->
+### After PyPI publishing
+<!-- /PRE-PYPI -->
+
 ```bash
 uvx python-docs-mcp-server build-index --versions 3.10,3.11,3.12,3.13,3.14
 ```
@@ -329,6 +333,8 @@ uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git python-d
 After PyPI publishing:
 <!-- /PRE-PYPI -->
 
+Check the local environment:
+
 ```bash
 uvx python-docs-mcp-server doctor
 ```
@@ -347,6 +353,8 @@ uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git python-d
 
 After PyPI publishing:
 <!-- /PRE-PYPI -->
+
+Validate an existing index:
 
 ```bash
 uvx python-docs-mcp-server validate-corpus
