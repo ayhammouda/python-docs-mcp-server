@@ -109,6 +109,13 @@ class TestPyprojectDeps:
         for dep_name in required_dep_names:
             assert dep_name in pyproject, f"Missing dependency: {dep_name}"
 
+    def test_classifiers_advertise_supported_python_versions(self):
+        """Classifiers must list every Python runtime the project supports."""
+        pyproject = (PROJECT_ROOT / "pyproject.toml").read_text()
+        for minor in (12, 13, 14):
+            classifier = f"Programming Language :: Python :: 3.{minor}"
+            assert classifier in pyproject, f"Missing classifier: {classifier}"
+
 
 class TestVersionFlag:
     """PKG-06: --version flag prints version."""
