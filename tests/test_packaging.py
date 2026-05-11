@@ -77,17 +77,30 @@ class TestWheelContent:
         assert f"Name: {DIST_NAME}" in content
 
     def test_wheel_has_entry_point(self, built_wheel):
-        """PKG-01: Wheel metadata declares the entry-point."""
+        """PKG-01: Wheel metadata declares both console scripts, structurally."""
+        import configparser
+        import io
+
         with zipfile.ZipFile(built_wheel) as zf:
-            # Entry points are in the .dist-info/entry_points.txt
             entry_point_files = [
                 n for n in zf.namelist() if n.endswith("entry_points.txt")
             ]
             assert len(entry_point_files) == 1
             content = zf.read(entry_point_files[0]).decode()
-        assert DIST_NAME in content
-        assert LEGACY_CLI_NAME in content
-        assert "mcp_server_python_docs.__main__:main" in content
+
+        parser = configparser.ConfigParser()
+        parser.read_file(io.StringIO(content))
+        assert parser.has_section("console_scripts"), (
+            f"entry_points.txt missing [console_scripts]:\n{content}"
+        )
+        scripts = dict(parser.items("console_scripts"))
+        target = "mcp_server_python_docs.__main__:main"
+        assert scripts.get(DIST_NAME) == target, (
+            f"Expected {DIST_NAME} -> {target}, got {scripts!r}"
+        )
+        assert scripts.get(LEGACY_CLI_NAME) == target, (
+            f"Expected {LEGACY_CLI_NAME} -> {target}, got {scripts!r}"
+        )
 
 
 class TestPyprojectDeps:
@@ -127,15 +140,26 @@ class TestVersionFlag:
         assert mcp_server_python_docs.__version__ == version(DIST_NAME)
 
     def test_source_tree_import_without_installed_metadata(self, tmp_path: Path):
-        """Source-tree import falls back to pyproject.toml when metadata is absent."""
+        """Source-tree import falls back to pyproject.toml when metadata is absent.
+
+        Forces the fallback path by monkey-patching importlib.metadata.version
+        to raise PackageNotFoundError, since `-S` alone does not reliably
+        suppress editable-install dist-info discovery.
+        """
         env = os.environ.copy()
         env["PYTHONPATH"] = str(PROJECT_ROOT / "src")
+        prelude = (
+            "import importlib.metadata as m\n"
+            "def _raise(_):\n"
+            "    raise m.PackageNotFoundError\n"
+            "m.version = _raise\n"
+        )
         result = subprocess.run(
             [
                 sys.executable,
                 "-S",
                 "-c",
-                "import mcp_server_python_docs; print(mcp_server_python_docs.__version__)",
+                prelude + "import mcp_server_python_docs; print(mcp_server_python_docs.__version__)",
             ],
             capture_output=True,
             text=True,
@@ -148,7 +172,13 @@ class TestVersionFlag:
             f"stdout: {result.stdout!r}\n"
             f"stderr: {result.stderr!r}"
         )
-        assert result.stdout.strip() == version(DIST_NAME)
+        # The fallback reads pyproject.toml directly; assert it equals
+        # whatever pyproject currently declares (decoupled from installed metadata).
+        import tomllib
+        pyproject_version = tomllib.loads(
+            (PROJECT_ROOT / "pyproject.toml").read_text()
+        )["project"]["version"]
+        assert result.stdout.strip() == pyproject_version
 
     def test_version_flag_output(self):
         """--version prints the installed package metadata version."""
