@@ -2,7 +2,7 @@
 
 ## Project
 
-`mcp-server-python-docs` is a read-only MCP server for the official Python
+`python-docs-mcp-server` is a read-only MCP server for the official Python
 standard library documentation. It is built for end users who want precise,
 version-aware stdlib answers inside MCP clients such as Claude, Cursor, and
 Codex without relying on an external hosted docs API at query time.
@@ -39,9 +39,9 @@ uv run pytest --tb=short -q
 Build and inspect a local docs index:
 
 ```bash
-uv run mcp-server-python-docs build-index --versions 3.12,3.13
-uv run mcp-server-python-docs doctor
-uv run mcp-server-python-docs validate-corpus
+uv run python-docs-mcp-server build-index --versions 3.12,3.13
+uv run python-docs-mcp-server doctor
+uv run python-docs-mcp-server validate-corpus
 ```
 
 Package smoke check:

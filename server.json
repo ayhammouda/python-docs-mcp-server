@@ -13,18 +13,12 @@
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
-      "identifier": "mcp-server-python-docs",
+      "identifier": "python-docs-mcp-server",
       "version": "0.1.1",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
       }
     }
-  ],
-  "_meta": {
-    "io.modelcontextprotocol.registry/publisher-provided": {
-      "status": "ready-for-validation-after-pypi-publish",
-      "notes": "PyPI package metadata is included for the official MCP Registry, but package publication is tracked separately."
-    }
-  }
+  ]
 }

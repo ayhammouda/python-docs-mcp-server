@@ -11,8 +11,10 @@ Feedback: Local MCP server for official Python standard library docs
 
 ### Post
 
-Hi HN -- I built `mcp-server-python-docs`, a read-only MCP server that gives AI
+Hi HN -- I built `python-docs-mcp-server`, a read-only MCP server that gives AI
 coding agents precise access to the official Python standard library docs.
+
+It runs on Python 3.12+ and indexes docs for Python 3.10 through 3.14.
 
 The motivation: generic docs retrieval is often noisy for stdlib questions.
 Python answers are sensitive to exact symbols and versions, and agents do not
@@ -35,7 +37,7 @@ Repo: https://github.com/ayhammouda/python-docs-mcp-server
 PyPI publishing is still pending. Until that is finished, test from GitHub:
 
 ```bash
-uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git mcp-server-python-docs --version
+uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git python-docs-mcp-server --version
 ```
 
 I'd love feedback on the MCP interface, retrieval output, and whether the local
@@ -49,8 +51,10 @@ Show HN: Local MCP server for official Python standard library docs
 
 ### Post
 
-Hi HN -- I built `mcp-server-python-docs`, a read-only MCP server that gives AI
+Hi HN -- I built `python-docs-mcp-server`, a read-only MCP server that gives AI
 coding agents precise access to the official Python standard library docs.
+
+It runs on Python 3.12+ and indexes docs for Python 3.10 through 3.14.
 
 The motivation: generic docs retrieval is often noisy for stdlib questions.
 Python answers are sensitive to exact symbols and versions, and agents do not
@@ -66,11 +70,12 @@ What it does:
 
 Repo: https://github.com/ayhammouda/python-docs-mcp-server
 
-Install after the PyPI release:
+First run after the PyPI release:
 
 ```bash
-uvx mcp-server-python-docs --version
+uvx python-docs-mcp-server build-index --versions 3.12,3.13
 ```
 
-I'd love feedback on the MCP interface, retrieval output, and whether the local
-indexing flow is clear enough.
+Then wire `uvx python-docs-mcp-server` into your MCP client and try the README's
+30-second demo. I'd love feedback on the MCP interface, retrieval output, and
+whether the local indexing flow is clear enough.

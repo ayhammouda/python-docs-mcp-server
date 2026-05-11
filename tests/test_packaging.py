@@ -16,6 +16,8 @@ from pathlib import Path
 import pytest
 
 PROJECT_ROOT = Path(__file__).parent.parent
+DIST_NAME = "python-docs-mcp-server"
+LEGACY_CLI_NAME = "mcp-server-python-docs"
 
 
 def _uv_command() -> list[str]:
@@ -66,6 +68,14 @@ class TestWheelContent:
             + "\n".join(sorted(names))
         )
 
+    def test_wheel_metadata_uses_public_distribution_name(self, built_wheel):
+        """Wheel metadata must publish under the repo-aligned distribution name."""
+        with zipfile.ZipFile(built_wheel) as zf:
+            metadata_files = [n for n in zf.namelist() if n.endswith("METADATA")]
+            assert len(metadata_files) == 1
+            content = zf.read(metadata_files[0]).decode()
+        assert f"Name: {DIST_NAME}" in content
+
     def test_wheel_has_entry_point(self, built_wheel):
         """PKG-01: Wheel metadata declares the entry-point."""
         with zipfile.ZipFile(built_wheel) as zf:
@@ -75,7 +85,8 @@ class TestWheelContent:
             ]
             assert len(entry_point_files) == 1
             content = zf.read(entry_point_files[0]).decode()
-        assert "mcp-server-python-docs" in content
+        assert DIST_NAME in content
+        assert LEGACY_CLI_NAME in content
         assert "mcp_server_python_docs.__main__:main" in content
 
 
@@ -106,7 +117,7 @@ class TestVersionFlag:
         """__version__ stays in sync with installed package metadata."""
         import mcp_server_python_docs
 
-        assert mcp_server_python_docs.__version__ == version("mcp-server-python-docs")
+        assert mcp_server_python_docs.__version__ == version(DIST_NAME)
 
     def test_source_tree_import_without_installed_metadata(self, tmp_path: Path):
         """Source-tree import falls back to pyproject.toml when metadata is absent."""
@@ -130,7 +141,7 @@ class TestVersionFlag:
             f"stdout: {result.stdout!r}\n"
             f"stderr: {result.stderr!r}"
         )
-        assert result.stdout.strip() == version("mcp-server-python-docs")
+        assert result.stdout.strip() == version(DIST_NAME)
 
     def test_version_flag_output(self):
         """--version prints the installed package metadata version."""
@@ -142,7 +153,7 @@ class TestVersionFlag:
         )
         # Version output goes to stderr due to stdio hygiene
         combined = result.stdout + result.stderr
-        expected = version("mcp-server-python-docs")
+        expected = version(DIST_NAME)
         assert expected in combined, (
             f"Expected {expected!r} in output.\n"
             f"stdout: {result.stdout!r}\n"
@@ -173,7 +184,7 @@ class TestInstallability:
         )
         assert result.returncode == 0
         combined = result.stdout + result.stderr
-        assert version("mcp-server-python-docs") in combined
+        assert version(DIST_NAME) in combined
 
     def test_entry_point_module_exists(self):
         """The entry-point module is importable."""

@@ -1,4 +1,4 @@
--- schema.sql — mcp-server-python-docs storage schema
+-- schema.sql — python-docs-mcp-server storage schema
 -- Version: Phase 2 (2026-04-16)
 --
 -- Design decisions:

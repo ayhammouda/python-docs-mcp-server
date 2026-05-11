@@ -100,7 +100,7 @@ def assert_fts5_available(conn: sqlite3.Connection) -> None:
         if system == "Linux" and machine == "x86_64":
             hint = (
                 "Install the pysqlite3-binary fallback:\n"
-                "  pip install 'mcp-server-python-docs[pysqlite3]'"
+                "  pip install 'python-docs-mcp-server[pysqlite3]'"
             )
         else:
             hint = (

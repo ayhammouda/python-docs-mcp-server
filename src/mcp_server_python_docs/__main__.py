@@ -79,7 +79,7 @@ def main(ctx: click.Context, show_version: bool) -> None:
     if show_version:
         from mcp_server_python_docs import __version__
 
-        click.echo(f"mcp-server-python-docs {__version__}", err=True)
+        click.echo(f"python-docs-mcp-server {__version__}", err=True)
         ctx.exit(0)
     if ctx.invoked_subcommand is None:
         ctx.invoke(serve)
@@ -404,7 +404,7 @@ def validate_corpus(db_path: str | None) -> None:
     if not target.exists():
         logger.error("Index not found at %s", target)
         logger.error(
-            "Run: mcp-server-python-docs build-index --versions %s",
+            "Run: python-docs-mcp-server build-index --versions %s",
             SUPPORTED_DOC_VERSIONS_CSV,
         )
         raise SystemExit(1)
@@ -488,7 +488,7 @@ def doctor() -> None:
 
         if plat.system() == "Linux" and plat.machine() == "x86_64":
             fts5_detail = (
-                "FTS5 unavailable -- pip install 'mcp-server-python-docs[pysqlite3]'"
+                "FTS5 unavailable -- pip install 'python-docs-mcp-server[pysqlite3]'"
             )
         else:
             fts5_detail = (
@@ -531,7 +531,7 @@ def doctor() -> None:
     index_detail = str(index_path)
     if not index_exists:
         index_detail += (
-            f" (not found -- run: mcp-server-python-docs build-index --versions "
+            f" (not found -- run: python-docs-mcp-server build-index --versions "
             f"{SUPPORTED_DOC_VERSIONS_CSV})"
         )
     else:
@@ -553,7 +553,7 @@ def doctor() -> None:
     results.append(("Disk space", disk_ok, disk_detail))
 
     # Print report (all to stderr for stdio hygiene)
-    click.echo("\nmcp-server-python-docs doctor\n", err=True)
+    click.echo("\npython-docs-mcp-server doctor\n", err=True)
     all_passed = True
     for probe_name, passed, detail in results:
         status = "PASS" if passed else "FAIL"
