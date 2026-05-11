@@ -418,6 +418,16 @@ class TestToolRegistration:
         assert "get_docs" in tool_names
         assert "list_versions" in tool_names
 
+    def test_create_server_identifies_as_dist_name(self):
+        """FastMCP server name must match the public distribution name."""
+        from mcp_server_python_docs.server import create_server
+
+        server = create_server()
+        # FastMCP exposes the constructor name via .name (mcp >= 1.27)
+        assert server.name == "python-docs-mcp-server", (
+            f"Expected FastMCP name 'python-docs-mcp-server', got {server.name!r}"
+        )
+
     def test_all_tools_have_annotations(self):
         from mcp_server_python_docs.server import create_server
 
