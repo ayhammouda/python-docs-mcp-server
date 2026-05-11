@@ -1,4 +1,4 @@
-"""Error taxonomy for mcp-server-python-docs.
+"""Error taxonomy for python-docs-mcp-server.
 
 Named exceptions for predictable failure modes, mapped to MCP error responses.
 See build guide section 10.

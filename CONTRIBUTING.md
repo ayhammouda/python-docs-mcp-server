@@ -1,4 +1,4 @@
-# Contributing to mcp-server-python-docs
+# Contributing to python-docs-mcp-server
 
 Start here for current contributor workflow. You should not need `.planning/`
 to set up, test, or validate the repo.
@@ -42,9 +42,9 @@ uv run pytest tests/test_retrieval_regression.py -q
 The server needs a local SQLite index before runtime validation:
 
 ```bash
-uv run mcp-server-python-docs build-index --versions 3.10,3.11,3.12,3.13,3.14
-uv run mcp-server-python-docs doctor
-uv run mcp-server-python-docs validate-corpus
+uv run python-docs-mcp-server build-index --versions 3.10,3.11,3.12,3.13,3.14
+uv run python-docs-mcp-server doctor
+uv run python-docs-mcp-server validate-corpus
 ```
 
 `build-index` downloads the symbol inventories, clones CPython docs sources,

@@ -7,7 +7,7 @@ from pathlib import Path
 
 def _read_version() -> str:
     try:
-        return version("mcp-server-python-docs")
+        return version("python-docs-mcp-server")
     except PackageNotFoundError:
         pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
         with pyproject_path.open("rb") as fh:

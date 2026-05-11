@@ -1,4 +1,4 @@
-"""Shared test fixtures for mcp-server-python-docs."""
+"""Shared test fixtures for python-docs-mcp-server."""
 from __future__ import annotations
 
 import sqlite3
