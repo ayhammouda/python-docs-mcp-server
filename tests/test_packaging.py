@@ -95,12 +95,10 @@ class TestWheelContent:
         )
         scripts = dict(parser.items("console_scripts"))
         target = "mcp_server_python_docs.__main__:main"
-        assert scripts.get(DIST_NAME) == target, (
-            f"Expected {DIST_NAME} -> {target}, got {scripts!r}"
-        )
-        assert scripts.get(LEGACY_CLI_NAME) == target, (
-            f"Expected {LEGACY_CLI_NAME} -> {target}, got {scripts!r}"
-        )
+        for cli_name in (DIST_NAME, LEGACY_CLI_NAME):
+            assert scripts.get(cli_name) == target, (
+                f"Expected {cli_name} -> {target}, got {scripts!r}"
+            )
 
 
 class TestPyprojectDeps:
