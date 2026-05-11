@@ -28,6 +28,10 @@ What it does:
 - supports version-aware lookup across Python 3.10 through 3.14
 - runs locally, read-only, with no API keys
 
+Demo query:
+
+- "In Python 3.13, what does `asyncio.TaskGroup` change compared to older asyncio patterns?"
+
 It is intentionally narrow. Use Context7 or generic retrieval for broad
 third-party docs and web research. Use this when you want official stdlib docs
 with less token waste.
@@ -67,6 +71,10 @@ What it does:
 - retrieves section-level docs with truncation and pagination
 - supports version-aware lookup across Python 3.10 through 3.14
 - runs locally, read-only, with no API keys
+
+Demo query:
+
+- "In Python 3.13, what does `asyncio.TaskGroup` change compared to older asyncio patterns?"
 
 Repo: https://github.com/ayhammouda/python-docs-mcp-server
 

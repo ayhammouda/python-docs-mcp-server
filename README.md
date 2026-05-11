@@ -439,6 +439,25 @@ uv cache clean python-docs-mcp-server
 The MSIX-packaged version of Claude Desktop on Windows may have restricted PATH
 access. If `uvx` is not found, specify the full path in your config:
 
+<!-- PRE-PYPI: remove the GitHub-source config and the "After PyPI publishing, use:" lead-in after the first PyPI publish; the post-PyPI config fence below survives -->
+```json
+{
+  "mcpServers": {
+    "python-docs": {
+      "command": "C:\\Users\\YOU\\.local\\bin\\uvx.exe",
+      "args": [
+        "--from",
+        "git+https://github.com/ayhammouda/python-docs-mcp-server.git",
+        "python-docs-mcp-server"
+      ]
+    }
+  }
+}
+```
+
+After PyPI publishing, use:
+<!-- /PRE-PYPI -->
+
 ```json
 {
   "mcpServers": {
