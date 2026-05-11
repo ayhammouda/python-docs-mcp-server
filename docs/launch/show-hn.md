@@ -73,7 +73,7 @@ Repo: https://github.com/ayhammouda/python-docs-mcp-server
 First run after the PyPI release:
 
 ```bash
-uvx python-docs-mcp-server build-index --versions 3.12,3.13
+uvx python-docs-mcp-server build-index --versions 3.10,3.11,3.12,3.13,3.14
 ```
 
 Then wire `uvx python-docs-mcp-server` into your MCP client and try the README's
