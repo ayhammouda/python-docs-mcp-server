@@ -158,10 +158,9 @@ Complete these steps in order. Each step has a checkbox -- do not skip ahead.
 ### Post-PyPI Launch Pack Cleanup
 
 - [ ] Remove every temporary PyPI pre-release block from `README.md`:
-  - Delete each `<!-- PRE-PYPI: ... -->` through `<!-- /PRE-PYPI -->` region,
-    including the marker comments and GitHub-source replacement commands
-  - Remove or rewrite stale "Before PyPI publishing" headings, "Until the first
-    PyPI release is published" text, and "After PyPI publishing" qualifiers
+  - Mechanical pass: delete every region from `<!-- PRE-PYPI:` to `<!-- /PRE-PYPI -->` (inclusive). Each block now encloses its surrounding heading + lead-in sentence + code, so a single pass produces a clean README.
+  - Reference command:
+    `perl -0777 -i -pe 's/<!-- PRE-PYPI:.*?<!-- \/PRE-PYPI -->\n*//gs' README.md`
   - Make the published package commands (`uvx python-docs-mcp-server ...`) the
     primary install, build-index, MCP client, `doctor`, and `validate-corpus`
     examples
