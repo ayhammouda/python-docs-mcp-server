@@ -395,6 +395,31 @@ Adjust `3.12` to match the version shown by `doctor`. Without this package,
 `build-index` cannot create the disposable Sphinx environment it uses to build
 JSON documentation content.
 
+### Migrating from the pre-rename CLI
+
+Earlier development snapshots of this project used the PyPI name
+`mcp-server-python-docs`. The published PyPI project is
+`python-docs-mcp-server`. If your MCP client config still references
+the old name via `uvx`, you will see a `Package not found` error,
+because `uvx` resolves projects by PyPI name.
+
+Update your config's `args` from:
+
+```json
+"args": ["mcp-server-python-docs"]
+```
+
+to:
+
+```json
+"args": ["python-docs-mcp-server"]
+```
+
+The wheel still installs a legacy `mcp-server-python-docs` console
+script for users who already have the package installed and invoke
+the binary by name on `$PATH`. That script is an alias and will be
+removed in a future release.
+
 ### `uvx` cache stale
 
 If `uvx python-docs-mcp-server` runs an old version:
