@@ -159,7 +159,10 @@ class TestVersionFlag:
                 sys.executable,
                 "-S",
                 "-c",
-                prelude + "import mcp_server_python_docs; print(mcp_server_python_docs.__version__)",
+                prelude + (
+                    "import mcp_server_python_docs; "
+                    "print(mcp_server_python_docs.__version__)"
+                ),
             ],
             capture_output=True,
             text=True,
