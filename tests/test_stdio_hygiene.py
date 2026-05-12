@@ -67,12 +67,16 @@ class TestStdioHygiene:
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            env = {
+                **_isolated_cache_env(tmpdir),
+                "PYTHON_DOCS_MCP_DISABLE_AUTO_INDEX": "1",
+            }
             result = subprocess.run(
                 [sys.executable, "-m", "mcp_server_python_docs", "serve"],
                 capture_output=True,
                 text=True,
                 timeout=10,
-                env=_isolated_cache_env(tmpdir),
+                env=env,
             )
             # Server should exit with error (missing index)
             assert result.returncode != 0
