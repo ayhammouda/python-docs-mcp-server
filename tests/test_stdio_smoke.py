@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -100,17 +101,17 @@ def _create_test_index(cache_dir: Path) -> Path:
     return db_path
 
 
-def _make_request(method: str, params: dict | None = None, req_id: int = 1) -> bytes:
+def _make_request(method: str, params: dict[str, object] | None = None, req_id: int = 1) -> bytes:
     """Build a JSON-RPC 2.0 request as newline-terminated bytes."""
-    msg = {"jsonrpc": "2.0", "id": req_id, "method": method}
+    msg: dict[str, object] = {"jsonrpc": "2.0", "id": req_id, "method": method}
     if params is not None:
         msg["params"] = params
     return json.dumps(msg).encode() + b"\n"
 
 
-def _make_notification(method: str, params: dict | None = None) -> bytes:
+def _make_notification(method: str, params: dict[str, object] | None = None) -> bytes:
     """Build a JSON-RPC 2.0 notification (no id) as newline-terminated bytes."""
-    msg = {"jsonrpc": "2.0", "method": method}
+    msg: dict[str, object] = {"jsonrpc": "2.0", "method": method}
     if params is not None:
         msg["params"] = params
     return json.dumps(msg).encode() + b"\n"
@@ -170,6 +171,19 @@ def _find_response(responses: list[dict], req_id: int) -> dict | None:
     return None
 
 
+def _request_ids(stdin_data: bytes) -> list[int]:
+    """Return request ids present in newline-delimited JSON-RPC input."""
+    request_ids: list[int] = []
+    for line in stdin_data.splitlines():
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict) and "id" in parsed:
+            request_ids.append(parsed["id"])
+    return request_ids
+
+
 class TestStdioSmoke:
     """Spawn the MCP server as a subprocess and verify protocol compliance."""
 
@@ -192,13 +206,64 @@ class TestStdioSmoke:
             env=self.env,
         )
         assert proc.stdin is not None
-        for index, line in enumerate(stdin_data.splitlines(keepends=True)):
-            proc.stdin.write(line)
-            proc.stdin.flush()
-            time.sleep(0.3 if index == 0 else 0.05)
-        proc.stdin.close()
-        proc.stdin = None
-        stdout, stderr = proc.communicate(timeout=timeout)
+        assert proc.stdout is not None
+        assert proc.stderr is not None
+
+        stdout_lines: list[bytes] = []
+        stderr_lines: list[bytes] = []
+        output_lock = threading.Lock()
+
+        def read_stream(stream, sink: list[bytes]) -> None:
+            for line in iter(stream.readline, b""):
+                with output_lock:
+                    sink.append(line)
+
+        stdout_thread = threading.Thread(
+            target=read_stream,
+            args=(proc.stdout, stdout_lines),
+            daemon=True,
+        )
+        stderr_thread = threading.Thread(
+            target=read_stream,
+            args=(proc.stderr, stderr_lines),
+            daemon=True,
+        )
+        stdout_thread.start()
+        stderr_thread.start()
+
+        expected_ids = _request_ids(stdin_data)
+        deadline = time.monotonic() + timeout
+        try:
+            for line in stdin_data.splitlines(keepends=True):
+                proc.stdin.write(line)
+                proc.stdin.flush()
+
+            while time.monotonic() < deadline:
+                with output_lock:
+                    responses = _read_responses(b"".join(stdout_lines))
+                if all(_find_response(responses, req_id) is not None for req_id in expected_ids):
+                    break
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.02)
+        finally:
+            try:
+                proc.stdin.close()
+            except BrokenPipeError:
+                pass
+            proc.stdin = None
+
+        remaining = max(0.1, deadline - time.monotonic())
+        try:
+            proc.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+
+        stdout_thread.join(timeout=1)
+        stderr_thread.join(timeout=1)
+        stdout = b"".join(stdout_lines)
+        stderr = b"".join(stderr_lines)
         return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
 
     def test_server_lists_tools_no_stdout_pollution(self):
