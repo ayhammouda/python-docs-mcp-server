@@ -1,4 +1,6 @@
-# mcp-server-python-docs
+# python-docs-mcp-server
+
+<!-- mcp-name: io.github.ayhammouda/python-docs-mcp-server -->
 
 [![CI](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/ci.yml/badge.svg)](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -58,19 +60,54 @@ exposes a small MCP tool surface tuned for high-signal retrieval.
 The model gets the exact symbol match and the relevant documentation section
 instead of a full-page dump.
 
-## Install
+## 30-second demo
 
-Run it directly with `uvx`:
+Ask your MCP client:
+
+> In Python 3.13, how should I use `asyncio.TaskGroup` and what changed from older asyncio patterns?
+
+The agent should use `search_docs` for the exact symbol, then `get_docs` for the
+matching section. Instead of generic web results or an entire docs page, it gets
+the official stdlib text for the requested Python version, trimmed to the useful
+section.
+
+<!-- PRE-PYPI: replace this temporary GitHub-source smoke test after the first PyPI publish -->
+Local source smoke test until the PyPI package is published:
 
 ```bash
-uvx mcp-server-python-docs --version
+uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git python-docs-mcp-server --version
+```
+<!-- /PRE-PYPI -->
+
+## Install
+
+<!-- PRE-PYPI: remove this entire "Before PyPI publishing" block (heading + prose + code) after the first PyPI publish -->
+### Before PyPI publishing (install from GitHub source)
+
+Until the first PyPI release is published, run from GitHub:
+
+```bash
+uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git python-docs-mcp-server --version
+```
+<!-- /PRE-PYPI -->
+
+<!-- PRE-PYPI: after the first PyPI publish, drop this "After PyPI publishing" heading so the section reads simply as "## Install" -->
+### After PyPI publishing
+<!-- /PRE-PYPI -->
+
+Run directly with `uvx`:
+
+```bash
+uvx python-docs-mcp-server --version
 ```
 
 Or install it persistently:
 
 ```bash
-pipx install mcp-server-python-docs
+pipx install python-docs-mcp-server
 ```
+
+---
 
 If `uv` is installed but the `uv` command is not on your `PATH`, reopen your
 shell or use `python -m uv ...` as a fallback for local contributor commands.
@@ -79,14 +116,26 @@ shell or use `python -m uv ...` as a fallback for local contributor commands.
 
 Build the local documentation index:
 
+<!-- PRE-PYPI: remove the GitHub-source build-index command and the "After PyPI publishing" lead-in after the first PyPI publish; the post-PyPI code fence below survives -->
 ```bash
-uvx mcp-server-python-docs build-index --versions 3.10,3.11,3.12,3.13,3.14
+uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git python-docs-mcp-server build-index --versions 3.10,3.11,3.12,3.13,3.14
+```
+
+After PyPI publishing, `uvx python-docs-mcp-server build-index ...` is enough.
+<!-- /PRE-PYPI -->
+
+<!-- PRE-PYPI: after the first PyPI publish, drop this "After PyPI publishing" heading so the section reads simply as "## First run" -->
+### After PyPI publishing
+<!-- /PRE-PYPI -->
+
+```bash
+uvx python-docs-mcp-server build-index --versions 3.10,3.11,3.12,3.13,3.14
 ```
 
 If you installed the package persistently, you can drop the `uvx` prefix:
 
 ```bash
-mcp-server-python-docs build-index --versions 3.10,3.11,3.12,3.13,3.14
+python-docs-mcp-server build-index --versions 3.10,3.11,3.12,3.13,3.14
 ```
 
 This downloads Python's `objects.inv` files, clones CPython docs sources, runs
@@ -105,12 +154,31 @@ Add this to your Claude Desktop configuration file:
 
 **Windows:** `%APPDATA%\\Claude\\claude_desktop_config.json`
 
+<!-- PRE-PYPI: remove the GitHub-source config and the "After PyPI publishing, use:" lead-in after the first PyPI publish; the post-PyPI config fence below survives -->
 ```json
 {
   "mcpServers": {
     "python-docs": {
       "command": "uvx",
-      "args": ["mcp-server-python-docs"]
+      "args": [
+        "--from",
+        "git+https://github.com/ayhammouda/python-docs-mcp-server.git",
+        "python-docs-mcp-server"
+      ]
+    }
+  }
+}
+```
+
+After PyPI publishing, use:
+<!-- /PRE-PYPI -->
+
+```json
+{
+  "mcpServers": {
+    "python-docs": {
+      "command": "uvx",
+      "args": ["python-docs-mcp-server"]
     }
   }
 }
@@ -123,12 +191,31 @@ Restart Claude Desktop after editing the config file.
 Add this to your Cursor MCP settings (`.cursor/mcp.json` in your project or
 global settings):
 
+<!-- PRE-PYPI: remove the GitHub-source config and the "After PyPI publishing, use:" lead-in after the first PyPI publish; the post-PyPI config fence below survives -->
 ```json
 {
   "mcpServers": {
     "python-docs": {
       "command": "uvx",
-      "args": ["mcp-server-python-docs"]
+      "args": [
+        "--from",
+        "git+https://github.com/ayhammouda/python-docs-mcp-server.git",
+        "python-docs-mcp-server"
+      ]
+    }
+  }
+}
+```
+
+After PyPI publishing, use:
+<!-- /PRE-PYPI -->
+
+```json
+{
+  "mcpServers": {
+    "python-docs": {
+      "command": "uvx",
+      "args": ["python-docs-mcp-server"]
     }
   }
 }
@@ -138,10 +225,20 @@ global settings):
 
 Add this to `.codex/config.toml`:
 
+<!-- PRE-PYPI: remove the GitHub-source config and the "After PyPI publishing, use:" lead-in after the first PyPI publish; the post-PyPI config fence below survives -->
 ```toml
 [mcp_servers.python-docs]
 command = "uvx"
-args = ["mcp-server-python-docs"]
+args = ["--from", "git+https://github.com/ayhammouda/python-docs-mcp-server.git", "python-docs-mcp-server"]
+```
+
+After PyPI publishing, use:
+<!-- /PRE-PYPI -->
+
+```toml
+[mcp_servers.python-docs]
+command = "uvx"
+args = ["python-docs-mcp-server"]
 ```
 
 ## How quality is verified
@@ -174,20 +271,23 @@ The server currently exposes five MCP tools:
 | `list_versions` | List all indexed Python versions with metadata. |
 | `detect_python_version` | Detect the user's local Python version and report whether it matches an indexed documentation version. |
 
-## When to use this instead of generic docs retrieval
+## Why not Context7 or generic docs retrieval?
 
-Use this server when you need:
+Use this server when you want precise local Python docs retrieval rather than
+broad web search:
 
-- exact Python stdlib symbol resolution
-- consistent version-aware answers across Python 3.10 through 3.14
-- token-efficient section retrieval from official docs
-- a local, read-only MCP server with a simple operational story
+- official Python docs, not scraped mirrors or mixed-source summaries
+- exact symbol resolution from `objects.inv`
+- Python-version-aware results across 3.10 through 3.14
+- token-efficient section retrieval instead of full-page dumps
+- package-declared PyPI metadata lookup via `lookup_package_docs` for
+  documentation, homepage, and source URLs
+- local, read-only runtime behavior with no API keys
 
-Use a generic fetcher or broader docs MCP when you need:
-
-- arbitrary third-party package content beyond package-declared PyPI metadata
-- arbitrary web pages
-- mixed-source research across many frameworks
+Use Context7 or a generic docs fetcher when you need broader third-party library
+coverage, arbitrary web pages, or cross-framework research. This server is not a
+universal docs search engine. It is a precise stdlib retrieval tool for AI
+coding agents.
 
 ## Retrieved docs cache
 
@@ -223,20 +323,41 @@ search, or silently fall back to unofficial community mirrors.
 
 ## Diagnostics
 
+<!-- PRE-PYPI: remove the GitHub-source doctor invocation and "After PyPI publishing:" lead-in after the first PyPI publish; the post-PyPI code fence below survives -->
+Before PyPI publishing, run `doctor` from the GitHub source package:
+
+```bash
+uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git python-docs-mcp-server doctor
+```
+
+After PyPI publishing:
+<!-- /PRE-PYPI -->
+
 Check the local environment:
 
 ```bash
-uvx mcp-server-python-docs doctor
+uvx python-docs-mcp-server doctor
 ```
 
 This checks the runtime Python version, SQLite FTS5, cache/index paths, disk
 space, and whether the current interpreter has the `venv`/`ensurepip` support
 needed by `build-index`.
 
+<!-- PRE-PYPI: remove the GitHub-source validate-corpus invocation and "After PyPI publishing:" lead-in after the first PyPI publish; the post-PyPI code fence below survives -->
+Before PyPI publishing, validate an existing index from the GitHub source
+package:
+
+```bash
+uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git python-docs-mcp-server validate-corpus
+```
+
+After PyPI publishing:
+<!-- /PRE-PYPI -->
+
 Validate an existing index:
 
 ```bash
-uvx mcp-server-python-docs validate-corpus
+uvx python-docs-mcp-server validate-corpus
 ```
 
 ## Troubleshooting
@@ -247,8 +368,10 @@ If you see an error about SQLite FTS5 not being available:
 
 **Linux x86-64**
 
+Linux x86-64 users can install the optional bundled SQLite package:
+
 ```bash
-pip install 'mcp-server-python-docs[pysqlite3]'
+pip install 'python-docs-mcp-server[pysqlite3]'
 ```
 
 **macOS / Windows / Linux ARM**
@@ -272,18 +395,43 @@ Adjust `3.12` to match the version shown by `doctor`. Without this package,
 `build-index` cannot create the disposable Sphinx environment it uses to build
 JSON documentation content.
 
+### Migrating from the pre-rename CLI
+
+Earlier development snapshots of this project used the PyPI name
+`mcp-server-python-docs`. The published PyPI project is
+`python-docs-mcp-server`. If your MCP client config still references
+the old name via `uvx`, you will see a `Package not found` error,
+because `uvx` resolves projects by PyPI name.
+
+Update your config's `args` from:
+
+```json
+"args": ["mcp-server-python-docs"]
+```
+
+to:
+
+```json
+"args": ["python-docs-mcp-server"]
+```
+
+The wheel still installs a legacy `mcp-server-python-docs` console
+script for users who already have the package installed and invoke
+the binary by name on `$PATH`. That script is an alias and will be
+removed in a future release.
+
 ### `uvx` cache stale
 
-If `uvx mcp-server-python-docs` runs an old version:
+If `uvx python-docs-mcp-server` runs an old version:
 
 ```bash
-uvx --reinstall mcp-server-python-docs
+uvx --reinstall python-docs-mcp-server
 ```
 
 Or clear the uv cache:
 
 ```bash
-uv cache clean mcp-server-python-docs
+uv cache clean python-docs-mcp-server
 ```
 
 ### Claude Desktop on Windows (MSIX)
@@ -291,12 +439,31 @@ uv cache clean mcp-server-python-docs
 The MSIX-packaged version of Claude Desktop on Windows may have restricted PATH
 access. If `uvx` is not found, specify the full path in your config:
 
+<!-- PRE-PYPI: remove the GitHub-source config and the "After PyPI publishing, use:" lead-in after the first PyPI publish; the post-PyPI config fence below survives -->
 ```json
 {
   "mcpServers": {
     "python-docs": {
       "command": "C:\\Users\\YOU\\.local\\bin\\uvx.exe",
-      "args": ["mcp-server-python-docs"]
+      "args": [
+        "--from",
+        "git+https://github.com/ayhammouda/python-docs-mcp-server.git",
+        "python-docs-mcp-server"
+      ]
+    }
+  }
+}
+```
+
+After PyPI publishing, use:
+<!-- /PRE-PYPI -->
+
+```json
+{
+  "mcpServers": {
+    "python-docs": {
+      "command": "C:\\Users\\YOU\\.local\\bin\\uvx.exe",
+      "args": ["python-docs-mcp-server"]
     }
   }
 }
@@ -325,7 +492,8 @@ For contributor setup and verification:
 Tested on macOS and Linux. Windows should work, but it is not verified on
 every release.
 
-Python documentation versions 3.10 through 3.14 are currently supported.
+The server requires Python 3.12+ to run. Its generated documentation corpus
+covers Python documentation versions 3.10 through 3.14.
 
 ## License
 

@@ -80,7 +80,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
         msg = (
             f"No index found at {index_path}\n"
-            f"Run: mcp-server-python-docs build-index --versions "
+            f"Run: python-docs-mcp-server build-index --versions "
             f"{SUPPORTED_DOC_VERSIONS_CSV}"
         )
         logger.error(msg)
@@ -219,7 +219,7 @@ PackageParam = Annotated[
 def create_server() -> FastMCP:
     """Create and configure the FastMCP server."""
     mcp = FastMCP(
-        "mcp-server-python-docs",
+        "python-docs-mcp-server",
         lifespan=app_lifespan,
     )
 

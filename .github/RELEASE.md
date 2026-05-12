@@ -6,7 +6,7 @@ Before the first release, configure PyPI Trusted Publishing:
 
 1. Go to https://pypi.org/manage/account/publishing/
 2. Add a new pending publisher:
-   - **PyPI project name**: `mcp-server-python-docs`
+   - **PyPI project name**: `python-docs-mcp-server`
    - **Owner**: your GitHub username or org
    - **Repository**: `python-docs-mcp-server`
    - **Workflow name**: `release.yml`
@@ -41,20 +41,20 @@ versions 3.10 through 3.14.
 2. Verify the version in `pyproject.toml` is correct:
    ```bash
    grep '^version' pyproject.toml
-   # Should show: version = "0.1.0"
+   # Should show: version = "0.1.1"
    ```
 
 3. Create and push the tag:
    ```bash
-   git tag -a v0.1.0 -m "Release v0.1.0"
-   git push origin v0.1.0
+   git tag -a v0.1.1 -m "Release v0.1.1"
+   git push origin v0.1.1
    ```
 
 4. Monitor the release workflow at:
    https://github.com/<owner>/python-docs-mcp-server/actions/workflows/release.yml
 
 5. Verify the package on PyPI:
-   https://pypi.org/project/mcp-server-python-docs/0.1.0/
+   https://pypi.org/project/python-docs-mcp-server/0.1.1/
 
 ## Post-Release Verification
 
@@ -62,15 +62,15 @@ After the package is published:
 
 ```bash
 # In a fresh environment:
-uvx mcp-server-python-docs --version
-# Should print: 0.1.0
+uvx python-docs-mcp-server --version
+# Should print: 0.1.1
 
 # Or via pipx:
-pipx run mcp-server-python-docs --version
-# Should print: 0.1.0
+pipx run python-docs-mcp-server --version
+# Should print: 0.1.1
 ```
 
-## v0.1.0 Release Checklist
+## v0.1.1 Release Checklist
 
 Complete these steps in order. Each step has a checkbox -- do not skip ahead.
 
@@ -81,20 +81,20 @@ Complete these steps in order. Each step has a checkbox -- do not skip ahead.
   ```bash
   uv run pytest --tb=short -q
   ```
-- [ ] Version in `pyproject.toml` is `0.1.0`:
+- [ ] Version in `pyproject.toml` is `0.1.1`:
   ```bash
   grep '^version' pyproject.toml
   ```
 - [ ] Integration tests from `.github/INTEGRATION-TEST.md` are complete and signed off
 - [ ] Doctor subcommand passes:
   ```bash
-  mcp-server-python-docs doctor
+  uv run python-docs-mcp-server doctor
   ```
 
 ### PyPI Trusted Publishing Setup (one-time)
 
 - [ ] PyPI pending publisher configured at https://pypi.org/manage/account/publishing/:
-  - PyPI project name: `mcp-server-python-docs`
+  - PyPI project name: `python-docs-mcp-server`
   - Owner: `<your-github-username>`
   - Repository: `python-docs-mcp-server`
   - Workflow name: `release.yml`
@@ -105,47 +105,47 @@ Complete these steps in order. Each step has a checkbox -- do not skip ahead.
 
 - [ ] Create the annotated tag:
   ```bash
-  git tag -a v0.1.0 -m "Release v0.1.0
+  git tag -a v0.1.1 -m "Release v0.1.1
 
-  First public release of mcp-server-python-docs.
+  First public release of python-docs-mcp-server.
 
   A read-only, version-aware MCP retrieval server over Python
   standard library documentation (3.10 through 3.14).
 
-  Installable via: uvx mcp-server-python-docs"
+  Installable via: uvx python-docs-mcp-server"
   ```
 - [ ] Push the tag to trigger the release workflow:
   ```bash
-  git push origin v0.1.0
+  git push origin v0.1.1
   ```
 - [ ] Monitor the workflow run: https://github.com/<owner>/python-docs-mcp-server/actions/workflows/release.yml
 - [ ] Verify all three jobs pass: `build` -> `publish` -> `github-release`
 
 ### Post-Release Verification (SHIP-06)
 
-- [ ] Package visible on PyPI: https://pypi.org/project/mcp-server-python-docs/0.1.0/
+- [ ] Package visible on PyPI: https://pypi.org/project/python-docs-mcp-server/0.1.1/
 - [ ] Attestation visible on PyPI package page (look for "Provenance" badge)
 - [ ] Fresh install test:
   ```bash
   # Clear any cached version
-  uv cache clean mcp-server-python-docs 2>/dev/null || true
+  uv cache clean python-docs-mcp-server 2>/dev/null || true
 
   # Install and verify version
-  uvx mcp-server-python-docs --version
-  # Expected output: 0.1.0
+  uvx python-docs-mcp-server --version
+  # Expected output: 0.1.1
   ```
 - [ ] Full README flow test (from a clean environment):
   ```bash
   # Step 1: Install
-  uvx mcp-server-python-docs --version
-  # Should print 0.1.0
+  uvx python-docs-mcp-server --version
+  # Should print 0.1.1
 
   # Step 2: Build index
-  uvx mcp-server-python-docs build-index --versions 3.10,3.11,3.12,3.13,3.14
+  uvx python-docs-mcp-server build-index --versions 3.10,3.11,3.12,3.13,3.14
   # Should complete successfully
 
   # Step 3: Doctor check
-  uvx mcp-server-python-docs doctor
+  uvx python-docs-mcp-server doctor
   # All checks should PASS
   ```
 - [ ] Slow E2E workflow passes:
@@ -154,17 +154,45 @@ Complete these steps in order. Each step has a checkbox -- do not skip ahead.
   - Confirm each job installs the built wheel, runs
     `build-index --versions 3.10,3.11,3.12,3.13,3.14`, `doctor`, and
     `validate-corpus`
+
+### Post-PyPI Launch Pack Cleanup
+
+- [ ] Remove every temporary PyPI pre-release block from `README.md`:
+  - Mechanical pass: delete every region from `<!-- PRE-PYPI:` to `<!-- /PRE-PYPI -->` (inclusive). Each block now encloses its surrounding heading + lead-in sentence + code, so a single pass produces a clean README.
+  - Reference command:
+    `perl -0777 -i -pe 's/<!-- PRE-PYPI:.*?<!-- \/PRE-PYPI -->\n*//gs' README.md`
+  - Make the published package commands (`uvx python-docs-mcp-server ...`) the
+    primary install, build-index, MCP client, `doctor`, and `validate-corpus`
+    examples
+- [ ] Verify `README.md` has no temporary pre-release install artifacts:
+  ```bash
+  rg -n 'PRE[-]PYPI|Before PyPI publishing|Until the first PyPI|After PyPI publishing|git\\+https://github.com/.*/python-docs-mcp-server' README.md
+  ```
+  The command should return no output.
+- [ ] Review `docs/launch/` so no public launch copy still asks users to install
+  from GitHub source after the PyPI package is available. Intentional historical
+  pre-release drafts may remain, but they must stay clearly labeled as
+  pre-PyPI-only.
+- [ ] Submit `server.json` to https://registry.modelcontextprotocol.io/ via the
+  `mcp-publisher` CLI after the PyPI smoke test passes; verify the registry
+  listing appears and points at version 0.1.1
+- [ ] Use the post-PyPI draft in `docs/launch/show-hn.md` for the HN submission
+- [ ] Use `docs/launch/reddit-posts.md` for the r/Python and r/LocalLLaMA
+  submissions after the PyPI release smoke test passes
+- [ ] Commit and push the README cleanup before public launch posts go out
+
 - [ ] Claude Desktop test with published package:
-  Configure `mcpServers` with `uvx mcp-server-python-docs` and verify
+  Configure `mcpServers` with `uvx python-docs-mcp-server` and verify
   "what is asyncio.TaskGroup" returns a correct hit
 
 ### Release Complete
 
 - [ ] GitHub Release exists with attached artifacts
-- [ ] PyPI page shows 0.1.0 with attestation
+- [ ] PyPI page shows 0.1.1 with attestation
 - [ ] README install instructions verified end-to-end
+- [ ] README no longer contains temporary pre-PyPI GitHub-source install blocks
 - [ ] Slow E2E workflow passed for the release candidate
-- [ ] Tag v0.1.0 exists in git
+- [ ] Tag v0.1.1 exists in git
 
 **Release date**: _______________
 **Released by**: _______________

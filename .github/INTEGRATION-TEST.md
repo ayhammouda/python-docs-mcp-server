@@ -13,9 +13,9 @@ Release-specific sign-off still lives in [`.github/RELEASE.md`](RELEASE.md).
   - `uv run pyright src/`
   - `uv run pytest --tb=short -q`
 - Local index build completed:
-  - `uv run mcp-server-python-docs build-index --versions 3.10,3.11,3.12,3.13,3.14`
+  - `uv run python-docs-mcp-server build-index --versions 3.10,3.11,3.12,3.13,3.14`
 - Doctor passes:
-  - `uv run mcp-server-python-docs doctor`
+  - `uv run python-docs-mcp-server doctor`
 - Slow E2E workflow passes when preparing a release:
   - GitHub Actions: `Slow E2E`
   - Expected: Python 3.13 and 3.14 jobs both complete `build-index`, `doctor`,
@@ -29,7 +29,7 @@ Use Inspector for fast local iteration before checking real clients.
 ### Start Inspector
 
 ```bash
-npx @modelcontextprotocol/inspector uv --directory . run mcp-server-python-docs
+npx @modelcontextprotocol/inspector uv --directory . run python-docs-mcp-server
 ```
 
 ### Verify
@@ -62,7 +62,7 @@ npx @modelcontextprotocol/inspector uv --directory . run mcp-server-python-docs
   "mcpServers": {
     "python-docs": {
       "command": "uvx",
-      "args": ["mcp-server-python-docs"]
+      "args": ["python-docs-mcp-server"]
     }
   }
 }
@@ -90,7 +90,7 @@ npx @modelcontextprotocol/inspector uv --directory . run mcp-server-python-docs
 2. Add a server:
    - Name: `python-docs`
    - Command: `uvx`
-   - Args: `mcp-server-python-docs`
+   - Args: `python-docs-mcp-server`
 3. Confirm the server shows as connected
 
 ### Checks
@@ -111,11 +111,11 @@ locked.
 
 ### Checks
 
-- [ ] `uvx mcp-server-python-docs --version`
+- [ ] `uvx python-docs-mcp-server --version`
   - Expected: prints the current package version
-- [ ] `uvx mcp-server-python-docs build-index --versions 3.10,3.11,3.12,3.13,3.14`
+- [ ] `uvx python-docs-mcp-server build-index --versions 3.10,3.11,3.12,3.13,3.14`
   - Expected: index build completes successfully
-- [ ] `uvx mcp-server-python-docs doctor`
+- [ ] `uvx python-docs-mcp-server doctor`
   - Expected: all required checks pass
 - [ ] Follow the README from scratch
   - Expected: a new user can get to a working client configuration without using `.planning/`
@@ -130,7 +130,7 @@ or supported Python versions.
 - [ ] Start the `Slow E2E` workflow from GitHub Actions
   - Expected: both Python 3.13 and Python 3.14 jobs start
 - [ ] Confirm each job installs the built wheel into a clean virtual environment
-  - Expected: the command path is the installed `mcp-server-python-docs`, not editable source
+  - Expected: the command path is the installed `python-docs-mcp-server`, not editable source
 - [ ] Confirm `build-index --versions 3.10,3.11,3.12,3.13,3.14` passes
   - Expected: all five versions produce content, not symbol-only fallback
 - [ ] Confirm `doctor` and `validate-corpus` pass

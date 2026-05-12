@@ -45,7 +45,7 @@ Fetcher = Callable[[str, float], _HTTPResponse]
 def _default_fetcher(url: str, timeout: float) -> _HTTPResponse:
     req = Request(
         url,
-        headers={"Accept": "application/json", "User-Agent": "mcp-server-python-docs"},
+        headers={"Accept": "application/json", "User-Agent": "python-docs-mcp-server"},
     )
     return urlopen(req, timeout=timeout)
 

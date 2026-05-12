@@ -22,9 +22,9 @@ def test_slow_e2e_workflow_runs_installed_build_index() -> None:
     assert "python -m venv" in content
     assert "python -m pip install dist/" in content
     assert (
-        f"mcp-server-python-docs build-index --versions {SUPPORTED_VERSION_ARGS}"
+        f"python-docs-mcp-server build-index --versions {SUPPORTED_VERSION_ARGS}"
         in content
     )
-    assert "mcp-server-python-docs doctor" in content
-    assert "mcp-server-python-docs validate-corpus" in content
+    assert "python-docs-mcp-server doctor" in content
+    assert "python-docs-mcp-server validate-corpus" in content
     assert "actions/upload-artifact" in content

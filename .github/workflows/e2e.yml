@@ -33,7 +33,7 @@ jobs:
           uv run --python ${{ matrix.python-version }} python -m venv .e2e-venv
           .e2e-venv/bin/python -m pip install --upgrade pip
           .e2e-venv/bin/python -m pip install dist/*.whl
-          .e2e-venv/bin/mcp-server-python-docs --version
+          .e2e-venv/bin/python-docs-mcp-server --version
 
       - name: Build and validate full docs index
         env:
@@ -41,10 +41,10 @@ jobs:
           XDG_CACHE_HOME: ${{ runner.temp }}/mcp-python-docs-cache
         run: |
           set -o pipefail
-          .e2e-venv/bin/mcp-server-python-docs build-index --versions 3.10,3.11,3.12,3.13,3.14 \
+          .e2e-venv/bin/python-docs-mcp-server build-index --versions 3.10,3.11,3.12,3.13,3.14 \
             2>&1 | tee "${RUNNER_TEMP}/build-index-${{ matrix.python-version }}.log"
-          .e2e-venv/bin/mcp-server-python-docs doctor
-          .e2e-venv/bin/mcp-server-python-docs validate-corpus
+          .e2e-venv/bin/python-docs-mcp-server doctor
+          .e2e-venv/bin/python-docs-mcp-server validate-corpus
 
       - name: Upload E2E logs and cache artifacts
         if: always()

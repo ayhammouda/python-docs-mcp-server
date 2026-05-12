@@ -16,6 +16,8 @@ from pathlib import Path
 import pytest
 
 PROJECT_ROOT = Path(__file__).parent.parent
+DIST_NAME = "python-docs-mcp-server"
+LEGACY_CLI_NAME = "mcp-server-python-docs"
 
 
 def _uv_command() -> list[str]:
@@ -66,17 +68,37 @@ class TestWheelContent:
             + "\n".join(sorted(names))
         )
 
-    def test_wheel_has_entry_point(self, built_wheel):
-        """PKG-01: Wheel metadata declares the entry-point."""
+    def test_wheel_metadata_uses_public_distribution_name(self, built_wheel):
+        """Wheel metadata must publish under the repo-aligned distribution name."""
         with zipfile.ZipFile(built_wheel) as zf:
-            # Entry points are in the .dist-info/entry_points.txt
+            metadata_files = [n for n in zf.namelist() if n.endswith("METADATA")]
+            assert len(metadata_files) == 1
+            content = zf.read(metadata_files[0]).decode()
+        assert f"Name: {DIST_NAME}" in content
+
+    def test_wheel_has_entry_point(self, built_wheel):
+        """PKG-01: Wheel metadata declares both console scripts, structurally."""
+        import configparser
+        import io
+
+        with zipfile.ZipFile(built_wheel) as zf:
             entry_point_files = [
                 n for n in zf.namelist() if n.endswith("entry_points.txt")
             ]
             assert len(entry_point_files) == 1
             content = zf.read(entry_point_files[0]).decode()
-        assert "mcp-server-python-docs" in content
-        assert "mcp_server_python_docs.__main__:main" in content
+
+        parser = configparser.ConfigParser()
+        parser.read_file(io.StringIO(content))
+        assert parser.has_section("console_scripts"), (
+            f"entry_points.txt missing [console_scripts]:\n{content}"
+        )
+        scripts = dict(parser.items("console_scripts"))
+        target = "mcp_server_python_docs.__main__:main"
+        for cli_name in (DIST_NAME, LEGACY_CLI_NAME):
+            assert scripts.get(cli_name) == target, (
+                f"Expected {cli_name} -> {target}, got {scripts!r}"
+            )
 
 
 class TestPyprojectDeps:
@@ -98,6 +120,13 @@ class TestPyprojectDeps:
         for dep_name in required_dep_names:
             assert dep_name in pyproject, f"Missing dependency: {dep_name}"
 
+    def test_classifiers_advertise_supported_python_versions(self):
+        """Classifiers must list every Python runtime the project supports."""
+        pyproject = (PROJECT_ROOT / "pyproject.toml").read_text()
+        for minor in (12, 13, 14):
+            classifier = f"Programming Language :: Python :: 3.{minor}"
+            assert classifier in pyproject, f"Missing classifier: {classifier}"
+
 
 class TestVersionFlag:
     """PKG-06: --version flag prints version."""
@@ -106,18 +135,32 @@ class TestVersionFlag:
         """__version__ stays in sync with installed package metadata."""
         import mcp_server_python_docs
 
-        assert mcp_server_python_docs.__version__ == version("mcp-server-python-docs")
+        assert mcp_server_python_docs.__version__ == version(DIST_NAME)
 
     def test_source_tree_import_without_installed_metadata(self, tmp_path: Path):
-        """Source-tree import falls back to pyproject.toml when metadata is absent."""
+        """Source-tree import falls back to pyproject.toml when metadata is absent.
+
+        Forces the fallback path by monkey-patching importlib.metadata.version
+        to raise PackageNotFoundError, since `-S` alone does not reliably
+        suppress editable-install dist-info discovery.
+        """
         env = os.environ.copy()
         env["PYTHONPATH"] = str(PROJECT_ROOT / "src")
+        prelude = (
+            "import importlib.metadata as m\n"
+            "def _raise(_):\n"
+            "    raise m.PackageNotFoundError\n"
+            "m.version = _raise\n"
+        )
         result = subprocess.run(
             [
                 sys.executable,
                 "-S",
                 "-c",
-                "import mcp_server_python_docs; print(mcp_server_python_docs.__version__)",
+                prelude + (
+                    "import mcp_server_python_docs; "
+                    "print(mcp_server_python_docs.__version__)"
+                ),
             ],
             capture_output=True,
             text=True,
@@ -130,7 +173,13 @@ class TestVersionFlag:
             f"stdout: {result.stdout!r}\n"
             f"stderr: {result.stderr!r}"
         )
-        assert result.stdout.strip() == version("mcp-server-python-docs")
+        # The fallback reads pyproject.toml directly; assert it equals
+        # whatever pyproject currently declares (decoupled from installed metadata).
+        import tomllib
+        pyproject_version = tomllib.loads(
+            (PROJECT_ROOT / "pyproject.toml").read_text()
+        )["project"]["version"]
+        assert result.stdout.strip() == pyproject_version
 
     def test_version_flag_output(self):
         """--version prints the installed package metadata version."""
@@ -142,7 +191,7 @@ class TestVersionFlag:
         )
         # Version output goes to stderr due to stdio hygiene
         combined = result.stdout + result.stderr
-        expected = version("mcp-server-python-docs")
+        expected = version(DIST_NAME)
         assert expected in combined, (
             f"Expected {expected!r} in output.\n"
             f"stdout: {result.stdout!r}\n"
@@ -173,7 +222,7 @@ class TestInstallability:
         )
         assert result.returncode == 0
         combined = result.stdout + result.stderr
-        assert version("mcp-server-python-docs") in combined
+        assert version(DIST_NAME) in combined
 
     def test_entry_point_module_exists(self):
         """The entry-point module is importable."""

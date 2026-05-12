@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "mcp-server-python-docs"
+name = "python-docs-mcp-server"
 version = "0.1.1"
 description = "A read-only, version-aware MCP retrieval server over Python standard library documentation"
 readme = "README.md"
@@ -18,6 +18,7 @@ classifiers = [
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Documentation",
     "Topic :: Software Development :: Libraries",
 ]
@@ -44,6 +45,7 @@ dev = [
 ]
 
 [project.scripts]
+python-docs-mcp-server = "mcp_server_python_docs.__main__:main"
 mcp-server-python-docs = "mcp_server_python_docs.__main__:main"
 
 [tool.hatch.build.targets.wheel]
