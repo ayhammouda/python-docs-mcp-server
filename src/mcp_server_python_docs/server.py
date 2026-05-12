@@ -9,7 +9,9 @@ from __future__ import annotations
 import asyncio
 import importlib.resources
 import logging
+import os
 import sqlite3
+import subprocess
 import sys
 import traceback
 from collections.abc import AsyncIterator
@@ -61,6 +63,55 @@ def _assert_fts5(conn: sqlite3.Connection) -> None:
     assert_fts5_available(conn)
 
 
+def _auto_build_symbol_index(index_path) -> bool:
+    """Build a small symbol-only index when the server starts without one.
+
+    This keeps hosted scanners/directories such as Glama from failing MCP
+    introspection on a fresh container while preserving the documented full
+    corpus command for normal users. Set PYTHON_DOCS_MCP_DISABLE_AUTO_INDEX=1
+    to require an explicitly prebuilt index.
+    """
+    if os.environ.get("PYTHON_DOCS_MCP_DISABLE_AUTO_INDEX") == "1":
+        return False
+
+    versions = os.environ.get("PYTHON_DOCS_MCP_AUTO_INDEX_VERSIONS", "3.13")
+    logger.warning(
+        "No index found at %s; auto-building symbol-only Python docs index for %s",
+        index_path,
+        versions,
+    )
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "mcp_server_python_docs",
+                "build-index",
+                "--versions",
+                versions,
+                "--skip-content",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.error("Auto index build failed to start or timed out: %s", e)
+        return False
+
+    if result.returncode != 0:
+        logger.error(
+            "Auto index build failed with exit code %s:\n%s",
+            result.returncode,
+            (result.stderr or result.stdout)[-4000:],
+        )
+        return False
+
+    logger.info("Auto index build complete at %s", index_path)
+    return index_path.exists()
+
+
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     """Manage application lifecycle with typed context (SRVR-01).
@@ -72,8 +123,9 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     cache_dir = get_cache_dir()
     index_path = get_index_path()
 
-    # Fail fast on missing index (SRVR-10)
-    if not index_path.exists():
+    # Fail fast on missing index unless a small symbol-only auto-index succeeds
+    # (SRVR-10 plus hosted-directory scanner compatibility).
+    if not index_path.exists() and not _auto_build_symbol_index(index_path):
         from mcp_server_python_docs.ingestion.cpython_versions import (
             SUPPORTED_DOC_VERSIONS_CSV,
         )
