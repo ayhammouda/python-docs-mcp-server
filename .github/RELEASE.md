@@ -41,20 +41,20 @@ versions 3.10 through 3.14.
 2. Verify the version in `pyproject.toml` is correct:
    ```bash
    grep '^version' pyproject.toml
-   # Should show: version = "0.1.1"
+   # Should show: version = "0.1.2"
    ```
 
 3. Create and push the tag:
    ```bash
-   git tag -a v0.1.1 -m "Release v0.1.1"
-   git push origin v0.1.1
+   git tag -a v0.1.2 -m "Release v0.1.2"
+   git push origin v0.1.2
    ```
 
 4. Monitor the release workflow at:
    https://github.com/<owner>/python-docs-mcp-server/actions/workflows/release.yml
 
 5. Verify the package on PyPI:
-   https://pypi.org/project/python-docs-mcp-server/0.1.1/
+   https://pypi.org/project/python-docs-mcp-server/0.1.2/
 
 ## Post-Release Verification
 
@@ -123,7 +123,7 @@ Complete these steps in order. Each step has a checkbox -- do not skip ahead.
 
 ### Post-Release Verification (SHIP-06)
 
-- [ ] Package visible on PyPI: https://pypi.org/project/python-docs-mcp-server/0.1.1/
+- [ ] Package visible on PyPI: https://pypi.org/project/python-docs-mcp-server/0.1.2/
 - [ ] Attestation visible on PyPI package page (look for "Provenance" badge)
 - [ ] Fresh install test:
   ```bash
