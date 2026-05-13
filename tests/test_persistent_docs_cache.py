@@ -237,7 +237,7 @@ def test_concurrent_puts_serialize_safely_without_lost_writes(tmp_path: Path):
                     max_chars=500,
                     start_index=0,
                 )
-        except BaseException as e:
+        except Exception as e:
             with err_lock:
                 errors.append(e)
 
