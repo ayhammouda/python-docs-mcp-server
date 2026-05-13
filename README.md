@@ -3,6 +3,9 @@
 <!-- mcp-name: io.github.ayhammouda/python-docs-mcp-server -->
 
 [![CI](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/ci.yml/badge.svg)](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/ci.yml)
+[![Security Audit](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/security.yml/badge.svg)](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/security.yml)
+[![CodeQL](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/codeql.yml/badge.svg)](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ayhammouda/python-docs-mcp-server/badge)](https://scorecard.dev/viewer/?uri=github.com/ayhammouda/python-docs-mcp-server)
 [![python-docs-mcp-server MCP server](https://glama.ai/mcp/servers/ayhammouda/python-docs-mcp-server/badges/score.svg)](https://glama.ai/mcp/servers/ayhammouda/python-docs-mcp-server)
 [![MCP Registry](https://img.shields.io/badge/MCP%20Registry-v0.1.4-0f766e)](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.ayhammouda%2Fpython-docs-mcp-server)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
