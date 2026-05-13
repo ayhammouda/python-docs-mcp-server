@@ -4,6 +4,7 @@
 
 [![CI](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/ci.yml/badge.svg)](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/ci.yml)
 [![python-docs-mcp-server MCP server](https://glama.ai/mcp/servers/ayhammouda/python-docs-mcp-server/badges/score.svg)](https://glama.ai/mcp/servers/ayhammouda/python-docs-mcp-server)
+[![MCP Registry](https://img.shields.io/badge/MCP%20Registry-v0.1.4-0f766e)](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.ayhammouda%2Fpython-docs-mcp-server)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
 [![No API Keys](https://img.shields.io/badge/API%20keys-none-success)](#why-teams-like-this)
