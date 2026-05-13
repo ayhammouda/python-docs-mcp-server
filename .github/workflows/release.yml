@@ -35,6 +35,16 @@ jobs:
             echo "::error::Tag ${GITHUB_REF_NAME} does not match pyproject.toml version ${PKG_VERSION}"
             exit 1
           fi
+          SERVER_VERSION=$(uv run python -c "import json; print(json.load(open('server.json'))['version'])")
+          PACKAGE_VERSION=$(uv run python -c "import json; print(json.load(open('server.json'))['packages'][0]['version'])")
+          if [ "$TAG_VERSION" != "$SERVER_VERSION" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match server.json version ${SERVER_VERSION}"
+            exit 1
+          fi
+          if [ "$TAG_VERSION" != "$PACKAGE_VERSION" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match server.json package version ${PACKAGE_VERSION}"
+            exit 1
+          fi
           echo "Version check passed: ${PKG_VERSION}"
 
       - name: Run linter
@@ -97,8 +107,36 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
-  github-release:
+  publish-mcp-registry:
     needs: publish
+    runs-on: ubuntu-latest
+    name: Publish to MCP Registry
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" \
+            | tar xz mcp-publisher
+
+      - name: Validate server.json
+        run: ./mcp-publisher validate server.json
+
+      - name: Authenticate to MCP Registry
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish to MCP Registry
+        run: ./mcp-publisher publish
+
+  github-release:
+    needs:
+      - publish
+      - publish-mcp-registry
     runs-on: ubuntu-latest
     name: Create GitHub Release
     timeout-minutes: 10
