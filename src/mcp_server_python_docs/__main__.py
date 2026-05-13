@@ -27,6 +27,7 @@ def _close_saved_stdout_fd() -> None:
     try:
         os.close(_saved_stdout_fd)
     except OSError:
+        # Best-effort cleanup; the fd may already be closed during interpreter shutdown.
         pass
     finally:
         _saved_stdout_fd = None
@@ -515,6 +516,7 @@ def doctor() -> None:
             test_file.unlink()
             cache_writable = True
         except OSError:
+            # Doctor reports the cache as not writable below.
             pass
     cache_ok = True  # Not existing yet is OK (will be created on first build)
     cache_detail = str(cache_dir)

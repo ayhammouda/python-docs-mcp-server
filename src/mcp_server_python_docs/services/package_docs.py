@@ -34,9 +34,14 @@ _PYPI_METADATA_MAX_BYTES = 5 * 1024 * 1024
 
 
 class _HTTPResponse(Protocol):
-    def read(self, size: int = -1) -> bytes: ...
-    def __enter__(self) -> "_HTTPResponse": ...
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool | None: ...
+    def read(self, size: int = -1) -> bytes:
+        raise NotImplementedError
+
+    def __enter__(self) -> "_HTTPResponse":
+        raise NotImplementedError
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool | None:
+        raise NotImplementedError
 
 
 Fetcher = Callable[[str, float], _HTTPResponse]

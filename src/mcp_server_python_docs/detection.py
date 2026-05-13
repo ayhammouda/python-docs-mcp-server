@@ -44,6 +44,7 @@ def detect_python_version() -> tuple[str, str]:
                 logger.info("Detected Python %s from .python-version", version)
                 return version, ".python-version file"
         except Exception:
+            # The version file is optional; fall through to active interpreter probing.
             pass
 
     # 2. python3 --version in PATH
@@ -60,6 +61,7 @@ def detect_python_version() -> tuple[str, str]:
                 logger.info("Detected Python %s from python3 in PATH", version)
                 return version, "python3 in PATH"
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        # python3 may be absent or too slow; fall through to the server runtime.
         pass
 
     # 3. Server's own runtime

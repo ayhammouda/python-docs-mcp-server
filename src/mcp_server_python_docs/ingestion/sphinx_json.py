@@ -508,6 +508,7 @@ def ingest_fjson_file(
         try:
             conn.rollback()
         except Exception:
+            # Keep reporting the original ingestion failure if rollback also fails.
             pass
         return False
 

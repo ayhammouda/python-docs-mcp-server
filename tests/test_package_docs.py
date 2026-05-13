@@ -59,10 +59,8 @@ def test_package_docs_filters_uncontrolled_urls_and_has_no_web_search_fallback()
             "project_urls": {"Community mirror": "https://mirror.example/demo"}}})
 
     result = PackageDocsService(fetcher=fetch).lookup("demo")
-    urls = [s.url for s in result.sources]
-    assert "https://demo.example/" in urls
-    assert "https://random-blog.example/demo" not in urls
-    assert "https://mirror.example/demo" not in urls
+    urls = {s.url for s in result.sources}
+    assert urls == {"https://pypi.org/project/demo/", "https://demo.example/"}
     assert "community mirror" in (result.note or "").lower()
 
 

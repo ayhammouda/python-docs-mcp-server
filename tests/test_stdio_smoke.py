@@ -250,6 +250,7 @@ class TestStdioSmoke:
             try:
                 proc.stdin.close()
             except BrokenPipeError:
+                # The subprocess may have already closed stdin after handling the requests.
                 pass
             proc.stdin = None
 

@@ -197,6 +197,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                 error_log = cache_dir / "last-error.log"
                 error_log.write_text(error_msg)
             except Exception:
+                # Best-effort diagnostic write; preserve the original lifespan error.
                 pass
             raise
     finally:
@@ -204,6 +205,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             try:
                 persistent_docs_cache.close()
             except Exception:
+                # Best-effort cleanup during shutdown.
                 pass
         db.close()
 
