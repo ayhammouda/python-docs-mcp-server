@@ -10,44 +10,43 @@
 [![MCP Registry](https://img.shields.io/badge/MCP%20Registry-v0.1.4-0f766e)](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.ayhammouda%2Fpython-docs-mcp-server)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
-[![No API Keys](https://img.shields.io/badge/API%20keys-none-success)](#why-teams-like-this)
+[![No API Keys](https://img.shields.io/badge/API%20keys-none-success)](#why-use-it)
 [![Official Python Docs](https://img.shields.io/badge/source-official%20python%20docs-informational)](https://docs.python.org/3/)
 
-A read-only, version-aware MCP server for Python standard library
-documentation, optimized for low-token, section-level retrieval.
+`python-docs-mcp-server` is a read-only MCP server for the Python standard
+library docs. It builds a local, version-aware index and gives MCP clients the
+relevant section instead of a whole docs page.
 
-It gives Claude, Cursor, Codex, and other MCP clients precise stdlib answers
-without dumping whole documentation pages into the context window, without API
-keys, and without depending on a hosted docs provider at query time.
+Use it with Claude, Cursor, Codex, or any MCP client when you want answers from
+docs.python.org without API keys or a hosted docs API at query time.
 
 ## Why this exists
 
-General-purpose docs retrieval is often noisy for Python stdlib questions:
+Generic docs retrieval is a rough fit for Python stdlib questions:
 
-- symbol lookups like `asyncio.TaskGroup` need exact resolution
-- answers should be version-aware (`3.12` vs `3.13`)
-- full-page fetches waste tokens when one section is enough
-- official Python docs are the source of truth, but they are not packaged for
-  MCP out of the box
+- `asyncio.TaskGroup` should resolve to the actual symbol, not a fuzzy page hit
+- Python version matters (`3.12` and `3.13` do not always say the same thing)
+- fetching a whole page burns tokens when one section answers the question
+- the official docs are canonical, but they do not ship as an MCP server
 
-This server builds a local index from the official Python documentation and
-exposes a small MCP tool surface tuned for high-signal retrieval.
+This server indexes the official docs locally and exposes a small set of MCP
+tools for lookup and section retrieval.
 
-## Why teams like this
+## Why use it
 
-- no API keys to provision, rotate, or justify
-- official Python docs are the source of truth
-- local index, so runtime retrieval does not depend on a third-party hosted API
-- read-only behavior with a simple security story
-- easy to explain in environments where external dependencies raise friction
+- no API keys to manage
+- queries run against a local index, not a hosted docs API
+- results come from the official Python docs
+- the server is read-only at runtime
+- fewer dependencies to review in strict environments
 
 ## What you get
 
-- exact symbol lookup from Python `objects.inv`
-- section-level retrieval with truncation and pagination
-- local SQLite + FTS5 index with no runtime web scraping
-- version-aware results across indexed Python versions
-- a deliberately small, read-only MCP tool surface
+- symbol lookup through Python `objects.inv`
+- page and section retrieval with truncation and pagination
+- a local SQLite + FTS5 index; no runtime web scraping
+- results for each Python version you index
+- five read-only MCP tools
 
 ## Quick example
 
@@ -62,8 +61,8 @@ exposes a small MCP tool surface tuned for high-signal retrieval.
 
 **Result**
 
-The model gets the exact symbol match and the relevant documentation section
-instead of a full-page dump.
+The model gets the matching symbol and the relevant docs section, not a
+full-page dump.
 
 ## 30-second demo
 
@@ -71,10 +70,10 @@ Ask your MCP client:
 
 > In Python 3.13, how should I use `asyncio.TaskGroup` and what changed from older asyncio patterns?
 
-The agent should use `search_docs` for the exact symbol, then `get_docs` for the
-matching section. Instead of generic web results or an entire docs page, it gets
-the official stdlib text for the requested Python version, trimmed to the useful
-section.
+If setup is working, the client should use `search_docs` for the exact symbol,
+then `get_docs` for the matching section. Instead of generic web results or an
+entire docs page, it gets official stdlib text for the requested Python version,
+trimmed to the section that matters.
 
 <!-- PRE-PYPI: replace this temporary GitHub-source smoke test after the first PyPI publish -->
 Local source smoke test until the PyPI package is published:
@@ -106,7 +105,7 @@ Run directly with `uvx`:
 uvx python-docs-mcp-server --version
 ```
 
-Or install it persistently:
+Or install it once with `pipx`:
 
 ```bash
 pipx install python-docs-mcp-server
@@ -143,9 +142,9 @@ If you installed the package persistently, you can drop the `uvx` prefix:
 python-docs-mcp-server build-index --versions 3.10,3.11,3.12,3.13,3.14
 ```
 
-This downloads Python's `objects.inv` files, clones CPython docs sources, runs
-`sphinx-build -b json`, and writes an SQLite index to your local cache. Expect
-the first build to take several minutes.
+The first build downloads Python's `objects.inv` files, clones CPython docs
+sources, runs `sphinx-build -b json`, and writes an SQLite index to your local
+cache. It can take several minutes.
 
 ## Configure your MCP client
 
@@ -246,20 +245,17 @@ command = "uvx"
 args = ["python-docs-mcp-server"]
 ```
 
-## How quality is verified
-
-The repo makes quality visible with reproducible checks instead of relying on
-marketing claims.
+## Quality checks
 
 - CI runs `ruff`, `pyright`, and `pytest` on macOS and Linux for Python 3.12
   and 3.13
-- subprocess-based stdio hygiene and smoke tests protect the MCP protocol pipe
-- packaging tests verify the wheel contents and CLI entry points
-- curated retrieval regression tests cover exact symbol hits, version behavior,
+- subprocess-based stdio and smoke tests cover the MCP protocol pipe
+- packaging tests check the wheel contents and CLI entry points
+- retrieval regression tests cover exact symbol hits, version behavior,
   missing symbols, truncation, and local-version defaults
-- manual MCP QA is documented in
+- manual MCP QA lives in
   [`.github/INTEGRATION-TEST.md`](.github/INTEGRATION-TEST.md), with MCP
-  Inspector as the fast-feedback loop and Claude/Cursor as real-client checks
+  Inspector for local checks and Claude/Cursor for real-client checks
 
 Contributor commands and validation steps live in
 [`CONTRIBUTING.md`](CONTRIBUTING.md).
@@ -274,25 +270,23 @@ The server currently exposes five MCP tools:
 | `get_docs` | Retrieve a specific documentation page or section by slug and optional anchor. Returns markdown content with budget-enforced truncation and pagination. Retrieved results are cached on disk by Python docs version and request identity. |
 | `lookup_package_docs` | Look up official PyPI package metadata and return package-declared documentation/homepage/source URLs. This is a controlled PyPI metadata lookup, not generic web search. |
 | `list_versions` | List all indexed Python versions with metadata. |
-| `detect_python_version` | Detect the user's local Python version and report whether it matches an indexed documentation version. |
+| `detect_python_version` | Detect the user's local Python version and report whether that version has been indexed. |
 
 ## Why not Context7 or generic docs retrieval?
 
 Use this server when you want precise local Python docs retrieval rather than
 broad web search:
 
-- official Python docs, not scraped mirrors or mixed-source summaries
+- official Python docs, not scraped mirrors or summaries
 - exact symbol resolution from `objects.inv`
-- Python-version-aware results across 3.10 through 3.14
-- token-efficient section retrieval instead of full-page dumps
-- package-declared PyPI metadata lookup via `lookup_package_docs` for
-  documentation, homepage, and source URLs
-- local, read-only runtime behavior with no API keys
+- version-aware results for Python 3.10 through 3.14
+- section retrieval instead of full-page dumps
+- PyPI-declared docs, homepage, and source links through `lookup_package_docs`
+- local read-only runtime with no API keys
 
-Use Context7 or a generic docs fetcher when you need broader third-party library
-coverage, arbitrary web pages, or cross-framework research. This server is not a
-universal docs search engine. It is a precise stdlib retrieval tool for AI
-coding agents.
+Use Context7 or a generic docs fetcher for third-party libraries, arbitrary web
+pages, or framework research. This server is not a universal docs search engine;
+it is a focused stdlib retrieval tool for AI coding agents.
 
 ## Retrieved docs cache
 
@@ -303,16 +297,16 @@ platform cache directory:
 <platform cache dir>/mcp-python-docs/retrieved-docs-cache.sqlite3
 ```
 
-The cache stores completed `get_docs` results, including page/section content,
-for the resolved Python docs version plus request identity (`slug`, optional
-`anchor`, `max_chars`, and `start_index`). Cache misses fall back to the normal
-local index retrieval path and then write the retrieved result.
+The cache stores completed `get_docs` results for the resolved Python docs
+version plus request identity (`slug`, optional `anchor`, `max_chars`, and
+`start_index`). Cache misses use the normal local index retrieval path and then
+write the result.
 
 Cache entries are also scoped to a fingerprint of the local `index.db` file
 (path, size, and modification timestamp). If you rebuild or replace the local
-docs index, older entries are ignored automatically instead of being returned
-for the new index generation. Deleting `retrieved-docs-cache.sqlite3` is safe;
-it only removes cached retrieval results, not the docs index.
+docs index, older entries are ignored automatically. Deleting
+`retrieved-docs-cache.sqlite3` is safe; it removes cached retrieval results, not
+the docs index.
 
 ## PyPI package docs lookup
 
@@ -345,8 +339,7 @@ uvx python-docs-mcp-server doctor
 ```
 
 This checks the runtime Python version, SQLite FTS5, cache/index paths, disk
-space, and whether the current interpreter has the `venv`/`ensurepip` support
-needed by `build-index`.
+space, and the `venv`/`ensurepip` support needed by `build-index`.
 
 <!-- PRE-PYPI: remove the GitHub-source validate-corpus invocation and "After PyPI publishing:" lead-in after the first PyPI publish; the post-PyPI code fence below survives -->
 Before PyPI publishing, validate an existing index from the GitHub source
@@ -369,7 +362,7 @@ uvx python-docs-mcp-server validate-corpus
 
 ### FTS5 unavailable
 
-If you see an error about SQLite FTS5 not being available:
+If your Python build does not include SQLite FTS5:
 
 **Linux x86-64**
 
@@ -389,8 +382,8 @@ uv python install
 
 ### Missing `pythonX.Y-venv` on Debian/Ubuntu
 
-If `doctor` reports that build venv support is unavailable, install the venv
-package for the same Python minor version that runs the server:
+If `doctor` says build venv support is unavailable, install the venv package
+for the same Python minor version that runs the server:
 
 ```bash
 sudo apt install python3.12-venv
@@ -408,7 +401,7 @@ Earlier development snapshots of this project used the PyPI name
 the old name via `uvx`, you will see a `Package not found` error,
 because `uvx` resolves projects by PyPI name.
 
-Update your config's `args` from:
+Change your config `args` from:
 
 ```json
 "args": ["mcp-server-python-docs"]
@@ -479,8 +472,8 @@ Replace `YOU` with your Windows username. Find the exact path with `where uvx`.
 ### Restart after rebuild
 
 After running `build-index`, restart your MCP client so it picks up the new
-database file. The server opens the index read-only at startup and does not
-hot-reload an updated database.
+database file. The server opens the index read-only on startup and does not
+reload it while running.
 
 On Windows, close the MCP client before rebuilding if the index file is locked.
 
