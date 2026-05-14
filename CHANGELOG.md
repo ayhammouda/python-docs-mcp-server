@@ -4,6 +4,17 @@ All notable changes to `python-docs-mcp-server` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] — 2026-05-14
+
+### Fixed
+
+- **MCP Registry publish** — `server.json` `description` shortened from 152 to 96 characters to comply with MCP Registry's schema constraint (`body.description ≤ 100 chars`). The v0.1.5 release succeeded on PyPI (no such limit) but the `publish-mcp-registry` workflow job failed validation; v0.1.5 therefore never reached MCP Registry. v0.1.6 ships the same wheel content as v0.1.5 with the corrected `server.json` so MCP Registry catches up. All three locked anchor phrases — *canonical Python stdlib oracle*, *always free, always MIT*, *token-frugal* — are preserved in the shortened form per `.planning/POSITIONING.md`'s adapt-for-length contract.
+
+### Notes
+
+- `pyproject.toml` `description` (154 chars) is unchanged; PyPI's 512-char summary cap is unaffected.
+- The locked README hero positioning sentence (the long, "use verbatim" form) is unchanged.
+
 ## [0.1.5] — 2026-05-14
 
 ### Added
