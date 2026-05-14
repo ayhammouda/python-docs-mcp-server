@@ -9,9 +9,9 @@
 
 | Phase | Title | Tool surface | Issue |
 |-------|-------|--------------|-------|
-| 09 | `compare_versions(symbol, v1, v2)` | New MCP tool | #TBD-link-after-PR-merges |
-| 10 | `whatsnew_for_version(version)` | New MCP tool | #TBD-link-after-PR-merges |
-| 11 | `detect_python_version` v2 (venv-aware) | Existing tool enhancement | #TBD-link-after-PR-merges |
+| 09 | `compare_versions(symbol, v1, v2)` | New MCP tool | [#32](https://github.com/ayhammouda/python-docs-mcp-server/issues/32) |
+| 10 | `whatsnew_for_version(version)` | New MCP tool | [#33](https://github.com/ayhammouda/python-docs-mcp-server/issues/33) |
+| 11 | `detect_python_version` v2 (venv-aware) | Existing tool enhancement | [#34](https://github.com/ayhammouda/python-docs-mcp-server/issues/34) |
 
 These are planned, not committed. Phase CONTEXTs at [`phases/09-compare-versions/`](phases/09-compare-versions/09-CONTEXT.md), [`phases/10-whatsnew/`](phases/10-whatsnew/10-CONTEXT.md), [`phases/11-detect-venv/`](phases/11-detect-venv/11-CONTEXT.md). Implementation kickoff requires `/gsd-plan-phase 0X`.
 
