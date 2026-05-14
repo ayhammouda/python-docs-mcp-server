@@ -1,15 +1,15 @@
 # python-docs-mcp-server
 
-<!-- mcp-name: io.github.ayhammouda/python-stdlib-mcp -->
+<!-- mcp-name: io.github.ayhammouda/python-docs-mcp-server -->
 
 **For AI coding agents writing Python, `python-docs-mcp-server` is the canonical Python stdlib oracle: exact symbols, exact sections, exact versions — offline, *always free, always MIT*, token-frugal.**
 
-[![CI](https://github.com/ayhammouda/python-stdlib-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ayhammouda/python-stdlib-mcp/actions/workflows/ci.yml)
-[![Security Audit](https://github.com/ayhammouda/python-stdlib-mcp/actions/workflows/security.yml/badge.svg)](https://github.com/ayhammouda/python-stdlib-mcp/actions/workflows/security.yml)
-[![CodeQL](https://github.com/ayhammouda/python-stdlib-mcp/actions/workflows/codeql.yml/badge.svg)](https://github.com/ayhammouda/python-stdlib-mcp/actions/workflows/codeql.yml)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ayhammouda/python-stdlib-mcp/badge)](https://scorecard.dev/viewer/?uri=github.com/ayhammouda/python-stdlib-mcp)
-[![python-docs-mcp-server MCP server](https://glama.ai/mcp/servers/ayhammouda/python-stdlib-mcp/badges/score.svg)](https://glama.ai/mcp/servers/ayhammouda/python-stdlib-mcp)
-[![MCP Registry](https://img.shields.io/badge/MCP%20Registry-v0.1.4-0f766e)](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.ayhammouda%2Fpython-stdlib-mcp)
+[![CI](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/ci.yml/badge.svg)](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/ci.yml)
+[![Security Audit](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/security.yml/badge.svg)](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/security.yml)
+[![CodeQL](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/codeql.yml/badge.svg)](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ayhammouda/python-docs-mcp-server/badge)](https://scorecard.dev/viewer/?uri=github.com/ayhammouda/python-docs-mcp-server)
+[![python-docs-mcp-server MCP server](https://glama.ai/mcp/servers/ayhammouda/python-docs-mcp-server/badges/score.svg)](https://glama.ai/mcp/servers/ayhammouda/python-docs-mcp-server)
+[![MCP Registry](https://img.shields.io/badge/MCP%20Registry-v0.1.4-0f766e)](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.ayhammouda%2Fpython-docs-mcp-server)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
 [![No API Keys](https://img.shields.io/badge/API%20keys-none-success)](#why-use-it)
@@ -76,7 +76,7 @@ trimmed to the section that matters.
 Local source smoke test until the PyPI package is published:
 
 ```bash
-uvx --from git+https://github.com/ayhammouda/python-stdlib-mcp.git python-docs-mcp-server --version
+uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git python-docs-mcp-server --version
 ```
 <!-- /PRE-PYPI -->
 
@@ -88,7 +88,7 @@ uvx --from git+https://github.com/ayhammouda/python-stdlib-mcp.git python-docs-m
 Until the first PyPI release is published, run from GitHub:
 
 ```bash
-uvx --from git+https://github.com/ayhammouda/python-stdlib-mcp.git python-docs-mcp-server --version
+uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git python-docs-mcp-server --version
 ```
 <!-- /PRE-PYPI -->
 
@@ -119,7 +119,7 @@ Build the local documentation index:
 
 <!-- PRE-PYPI: remove the GitHub-source build-index command and the "After PyPI publishing" lead-in after the first PyPI publish; the post-PyPI code fence below survives -->
 ```bash
-uvx --from git+https://github.com/ayhammouda/python-stdlib-mcp.git python-docs-mcp-server build-index --versions 3.10,3.11,3.12,3.13,3.14
+uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git python-docs-mcp-server build-index --versions 3.10,3.11,3.12,3.13,3.14
 ```
 
 After PyPI publishing, `uvx python-docs-mcp-server build-index ...` is enough.
@@ -163,7 +163,7 @@ Add this to your Claude Desktop configuration file:
       "command": "uvx",
       "args": [
         "--from",
-        "git+https://github.com/ayhammouda/python-stdlib-mcp.git",
+        "git+https://github.com/ayhammouda/python-docs-mcp-server.git",
         "python-docs-mcp-server"
       ]
     }
@@ -200,7 +200,7 @@ global settings):
       "command": "uvx",
       "args": [
         "--from",
-        "git+https://github.com/ayhammouda/python-stdlib-mcp.git",
+        "git+https://github.com/ayhammouda/python-docs-mcp-server.git",
         "python-docs-mcp-server"
       ]
     }
@@ -230,7 +230,7 @@ Add this to `.codex/config.toml`:
 ```toml
 [mcp_servers.python-docs]
 command = "uvx"
-args = ["--from", "git+https://github.com/ayhammouda/python-stdlib-mcp.git", "python-docs-mcp-server"]
+args = ["--from", "git+https://github.com/ayhammouda/python-docs-mcp-server.git", "python-docs-mcp-server"]
 ```
 
 After PyPI publishing, use:
@@ -323,7 +323,7 @@ search, or silently fall back to unofficial community mirrors.
 Before PyPI publishing, run `doctor` from the GitHub source package:
 
 ```bash
-uvx --from git+https://github.com/ayhammouda/python-stdlib-mcp.git python-docs-mcp-server doctor
+uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git python-docs-mcp-server doctor
 ```
 
 After PyPI publishing:
@@ -343,7 +343,7 @@ Before PyPI publishing, validate an existing index from the GitHub source
 package:
 
 ```bash
-uvx --from git+https://github.com/ayhammouda/python-stdlib-mcp.git python-docs-mcp-server validate-corpus
+uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git python-docs-mcp-server validate-corpus
 ```
 
 After PyPI publishing:
@@ -442,7 +442,7 @@ access. If `uvx` is not found, specify the full path in your config:
       "command": "C:\\Users\\YOU\\.local\\bin\\uvx.exe",
       "args": [
         "--from",
-        "git+https://github.com/ayhammouda/python-stdlib-mcp.git",
+        "git+https://github.com/ayhammouda/python-docs-mcp-server.git",
         "python-docs-mcp-server"
       ]
     }

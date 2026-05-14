@@ -3,7 +3,7 @@
 ## Current
 
 - **v0.1.4** — shipped (pre-PyPI; installed via `uvx --from git+…`)
-- **v0.1.5** — in progress. Five coordinated workstreams: positioning lockdown ("canonical Python stdlib oracle for AI coding agents — always free, always MIT, token-frugal"); first PyPI publish via Trusted Publishing; GitHub repo rename to `python-stdlib-mcp` (PyPI package name stays `python-docs-mcp-server`); benchmark harness against competing docs MCPs; coordinated launch post on a personal blog, dev.to, and Show HN.
+- **v0.1.5** — in progress. Four coordinated workstreams: positioning lockdown ("canonical Python stdlib oracle for AI coding agents — always free, always MIT, token-frugal"); first PyPI publish via Trusted Publishing; benchmark harness against competing docs MCPs; coordinated launch post on a personal blog, dev.to, and Show HN. (Note: the GitHub repo rename to `python-stdlib-mcp` originally planned for v0.1.5 was dropped on 2026-05-14 — the repo and PyPI package keep the `python-docs-mcp-server` name.)
 
 ## Backlog (post-v0.1.5)
 
