@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "python-docs-mcp-server"
 version = "0.1.4"
-description = "A read-only, version-aware MCP retrieval server over Python standard library documentation"
+description = "The canonical Python stdlib oracle for AI coding agents — exact symbols, exact sections, exact versions, offline, always free, always MIT, token-frugal."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
