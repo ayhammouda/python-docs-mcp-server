@@ -85,6 +85,12 @@ Complete these steps in order. Each step has a checkbox -- do not skip ahead.
   ```bash
   grep '^version' pyproject.toml
   ```
+- [ ] `server.json` validates against the live MCP Registry schema. MCP Registry enforces stricter limits than PyPI (e.g. `description ≤ 100 chars`); validating before the tag prevents a half-published release (PyPI succeeds while MCP Registry rejects, as happened on v0.1.5 → recovered in v0.1.6):
+  ```bash
+  curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+  ./mcp-publisher validate server.json
+  ```
+  Must report `✅ server.json is valid`. If validation fails, shorten the `server.json` `description` on `main` before tagging (the `pyproject.toml` description is unbounded by this constraint and can stay longer).
 - [ ] Integration tests from `.github/INTEGRATION-TEST.md` are complete and signed off
 - [ ] Doctor subcommand passes:
   ```bash
