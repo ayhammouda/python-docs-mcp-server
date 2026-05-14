@@ -51,7 +51,7 @@ versions 3.10 through 3.14.
    ```
 
 4. Monitor the release workflow at:
-   https://github.com/<owner>/python-docs-mcp-server/actions/workflows/release.yml
+   https://github.com/<owner>/python-stdlib-mcp/actions/workflows/release.yml
 
 5. Verify the package on PyPI:
    https://pypi.org/project/python-docs-mcp-server/0.1.2/
@@ -76,7 +76,7 @@ Complete these steps in order. Each step has a checkbox -- do not skip ahead.
 
 ### Pre-Release Verification
 
-- [ ] All CI tests green on main: check https://github.com/<owner>/python-docs-mcp-server/actions/workflows/ci.yml
+- [ ] All CI tests green on main: check https://github.com/<owner>/python-stdlib-mcp/actions/workflows/ci.yml
 - [ ] Local test suite passes:
   ```bash
   uv run pytest --tb=short -q
@@ -118,7 +118,7 @@ Complete these steps in order. Each step has a checkbox -- do not skip ahead.
   ```bash
   git push origin v0.1.1
   ```
-- [ ] Monitor the workflow run: https://github.com/<owner>/python-docs-mcp-server/actions/workflows/release.yml
+- [ ] Monitor the workflow run: https://github.com/<owner>/python-stdlib-mcp/actions/workflows/release.yml
 - [ ] Verify all three jobs pass: `build` -> `publish` -> `github-release`
 
 ### Post-Release Verification (SHIP-06)
@@ -166,7 +166,7 @@ Complete these steps in order. Each step has a checkbox -- do not skip ahead.
     examples
 - [ ] Verify `README.md` has no temporary pre-release install artifacts:
   ```bash
-  rg -n 'PRE[-]PYPI|Before PyPI publishing|Until the first PyPI|After PyPI publishing|git\\+https://github.com/.*/python-docs-mcp-server' README.md
+  rg -n 'PRE[-]PYPI|Before PyPI publishing|Until the first PyPI|After PyPI publishing|git\\+https://github.com/.*/python-stdlib-mcp' README.md
   ```
   The command should return no output.
 - [ ] Review `docs/launch/` so no public launch copy still asks users to install
