@@ -8,7 +8,7 @@ Before the first release, configure PyPI Trusted Publishing:
 2. Add a new pending publisher:
    - **PyPI project name**: `python-docs-mcp-server`
    - **Owner**: your GitHub username or org
-   - **Repository**: `python-docs-mcp-server`
+   - **Repository**: `python-stdlib-mcp`
    - **Workflow name**: `release.yml`
    - **Environment name**: `pypi`
 3. In the GitHub repo, go to Settings > Environments
@@ -96,7 +96,7 @@ Complete these steps in order. Each step has a checkbox -- do not skip ahead.
 - [ ] PyPI pending publisher configured at https://pypi.org/manage/account/publishing/:
   - PyPI project name: `python-docs-mcp-server`
   - Owner: `<your-github-username>`
-  - Repository: `python-docs-mcp-server`
+  - Repository: `python-stdlib-mcp`
   - Workflow name: `release.yml`
   - Environment name: `pypi`
 - [ ] GitHub environment `pypi` created in repo Settings > Environments
