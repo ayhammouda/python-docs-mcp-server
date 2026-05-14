@@ -72,29 +72,7 @@ then `get_docs` for the matching section. Instead of generic web results or an
 entire docs page, it gets official stdlib text for the requested Python version,
 trimmed to the section that matters.
 
-<!-- PRE-PYPI: replace this temporary GitHub-source smoke test after the first PyPI publish -->
-Local source smoke test until the PyPI package is published:
-
-```bash
-uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git python-docs-mcp-server --version
-```
-<!-- /PRE-PYPI -->
-
 ## Install
-
-<!-- PRE-PYPI: remove this entire "Before PyPI publishing" block (heading + prose + code) after the first PyPI publish -->
-### Before PyPI publishing (install from GitHub source)
-
-Until the first PyPI release is published, run from GitHub:
-
-```bash
-uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git python-docs-mcp-server --version
-```
-<!-- /PRE-PYPI -->
-
-<!-- PRE-PYPI: after the first PyPI publish, drop this "After PyPI publishing" heading so the section reads simply as "## Install" -->
-### After PyPI publishing
-<!-- /PRE-PYPI -->
 
 Run directly with `uvx`:
 
@@ -116,18 +94,6 @@ shell or use `python -m uv ...` as a fallback for local contributor commands.
 ## First run
 
 Build the local documentation index:
-
-<!-- PRE-PYPI: remove the GitHub-source build-index command and the "After PyPI publishing" lead-in after the first PyPI publish; the post-PyPI code fence below survives -->
-```bash
-uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git python-docs-mcp-server build-index --versions 3.10,3.11,3.12,3.13,3.14
-```
-
-After PyPI publishing, `uvx python-docs-mcp-server build-index ...` is enough.
-<!-- /PRE-PYPI -->
-
-<!-- PRE-PYPI: after the first PyPI publish, drop this "After PyPI publishing" heading so the section reads simply as "## First run" -->
-### After PyPI publishing
-<!-- /PRE-PYPI -->
 
 ```bash
 uvx python-docs-mcp-server build-index --versions 3.10,3.11,3.12,3.13,3.14
@@ -155,25 +121,6 @@ Add this to your Claude Desktop configuration file:
 
 **Windows:** `%APPDATA%\\Claude\\claude_desktop_config.json`
 
-<!-- PRE-PYPI: remove the GitHub-source config and the "After PyPI publishing, use:" lead-in after the first PyPI publish; the post-PyPI config fence below survives -->
-```json
-{
-  "mcpServers": {
-    "python-docs": {
-      "command": "uvx",
-      "args": [
-        "--from",
-        "git+https://github.com/ayhammouda/python-docs-mcp-server.git",
-        "python-docs-mcp-server"
-      ]
-    }
-  }
-}
-```
-
-After PyPI publishing, use:
-<!-- /PRE-PYPI -->
-
 ```json
 {
   "mcpServers": {
@@ -192,25 +139,6 @@ Restart Claude Desktop after editing the config file.
 Add this to your Cursor MCP settings (`.cursor/mcp.json` in your project or
 global settings):
 
-<!-- PRE-PYPI: remove the GitHub-source config and the "After PyPI publishing, use:" lead-in after the first PyPI publish; the post-PyPI config fence below survives -->
-```json
-{
-  "mcpServers": {
-    "python-docs": {
-      "command": "uvx",
-      "args": [
-        "--from",
-        "git+https://github.com/ayhammouda/python-docs-mcp-server.git",
-        "python-docs-mcp-server"
-      ]
-    }
-  }
-}
-```
-
-After PyPI publishing, use:
-<!-- /PRE-PYPI -->
-
 ```json
 {
   "mcpServers": {
@@ -225,16 +153,6 @@ After PyPI publishing, use:
 ### Codex
 
 Add this to `.codex/config.toml`:
-
-<!-- PRE-PYPI: remove the GitHub-source config and the "After PyPI publishing, use:" lead-in after the first PyPI publish; the post-PyPI config fence below survives -->
-```toml
-[mcp_servers.python-docs]
-command = "uvx"
-args = ["--from", "git+https://github.com/ayhammouda/python-docs-mcp-server.git", "python-docs-mcp-server"]
-```
-
-After PyPI publishing, use:
-<!-- /PRE-PYPI -->
 
 ```toml
 [mcp_servers.python-docs]
@@ -319,16 +237,6 @@ search, or silently fall back to unofficial community mirrors.
 
 ## Diagnostics
 
-<!-- PRE-PYPI: remove the GitHub-source doctor invocation and "After PyPI publishing:" lead-in after the first PyPI publish; the post-PyPI code fence below survives -->
-Before PyPI publishing, run `doctor` from the GitHub source package:
-
-```bash
-uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git python-docs-mcp-server doctor
-```
-
-After PyPI publishing:
-<!-- /PRE-PYPI -->
-
 Check the local environment:
 
 ```bash
@@ -337,17 +245,6 @@ uvx python-docs-mcp-server doctor
 
 This checks the runtime Python version, SQLite FTS5, cache/index paths, disk
 space, and the `venv`/`ensurepip` support needed by `build-index`.
-
-<!-- PRE-PYPI: remove the GitHub-source validate-corpus invocation and "After PyPI publishing:" lead-in after the first PyPI publish; the post-PyPI code fence below survives -->
-Before PyPI publishing, validate an existing index from the GitHub source
-package:
-
-```bash
-uvx --from git+https://github.com/ayhammouda/python-docs-mcp-server.git python-docs-mcp-server validate-corpus
-```
-
-After PyPI publishing:
-<!-- /PRE-PYPI -->
 
 Validate an existing index:
 
@@ -433,25 +330,6 @@ uv cache clean python-docs-mcp-server
 
 The MSIX-packaged version of Claude Desktop on Windows may have restricted PATH
 access. If `uvx` is not found, specify the full path in your config:
-
-<!-- PRE-PYPI: remove the GitHub-source config and the "After PyPI publishing, use:" lead-in after the first PyPI publish; the post-PyPI config fence below survives -->
-```json
-{
-  "mcpServers": {
-    "python-docs": {
-      "command": "C:\\Users\\YOU\\.local\\bin\\uvx.exe",
-      "args": [
-        "--from",
-        "git+https://github.com/ayhammouda/python-docs-mcp-server.git",
-        "python-docs-mcp-server"
-      ]
-    }
-  }
-}
-```
-
-After PyPI publishing, use:
-<!-- /PRE-PYPI -->
 
 ```json
 {
