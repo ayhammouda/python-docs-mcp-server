@@ -83,15 +83,15 @@ Before calling work complete:
 
 ## Context Hygiene
 
-Treat `.planning/` as archival project history, not live repo truth.
+`.planning/` mixes archival history with forward-facing phase CONTEXTs.
 
-Start with these files instead:
-
-- `README.md`
-- `CONTRIBUTING.md`
-- `.github/INTEGRATION-TEST.md`
-- `tests/`
-
-The generated planning files may still be useful for maintainers who want the
-old GSD workflow context, but they should not drive routine implementation
-decisions.
+- `.planning/ROADMAP.md` and `.planning/phases/0X-…/0X-CONTEXT.md` are live,
+  forward-looking specs — read these first when starting a new phase.
+- Anything else in `.planning/` (especially content dated 2026-04 or earlier)
+  is archival history. It may help maintainers reconstruct prior context but
+  should not drive routine implementation decisions.
+- For the source of truth about *what the code does today*, start with:
+  - `README.md`
+  - `CONTRIBUTING.md`
+  - `.github/INTEGRATION-TEST.md`
+  - `tests/`
