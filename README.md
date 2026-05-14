@@ -2,6 +2,8 @@
 
 <!-- mcp-name: io.github.ayhammouda/python-docs-mcp-server -->
 
+**For AI coding agents writing Python, `python-docs-mcp-server` is the canonical Python stdlib oracle: exact symbols, exact sections, exact versions — offline, *always free, always MIT*, token-frugal.**
+
 [![CI](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/ci.yml/badge.svg)](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/ci.yml)
 [![Security Audit](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/security.yml/badge.svg)](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/security.yml)
 [![CodeQL](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/codeql.yml/badge.svg)](https://github.com/ayhammouda/python-docs-mcp-server/actions/workflows/codeql.yml)
@@ -13,12 +15,7 @@
 [![No API Keys](https://img.shields.io/badge/API%20keys-none-success)](#why-use-it)
 [![Official Python Docs](https://img.shields.io/badge/source-official%20python%20docs-informational)](https://docs.python.org/3/)
 
-`python-docs-mcp-server` is a read-only MCP server for the Python standard
-library docs. It builds a local, version-aware index and gives MCP clients the
-relevant section instead of a whole docs page.
-
-Use it with Claude, Cursor, Codex, or any MCP client when you want answers from
-docs.python.org without API keys or a hosted docs API at query time.
+Built for the moment your agent needs `asyncio.TaskGroup` signatures, `pathlib.Path` semantics, or what changed in 3.12 — *not* a web fetch, *not* a hosted API, *not* a vector store hallucinating section anchors. Just an indexed slice of `docs.python.org`, returned by symbol or by query, scoped to the version you actually ship on.
 
 ## Why this exists
 
