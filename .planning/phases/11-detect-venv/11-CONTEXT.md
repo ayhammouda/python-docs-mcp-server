@@ -19,15 +19,15 @@ Make `detect_python_version` venv-aware: report the Python version of the *activ
 - DETV2-02: Detect `.venv/` or `venv/` directories in cwd or its ancestors (up to project root).
 - DETV2-03: Detect `uv`'s `.venv` and `poetry`'s `.venv` patterns.
 - DETV2-04: Preserve v1 fallback chain unchanged below the new venv checks.
-- DETV2-05: Return `(major_minor, source)` tuple where `source` discriminates `venv:VIRTUAL_ENV` / `venv:.venv` / `python-version` / `python3` / `sys.version_info`.
+- DETV2-05: Return `(major_minor, source)` tuple. **New v2 sources:** `"venv:VIRTUAL_ENV"`, `"venv:.venv"`. **Existing v1 sources (preserved unchanged, see `src/mcp_server_python_docs/detection.py`):** `".python-version file"`, `"python3 in PATH"`, `"server runtime"`. Total: 5 distinct source strings.
 
 ## Success criteria
 
 1. Inside an activated venv (3.12) on a 3.13 host: returns `("3.12", "venv:VIRTUAL_ENV")`.
-2. With no venv but `.python-version` present: returns `("X.Y", "python-version")` — v1 behavior preserved.
-3. With nothing: returns `(sys-version, "sys.version_info")` — v1 fallback preserved.
-4. Backfill: `tests/test_detection.py` covers all five `source` cases.
-5. No regression in v1 callers (`server.py` MCP tool wrapper signature unchanged).
+2. With no venv but `.python-version` present: returns `("X.Y", ".python-version file")` — v1 behavior preserved verbatim.
+3. With nothing else available: returns `(sys-version, "server runtime")` — v1 fallback preserved verbatim.
+4. Backfill: `tests/test_detection.py` covers all five `source` cases (2 new + 3 preserved).
+5. No regression in v1 callers (`server.py` MCP tool wrapper signature unchanged; existing source strings unchanged).
 
 ## Plans
 

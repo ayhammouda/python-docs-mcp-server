@@ -17,4 +17,4 @@ These are planned, not committed. Phase CONTEXTs at [`phases/09-compare-versions
 
 ## Historical
 
-Pre-2026-05-14 GSD workflow artifacts (phases 1–8 for v0.1.0) live in maintainers' local worktrees and are intentionally not tracked in this repo. See the note in `.git/info/exclude` for the prior policy. With v0.1.5 the `.planning/` directory becomes a tracked, forward-facing surface for new phase CONTEXTs and roadmap entries.
+Pre-2026-05-14 GSD workflow artifacts (phases 1–8 for v0.1.0) live in maintainers' local worktrees and are intentionally not tracked in this repo — they remain accessible to those who ran the original GSD workflow locally but are not load-bearing for current implementation work. With v0.1.5 the `.planning/` directory becomes a tracked, forward-facing surface for new phase CONTEXTs and roadmap entries.

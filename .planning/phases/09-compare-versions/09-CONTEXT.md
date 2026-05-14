@@ -20,7 +20,7 @@ Add an MCP tool `compare_versions(symbol, v1, v2)` that returns a structured dif
 
 ## Success criteria
 
-1. `compare_versions("asyncio.TaskGroup", "3.11", "3.12")` returns a clear, machine-readable diff highlighting the introduction in 3.11.
+1. `compare_versions("asyncio.TaskGroup", "3.10", "3.11")` returns a clear, machine-readable diff showing the symbol was newly introduced in 3.11 (e.g. an `added` or `new_in` marker, not just a delta of existing fields).
 2. Comparing identical versions returns an empty diff with an explicit "no change" marker.
 3. Missing-version cases return an actionable error with the indexed-version list.
 4. Token cost of a typical diff is under 300 tokens (vs ~1500 for fetching both full doc pages).
