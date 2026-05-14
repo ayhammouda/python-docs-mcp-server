@@ -15,7 +15,7 @@ Make `detect_python_version` venv-aware: report the Python version of the *activ
 
 ## Requirements
 
-- DETV2-01: Detect active venv via the `VIRTUAL_ENV` env var; if present, read `$VIRTUAL_ENV/pyvenv.cfg` for `version_info`.
+- DETV2-01: Detect active venv via the `VIRTUAL_ENV` env var; if present, read `$VIRTUAL_ENV/pyvenv.cfg` and parse the `version = X.Y[.Z]` key (the standard key written by `python -m venv`). Fall back to `version_info` only if `version` is absent — some tools write that variant.
 - DETV2-02: Detect `.venv/` or `venv/` directories in cwd or its ancestors (up to project root).
 - DETV2-03: Detect `uv`'s `.venv` and `poetry`'s `.venv` patterns.
 - DETV2-04: Preserve v1 fallback chain unchanged below the new venv checks.

@@ -14,9 +14,9 @@ Return the official "What's New in Python `<version>`" content as structured sec
 
 ## Requirements
 
-- WNEW-01: Tool accepts a Python version string. Returns `{ "sections": [{title, anchor, body, kind}] }`.
+- WNEW-01: Tool signature: `whatsnew_for_version(version: str, kind: str | None = None, start_index: int = 0, max_sections: int = 20)`. `kind` filters to a single `kind` value (see WNEW-02); `start_index` + `max_sections` paginate the response. Returns `{ "sections": [{title, anchor, body, kind}], "next_start_index": int | None }`.
 - WNEW-02: `kind` enum: `new_module | new_feature | deprecation | removal | performance | syntax | other`.
-- WNEW-03: Token cost capped at ~2k per section; pagination supported via section index.
+- WNEW-03: Each section's `body` is capped at ~2k tokens. If a single section exceeds the cap, truncate with a clear marker and a `get_docs` hint. Pagination via `start_index` / `next_start_index` round-trips.
 
 ## Success criteria
 
