@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.ayhammouda/python-docs-mcp-server",
-  "description": "The canonical Python stdlib oracle for AI coding agents. Exact symbols, exact sections, exact versions — offline, always free, always MIT, token-frugal.",
+  "description": "The canonical Python stdlib oracle for AI coding agents — always free, always MIT, token-frugal.",
   "title": "Python Docs MCP Server",
   "websiteUrl": "https://github.com/ayhammouda/python-docs-mcp-server",
   "repository": {
