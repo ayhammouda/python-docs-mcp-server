@@ -10,6 +10,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from mcp_server_python_docs.services.compare import CompareService
 from mcp_server_python_docs.services.content import ContentService
 from mcp_server_python_docs.services.package_docs import PackageDocsService
 from mcp_server_python_docs.services.persistent_cache import PersistentDocsCache
@@ -25,6 +26,7 @@ class AppContext:
     index_path: Path
     search_service: SearchService
     content_service: ContentService
+    compare_service: CompareService
     version_service: VersionService
     package_docs_service: PackageDocsService = field(default_factory=PackageDocsService)
     persistent_docs_cache: PersistentDocsCache | None = None
