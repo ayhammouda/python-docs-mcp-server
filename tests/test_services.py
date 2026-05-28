@@ -433,7 +433,7 @@ class TestToolRegistration:
 
         server = create_server()
         tools = server._tool_manager._tools
-        for name in ["search_docs", "get_docs", "list_versions"]:
+        for name in ["search_docs", "get_docs", "list_versions", "compare_versions"]:
             tool = tools[name]
             annotations = tool.annotations
             assert annotations is not None, f"{name} missing annotations"
@@ -447,12 +447,12 @@ class TestToolRegistration:
                 annotations.openWorldHint is False
             ), f"{name} openWorldHint should be False"
 
-    def test_five_tools_registered(self):
+    def test_six_tools_registered(self):
         from mcp_server_python_docs.server import create_server
 
         server = create_server()
         tools = server._tool_manager._tools
-        assert len(tools) == 5
+        assert len(tools) == 6
 
     def test_runtime_tool_schemas_include_input_constraints(self):
         import anyio
@@ -476,6 +476,13 @@ class TestToolRegistration:
         assert get_docs["max_chars"]["minimum"] == 100
         assert get_docs["max_chars"]["maximum"] == 50000
         assert get_docs["start_index"]["minimum"] == 0
+
+        compare_versions = schemas["compare_versions"]["properties"]
+        assert compare_versions["symbol"]["maxLength"] == 200
+        assert compare_versions["symbol"]["minLength"] == 1
+        # v1 and v2 do not have min/max length constraints by current design.
+        assert "v1" in compare_versions
+        assert "v2" in compare_versions
 
     def test_app_lifespan_closes_db_on_pre_yield_error(self, tmp_path):
         import anyio
