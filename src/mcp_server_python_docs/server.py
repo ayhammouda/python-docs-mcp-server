@@ -28,6 +28,7 @@ from mcp_server_python_docs.app_context import AppContext
 from mcp_server_python_docs.detection import detect_python_version, match_to_indexed
 from mcp_server_python_docs.errors import DocsServerError
 from mcp_server_python_docs.models import (
+    CompareVersionsResult,
     DetectPythonVersionResult,
     GetDocsResult,
     ListVersionsResult,
@@ -271,6 +272,18 @@ PackageParam = Annotated[
     str,
     Field(min_length=1, max_length=214, description="PyPI package/project name"),
 ]
+SymbolParam = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=200,
+        description="Qualified Python symbol name, e.g. 'asyncio.TaskGroup'",
+    ),
+]
+CompareVersionParam = Annotated[
+    str,
+    Field(description="Python version string, e.g. '3.11'"),
+]
 
 
 def create_server() -> FastMCP:
@@ -376,6 +389,27 @@ def create_server() -> FastMCP:
             matched_index_version=detected_ver,
             is_default=detected_ver is not None,
         )
+
+    @mcp.tool(annotations=_TOOL_ANNOTATIONS)
+    def compare_versions(
+        symbol: SymbolParam,
+        v1: CompareVersionParam,
+        v2: CompareVersionParam,
+        ctx: Context = None,  # type: ignore[assignment]
+    ) -> CompareVersionsResult:
+        """Diff a Python stdlib symbol between two indexed versions. Returns
+        change=added|removed|changed|unchanged with optional new_in, changed_in,
+        deprecated_in, signature_delta (advisory), see_also_added/removed,
+        section_diff, and note fields. Both versions must be indexed; otherwise
+        an actionable error names the available versions."""
+        app_ctx: AppContext = ctx.request_context.lifespan_context
+        try:
+            return app_ctx.compare_service.compare(symbol, v1, v2)
+        except DocsServerError as e:
+            raise ToolError(str(e))
+        except Exception as e:
+            logger.exception("Unexpected error in compare_versions")
+            raise ToolError(f"Internal error: {type(e).__name__}")
 
     # SRVR-07: _meta hint for get_docs tool.
     # FastMCP 1.27 does not expose a public API for setting _meta on tool
