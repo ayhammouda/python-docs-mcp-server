@@ -10,6 +10,7 @@ import pytest
 from mcp_server_python_docs.app_context import AppContext
 from mcp_server_python_docs.errors import VersionNotFoundError
 from mcp_server_python_docs.server import create_server
+from mcp_server_python_docs.services.compare import CompareService
 from mcp_server_python_docs.services.content import ContentService
 from mcp_server_python_docs.services.search import SearchService
 from mcp_server_python_docs.services.version import VersionService
@@ -122,11 +123,13 @@ def regression_db(tmp_path):
 
 def _make_app_context(db, detected_python_version: str | None) -> AppContext:
     """Build an AppContext for direct tool invocation tests."""
+    content_service = ContentService(db)
     return AppContext(
         db=db,
         index_path=Path("retrieval-regression.db"),
         search_service=SearchService(db, {}),
-        content_service=ContentService(db),
+        content_service=content_service,
+        compare_service=CompareService(db, content_service),
         version_service=VersionService(db),
         detected_python_version=detected_python_version,
         detected_python_source="test fixture",
