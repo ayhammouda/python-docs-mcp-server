@@ -15,8 +15,12 @@ import json
 
 import pytest
 
-from mcp_server_python_docs.errors import SymbolNotFoundError, VersionNotFoundError
-from mcp_server_python_docs.services.compare import CompareService
+from mcp_server_python_docs.errors import (
+    PageNotFoundError,
+    SymbolNotFoundError,
+    VersionNotFoundError,
+)
+from mcp_server_python_docs.services.compare import CompareService, _extract_see_also
 from mcp_server_python_docs.services.content import ContentService
 from mcp_server_python_docs.storage.db import bootstrap_schema, get_readwrite_connection
 
@@ -133,14 +137,20 @@ def compare_db(tmp_path):
         ds_id = ds_ids[ver]
         key = (ver, slug)
         if key not in doc_ids:
+            # Production-shaped slugs (CR-01 regression): real Sphinx ingestion
+            # stores documents.uri WITH ".html" but documents.slug EXTENSIONLESS
+            # (current_page_name); symbol/section URIs carry ".html". The old
+            # fixture seeded both columns with the ".html" form, masking the slug
+            # mismatch that broke get_docs on a real index.
+            doc_slug = slug[:-5] if slug.endswith(".html") else slug
             conn.execute(
                 "INSERT INTO documents (doc_set_id, uri, slug, title, content_text, char_count) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                (ds_id, slug, slug, slug, "page", 4),
+                (ds_id, slug, doc_slug, slug, "page", 4),
             )
             doc_ids[key] = conn.execute(
                 "SELECT id FROM documents WHERE doc_set_id = ? AND slug = ?",
-                (ds_id, slug),
+                (ds_id, doc_slug),
             ).fetchone()["id"]
         doc_id = doc_ids[key]
         uri = f"{slug}#{anchor}"
@@ -269,7 +279,6 @@ def test_compare_neither_version_has_symbol(compare_db):
 
 def test_compare_page_not_available_returns_changed_with_note(compare_db, monkeypatch):
     """M2: PageNotFoundError in the both-present branch -> changed + note (not unchanged)."""
-    from mcp_server_python_docs.errors import PageNotFoundError
 
     def _raise(*args, **kwargs):
         raise PageNotFoundError("simulated page not found")
@@ -298,3 +307,74 @@ def test_compare_diff_is_token_frugal(compare_db):
         f"(~{approx_tokens} tokens), expected under 300"
     )
     assert len(serialized) < 1200
+
+
+# --- Code-review regression tests (CR-01, WR-01, WR-02) ---
+
+
+def test_section_text_resolves_extensionless_slug_cr01(compare_db):
+    """CR-01: symbol URIs carry '.html' but documents.slug is extensionless.
+
+    _section_text must resolve the '.html' symbol URI against the extensionless
+    documents.slug that real Sphinx ingestion stores. Before the fix this raised
+    PageNotFoundError on the production-shaped fixture, forcing every both-present
+    comparison into the M2 'page unavailable' fallback. Guards against regression
+    of the slug-derivation mismatch directly at the helper level.
+    """
+    svc = _service(compare_db)
+    text = svc._section_text("library/json.html#json.dumps", "json.dumps", "3.11")
+    assert "Serialize obj to a JSON formatted str." in text
+
+    # And end-to-end: the both-present 'changed' branch computes real metadata
+    # instead of returning the page-unavailable note.
+    result = svc.compare("some.old_func", "3.10", "3.11")
+    assert result.change == "changed"
+    assert result.deprecated_in == "3.11"
+    assert result.note is None
+
+
+def test_extract_see_also_excludes_unrelated_body_links_wr01():
+    """WR-01: the see-also window is one contiguous block.
+
+    A 'See also' admonition followed by a blank line and then unrelated body
+    prose (with its own links) must NOT capture those later links. markdownify
+    rarely emits an ATX heading after the admonition, so the blank-line boundary
+    is what bounds the window.
+    """
+    text = (
+        "Some intro paragraph.\n\n"
+        "See also\n"
+        "[json.tool](library/json.tool.html) — CLI helper.\n\n"
+        "This unrelated paragraph links to "
+        "[totally.unrelated](library/unrelated.html) and more.\n"
+    )
+    labels = _extract_see_also(text)
+    assert labels == ["json.tool"]
+    assert "totally.unrelated" not in labels
+
+
+def test_section_diff_truncates_on_line_boundary_wr02(compare_db, monkeypatch):
+    """WR-02: oversized section_diff truncates on a line boundary + marker.
+
+    The output must remain a parseable unified diff — no mid-line slice. Every
+    emitted line is a valid unified-diff line (' ', '+', '-', '@') or the
+    explicit truncation marker.
+    """
+    svc = _service(compare_db)
+
+    def _long_section(uri, anchor, version):
+        # Two large, fully-divergent bodies so the unified diff exceeds the cap.
+        marker = "alpha" if version == "3.10" else "omega"
+        return "\n".join(f"{marker} line {i} with content" for i in range(200))
+
+    monkeypatch.setattr(svc, "_section_text", _long_section)
+    result = svc.compare("json.dumps", "3.10", "3.11")
+
+    assert result.change == "changed"
+    assert result.section_diff is not None
+    assert len(result.section_diff) <= 600 + len("\n... (diff truncated)")
+    assert result.section_diff.endswith("... (diff truncated)")
+    for line in result.section_diff.splitlines():
+        if line == "... (diff truncated)":
+            continue
+        assert line[:1] in {" ", "+", "-", "@"}, f"corrupt diff line: {line!r}"

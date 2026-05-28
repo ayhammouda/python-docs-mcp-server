@@ -90,11 +90,20 @@ def _extract_see_also(text: str) -> list[str]:
     if start is None:
         return []
 
+    # WR-01: a Sphinx "See also" admonition is one contiguous block. markdownify
+    # rarely emits an ATX heading after it, so an ATX-only break over-captures
+    # unrelated body links. Skip leading blanks, then read the block until the
+    # first blank line AFTER content has started (or an ATX heading, or the cap).
     window: list[str] = []
+    started = False
     for line in lines[start + 1 : start + 1 + 20]:
         if line.lstrip().startswith("#"):
             break
-        window.append(line)
+        if line.strip():
+            started = True
+            window.append(line)
+        elif started:
+            break  # blank line ends the admonition block
 
     return re.findall(_SEE_ALSO_LINK_RE, "\n".join(window))
 
@@ -132,11 +141,29 @@ class CompareService:
 
         Derives the slug from the symbol URI (everything before '#') and uses the
         symbol anchor — never joins symbols.section_id directly (RESEARCH Pitfall 2).
-        May raise PageNotFoundError if the page/section is not in the index.
+
+        CR-01: symbol URIs carry ".html" (``library/json.html#...``) but real
+        Sphinx ingestion stores ``documents.slug`` EXTENSIONLESS
+        (``library/json``), and ``get_docs`` matches ``documents.slug`` exactly.
+        Try the extensionless form first, then the raw ".html" page, mirroring
+        ``retrieval.ranker._document_candidates`` so resolution holds on a real
+        index. Raises PageNotFoundError only when every candidate misses.
         """
-        slug = uri.split("#", 1)[0]
-        result = self._content.get_docs(slug=slug, version=version, anchor=anchor)
-        return result.content
+        page = uri.split("#", 1)[0]
+        candidates = (page[:-5], page) if page.endswith(".html") else (page,)
+        last_exc: PageNotFoundError | None = None
+        for slug in candidates:
+            try:
+                result = self._content.get_docs(
+                    slug=slug, version=version, anchor=anchor
+                )
+            except PageNotFoundError as exc:
+                last_exc = exc
+                continue
+            return result.content
+        # candidates is non-empty, so last_exc is always set when we reach here.
+        assert last_exc is not None
+        raise last_exc
 
     @log_tool_call("compare_versions")
     def compare(self, symbol: str, v1: str, v2: str) -> CompareVersionsResult:
@@ -237,9 +264,24 @@ class CompareService:
                 n=2,
             )
         )
-        section_diff: str | None = "\n".join(diff_lines) if diff_lines else None
-        if section_diff is not None and len(section_diff) > _SECTION_DIFF_MAX_CHARS:
-            section_diff = section_diff[:_SECTION_DIFF_MAX_CHARS]
+        # WR-02: truncate on LINE boundaries (not mid-line) with an explicit
+        # marker, so the emitted diff stays a parseable unified diff.
+        section_diff: str | None = None
+        if diff_lines:
+            kept: list[str] = []
+            used = 0
+            truncated = False
+            for line in diff_lines:
+                projected = used + len(line) + (1 if kept else 0)
+                if projected > _SECTION_DIFF_MAX_CHARS:
+                    truncated = True
+                    break
+                kept.append(line)
+                used = projected
+            section_diff = "\n".join(kept)
+            if truncated:
+                marker = "... (diff truncated)"
+                section_diff = f"{section_diff}\n{marker}" if section_diff else marker
 
         # If nothing changed at all, the symbol is genuinely 'unchanged'.
         has_delta = (
