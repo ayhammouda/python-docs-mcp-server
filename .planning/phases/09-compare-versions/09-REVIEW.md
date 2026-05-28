@@ -19,8 +19,21 @@ findings:
   warning: 4
   info: 3
   total: 8
-status: issues_found
+status: resolved
+resolution:
+  fixed_in: 0e16b34
+  fixed: [CR-01, WR-01, WR-02]
+  accepted_by_design: [WR-03, WR-04]
+  info_noted: [IN-01, IN-02, IN-03]
 ---
+
+> **Resolution (commit 0e16b34):** CR-01 (blocker), WR-01, and WR-02 were fixed
+> inline with 3 added regression tests; the production-shaped fixture now stores
+> extensionless `documents.slug`. WR-03 (`removed_in=v2`) and WR-04
+> (`signature_delta` naming) are accepted as by-design — only two versions are
+> compared, so v2 *is* the first-absent version, and `signature_delta` was
+> already accepted as advisory (cross-AI M1). INFO items noted (IN-03 stale test
+> name is cosmetic). Full gate after fix: ruff clean, pyright 0 errors, 284 tests.
 
 # Phase 9: Code Review Report
 
