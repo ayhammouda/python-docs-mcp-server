@@ -38,8 +38,10 @@ npx @modelcontextprotocol/inspector uv --directory . run python-docs-mcp-server
 - [ ] Confirm the tool list includes:
   - `search_docs`
   - `get_docs`
+  - `lookup_package_docs`
   - `list_versions`
   - `detect_python_version`
+  - `compare_versions`
 - [ ] Call `search_docs` with query `asyncio.TaskGroup`, `kind="symbol"`, `version="3.13"`
   - Expected: exact symbol hit with `library/asyncio-task.html`
 - [ ] Call `get_docs` for the returned slug and anchor
@@ -48,6 +50,8 @@ npx @modelcontextprotocol/inspector uv --directory . run python-docs-mcp-server
   - Expected: indexed versions appear with the configured default version
 - [ ] Call `detect_python_version`
   - Expected: returns local interpreter information without breaking the session
+- [ ] Call `compare_versions` with `symbol="asyncio.TaskGroup"`, `v1="3.10"`, `v2="3.11"`
+  - Expected: result with `change="added"` and `new_in="3.11"`, JSON serialization under ~1200 bytes
 - [ ] Observe no protocol corruption or unexplained disconnects in Inspector
 
 ## Test 2: Claude Desktop integration
