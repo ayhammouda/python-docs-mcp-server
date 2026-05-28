@@ -34,6 +34,7 @@ from mcp_server_python_docs.models import (
     PackageDocsResult,
     SearchDocsResult,
 )
+from mcp_server_python_docs.services.compare import CompareService
 from mcp_server_python_docs.services.content import ContentService
 from mcp_server_python_docs.services.package_docs import PackageDocsService
 from mcp_server_python_docs.services.persistent_cache import PersistentDocsCache
@@ -158,6 +159,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         )
         search_svc = SearchService(db, synonyms)
         content_svc = ContentService(db, persistent_cache=persistent_docs_cache)
+        compare_svc = CompareService(db, content_svc)
         version_svc = VersionService(db)
         package_docs_svc = PackageDocsService()
 
@@ -183,6 +185,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                 synonyms=synonyms,
                 search_service=search_svc,
                 content_service=content_svc,
+                compare_service=compare_svc,
                 version_service=version_svc,
                 package_docs_service=package_docs_svc,
                 persistent_docs_cache=persistent_docs_cache,
