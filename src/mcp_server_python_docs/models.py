@@ -214,3 +214,90 @@ class PackageDocsResult(BaseModel):
         default=None,
         description="Controlled-scope note, for example skipped labels or not-found details",
     )
+
+
+# --- compare_versions models ---
+
+ChangeKind = Literal["added", "removed", "changed", "unchanged"]
+
+
+class CompareVersionsResult(BaseModel):
+    """Output from compare_versions tool (CMPR-01, CMPR-03).
+
+    Typed contract returned by CompareService.compare and the source FastMCP
+    auto-derives the compare_versions outputSchema from. The four ``change``
+    cases (added / removed / changed / unchanged) all share this shape;
+    optional delta fields are ``None`` when they do not apply to the case,
+    keeping the JSON shape predictable and token-frugal (no full re-printing
+    of unchanged content, per CMPR-03).
+    """
+
+    symbol: str = Field(description="Qualified symbol name being compared")
+    v1: str = Field(description="Source Python version")
+    v2: str = Field(description="Target Python version")
+    change: ChangeKind = Field(
+        description=(
+            "Diff discriminator: 'added' (symbol new in v2), 'removed' "
+            "(symbol absent in v2), 'changed' (symbol present in both with a "
+            "detected delta), or 'unchanged' (symbol present in both, no delta)"
+        )
+    )
+
+    new_in: str | None = Field(
+        default=None,
+        description=(
+            "Version string extracted from the v2 section text; populated when "
+            "change == 'added', and may also be set when change == 'changed' if "
+            "the v2 section carries a versionadded marker for a sub-feature"
+        ),
+    )
+    removed_in: str | None = Field(
+        default=None,
+        description=(
+            "Version where the symbol is first absent; populated when "
+            "change == 'removed' (equals v2)"
+        ),
+    )
+    changed_in: str | None = Field(
+        default=None,
+        description=(
+            "Version extracted from the v2 section; populated when "
+            "change == 'changed'"
+        ),
+    )
+    deprecated_in: str | None = Field(
+        default=None,
+        description="Version extracted from a deprecation marker in the v2 section",
+    )
+    signature_delta: str | None = Field(
+        default=None,
+        description=(
+            "Best-effort heuristic: first non-empty diff line between v1 and v2 "
+            "section text. MAY be a docstring change or prose change rather than "
+            "a true signature change — treat as advisory, not authoritative."
+        ),
+    )
+    see_also_added: list[str] = Field(
+        default_factory=list,
+        description="See-also link labels present in v2 but not v1",
+    )
+    see_also_removed: list[str] = Field(
+        default_factory=list,
+        description="See-also link labels present in v1 but not v2",
+    )
+    section_diff: str | None = Field(
+        default=None,
+        description=(
+            "Short unified-diff snippet (difflib.unified_diff), truncated to "
+            "honor the token budget; populated only when change == 'changed' and "
+            "the diff is non-trivially short"
+        ),
+    )
+    note: str | None = Field(
+        default=None,
+        description=(
+            "Optional advisory note about result completeness, e.g. when docs "
+            "pages could not be fetched for one or both versions and the diff is "
+            "therefore based on symbol presence alone."
+        ),
+    )
