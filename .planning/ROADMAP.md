@@ -8,11 +8,11 @@
 
 ## Backlog (post-v0.1.6)
 
-Triaged 2026-05-26 — all three phases remain in scope. Phase 09 is up next.
+Triaged 2026-05-26 — all three phases remain in scope. Phase 10 is up next.
 
 | Phase | Title | Tool surface | Issue | Status |
 |-------|-------|--------------|-------|--------|
-| 09 | `compare_versions(symbol, v1, v2)` | New MCP tool | [#32](https://github.com/ayhammouda/python-docs-mcp-server/issues/32) | **All plans done** — 5/5, verifying |
+| 09 | `compare_versions(symbol, v1, v2)` | New MCP tool | [#32](https://github.com/ayhammouda/python-docs-mcp-server/issues/32) | **✓ Complete** — 5/5 plans, verified 2026-05-29 |
 | 10 | `whatsnew_for_version(version)` | New MCP tool | [#33](https://github.com/ayhammouda/python-docs-mcp-server/issues/33) | Backlog |
 | 11 | `detect_python_version` v2 (venv-aware) | Existing tool enhancement | [#34](https://github.com/ayhammouda/python-docs-mcp-server/issues/34) | Backlog |
 
