@@ -4,6 +4,8 @@
 
 **Companion to:** [`STRATEGIC-ROADMAP-2026-05-29.md`](STRATEGIC-ROADMAP-2026-05-29.md) (the *what*; this is the *how, with what guardrails*).
 
+**OpenClaw operating layer:** [`OPENCLAW-FORGE-PROTOCOL.md`](OPENCLAW-FORGE-PROTOCOL.md) defines how Vision, Gilfoyle, and Heimdall apply this policy. This project has no UI, so Saga is not part of the default loop.
+
 **Adopted:** 2026-05-29
 
 ---
@@ -40,6 +42,7 @@ Autonomous agents may NOT modify the following without explicit human approval i
 | `SECURITY.md` | Trust posture; requires deliberate review |
 | Existing tests (deletion or weakening assertions) | Regression cover |
 | `.planning/ROADMAP.md` historical phase records | Archival history |
+| `AGENT-EXECUTION-PIPELINE.md`, `OPENCLAW-FORGE-PROTOCOL.md`, and `STRATEGIC-ROADMAP-2026-05-29.md` | Governing policy and strategy docs |
 
 If an agent's task appears to require touching any of these:
 1. **Stop work.**
@@ -192,6 +195,7 @@ These files must exist on `main` before the v0.3.0 issues are unleashed to auton
 | [`AGENTS.md`](AGENTS.md) | Existing repo-conventions doc; should reference this pipeline | **Needs update** — add a one-paragraph link to this file |
 | [`STRATEGIC-ROADMAP-2026-05-29.md`](STRATEGIC-ROADMAP-2026-05-29.md) | The *what and why*; mandatory reading | **Exists** |
 | `AGENT-EXECUTION-PIPELINE.md` (this file) | The *how, with what guardrails* | **Exists** |
+| [`OPENCLAW-FORGE-PROTOCOL.md`](OPENCLAW-FORGE-PROTOCOL.md) | OpenClaw role split and MCP-specific execution loop | **Exists** |
 | `.github/ISSUE_TEMPLATE/autonomous-agent.yml` | Issue template enforcing §3 structure | **Create** — see §11 sketch |
 | `.github/PULL_REQUEST_TEMPLATE/agent.md` | PR template enforcing §6 | **Create** — see §11 sketch |
 | `.github/CODEOWNERS` | Forces human review on forbidden-territory paths | **Create** — see §11 sketch |
@@ -358,3 +362,14 @@ The v0.3.0 issue wave should therefore lead with the **high-confidence agent iss
 ## Amendments
 
 *Append amendments below as `## Amendment YYYY-MM-DD` sections. Do not edit historical content above this line; the locked sections are the authoritative current policy.*
+
+## Amendment 2026-05-29 — OpenClaw Role Split
+
+OpenClaw execution for this repo is governed by `OPENCLAW-FORGE-PROTOCOL.md`.
+The default loop is Vision → Gilfoyle → Heimdall → Vision/Aymen:
+
+- Vision owns issue pre-flight, `agent-ready`, review synthesis, branch protection, and pause/resume decisions.
+- Gilfoyle owns scoped implementation on exactly one issue at a time.
+- Heimdall owns independent verification, packaging/install smoke, security-sensitive checks, and release-readiness checks.
+- Saga is not in the default loop because this MCP has no UI.
+- Pipeline Monitor remains disabled unless Aymen explicitly asks for assisted merge checks; no auto-merge is allowed.
