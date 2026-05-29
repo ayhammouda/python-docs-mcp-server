@@ -1,7 +1,7 @@
 # [v0.3.0] docs — write ADR-001 (Source Adapters)
 
 > **Confidence:** MEDIUM · **Wave:** trailing · **Slug:** `adr-001-source-adapters`
-> Create with: `gh issue create -F .planning/issues/v0.3.0/05-adr-001-source-adapters.md -l agent-ready,documentation,priority:P2`
+> Create with: `gh issue create -F .planning/issues/v0.3.0/05-adr-001-source-adapters.md -l documentation,priority:P2`
 > Branch: `agent/<issue-number>-adr-001-source-adapters`
 
 ## Context

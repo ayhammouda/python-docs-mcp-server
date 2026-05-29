@@ -1,7 +1,7 @@
 # [v0.3.0] ingestion — pin CPython source by commit SHA
 
 > **Confidence:** PARTIAL (agent does the pin; human writes the SECURITY.md threat model) · **Wave:** trailing · **Slug:** `cpython-source-sha-pin`
-> Create with: `gh issue create -F .planning/issues/v0.3.0/06-cpython-source-sha-pin.md -l agent-ready,area:build,compliance,priority:P1`
+> Create with: `gh issue create -F .planning/issues/v0.3.0/06-cpython-source-sha-pin.md -l area:build,compliance,priority:P1`
 > Branch: `agent/<issue-number>-cpython-source-sha-pin`
 
 ## Context

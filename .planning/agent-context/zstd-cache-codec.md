@@ -23,7 +23,7 @@
   - This is **best-effort**: every read/write is wrapped in try/except and the cache disables cleanly (`self._conn = None`) on error. Preserve that posture.
 - **New module:** `src/mcp_server_python_docs/cache/codec.py` (create the `cache/` package with `__init__.py`). Public API the pipeline §4 example expects:
   - `list_supported() -> list[str]` → `['none', 'zstd', 'zstd-dict-v1']`
-  - `encode(text: str, codec: str) -> bytes`, `decode(blob: bytes, codec: str) -> str`.
+  - `encode(text: str, codec: str, *, dictionary=None) -> bytes`, `decode(blob: bytes, codec: str, *, dictionary=None) -> str`.
 - **Tests:** new dir `tests/cache/` with `__init__.py` and `test_codec.py`.
 
 ## 3. Existing test patterns to follow
@@ -57,9 +57,9 @@
 - **`zstandard` must already be importable** (maintainer pre-req). If
   `import zstandard` fails, STOP and comment — do not edit `pyproject.toml`/`uv.lock`.
 - **`zstd-dict-v1` has no production dictionary in this issue.** Make the codec
-  *work* (the test trains an ephemeral dict from a fixture corpus and passes it
-  in), but the cache's default production codec is `'zstd'`. Shipping a trained
-  dictionary artifact is a separate, human-gated follow-up.
+  *work* only when an explicit dictionary object is supplied by tests. The
+  cache's default production codec is `'zstd'`. Shipping a trained dictionary
+  artifact is a separate, human-gated follow-up.
 - Decode must dispatch off the stored `compression` value, never off the current
   default — otherwise old `'none'` rows break the day the default flips.
 

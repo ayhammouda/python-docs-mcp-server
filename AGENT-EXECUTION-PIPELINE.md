@@ -78,8 +78,8 @@ An issue missing any of these is not agent-ready. The pre-flight checklist (§10
 
 - "`uv run pytest tests/cache/test_codec.py -q` passes with at least 4 new tests covering: codec round-trip for `'none'`, codec round-trip for `'zstd'`, codec round-trip for `'zstd-dict-v1'`, and graceful read of pre-existing `compression='none'` rows."
 - "After cherry-picking this branch, `python -c 'from mcp_server_python_docs.cache.codec import list_supported; print(list_supported())'` prints exactly `['none', 'zstd', 'zstd-dict-v1']`."
-- "`grep -rn 'yaml.load(' src/ tests/` returns zero hits. `grep -rn 'yaml.safe_load(' src/` returns at least one hit at the expected call site in `synonyms.py`."
-- "README.md `## Tools` section lists exactly six rows in the table, including `compare_versions`, and the row order matches the order in `tools/registry.py`."
+- "`grep -rn 'yaml.load(' src/ tests/` returns zero hits. `grep -rn 'yaml.safe_load(' src/` returns at least the expected call sites in `server.py` and `ingestion/sphinx_json.py`."
+- "README.md `## Tools` section lists exactly six rows in the table, including `compare_versions`, and the row order matches the `@mcp.tool` declaration order in `src/mcp_server_python_docs/server.py`."
 
 **Bad examples (do not allow):**
 
@@ -105,7 +105,7 @@ uv run python-docs-mcp-server doctor
 
 - Any change touching the MCP wire protocol or tool registration:
   ```bash
-  uv run pytest tests/integration/test_stdio_smoke.py -q
+  uv run pytest tests/test_stdio_smoke.py -q
   ```
 - Any change to ingestion or storage:
   ```bash
@@ -227,7 +227,6 @@ These are the minimum-viable shapes for the templates referenced in §9. Claude 
 ```yaml
 name: Autonomous Agent Task
 description: A task spec scoped for execution by an autonomous coding agent
-labels: ["agent-ready"]
 body:
   - type: input
     id: title-prefix

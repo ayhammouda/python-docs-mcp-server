@@ -1,7 +1,7 @@
 # [v0.3.0] security — audit and document PyYAML safe-loader discipline
 
 > **Confidence:** MEDIUM · **Wave:** lead · **Slug:** `pyyaml-safe-loader-audit`
-> Create with: `gh issue create -F .planning/issues/v0.3.0/03-pyyaml-safe-loader-audit.md -l agent-ready,compliance,priority:P2`
+> Create with: `gh issue create -F .planning/issues/v0.3.0/03-pyyaml-safe-loader-audit.md -l compliance,priority:P2`
 > Branch: `agent/<issue-number>-pyyaml-safe-loader-audit`
 
 ## Context

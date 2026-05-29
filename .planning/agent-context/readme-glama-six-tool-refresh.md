@@ -18,17 +18,18 @@
 - `README.md`:
   - `## Tools` section at **line ~178**: already a six-row table in the correct
     order. Verify, don't churn it.
-  - **Stale badge at line ~12:** `MCP%20Registry-v0.1.4`. Current published
-    registry/PyPI version is **0.2.1**. This is the concrete fix.
-  - Hero section = everything **above the first install code block** (~line 125) — FORBIDDEN.
+  - **Stale badge near the top:** `MCP%20Registry-v0.1.4`. Current published
+    registry/PyPI version is **0.2.1**. This is the concrete fix and the only
+    allowed edit above the first install code block.
+  - Hero section = everything **above the first install code block** (~line 125)
+    — FORBIDDEN except the stale registry/version badge above.
 - `glama.json`: `description` field (prose, no tool list today).
 - `.github/RELEASE.md`: add one checklist line for decision 5.9.
 
 ## 3. Patterns to follow
 
-- `tests/test_packaging.py` and `tests/test_release_metadata.py` assert
-  metadata/packaging consistency — run them; if you add a surface, see whether a
-  cheap assertion belongs there (optional, not required).
+- `tests/test_packaging.py` asserts packaging consistency — run it; if you add a
+  surface, see whether a cheap assertion belongs there (optional, not required).
 - Badge lines in `README.md` are markdown image links; match the existing style
   when updating the version.
 

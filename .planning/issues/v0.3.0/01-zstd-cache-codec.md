@@ -1,7 +1,7 @@
 # [v0.3.0] cache — add zstd codec layer to the retrieved-docs cache
 
 > **Confidence:** HIGH · **Wave:** lead · **Slug:** `zstd-cache-codec`
-> Create on GitHub with: `gh issue create -F .planning/issues/v0.3.0/01-zstd-cache-codec.md -l agent-ready,area:runtime,priority:P2`
+> Create on GitHub with: `gh issue create -F .planning/issues/v0.3.0/01-zstd-cache-codec.md -l area:runtime,priority:P2`
 > Branch (after number assigned): `agent/<issue-number>-zstd-cache-codec`
 
 ## ⛔ Blocking pre-requisite (maintainer, before queueing)
@@ -37,7 +37,7 @@ codec that reads pre-existing uncompressed rows transparently.
 ## Acceptance criteria
 
 - [ ] `python -c 'from mcp_server_python_docs.cache.codec import list_supported; print(list_supported())'` prints exactly `['none', 'zstd', 'zstd-dict-v1']`.
-- [ ] `uv run pytest tests/cache/test_codec.py -q` passes with **at least 4** new tests covering: round-trip for `'none'`, round-trip for `'zstd'`, round-trip for `'zstd-dict-v1'` (dictionary trained from the committed fixture corpus at test time), and graceful decode of a value written under `compression='none'` by a prior server version.
+- [ ] `uv run pytest tests/cache/test_codec.py -q` passes with **at least 4** new tests covering: round-trip for `'none'`, round-trip for `'zstd'`, round-trip for `'zstd-dict-v1'` using an explicit test-only dictionary object, and graceful decode of a value written under `compression='none'` by a prior server version.
 - [ ] The `retrieved_docs_cache` table gains a `compression TEXT NOT NULL DEFAULT 'none'` column, added via `ALTER TABLE ... ADD COLUMN` when an older cache file lacks it (existence-checked), so an existing on-disk cache opens without error and serves its rows.
 - [ ] `uv run pytest tests/test_persistent_docs_cache.py -q` still passes (no regression to the existing cache contract), and a new test asserts a value written by the current server reads back identically after a simulated restart with the default production codec.
 - [ ] The cache writes new entries with a single configurable default codec (`'zstd'`); `get()` dispatches decode purely off the stored `compression` value, never off the default.
@@ -45,13 +45,13 @@ codec that reads pre-existing uncompressed rows transparently.
 ## Scope boundaries
 
 **In scope:**
-- New `cache/codec.py` with `list_supported()`, `encode(text, codec) -> bytes`, `decode(blob, codec) -> str`, and a registry mapping codec id → handler.
+- New `cache/codec.py` with `list_supported()`, `encode(text, codec, *, dictionary=None) -> bytes`, `decode(blob, codec, *, dictionary=None) -> str`, and a registry mapping codec id → handler.
 - `compression` column on `retrieved_docs_cache` + transparent migration of existing cache files.
 - Wiring `put()`/`get()` in `persistent_cache.py` through the codec.
 - Tests under `tests/cache/`.
 
 **Out of scope (do NOT do these — stop and comment if they seem required):**
-- Training and **packaging a production `zstd-dict-v1` dictionary** from a real `get_docs` corpus — corpus selection is a human judgment call per roadmap §4. The `zstd-dict-v1` codec must *function* (tests train an ephemeral dict from a fixture), but no production dictionary artifact ships in this issue.
+- Training and **packaging a production `zstd-dict-v1` dictionary** from a real `get_docs` corpus — corpus selection is a human judgment call per roadmap §4. The `zstd-dict-v1` codec must *function* with an explicit dictionary object supplied by tests, but no production dictionary artifact ships in this issue.
 - Any change to the **canonical index** schema (`src/mcp_server_python_docs/storage/schema.sql`).
 - Any tool name, parameter, or return shape.
 - Compressing `get_docs` markdown on the wire — this is cache-at-rest only.
@@ -70,7 +70,7 @@ uv run pyright src/
 uv run pytest --tb=short -q
 uv run python-docs-mcp-server doctor
 # cache lives in the get_docs path — also run the wire smoke:
-uv run pytest tests/integration/test_stdio_smoke.py -q
+uv run pytest tests/test_stdio_smoke.py -q
 ```
 
 ## PR template & recovery

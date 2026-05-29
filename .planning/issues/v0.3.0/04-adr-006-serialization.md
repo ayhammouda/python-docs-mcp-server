@@ -1,7 +1,7 @@
 # [v0.3.0] docs — write ADR-006 (Serialization)
 
 > **Confidence:** MEDIUM · **Wave:** lead · **Slug:** `adr-006-serialization`
-> Create with: `gh issue create -F .planning/issues/v0.3.0/04-adr-006-serialization.md -l agent-ready,documentation,priority:P2`
+> Create with: `gh issue create -F .planning/issues/v0.3.0/04-adr-006-serialization.md -l documentation,priority:P2`
 > Branch: `agent/<issue-number>-adr-006-serialization`
 
 ## Context
