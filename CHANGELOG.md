@@ -4,6 +4,40 @@ All notable changes to `python-docs-mcp-server` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-05-29
+
+### Added
+
+- **New MCP tool: `compare_versions(symbol, v1, v2)`** (Phase 09). Diffs a Python
+  stdlib symbol between two indexed versions and returns a structured result with
+  `change=added|removed|changed|unchanged` plus optional `new_in`, `changed_in`,
+  `deprecated_in`, `signature_delta` (advisory heuristic), `see_also_added`,
+  `see_also_removed`, `section_diff`, and `note` fields. Token-frugal by design —
+  emits only changed fields, not full page content. Both versions must be indexed;
+  an unknown version raises an actionable error naming the available versions. This
+  brings the server to a **six-tool surface**. ([#41](https://github.com/ayhammouda/python-docs-mcp-server/pull/41))
+
+### Security
+
+- Bumped two transitive dependencies to patched releases:
+  - `idna` 3.13 → 3.17 — resolves CVE-2026-45409 (ReDoS in `idna.encode()`).
+  - `starlette` 1.0.0 → 1.2.0 — resolves PYSEC-2026-161 ("BadHost", a `Host`-header
+    auth bypass that explicitly affects MCP servers).
+  Both arrive via the `mcp` / `sse-starlette` chain; no direct-dependency or API
+  changes. `pip-audit` reports no known vulnerabilities after the bump.
+
+### Changed
+
+- `services/compare.py` extractors simplified — precompiled the four Sphinx-directive
+  regexes and collapsed three near-identical `_extract_*` helpers into one.
+
+### Docs
+
+- README tools table and `.github/INTEGRATION-TEST.md` updated to document the full
+  six-tool surface including `compare_versions`.
+- Added `.github/TEST-STRATEGY.md` — canonical map of test layers, the feature→coverage
+  matrix, and known gaps.
+
 ## [0.1.6] — 2026-05-14
 
 ### Fixed
