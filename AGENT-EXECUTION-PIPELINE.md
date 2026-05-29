@@ -16,6 +16,7 @@
 - Every PR requires human review before merge. **No auto-merge, ever.**
 - Agents declare their scope explicitly and stay inside it.
 - The canonical validation gate (§5) must pass before any PR is opened. Failing gate → no PR, just a `WORKING-NOTES.md` on the branch + comment on the issue.
+- Automated review tools such as CodeRabbit provide review signal only. They do not approve, merge, or override the human-review gate.
 - Forbidden territory (§2) is non-negotiable. Any drift triggers a hard stop.
 - Recovery is always **stop and post a comment**, never **silently expand scope**.
 
@@ -134,6 +135,7 @@ uv run python-docs-mcp-server doctor
   - `Closes #<issue-number>` (or `Refs #` if intentionally not closing)
   - Each acceptance criterion as a checked or unchecked box, with a one-line explanation if unchecked
   - Output (or link to artifact) for the §5 validation gate
+  - CodeRabbit triage summary when CodeRabbit comments on the PR: blocking, follow-up, false positive, or pending/unavailable
   - "What this does NOT touch" section reaffirming the forbidden-territory items relevant to this issue
   - A short "Why this approach" paragraph if the design wasn't fully prescribed in the issue
 - **PR is opened against** the milestone integration branch (e.g., `release/v0.3.0`) when one exists, otherwise `main`. Never auto-merge.
@@ -371,5 +373,6 @@ The default loop is Vision → Gilfoyle → Heimdall → Vision/Aymen:
 - Vision owns issue pre-flight, `agent-ready`, review synthesis, branch protection, and pause/resume decisions.
 - Gilfoyle owns scoped implementation on exactly one issue at a time.
 - Heimdall owns independent verification, packaging/install smoke, security-sensitive checks, and release-readiness checks.
+- CodeRabbit findings are mandatory review signal when present. Vision/Heimdall must triage them as blocking, follow-up, or false positive before `verified`.
 - Saga is not in the default loop because this MCP has no UI.
 - Pipeline Monitor remains disabled unless Aymen explicitly asks for assisted merge checks; no auto-merge is allowed.
