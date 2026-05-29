@@ -1,6 +1,6 @@
 {
   "$schema": "https://glama.ai/mcp/schemas/server.json",
-  "description": "For AI coding agents writing Python: six read-only tools for canonical Python stdlib lookup, retrieval, local version detection, and version comparison.",
+  "description": "For AI coding agents writing Python: six read-only tools for canonical Python stdlib lookup, retrieval, package documentation discovery, version listing, local version detection, and version comparison.",
   "maintainers": [
     "ayhammouda"
   ]
