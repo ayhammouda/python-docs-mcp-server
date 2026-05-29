@@ -16,6 +16,7 @@ and control the ``python3`` probe by patching ``subprocess.run``.
 from __future__ import annotations
 
 import subprocess
+import sys
 
 import pytest
 
@@ -86,26 +87,39 @@ def test_malformed_version_file_falls_through(tmp_path, monkeypatch) -> None:
     assert source == "python3 in PATH"
 
 
-# TODO(you): implement the remaining two branches of the fallback chain.
-#
-# These are the cases where the test *design* matters most — you have to
-# neutralize the branches above the one under test. Both start from an empty
-# cwd so no real .python-version interferes:
-#
-#     monkeypatch.chdir(tmp_path)   # escape any real .python-version
-#
-# 1) test_detects_from_path_probe:
-#       - Patch detection.subprocess.run to return a CompletedProcess with
-#         returncode=0 and stdout="Python 3.10.9\n".
-#       - Assert (version, source) == ("3.10", "python3 in PATH").
-#
-# 2) test_falls_back_to_runtime_when_no_python3:
-#       - Make the PATH probe fail: patch detection.subprocess.run to raise
-#         FileNotFoundError (python3 absent). Decide what the function should
-#         return — it falls back to the server's own interpreter. Assert the
-#         source is "server runtime" and the version matches
-#         f"{sys.version_info.major}.{sys.version_info.minor}".
-#
-# Why this is the meaningful part: detection is order-dependent, so a test that
-# forgets to chdir() or forgets to stub subprocess will pass on your machine
-# and fail in CI (or vice-versa). The isolation is the assertion.
+def test_detects_from_path_probe(tmp_path, monkeypatch) -> None:
+    """Branch 2: no .python-version file, so the python3 PATH probe wins.
+
+    chdir to an empty tmp dir to neutralize branch 1 (any real
+    .python-version on the host), then stub the probe deterministically.
+    """
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(*args, **_kwargs):
+        return subprocess.CompletedProcess(args, 0, stdout="Python 3.10.9\n", stderr="")
+
+    monkeypatch.setattr(detection.subprocess, "run", fake_run)
+
+    version, source = detect_python_version()
+
+    assert version == "3.10"
+    assert source == "python3 in PATH"
+
+
+def test_falls_back_to_runtime_when_no_python3(tmp_path, monkeypatch) -> None:
+    """Branch 3: no file and no python3 on PATH -> server's own interpreter.
+
+    Neutralize branch 1 (empty cwd) and force branch 2 to fail by making the
+    probe raise FileNotFoundError, exactly as a missing python3 would.
+    """
+    monkeypatch.chdir(tmp_path)
+
+    def boom(*args, **_kwargs):
+        raise FileNotFoundError("python3 not found")
+
+    monkeypatch.setattr(detection.subprocess, "run", boom)
+
+    version, source = detect_python_version()
+
+    assert source == "server runtime"
+    assert version == f"{sys.version_info.major}.{sys.version_info.minor}"
