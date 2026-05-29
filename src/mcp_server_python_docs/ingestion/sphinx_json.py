@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import sqlite3
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -166,6 +167,25 @@ def make_sphinx_json_env(
     return env
 
 
+def sphinx_parallel_jobs(
+    version_info: tuple[int, ...] = (sys.version_info.major, sys.version_info.minor),
+) -> str:
+    """Return the Sphinx ``-j`` value for the build interpreter.
+
+    The Sphinx venv is created from the current interpreter (``venv.create``),
+    so ``sys.version_info`` reflects the Python that will run ``sphinx-build``.
+
+    Python 3.14 changed the default ``multiprocessing`` start method on
+    POSIX from ``fork`` to ``forkserver``. ``forkserver`` pickles the work
+    handed to child processes, but Sphinx's parallel build passes a
+    ``ParallelTasks`` object holding a local closure
+    (``Builder._read_parallel.<locals>.merge``) that cannot be pickled, so
+    ``-j auto`` raises ``_pickle.PicklingError`` on 3.14+. Fall back to a
+    serial build there; ``fork``-default interpreters keep the parallel path.
+    """
+    return "1" if version_info >= (3, 14) else "auto"
+
+
 def build_sphinx_json_command(
     sphinx_build: Path | str,
     doc_dir: Path | str,
@@ -179,7 +199,7 @@ def build_sphinx_json_command(
         "-D",
         "html_theme=classic",
         "-j",
-        "auto",
+        sphinx_parallel_jobs(),
         str(doc_dir),
         str(json_out),
     ]
