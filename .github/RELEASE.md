@@ -51,6 +51,7 @@ Replace `X.Y.Z` below with the version you are releasing (e.g. `0.1.7`). Complet
   ```
   Must report `✅ server.json is valid`. If validation fails, shorten `server.json` `description` on `main` before tagging (the `pyproject.toml` description is unbounded by this constraint and can stay longer).
 - [ ] Integration tests from `.github/INTEGRATION-TEST.md` are complete and signed off
+- [ ] Refresh README `## Tools`, `glama.json`, and registry/version badges to match the current tool surface.
 - [ ] `Doctor` subcommand passes:
   ```bash
   uv run python-docs-mcp-server doctor
