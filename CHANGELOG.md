@@ -4,6 +4,18 @@ All notable changes to `python-docs-mcp-server` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`build-index` on Python 3.14** — Sphinx's parallel JSON build (`-j auto`)
+  raised `_pickle.PicklingError` on Python 3.14, which flipped the default
+  `multiprocessing` start method on POSIX from `fork` to `forkserver`
+  (`forkserver` must pickle worker tasks, but Sphinx's `ParallelTasks` holds an
+  unpicklable local closure). The builder now falls back to a serial build
+  (`-j 1`) on 3.14+ while keeping the parallel path on `fork`-default
+  interpreters (3.13 and earlier). Server runtime behavior is unchanged.
+
 ## [0.2.0] — 2026-05-29
 
 ### Added
