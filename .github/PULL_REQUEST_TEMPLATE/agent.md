@@ -22,6 +22,15 @@ $ uv run python-docs-mcp-server doctor
 <!-- Plus any change-type-specific gates from pipeline §5 (stdio smoke,
      validate-corpus, uv lock --check) that applied to this change. -->
 
+## CodeRabbit review
+<!-- After CodeRabbit comments, summarize findings as:
+     - Blocking: <items or None>
+     - Follow-up: <items or None>
+     - False positive: <items or None>
+     If CodeRabbit has not run yet, write "Pending." Do not mark findings green
+     by silence. -->
+Pending.
+
 ## What this does NOT touch
 <!-- Restate the forbidden-territory items (pipeline §2) relevant to this issue
      and affirm they were not modified. -->
