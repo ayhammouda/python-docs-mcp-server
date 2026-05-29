@@ -11,6 +11,19 @@ The repo's public credibility matters. Prefer changes that make the project
 easier to trust, easier to verify, and easier to contribute to over changes
 that merely add more AI or MCP setup.
 
+## Autonomous Agent Execution
+
+A portion of this project is executed by autonomous coding agents working
+unattended against GitHub issues. If you are such an agent — or are scoping
+work for one — **`AGENT-EXECUTION-PIPELINE.md` is mandatory reading before you
+touch anything.** It defines the forbidden territory (don't-touch paths), the
+required issue structure, the canonical validation gate, the human-review
+triggers, and the recovery procedure. The *what and why* lives in
+`STRATEGIC-ROADMAP-2026-05-29.md`; the *how, with what guardrails* lives in the
+pipeline doc. Agents work on branches only, every PR needs human review, and
+auto-merge is forbidden. Per-issue working context lives under
+`.planning/agent-context/<issue-slug>.md`.
+
 ## Canonical Commands
 
 If `uv` is not installed yet:
