@@ -34,6 +34,7 @@ from mcp_server_python_docs.ingestion.sphinx_json import (
     parse_fjson,
     populate_synonyms,
     rebuild_fts_indexes,
+    sphinx_parallel_jobs,
     write_json_build_requirements,
     write_sphinx_json_sitecustomize,
 )
@@ -227,10 +228,21 @@ class TestSphinxJsonCommand:
             "-D",
             "html_theme=classic",
             "-j",
-            "auto",
+            sphinx_parallel_jobs(),
             str(doc_dir),
             str(json_out),
         ]
+
+    def test_sphinx_parallel_jobs_auto_before_314(self):
+        """Pre-3.14 interpreters keep the parallel 'auto' build (fork default)."""
+        assert sphinx_parallel_jobs((3, 10, 0)) == "auto"
+        assert sphinx_parallel_jobs((3, 13, 5)) == "auto"
+
+    def test_sphinx_parallel_jobs_serial_on_314_plus(self):
+        """3.14+ flipped multiprocessing to forkserver, which can't pickle
+        Sphinx's parallel ParallelTasks closures -> force a serial build."""
+        assert sphinx_parallel_jobs((3, 14, 0)) == "1"
+        assert sphinx_parallel_jobs((3, 15, 1)) == "1"
 
 
 # ── fjson parsing tests (INGR-C-04) ──
