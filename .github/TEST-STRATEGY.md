@@ -32,7 +32,7 @@ behavioral test and appear in the schema snapshot.
 | `list_versions`        | `test_services`, `test_multi_version`                                | unit + integration| GOOD   |
 | `compare_versions`     | `test_compare_versions` (15), `test_services`                        | unit             | GOOD   |
 | `lookup_package_docs`  | `test_package_docs` (8)                                              | unit only        | THIN   |
-| `detect_python_version`| — none —                                                             | —                | **GAP**|
+| `detect_python_version`| `test_detection` (12)                                               | unit             | GOOD   |
 
 Cross-cutting coverage:
 
@@ -76,17 +76,18 @@ packages, not `server.py` (intentionally thin) or `__main__.py`.
 
 ## 5. Known gaps
 
-1. **`detection.py` is untested (HIGH).** `detect_python_version` is 1 of 6
-   public tools and has three branches (`.python-version` file → `python3` in
-   PATH → `sys.version_info` fallback) plus `_parse_major_minor` regex parsing
-   and `match_to_indexed`. No `tests/test_detection.py` exists. Confirmed across
-   prior audits. **Closing this is the top priority below.**
+1. **`detection.py` — CLOSED (2026-05-29).** `tests/test_detection.py` now
+   covers all three branches of the fallback chain (`.python-version` file →
+   `python3` in PATH → `sys.version_info`), `_parse_major_minor` parsing, and
+   `match_to_indexed` — 12 tests. The isolation pattern (`monkeypatch.chdir` to
+   escape a real `.python-version`, `monkeypatch.setattr` on `subprocess.run`)
+   is the reference for testing order-dependent environment probing.
 2. **`lookup_package_docs` has no stdio smoke (LOW).** Covered at the service
    layer only; the PyPI-allowlist trust boundary is never exercised end-to-end.
 3. **No negative version-resolution E2E (LOW).** Unknown-version errors are
    unit-tested but not asserted over the stdio boundary.
 
-## 6. Example test cases for the top gap (`detection.py`)
+## 6. Reference cases — `detection.py` (now implemented in `test_detection.py`)
 
 | Case                                   | Expectation                              |
 |----------------------------------------|------------------------------------------|
