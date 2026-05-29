@@ -184,6 +184,87 @@ def _request_ids(stdin_data: bytes) -> list[int]:
     return request_ids
 
 
+def _run_server_until_responses(
+    stdin_data: bytes, env: dict[str, str], timeout: int = 15,
+) -> subprocess.CompletedProcess:
+    """Run the MCP server, stream stdin, and wait for every expected response.
+
+    Unlike a fire-and-forget ``subprocess.run(input=...)``, this keeps stdin
+    open until each request id in ``stdin_data`` has a matching response on
+    stdout (or the timeout/exit fires). That avoids a race where the server's
+    read loop shuts down on stdin EOF before the final ``tools/call`` handler
+    flushes its reply — the source of CI flakiness on cold runners.
+    """
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "mcp_server_python_docs", "serve"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+
+    stdout_lines: list[bytes] = []
+    stderr_lines: list[bytes] = []
+    output_lock = threading.Lock()
+
+    def read_stream(stream, sink: list[bytes]) -> None:
+        for line in iter(stream.readline, b""):
+            with output_lock:
+                sink.append(line)
+
+    stdout_thread = threading.Thread(
+        target=read_stream,
+        args=(proc.stdout, stdout_lines),
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=read_stream,
+        args=(proc.stderr, stderr_lines),
+        daemon=True,
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+
+    expected_ids = _request_ids(stdin_data)
+    deadline = time.monotonic() + timeout
+    try:
+        for line in stdin_data.splitlines(keepends=True):
+            proc.stdin.write(line)
+            proc.stdin.flush()
+
+        while time.monotonic() < deadline:
+            with output_lock:
+                responses = _read_responses(b"".join(stdout_lines))
+            if all(_find_response(responses, req_id) is not None for req_id in expected_ids):
+                break
+            if proc.poll() is not None:
+                break
+            time.sleep(0.02)
+    finally:
+        try:
+            proc.stdin.close()
+        except BrokenPipeError:
+            # The subprocess may have already closed stdin after handling the requests.
+            pass
+        proc.stdin = None
+
+    remaining = max(0.1, deadline - time.monotonic())
+    try:
+        proc.wait(timeout=remaining)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+
+    stdout_thread.join(timeout=1)
+    stderr_thread.join(timeout=1)
+    stdout = b"".join(stdout_lines)
+    stderr = b"".join(stderr_lines)
+    return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+
+
 class TestStdioSmoke:
     """Spawn the MCP server as a subprocess and verify protocol compliance."""
 
@@ -198,74 +279,7 @@ class TestStdioSmoke:
         self, stdin_data: bytes, timeout: int = 15,
     ) -> subprocess.CompletedProcess:
         """Run the server subprocess with line-paced stdin and return the result."""
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "mcp_server_python_docs", "serve"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=self.env,
-        )
-        assert proc.stdin is not None
-        assert proc.stdout is not None
-        assert proc.stderr is not None
-
-        stdout_lines: list[bytes] = []
-        stderr_lines: list[bytes] = []
-        output_lock = threading.Lock()
-
-        def read_stream(stream, sink: list[bytes]) -> None:
-            for line in iter(stream.readline, b""):
-                with output_lock:
-                    sink.append(line)
-
-        stdout_thread = threading.Thread(
-            target=read_stream,
-            args=(proc.stdout, stdout_lines),
-            daemon=True,
-        )
-        stderr_thread = threading.Thread(
-            target=read_stream,
-            args=(proc.stderr, stderr_lines),
-            daemon=True,
-        )
-        stdout_thread.start()
-        stderr_thread.start()
-
-        expected_ids = _request_ids(stdin_data)
-        deadline = time.monotonic() + timeout
-        try:
-            for line in stdin_data.splitlines(keepends=True):
-                proc.stdin.write(line)
-                proc.stdin.flush()
-
-            while time.monotonic() < deadline:
-                with output_lock:
-                    responses = _read_responses(b"".join(stdout_lines))
-                if all(_find_response(responses, req_id) is not None for req_id in expected_ids):
-                    break
-                if proc.poll() is not None:
-                    break
-                time.sleep(0.02)
-        finally:
-            try:
-                proc.stdin.close()
-            except BrokenPipeError:
-                # The subprocess may have already closed stdin after handling the requests.
-                pass
-            proc.stdin = None
-
-        remaining = max(0.1, deadline - time.monotonic())
-        try:
-            proc.wait(timeout=remaining)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=5)
-
-        stdout_thread.join(timeout=1)
-        stderr_thread.join(timeout=1)
-        stdout = b"".join(stdout_lines)
-        stderr = b"".join(stderr_lines)
-        return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+        return _run_server_until_responses(stdin_data, self.env, timeout)
 
     def test_server_lists_tools_no_stdout_pollution(self):
         """Server returns tool list and stdout has no non-JSON-RPC bytes."""
