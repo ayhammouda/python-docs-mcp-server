@@ -180,6 +180,7 @@ Not yet locked. Each should be resolved within the next 2 – 4 weeks.
 | Artifact | Role | Status |
 |---|---|---|
 | `AGENT-EXECUTION-PIPELINE.md` | Autonomous-agent policy, guardrails, validation gates, templates | Active; load-bearing for §9 |
+| `OPENCLAW-FORGE-PROTOCOL.md` | OpenClaw role split for this MCP: Vision supervises, Gilfoyle implements, Heimdall verifies, Saga excluded by default because there is no UI | Active; operating layer for §9 |
 | `competitive-brief.docx` | Original market positioning analysis (Context7, Ref.tools, arabold, DeepWiki, GitMCP, etc.) | Reference |
 | `CHANGE-REQUEST-v0.1.5-launch.md` | Implementation plan for v0.1.5 launch — executed | Historical (rename dropped, otherwise complete) |
 | `ARCHITECTURE-BRAINSTORM-FEEDBACK-2026-05-29.md` | TOON / cache-first / reference-architecture brainstorm with the original locked decisions | Superseded by §2 and §5 of this roadmap |
@@ -215,6 +216,13 @@ That file is **mandatory reading** before any agent-targetable issue is generate
 - **Human-review triggers** that force a pause even when the agent thinks it's done.
 - **Recovery procedures** when an agent gets stuck.
 - **Per-issue context files** in `.planning/agent-context/` that give the agent everything it needs in one read.
+
+OpenClaw's concrete role split for this repo lives in:
+
+[`OPENCLAW-FORGE-PROTOCOL.md`](OPENCLAW-FORGE-PROTOCOL.md)
+
+Default execution is Vision → Gilfoyle → Heimdall → Vision/Aymen. Saga is not
+part of the default loop because this MCP has no UI surface to review.
 
 ### 9.1 Deliverable annotations
 
