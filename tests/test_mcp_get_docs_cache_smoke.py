@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import sqlite3
 import subprocess
-import sys
 from pathlib import Path
 
 from mcp_server_python_docs.services.persistent_cache import _NO_ANCHOR_KEY
@@ -14,6 +13,7 @@ from tests.test_stdio_smoke import (
     _isolated_cache_env,
     _make_notification,
     _make_request,
+    _run_server_until_responses,
 )
 
 
@@ -80,13 +80,10 @@ def _create_contentful_json_index(cache_dir: Path) -> Path:
 
 
 def _run_server(stdin_data: bytes, env: dict[str, str]) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [sys.executable, "-m", "mcp_server_python_docs", "serve"],
-        input=stdin_data,
-        capture_output=True,
-        timeout=15,
-        env=env,
-    )
+    # Use the polling runner (waits for the tools/call reply before closing
+    # stdin) instead of subprocess.run(input=...), which races the server's
+    # EOF-driven shutdown and flakes on cold CI runners.
+    return _run_server_until_responses(stdin_data, env)
 
 
 def _initialized_tool_call(name: str, arguments: dict, req_id: int = 2) -> bytes:
