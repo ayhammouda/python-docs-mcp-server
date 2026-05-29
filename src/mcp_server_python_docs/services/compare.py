@@ -39,13 +39,13 @@ if TYPE_CHECKING:
 # --- Locked extractor regexes (verbatim from 09-01-data-shape-spike-SUMMARY) ---
 # All four HOLD against the spike fixture (A1/A2/sibling probes). Scalar
 # extractors return None on no-match; _extract_see_also returns [].
-_NEW_IN_RE = r"New in version\s+(\d+\.\d+)"
-_CHANGED_IN_RE = r"Changed in version\s+(\d+\.\d+)"
-_DEPRECATED_IN_RE = r"Deprecated since version\s+(\d+\.\d+)"
+_NEW_IN_RE = re.compile(r"New in version\s+(\d+\.\d+)")
+_CHANGED_IN_RE = re.compile(r"Changed in version\s+(\d+\.\d+)")
+_DEPRECATED_IN_RE = re.compile(r"Deprecated since version\s+(\d+\.\d+)")
 # Markdown link label extractor; MUST be applied only within a "See also" window
 # (locate case-insensitive "see also", read forward to next ATX heading / window
 # end), not against the whole section, or it captures unrelated body links.
-_SEE_ALSO_LINK_RE = r"\[([^\]]+)\]\("
+_SEE_ALSO_LINK_RE = re.compile(r"\[([^\]]+)\]\(")
 
 # M2 note text emitted when a docs page is unfetchable in the both-present branch.
 _PAGE_UNAVAILABLE_NOTE = "docs page not available for one or both versions"
@@ -56,21 +56,13 @@ _SECTION_DIFF_MAX_CHARS = 600
 _SIGNATURE_LINE_MAX = 80
 
 
-def _extract_new_in(text: str) -> str | None:
-    """Extract the 'New in version X.Y' version, or None (locked _NEW_IN_RE)."""
-    match = re.search(_NEW_IN_RE, text)
-    return match.group(1) if match else None
+def _extract_version(pattern: re.Pattern[str], text: str) -> str | None:
+    """Return the captured version from the first match of ``pattern``, or None.
 
-
-def _extract_changed_in(text: str) -> str | None:
-    """Extract the 'Changed in version X.Y' version, or None (_CHANGED_IN_RE)."""
-    match = re.search(_CHANGED_IN_RE, text)
-    return match.group(1) if match else None
-
-
-def _extract_deprecated_in(text: str) -> str | None:
-    """Extract the 'Deprecated since version X.Y' version, or None."""
-    match = re.search(_DEPRECATED_IN_RE, text)
+    Shared by the New-in / Changed-in / Deprecated-since extractors, which differ
+    only by their (spike-locked) pattern literal (``_NEW_IN_RE`` etc.).
+    """
+    match = pattern.search(text)
     return match.group(1) if match else None
 
 
@@ -105,7 +97,7 @@ def _extract_see_also(text: str) -> list[str]:
         elif started:
             break  # blank line ends the admonition block
 
-    return re.findall(_SEE_ALSO_LINK_RE, "\n".join(window))
+    return _SEE_ALSO_LINK_RE.findall("\n".join(window))
 
 
 def _first_nonempty_line(text: str) -> str:
@@ -205,7 +197,7 @@ class CompareService:
             new_in: str | None = None
             try:
                 text_v2 = self._section_text(sym_v2.uri, sym_v2.anchor, v2)
-                new_in = _extract_new_in(text_v2)
+                new_in = _extract_version(_NEW_IN_RE, text_v2)
             except PageNotFoundError:
                 new_in = None
             return CompareVersionsResult(
@@ -236,8 +228,8 @@ class CompareService:
                 note=_PAGE_UNAVAILABLE_NOTE,
             )
 
-        changed_in = _extract_changed_in(text_v2)
-        deprecated_in = _extract_deprecated_in(text_v2)
+        changed_in = _extract_version(_CHANGED_IN_RE, text_v2)
+        deprecated_in = _extract_version(_DEPRECATED_IN_RE, text_v2)
 
         # signature_delta (M1, advisory): first non-empty line comparison.
         first_v1 = _first_nonempty_line(text_v1)
