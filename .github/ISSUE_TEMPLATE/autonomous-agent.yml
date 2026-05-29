@@ -1,7 +1,6 @@
 name: Autonomous Agent Task
 description: A task spec scoped for unattended execution by an autonomous coding agent (Claude Code or similar).
 title: "[vX.Y.Z] <scope> — <verb> <thing>"
-labels: ["agent-ready"]
 body:
   - type: markdown
     attributes:
@@ -9,7 +8,9 @@ body:
         This template enforces the issue structure required by
         [`AGENT-EXECUTION-PIPELINE.md` §3](../../AGENT-EXECUTION-PIPELINE.md).
         An issue missing any required section is **not** agent-ready and will
-        not pass the §10 pre-flight checklist. Read the pipeline doc and
+        not pass the §10 pre-flight checklist. Do not apply the `agent-ready`
+        label from this template; a maintainer applies it only after reading
+        the completed issue end-to-end. Read the pipeline doc and
         [`STRATEGIC-ROADMAP-2026-05-29.md`](../../STRATEGIC-ROADMAP-2026-05-29.md)
         before filling this out.
   - type: input
