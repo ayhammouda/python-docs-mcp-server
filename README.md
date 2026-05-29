@@ -43,7 +43,7 @@ tools for lookup and section retrieval.
 - page and section retrieval with truncation and pagination
 - a local SQLite + FTS5 index; no runtime web scraping
 - results for each Python version you index
-- five read-only MCP tools
+- six read-only MCP tools
 
 ## Quick example
 
@@ -177,7 +177,7 @@ Contributor commands and validation steps live in
 
 ## Tools
 
-The server currently exposes five MCP tools:
+The server currently exposes six MCP tools:
 
 | Tool | Description |
 |------|-------------|
@@ -186,6 +186,7 @@ The server currently exposes five MCP tools:
 | `lookup_package_docs` | Look up official PyPI package metadata and return package-declared documentation/homepage/source URLs. This is a controlled PyPI metadata lookup, not generic web search. |
 | `list_versions` | List all indexed Python versions with metadata. |
 | `detect_python_version` | Detect the user's local Python version and report whether that version has been indexed. |
+| `compare_versions` | Diff a Python stdlib symbol between two indexed versions. Returns `change=added|removed|changed|unchanged` with optional `new_in`, `changed_in`, `deprecated_in`, `signature_delta` (advisory heuristic), `see_also_added/removed`, `section_diff`, and `note` deltas. Token-frugal — emits only changed fields, not full content. |
 
 ## Why not Context7 or generic docs retrieval?
 
