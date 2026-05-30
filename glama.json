@@ -1,6 +1,6 @@
 {
   "$schema": "https://glama.ai/mcp/schemas/server.json",
-  "description": "For AI coding agents writing Python: the canonical Python stdlib oracle. Exact symbols, exact sections, exact versions — offline, always free, always MIT, token-frugal.",
+  "description": "For AI coding agents writing Python: six read-only tools for canonical Python stdlib lookup, retrieval, package documentation discovery, version listing, local version detection, and version comparison.",
   "maintainers": [
     "ayhammouda"
   ]
