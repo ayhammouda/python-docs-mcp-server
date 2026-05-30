@@ -26,9 +26,11 @@
 /CHANGELOG.md                                     @ayhammouda
 
 # --- CI/CD and supply chain (release path especially) ---
+# The single /.github/ rule covers workflows and release.yml. Last-matching-
+# pattern wins in CODEOWNERS — adding narrower entries with the same owner
+# below would be no-ops and would silently *override* this rule if a different
+# owner is ever added here, so we keep ownership of /.github/ uniform.
 /.github/                                         @ayhammouda
-/.github/workflows/                               @ayhammouda
-/.github/workflows/release.yml                    @ayhammouda
 
 # --- Index schema and migrations (rebuilds existing user indexes) ---
 # NOTE: the retrieved-docs *cache* table lives in

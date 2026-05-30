@@ -136,8 +136,8 @@ uv run python-docs-mcp-server doctor
   - Each acceptance criterion as a checked or unchecked box, with a one-line explanation if unchecked
   - Output (or link to artifact) for the §5 validation gate
   - CodeRabbit triage summary when CodeRabbit comments on the PR: blocking, follow-up, false positive, or pending/unavailable
-  - "What this does NOT touch" section reaffirming the forbidden-territory items relevant to this issue
   - A short "Why this approach" paragraph if the design wasn't fully prescribed in the issue
+  - The §7 "Why this triggered human review" disclosure (which doubles as a forbidden-territory near-miss log when applicable; CODEOWNERS is the mechanical enforcement)
 - **PR is opened against** the milestone integration branch (e.g., `release/v0.3.0`) when one exists, otherwise `main`. Never auto-merge.
 
 ---
@@ -224,23 +224,14 @@ Run this checklist before pushing the first agent-ready issue to the queue.
 
 ---
 
-## 11. Template Sketches
+## 11. Templates (authoritative implementations)
 
-The files below are the authoritative templates referenced in §9. Keep this
-section as pointers so the policy doc does not drift from the checked-in
-template implementations.
+The §9 templates live as checked-in files; this section just points at them so
+this doc never drifts from the implementations:
 
-### `.github/ISSUE_TEMPLATE/autonomous-agent.yml` (sketch)
-
-See `.github/ISSUE_TEMPLATE/autonomous-agent.yml` for the authoritative implementation.
-
-### `.github/PULL_REQUEST_TEMPLATE/agent.md` (sketch)
-
-See `.github/PULL_REQUEST_TEMPLATE/agent.md` for the authoritative implementation.
-
-### `.github/CODEOWNERS` (sketch)
-
-See `.github/CODEOWNERS` for the authoritative implementation.
+- `.github/ISSUE_TEMPLATE/autonomous-agent.yml`
+- `.github/PULL_REQUEST_TEMPLATE/agent.md`
+- `.github/CODEOWNERS`
 
 ---
 

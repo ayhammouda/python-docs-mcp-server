@@ -31,11 +31,6 @@ $ uv run python-docs-mcp-server doctor
      by silence. -->
 Pending.
 
-## What this does NOT touch
-<!-- Restate the forbidden-territory items (pipeline §2) relevant to this issue
-     and affirm they were not modified. -->
--
-
 ## Why this approach
 <!-- One paragraph max. If the issue fully prescribed the approach, say so.
      If you cite a design choice NOT in the issue, that is a §7 trigger. -->
