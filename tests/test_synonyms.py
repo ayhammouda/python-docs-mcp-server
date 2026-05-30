@@ -103,7 +103,9 @@ def test_yaml_loaded_only_via_safe_load():
     for scan_root in scan_roots:
         for source_path in sorted(scan_root.rglob("*.py")):
             relative_path = source_path.relative_to(repo_root).as_posix()
-            for line_number, line in enumerate(source_path.read_text().splitlines(), 1):
+            for line_number, line in enumerate(
+                source_path.read_text(encoding="utf-8").splitlines(), 1
+            ):
                 if unsafe_load_call.search(line) or unsafe_loader_name.search(line):
                     violations.append(f"{relative_path}:{line_number}: unsafe YAML load")
                 if source_path.is_relative_to(src_root) and safe_load_call.search(line):
