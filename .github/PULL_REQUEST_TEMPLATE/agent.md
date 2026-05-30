@@ -1,6 +1,6 @@
 <!--
 Autonomous-agent PR template. Enforces AGENT-EXECUTION-PIPELINE.md §6.
-PR title MUST match the issue title verbatim. Never request auto-merge.
+PR title MUST match the issue title verbatim. Never self-merge.
 -->
 
 Closes #<issue-number>
@@ -35,8 +35,8 @@ Pending.
 <!-- One paragraph max. If the issue fully prescribed the approach, say so.
      If you cite a design choice NOT in the issue, that is a §7 trigger. -->
 
-## Why this triggered human review
+## Why this triggered supervisor review
 <!-- List any pipeline §7 triggers and explain each. If none, write "None."
-     If any fired: this PR is opened for review only — do NOT request merge,
-     and ensure the `🛑 needs-human-review` label is applied. -->
+     If any fired: this PR is opened for supervisor review only; do not merge it yourself,
+     and ensure the `supervisor-review` label is applied. -->
 None.

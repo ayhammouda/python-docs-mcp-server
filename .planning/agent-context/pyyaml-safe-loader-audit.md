@@ -36,7 +36,7 @@
 
 - **Do not edit `SECURITY.md`** (forbidden). Capture the trust-boundary write-up
   in a new `docs/architecture/YAML-TRUST-BOUNDARY.md` and recommend SECURITY.md
-  wording for a human.
+  wording for Vision.
 - The two `safe_load` sites both also exist as `.pyc` in `__pycache__`; grep
   source dirs only (`src/`, `tests/`), not `__pycache__`.
 - If the codebase is already clean (expected), the deliverable is the **lock-in**
@@ -49,4 +49,4 @@
 - Audit result (clean / findings):
 - Regression test name + what it scans:
 - Trust-boundary doc location:
-- Recommended SECURITY.md wording (for human):
+- Recommended SECURITY.md wording (for Vision):

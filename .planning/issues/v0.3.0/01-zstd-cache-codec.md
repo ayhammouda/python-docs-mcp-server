@@ -7,7 +7,7 @@
 ## ⛔ Blocking pre-requisite (maintainer, before queueing)
 
 This task needs the `zstandard` runtime dependency, and `pyproject.toml [project]`
-is **forbidden territory** (pipeline §2) plus a §7 human-review trigger. The
+is **forbidden territory** (pipeline §2) plus a §7 supervisor-review trigger. The
 maintainer must add it and refresh the lockfile **before** this issue is queued:
 
 ```toml
@@ -51,7 +51,7 @@ codec that reads pre-existing uncompressed rows transparently.
 - Tests under `tests/cache/`.
 
 **Out of scope (do NOT do these — stop and comment if they seem required):**
-- Training and **packaging a production `zstd-dict-v1` dictionary** from a real `get_docs` corpus — corpus selection is a human judgment call per roadmap §4. The `zstd-dict-v1` codec must *function* with an explicit dictionary object supplied by tests, but no production dictionary artifact ships in this issue.
+- Training and **packaging a production `zstd-dict-v1` dictionary** from a real `get_docs` corpus — corpus selection is a Vision judgment call per roadmap §4. The `zstd-dict-v1` codec must *function* with an explicit dictionary object supplied by tests, but no production dictionary artifact ships in this issue.
 - Any change to the **canonical index** schema (`src/mcp_server_python_docs/storage/schema.sql`).
 - Any tool name, parameter, or return shape.
 - Compressing `get_docs` markdown on the wire — this is cache-at-rest only.
@@ -75,8 +75,8 @@ uv run pytest tests/test_stdio_smoke.py -q
 ## PR template & recovery
 
 - PR body uses `.github/PULL_REQUEST_TEMPLATE/agent.md`; title matches this issue verbatim.
-- Adding a third-party runtime dep is a §7 trigger — but if the maintainer pre-added `zstandard`, the PR itself introduces no new dep; state that under "Why this triggered human review: None."
-- Blocked? Stop, write `WORKING-NOTES.md`, comment per pipeline §8. No PR, no auto-merge.
+- Adding a third-party runtime dep is a §7 trigger — but if the maintainer pre-added `zstandard`, the PR itself introduces no new dep; state that under "Why this triggered supervisor review: None."
+- Blocked? Stop, write `WORKING-NOTES.md`, comment per pipeline §8. No PR, no silent scope expansion.
 
 ## Effort estimate
 

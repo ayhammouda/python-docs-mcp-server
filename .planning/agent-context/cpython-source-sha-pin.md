@@ -1,7 +1,7 @@
 # Agent Context — CPython source SHA pin
 
 > One-read working context for issue `[v0.3.0] ingestion — pin CPython source by commit SHA`.
-> PARTIAL issue: you do the pin + verification; the human writes the SECURITY.md prose.
+> PARTIAL issue: you do the pin + verification; Vision handles the SECURITY.md prose.
 
 ## 1. Roadmap excerpt
 
@@ -48,7 +48,7 @@
 - Use the **dereferenced commit SHA** (peeled tag), not the annotated tag object's
   own SHA — `rev-parse HEAD` after checkout gives the commit; match that.
 - **Do not edit `SECURITY.md`** (forbidden). Draft the threat-model paragraph in
-  the PR body + decision log below for a human to paste.
+  the PR body + decision log below for Vision to apply.
 - A full `build-index` clones over the network and takes minutes — do not gate the
   PR on it. The unit tests cover the config + verification logic offline.
 - Don't bump any tag to a newer CPython point release; pin the SHA of the
@@ -63,5 +63,5 @@
   - 3.13 / v3.13.13 →
   - 3.14 / v3.14.4 →
 - Where/how the verification aborts on mismatch:
-- **Draft SECURITY.md threat-model paragraph (for human to paste):**
+- **Draft SECURITY.md threat-model paragraph (for Vision to apply):**
   >

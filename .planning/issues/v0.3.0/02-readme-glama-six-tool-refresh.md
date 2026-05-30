@@ -38,7 +38,7 @@ Make every public-facing surface consistently describe the six-tool surface
 
 - `README.md` hero section — do not touch.
 - `pyproject.toml [project]` — do not touch.
-- This PR will touch `README.md`, `.github/RELEASE.md`, and `glama.json`, all of which are CODEOWNERS-owned. Expect required maintainer review; that is correct, not a defect.
+- This PR will touch `README.md`, `.github/RELEASE.md`, and `glama.json`, all of which are CODEOWNERS-owned. Expect supervisor review when triggered; Vision may merge after verification and green checks.
 
 ## Validation commands (pipeline §5)
 
@@ -51,7 +51,7 @@ uv run pytest tests/test_packaging.py -q
 
 ## PR template & recovery
 
-- Use `.github/PULL_REQUEST_TEMPLATE/agent.md`. Under "Why this triggered human review", note: "Touches CODEOWNERS-owned brand/release docs (`README.md`, `.github/RELEASE.md`); opened for review, not auto-merge."
+- Use `.github/PULL_REQUEST_TEMPLATE/agent.md`. Under "Why this triggered supervisor review", note: "Touches CODEOWNERS-owned brand/release docs (`README.md`, `.github/RELEASE.md`); opened for supervisor review."
 - Blocked? Stop, `WORKING-NOTES.md`, comment per §8.
 
 ## Effort estimate
