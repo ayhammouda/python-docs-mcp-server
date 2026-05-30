@@ -10,10 +10,13 @@ from typing import NamedTuple
 
 from pydantic import ValidationError
 
+from mcp_server_python_docs.cache.codec import decode as decode_cache_payload
+from mcp_server_python_docs.cache.codec import encode as encode_cache_payload
 from mcp_server_python_docs.models import GetDocsResult
 
 logger = logging.getLogger(__name__)
 _NO_ANCHOR_KEY = "\x00mcp-python-docs:no-anchor\x00"
+DEFAULT_RETRIEVED_DOCS_CACHE_CODEC = "zstd"
 
 
 class CacheStats(NamedTuple):
@@ -25,8 +28,15 @@ class CacheStats(NamedTuple):
 class PersistentDocsCache:
     """Persist get_docs results by index fingerprint, version, and request identity."""
 
-    def __init__(self, cache_path: Path, index_path: Path) -> None:
+    def __init__(
+        self,
+        cache_path: Path,
+        index_path: Path,
+        *,
+        default_codec: str = DEFAULT_RETRIEVED_DOCS_CACHE_CODEC,
+    ) -> None:
         self._cache_path = Path(cache_path)
+        self._default_codec = default_codec
         # Set after fingerprint stat succeeds; stays "" if init fails so the
         # cache disables cleanly without leaking partial state.
         self._fingerprint = ""
@@ -47,9 +57,11 @@ class PersistentDocsCache:
                 "CREATE TABLE IF NOT EXISTS retrieved_docs_cache ("
                 "index_fingerprint TEXT NOT NULL, version TEXT NOT NULL, slug TEXT NOT NULL, "
                 "anchor TEXT NOT NULL, max_chars INTEGER NOT NULL, start_index INTEGER NOT NULL, "
-                "result_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+                "result_json TEXT NOT NULL, compression TEXT NOT NULL DEFAULT 'none', "
+                "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, "
                 "PRIMARY KEY (index_fingerprint, version, slug, anchor, max_chars, start_index))"
             )
+            self._ensure_compression_column()
             self._conn.execute(
                 "DELETE FROM retrieved_docs_cache WHERE index_fingerprint != ?",
                 (self._fingerprint,),
@@ -74,6 +86,18 @@ class PersistentDocsCache:
     def _anchor_key(anchor: str | None) -> str:
         return _NO_ANCHOR_KEY if anchor is None else anchor
 
+    def _ensure_compression_column(self) -> None:
+        if self._conn is None:
+            return
+        columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(retrieved_docs_cache)")
+        }
+        if "compression" not in columns:
+            self._conn.execute(
+                "ALTER TABLE retrieved_docs_cache "
+                "ADD COLUMN compression TEXT NOT NULL DEFAULT 'none'"
+            )
+
     def stats(self) -> CacheStats:
         return CacheStats(self._hits, self._misses, self._writes)
 
@@ -87,7 +111,8 @@ class PersistentDocsCache:
         with self._lock:
             try:
                 row = self._conn.execute(
-                    "SELECT result_json FROM retrieved_docs_cache WHERE index_fingerprint = ? "
+                    "SELECT result_json, compression FROM retrieved_docs_cache "
+                    "WHERE index_fingerprint = ? "
                     "AND version = ? AND slug = ? AND anchor = ? AND max_chars = ? "
                     "AND start_index = ?",
                     (
@@ -107,8 +132,10 @@ class PersistentDocsCache:
                 self._misses += 1
                 return None
             try:
-                result = GetDocsResult.model_validate_json(row[0])
-            except (ValidationError, ValueError) as e:
+                payload = row[0].encode("utf-8") if isinstance(row[0], str) else bytes(row[0])
+                result_json = decode_cache_payload(payload, row[1])
+                result = GetDocsResult.model_validate_json(result_json)
+            except (ValidationError, ValueError, TypeError) as e:
                 self._misses += 1
                 logger.warning("Persistent docs cache entry ignored: %s", e)
                 return None
@@ -123,7 +150,7 @@ class PersistentDocsCache:
                 self._conn.execute(
                     "INSERT OR REPLACE INTO retrieved_docs_cache "
                     "(index_fingerprint, version, slug, anchor, max_chars, start_index, "
-                    "result_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "result_json, compression) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         self._fingerprint,
                         result.version,
@@ -131,7 +158,8 @@ class PersistentDocsCache:
                         self._anchor_key(result.anchor),
                         max_chars,
                         start_index,
-                        result.model_dump_json(),
+                        encode_cache_payload(result.model_dump_json(), self._default_codec),
+                        self._default_codec,
                     ),
                 )
                 self._conn.commit()
