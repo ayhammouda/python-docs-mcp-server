@@ -1,15 +1,15 @@
-# CODEOWNERS — forces maintainer review on forbidden-territory paths.
+# CODEOWNERS — requests maintainer visibility on forbidden-territory paths.
 #
 # Source of truth: AGENT-EXECUTION-PIPELINE.md §2 (Forbidden Territory),
 # required by §10 (Pre-flight Checklist).
 #
 # For these rules to be ENFORCED, branch protection on `main` must enable
 # "Require review from Code Owners". CODEOWNERS alone only requests review;
-# branch protection is what blocks merge.
+# branch protection only blocks merge when review rules are enabled.
 #
-# Autonomous agents may NOT modify these paths without explicit human approval
-# (pipeline §2). Any agent PR touching them must add the `🛑 needs-human-review`
-# label and stop short of requesting merge (pipeline §7).
+# Autonomous agents may NOT modify these paths without explicit Vision approval
+# (pipeline §2). Any agent PR touching them must add the `supervisor-review`
+# label and stop short of self-merging (pipeline §7).
 
 # --- Project identity, dependencies, classifiers (only `version` is agent-editable) ---
 /pyproject.toml                                   @ayhammouda

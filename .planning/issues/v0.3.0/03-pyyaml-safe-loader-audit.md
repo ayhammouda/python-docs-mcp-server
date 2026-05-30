@@ -32,7 +32,7 @@ via `yaml.safe_load`, with the trust boundary documented and regression-guarded.
 
 ## Forbidden-territory reminders (pipeline §2)
 
-- `SECURITY.md` — trust-posture prose requires deliberate human review. Capture findings in a new `docs/architecture/` note instead and recommend the `SECURITY.md` wording for a human to apply.
+- `SECURITY.md` — trust-posture prose requires deliberate Vision review. Capture findings in a new `docs/architecture/` note instead and recommend the `SECURITY.md` wording for Vision to apply.
 - Existing tests — extend, never weaken.
 
 ## Validation commands (pipeline §5)

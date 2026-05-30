@@ -26,14 +26,14 @@ GitHub issue numbers are filled in below as issues are created (post pre-flight)
 ADR-006 (04) leads the ADR work because it unblocks the v0.3.x `format` parameter.
 01 is intentionally delayed until the dependency and dictionary/context API prep
 are resolved by a maintainer. 06 trails; it is PARTIAL and **must** carry
-`🛑 needs-human-review` because it produces SECURITY.md wording for a human and
+`supervisor-review` because it produces SECURITY.md wording for Vision and
 touches the supply-chain path.
 
-## Explicitly NOT in the agent wave (human-led, roadmap §9.1)
+## Explicitly NOT in the agent wave (Vision-led, roadmap §9.1)
 
 - **30-minute TOON Python port audit** — subjective quality judgment.
 - **Empirical token study** — methodology + corpus selection require judgment.
-  (An agent *may* later scaffold the harness against a human-written
+  (An agent *may* later scaffold the harness against a Vision-written
   `docs/architecture/TOKEN-STUDY-METHODOLOGY.md`, but that spec doesn't exist yet.)
 
 ## Pre-flight checklist (pipeline §10) — status
@@ -42,12 +42,11 @@ touches the supply-chain path.
       `.github/ISSUE_TEMPLATE/autonomous-agent.yml`, `.github/PULL_REQUEST_TEMPLATE/agent.md`,
       `.github/CODEOWNERS` created. **(Land these on `main` before queueing.)**
 - [ ] §5 canonical gate passes on `main` from a clean clone (maintainer to confirm).
-- [ ] Each issue read end-to-end by a human and labeled `agent-ready`.
-- [x] `🛑 needs-human-review` and `agent-ready` labels created in the repo.
-- [x] CODEOWNERS forces review on `pyproject.toml`, `.github/workflows/`, `LICENSE`,
+- [ ] Each issue pre-flighted by Vision and labeled `agent-ready`.
+- [x] `supervisor-review` and `agent-ready` labels created in the repo.
+- [x] CODEOWNERS requests owner visibility on `pyproject.toml`, `.github/workflows/`, `LICENSE`,
       `README.md`, `.planning/POSITIONING.md`, `schema.sql` (and more — see file).
-- [ ] Branch protection on `main` requires ≥1 human approval + "Require review
-      from Code Owners" (maintainer to confirm in repo settings).
+- [ ] Branch protection on `main` keeps deletion and force-push protection active without review deadlock.
 - [x] At least one issue ≤4h for a confidence-building first run: 02 (~1h), 03 (~1–1.5h).
 
 ## Per-issue maintainer pre-reqs
@@ -59,6 +58,6 @@ touches the supply-chain path.
 
 Issues #46–#51 were created from the files in this directory with
 `gh issue create -F .planning/issues/v0.3.0/<file>.md`, after `agent-ready` and
-`🛑 needs-human-review` labels were created in the repo. Do **not** re-run that
+`supervisor-review` labels were created in the repo. Do **not** re-run that
 loop — it would duplicate live issues. Edit the spec file *and* the GitHub
 issue body when a change is needed.

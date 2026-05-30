@@ -1,6 +1,6 @@
 # [v0.3.0] ingestion — pin CPython source by commit SHA
 
-> **Confidence:** PARTIAL (agent does the pin; human writes the SECURITY.md threat model) · **Wave:** trailing · **Slug:** `cpython-source-sha-pin`
+> **Confidence:** PARTIAL (agent does the pin; Vision handles the SECURITY.md threat model) · **Wave:** trailing · **Slug:** `cpython-source-sha-pin`
 > Create with: `gh issue create -F .planning/issues/v0.3.0/06-cpython-source-sha-pin.md -l area:build,compliance,priority:P1`
 > Branch: `agent/<issue-number>-cpython-source-sha-pin`
 
@@ -21,7 +21,7 @@ Make a pinned commit SHA — not a mutable tag — the integrity anchor for ever
 - [ ] After the clone in `__main__.py`, the code verifies `git -C <clone_dir> rev-parse HEAD` equals `config["sha"]` and **aborts that version's build with a clear error** on mismatch (no silent fallback). The shallow `--branch <tag>` fetch may stay; the SHA check is what enforces integrity.
 - [ ] `tests/test_ingestion.py` asserts every config entry has a `sha` matching `^[0-9a-f]{40}$`, alongside the existing tag assertion at line 53.
 - [ ] `uv run pytest tests/test_ingestion.py -q` passes.
-- [ ] A draft SECURITY.md threat-model paragraph (the `build-index` CPython clone as the largest non-runtime attack surface, now SHA-pinned) is written **into the PR description and the context file's decision log** for a human to paste — `SECURITY.md` itself is **not** edited.
+- [ ] A draft SECURITY.md threat-model paragraph (the `build-index` CPython clone as the largest non-runtime attack surface, now SHA-pinned) is written **into the PR description and the context file's decision log** for Vision to apply — `SECURITY.md` itself is **not** edited.
 
 ## Scope boundaries
 
@@ -34,7 +34,7 @@ Make a pinned commit SHA — not a mutable tag — the integrity anchor for ever
 
 ## Forbidden-territory reminders (pipeline §2)
 
-- `SECURITY.md` — do not edit; provide draft text for human review (this is the "human" half of this PARTIAL issue).
+- `SECURITY.md` — do not edit; provide draft text for Vision review (this is the "Vision" half of this PARTIAL issue).
 - `.github/workflows/` — do not touch the release/CI path.
 - `pyproject.toml [project]` — untouched.
 
@@ -53,7 +53,7 @@ uv run python-docs-mcp-server validate-corpus
 
 ## PR template & recovery (pipeline §6, §7)
 
-- This is a **human-review-required** PR: it touches the supply-chain integrity path and produces SECURITY.md wording for a human. Open the PR, add `🛑 needs-human-review`, do **not** request merge. Fill the "Why this triggered human review" section.
+- This is a **supervisor-review-required** PR: it touches the supply-chain integrity path and produces SECURITY.md wording for Vision. Open the PR, add `supervisor-review`, do not self-merge. Fill the "Why this triggered supervisor review" section.
 - Blocked (e.g. can't resolve a SHA offline)? Stop and comment per §8.
 
 ## Effort estimate

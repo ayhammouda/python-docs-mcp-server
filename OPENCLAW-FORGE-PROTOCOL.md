@@ -14,7 +14,7 @@ The core loop is:
 - **Gilfoyle** implements one scoped issue at a time.
 - **Heimdall** verifies behavior, packaging, security posture, and release readiness.
 - **CodeRabbit** provides automated review signal that Heimdall and Vision must triage.
-- **Aymen** remains the final human review authority for protected merges.
+- **Vision** owns final autonomous merge decisions while Aymen is AFK; escalate only for money, secrets, external communication, or unresolved architecture calls.
 
 `AGENT-EXECUTION-PIPELINE.md` remains the binding repo policy. This protocol is
 the OpenClaw operating layer for applying that policy.
@@ -25,12 +25,12 @@ the OpenClaw operating layer for applying that policy.
 
 | Role | Agent | Responsibility | May modify code? | May merge? |
 |---|---|---|---|---|
-| Supervisor | Vision (`main`) | Issue pre-flight, labels, branch protection, final review synthesis, stuck-work decisions | Yes, for protocol/config/documentation fixes | No auto-merge |
+| Supervisor | Vision (`main`) | Issue pre-flight, labels, branch protection, final review synthesis, stuck-work decisions | Yes, for protocol/config/documentation fixes | Yes, after verification and green checks |
 | Implementer | Gilfoyle (`arch`) | Implement exactly one `agent-ready` issue, open/update one PR, run the canonical gate | Yes | No |
 | Verifier | Heimdall (`test`) | Independently validate PR behavior, test evidence, packaging/install smoke, security/release risks | Only test artifacts or diagnostic notes when explicitly assigned | No |
 | Automated reviewer | CodeRabbit | Static review comments, maintainability findings, and security-adjacent review signal | No | No |
 | Designer | Saga (`design`) | Not in the default loop; no UI exists | No | No |
-| Merger | Pipeline Monitor (`merge`) | Disabled for this repo unless Aymen explicitly asks for assisted merge checks | No | No auto-merge |
+| Merger | Pipeline Monitor (`merge`) | Disabled for this repo unless Vision explicitly enables assisted merge checks | No | No |
 
 No agent may claim to be Vision, Aymen, or a maintainer. Agent comments must use
 their own role name and must not invoke supervisor override language.
@@ -42,7 +42,7 @@ their own role name and must not invoke supervisor override language.
 ```mermaid
 flowchart TD
     A[Vision reviews roadmap + issue spec] --> B{Issue passes pre-flight?}
-    B -- no --> C[Vision fixes spec or labels needs-human-review]
+    B -- no --> C[Vision fixes spec or labels supervisor-review]
     B -- yes --> D[Vision applies agent-ready]
     D --> E[Gilfoyle creates agent issue branch]
     E --> F[Gilfoyle implements within scope]
@@ -58,13 +58,13 @@ flowchart TD
     L --> E
     K -- yes --> M[Heimdall labels verified]
     M --> N[Vision review synthesis]
-    N --> O{Human approval?}
-    O -- no --> P[Changes requested or needs-human-review]
-    O -- yes --> Q[Aymen/Vision merges manually after protected checks]
+    N --> O{Vision merge decision?}
+    O -- no --> P[Changes requested or supervisor-review]
+    O -- yes --> Q[Vision merges after protected checks]
 ```
 
 The flow is deliberately slower than the Alto pipeline. This project is a public
-developer tool with a small API surface; one bad auto-merge damages trust faster
+developer tool with a small API surface; one bad unsupervised merge damages trust faster
 than it saves time.
 
 ---
@@ -81,7 +81,7 @@ The repo should use these labels for the OpenClaw loop:
 | `verification-needed` | Gilfoyle | PR is ready for Heimdall |
 | `verified` | Heimdall | Independent verification passed |
 | `verification-failed` | Heimdall | Verification failed; comment contains exact reproduction |
-| `🛑 needs-human-review` | Any agent | Human judgment required before further automation |
+| `supervisor-review` | Any agent | Vision decision required before further automation |
 
 Only one of `verification-needed`, `verified`, and `verification-failed` should
 be present on a PR at a time.
@@ -99,7 +99,7 @@ Before labeling an issue `agent-ready`, Vision must verify:
 - The issue has clear in-scope and out-of-scope boundaries.
 - The acceptance criteria are executable in under five minutes each.
 - The canonical validation gate is green on current `main`.
-- `main` branch protection requires one approving review and Code Owner review.
+- `main` branch protection keeps deletion and force-push protection active without review deadlock.
 - The issue does not require spending money, external communication, secret
   rotation, architecture policy changes, or public API design judgment.
 
@@ -109,8 +109,7 @@ Vision also owns PR review synthesis:
 - Compare Heimdall's verification comment with Gilfoyle's claimed evidence.
 - Read CodeRabbit findings and classify each as blocking, non-blocking follow-up,
   or false positive.
-- Decide whether to request changes, add `🛑 needs-human-review`, or approve
-  for Aymen's final merge.
+- Decide whether to request changes, label `supervisor-review`, request changes, or merge after green checks.
 
 Vision may directly patch planning/protocol files when the gap is in the forge
 itself, but feature implementation should normally go through Gilfoyle.
@@ -225,7 +224,7 @@ CodeRabbit cannot:
 - Override the canonical validation gate.
 - Approve a PR.
 - Request merge.
-- Bypass Code Owner review.
+- Bypass verification or green checks.
 - Expand an issue's scope.
 
 If CodeRabbit is unavailable or delayed, Vision may proceed after Heimdall

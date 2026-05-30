@@ -59,7 +59,7 @@
 - **`zstd-dict-v1` has no production dictionary in this issue.** Make the codec
   *work* only when an explicit dictionary object is supplied by tests. The
   cache's default production codec is `'zstd'`. Shipping a trained dictionary
-  artifact is a separate, human-gated follow-up.
+  artifact is a separate, Vision-gated follow-up.
 - Decode must dispatch off the stored `compression` value, never off the current
   default — otherwise old `'none'` rows break the day the default flips.
 
