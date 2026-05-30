@@ -1,0 +1,108 @@
+name: Autonomous Agent Task
+description: A task spec scoped for unattended execution by an autonomous coding agent (Claude Code or similar).
+title: "[vX.Y.Z] <scope> — <verb> <thing>"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This template enforces the issue structure required by
+        `AGENT-EXECUTION-PIPELINE.md` §3 (in the repo root). An issue missing
+        any required section is **not** agent-ready and will not pass the §10
+        pre-flight checklist. Do not apply the `agent-ready` label from this
+        template; a maintainer applies it only after reading the completed
+        issue end-to-end. Read the pipeline doc and
+        `STRATEGIC-ROADMAP-2026-05-29.md` before filling this out.
+  - type: textarea
+    id: context
+    attributes:
+      label: Context (self-containment)
+      description: Link to the per-issue context file, this pipeline doc, the roadmap, any relevant ADR or `.planning/phases/0X-*` directory, and prior related issues.
+      value: |
+        - Per-issue context file: `.planning/agent-context/<issue-slug>.md` (read this first)
+        - Pipeline: `AGENT-EXECUTION-PIPELINE.md`
+        - Roadmap: `STRATEGIC-ROADMAP-2026-05-29.md` §<section>
+        - Related issues:
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal (one sentence)
+      description: The single outcome that counts as success.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria (testable checkbox list)
+      description: Each criterion must be testable, atomic, achievable without touching forbidden territory, and verifiable in <5 minutes (pipeline §4). Prefer exact commands and expected output.
+      value: |
+        - [ ] `<exact command>` <expected result>
+        - [ ] `<exact command>` <expected result>
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope boundaries
+      description: Explicit In scope / Out of scope. Out-of-scope work is a stop-and-comment trigger, never silent expansion.
+      value: |
+        **In scope:**
+        -
+
+        **Out of scope:**
+        -
+    validations:
+      required: true
+  - type: textarea
+    id: forbidden
+    attributes:
+      label: Forbidden-territory reminders
+      description: Repeat the AGENT-EXECUTION-PIPELINE.md §2 items relevant to THIS issue. If the task appears to require touching any of them, stop and comment.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation commands (pipeline §5 gate)
+      description: The exact canonical gate, in order, plus any change-type-specific gates. Must pass before any PR is opened.
+      value: |
+        ```bash
+        uv run ruff check src/ tests/
+        uv run pyright src/
+        uv run pytest --tb=short -q
+        uv run python-docs-mcp-server doctor
+        ```
+    validations:
+      required: true
+  - type: textarea
+    id: pr-and-recovery
+    attributes:
+      label: PR requirements & recovery
+      description: What the PR description must include (pipeline §6) and where to go if blocked (pipeline §8).
+      value: |
+        - PR title matches this issue title verbatim; body uses
+          `.github/PULL_REQUEST_TEMPLATE/agent.md`.
+        - Branch: `agent/<issue-number>-<kebab-summary>`.
+        - If blocked: stop, write `WORKING-NOTES.md` on the branch, comment on
+          this issue per pipeline §8. **No PR, no auto-merge, ever.**
+    validations:
+      required: true
+  - type: input
+    id: effort
+    attributes:
+      label: Effort estimate (hours)
+      description: Rough hours. Agent must bail and escalate if work exceeds 2× this estimate (pipeline §8).
+    validations:
+      required: true
+  - type: checkboxes
+    id: acknowledgements
+    attributes:
+      label: Agent acknowledgements
+      options:
+        - label: I will work on a branch, never on `main`, and will not auto-merge.
+          required: true
+        - label: I will stop and comment rather than silently expand scope or touch forbidden territory.
+          required: true
+        - label: I will add `🛑 needs-human-review` if any pipeline §7 trigger fires.
+          required: true
