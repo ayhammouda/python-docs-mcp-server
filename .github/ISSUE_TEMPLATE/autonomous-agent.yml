@@ -85,7 +85,7 @@ body:
           `.github/PULL_REQUEST_TEMPLATE/agent.md`.
         - Branch: `agent/<issue-number>-<kebab-summary>`.
         - If blocked: stop, write `WORKING-NOTES.md` on the branch, comment on
-          this issue per pipeline §8. **No PR, no auto-merge, ever.**
+          this issue per pipeline §8. **No PR and no silent scope expansion.**
     validations:
       required: true
   - type: input
@@ -100,9 +100,9 @@ body:
     attributes:
       label: Agent acknowledgements
       options:
-        - label: I will work on a branch, never on `main`, and will not auto-merge.
+        - label: I will work on a branch, never on `main`, and will not self-merge.
           required: true
         - label: I will stop and comment rather than silently expand scope or touch forbidden territory.
           required: true
-        - label: I will add `🛑 needs-human-review` if any pipeline §7 trigger fires.
+        - label: I will add `supervisor-review` if any pipeline §7 trigger fires.
           required: true

@@ -13,20 +13,20 @@
 ## 1. Operating Principles
 
 - Agents work in branches, never on `main`.
-- Every PR requires human review before merge. **No auto-merge, ever.**
+- Every PR requires independent verification before merge. Vision may merge verified PRs when checks and review triage are green.
 - Agents declare their scope explicitly and stay inside it.
 - The canonical validation gate (§5) must pass before any PR is opened. Failing gate → no PR, just a `WORKING-NOTES.md` on the branch + comment on the issue.
-- Automated review tools such as CodeRabbit provide review signal only. They do not approve, merge, or override the human-review gate.
+- Automated review tools such as CodeRabbit provide review signal only. They do not approve or merge; Vision uses them as review signal before merging.
 - Forbidden territory (§2) is non-negotiable. Any drift triggers a hard stop.
 - Recovery is always **stop and post a comment**, never **silently expand scope**.
 
-The goal is to maximize what an agent can do unattended overnight, then catch anything that needed human judgment in a tight morning review.
+The goal is to keep the forge moving while preserving explicit stop points for money, secrets, external communication, and unresolved architectural judgment.
 
 ---
 
 ## 2. Forbidden Territory (hard stop)
 
-Autonomous agents may NOT modify the following without explicit human approval in the issue comments first:
+Autonomous agents may NOT modify the following without explicit Vision approval in the issue comments first:
 
 | Path / Concern | Reason |
 |---|---|
@@ -48,7 +48,7 @@ Autonomous agents may NOT modify the following without explicit human approval i
 If an agent's task appears to require touching any of these:
 1. **Stop work.**
 2. Post a comment on the issue explaining the conflict.
-3. Tag with `🛑 needs-human-review`.
+3. Tag with `supervisor-review`.
 4. Wait for guidance.
 
 ---
@@ -137,14 +137,14 @@ uv run python-docs-mcp-server doctor
   - Output (or link to artifact) for the §5 validation gate
   - CodeRabbit triage summary when CodeRabbit comments on the PR: blocking, follow-up, false positive, or pending/unavailable
   - A short "Why this approach" paragraph if the design wasn't fully prescribed in the issue
-  - The §7 "Why this triggered human review" disclosure (which doubles as a forbidden-territory near-miss log when applicable; CODEOWNERS is the mechanical enforcement)
-- **PR is opened against** the milestone integration branch (e.g., `release/v0.3.0`) when one exists, otherwise `main`. Never auto-merge.
+  - The §7 "Supervisor review" disclosure (which doubles as a forbidden-territory near-miss log when applicable; CODEOWNERS is the mechanical enforcement)
+- **PR is opened against** the milestone integration branch (e.g., `release/v0.3.0`) when one exists, otherwise `main`. Never self-merge.
 
 ---
 
-## 7. Human-Review Triggers (always pause)
+## 7. Supervisor-Review Triggers (always pause)
 
-The agent must open the PR but **NOT** request merge — and must add the `🛑 needs-human-review` label — if any of these are true:
+The agent must open the PR but **NOT** request merge — and must add the `supervisor-review` label — if any of these are true:
 
 | Trigger | Why |
 |---|---|
@@ -158,7 +158,7 @@ The agent must open the PR but **NOT** request merge — and must add the `🛑 
 | The PR introduces async code in a previously-sync code path | Concurrency review |
 | The agent's "Why this approach" paragraph cites a design choice not in the issue | Verify scope |
 
-For each trigger, the PR description must include a `## Why this triggered human review` section explaining what changed and why the agent believes it was necessary.
+For each trigger, the PR description must include a `## Why this triggered supervisor review` section explaining what changed and why the agent believes it was necessary.
 
 ---
 
@@ -200,11 +200,11 @@ These files must exist on `main` before the v0.3.0 issues are unleashed to auton
 | [`OPENCLAW-FORGE-PROTOCOL.md`](OPENCLAW-FORGE-PROTOCOL.md) | OpenClaw role split and MCP-specific execution loop | **Exists** |
 | `.github/ISSUE_TEMPLATE/autonomous-agent.yml` | Issue template enforcing §3 structure | **Create** — see §11 sketch |
 | `.github/PULL_REQUEST_TEMPLATE/agent.md` | PR template enforcing §6 | **Create** — see §11 sketch |
-| `.github/CODEOWNERS` | Forces human review on forbidden-territory paths | **Create** — see §11 sketch |
+| `.github/CODEOWNERS` | Requests owner attention on forbidden-territory paths | **Create** — see §11 sketch |
 | `docs/architecture/TOKEN-STUDY-METHODOLOGY.md` | Methodology spec for the v0.3.0 first issue | **Create as part of that issue spec** |
-| GitHub label: `🛑 needs-human-review` | Marks PRs paused at §7 triggers | **Create** |
+| GitHub label: `supervisor-review` | Marks PRs paused at §7 triggers | **Create** |
 | GitHub label: `agent-ready` | Confirms issue passed §10 pre-flight | **Create** |
-| Branch protection on `main` | Requires at least one human approval before merge | **Confirm enabled** |
+| Branch protection on `main` | Allows Vision to merge after verification and green checks | **Confirm enabled** |
 | Branch protection on `release/v0.3.0` (when created) | Same | **Configure at branch creation** |
 
 ---
@@ -215,11 +215,11 @@ Run this checklist before pushing the first agent-ready issue to the queue.
 
 - [ ] All §9 context files exist on `main`.
 - [ ] The §5 canonical validation gate passes on `main` (clean baseline).
-- [ ] Each issue has been read end-to-end by a human and labeled `agent-ready`.
+- [ ] Each issue has been pre-flighted by Vision and labeled `agent-ready`.
 - [ ] Each issue includes its §3 sections in full.
-- [ ] The `🛑 needs-human-review` and `agent-ready` labels exist in the repo.
+- [ ] The `supervisor-review` and `agent-ready` labels exist in the repo.
 - [ ] CODEOWNERS forces review on at least: `pyproject.toml`, `.github/workflows/`, `LICENSE`, `README.md`, `.planning/POSITIONING.md`, `schema.sql`.
-- [ ] Branch protection on `main` requires ≥1 human approval before merge.
+- [ ] Branch protection on `main` keeps deletion and force-push protection active without review deadlock.
 - [ ] At least one issue is small enough (≤4 hours) to serve as a confidence-building first run.
 
 ---
@@ -262,11 +262,11 @@ Mapping the v0.3.0 deliverables to agent-friendliness, to help prioritize issue 
 | PyYAML safe-loader audit | **Yes (medium)** | Simple grep + fix; need agent to surface findings before changing | Agent |
 | ADR-001 (Source Adapters) draft | **Yes (medium)** | Writing task; needs clear template + style guide | Agent with strict template |
 | ADR-006 (Serialization) draft | **Yes (medium)** | Same as ADR-001 | Agent with strict template |
-| Build-time supply-chain hardening (CPython SHA pin + SECURITY.md update) | **Partial** | Pinning is mechanical; SECURITY.md text needs judgment | Agent for pinning; human for SECURITY.md |
+| Build-time supply-chain hardening (CPython SHA pin + SECURITY.md update) | **Partial** | Pinning is mechanical; SECURITY.md text needs judgment | Agent for pinning; Vision for SECURITY.md |
 | 30-minute TOON Python port audit | **No** | Requires subjective quality judgment | Human |
 | Empirical token study | **No** | Methodology choices and corpus selection require judgment | Human (with agent scaffolding the harness) |
 
-The v0.3.0 issue wave should therefore lead with the **high-confidence agent issues** so the overnight run produces obvious wins, then escalate to the partial / human-judgment items the following day with the maintainer at the keyboard.
+The v0.3.0 issue wave should therefore lead with the **high-confidence agent issues** so the overnight run produces obvious wins, then escalate to the partial / Vision-judgment items the following day under Vision supervision.
 
 ---
 
@@ -284,4 +284,4 @@ The default loop is Vision → Gilfoyle → Heimdall → Vision/Aymen:
 - Heimdall owns independent verification, packaging/install smoke, security-sensitive checks, and release-readiness checks.
 - CodeRabbit findings are mandatory review signal when present. Vision/Heimdall must triage them as blocking, follow-up, or false positive before `verified`.
 - Saga is not in the default loop because this MCP has no UI.
-- Pipeline Monitor remains disabled unless Aymen explicitly asks for assisted merge checks; no auto-merge is allowed.
+- Pipeline Monitor remains disabled unless Aymen explicitly asks for assisted merge checks; no Vision-owned merge is allowed.

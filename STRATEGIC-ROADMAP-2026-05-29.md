@@ -158,7 +158,7 @@ Consolidated from prior artifacts and this consolidation.
 | 5.9 | README / PyPI description / glama.json refresh to reflect the 6-tool surface; this becomes a release-cycle discipline going forward. | Deep-research integration (2026-05-29) |
 | 5.10 | Build-time supply chain (the `build-index` CPython clone) is an explicit risk area; threat model documented in SECURITY.md; CPython source pinned by SHA. | Deep-research integration (2026-05-29) |
 | 5.11 | PyYAML safe-loader-only discipline; `synonyms.yaml` is the only YAML input and is packaged with the wheel. | Deep-research integration (2026-05-29) |
-| 5.12 | Autonomous agents work only via the issue-and-PR flow defined in `AGENT-EXECUTION-PIPELINE.md`. Direct commits to `main` are forbidden; auto-merge is forbidden. | Agent-pipeline addition (2026-05-29) |
+| 5.12 | Autonomous agents work only via the issue-and-PR flow defined in `AGENT-EXECUTION-PIPELINE.md`. Direct commits to `main` are forbidden; Vision-owned merge is required. | Agent-pipeline addition (2026-05-29) |
 | 5.13 | Forbidden-territory list in `AGENT-EXECUTION-PIPELINE.md` §2 is binding on all agents. | Agent-pipeline addition (2026-05-29) |
 | 5.14 | Every agent-targetable issue must have a per-issue context file under `.planning/agent-context/<issue-slug>.md`. | Agent-pipeline addition (2026-05-29) |
 
@@ -235,7 +235,7 @@ Each v0.3.0 deliverable in §4 is classified by agent-friendliness:
 | PyYAML safe-loader audit | **Yes (medium)** | Agent |
 | ADR-001 (Source Adapters) draft | **Yes (medium)** | Agent w/ strict template |
 | ADR-006 (Serialization) draft | **Yes (medium)** | Agent w/ strict template |
-| Build-time supply-chain: CPython SHA pin | **Yes (partial)** | Agent for the pin; human for SECURITY.md prose |
+| Build-time supply-chain: CPython SHA pin | **Yes (partial)** | Agent for the pin; Vision for SECURITY.md prose |
 | 30-minute TOON Python port audit | **No** | Human (subjective quality judgment) |
 | Empirical token study | **No** | Human (methodology + corpus selection); agent may scaffold the harness |
 
@@ -246,16 +246,16 @@ The recommended overnight wave is the four high-confidence agent issues first �
 Before the first agent-ready issue is queued, the pre-flight checklist in `AGENT-EXECUTION-PIPELINE.md` §10 must be green. In particular:
 
 - `.github/CODEOWNERS`, `.github/ISSUE_TEMPLATE/autonomous-agent.yml`, and `.github/PULL_REQUEST_TEMPLATE/agent.md` must exist on `main`.
-- Branch protection on `main` must require ≥1 human approval.
-- The `🛑 needs-human-review` and `agent-ready` labels must exist.
+- Branch protection on `main` must keep deletion and force-push protection active without review deadlock.
+- The `supervisor-review` and `agent-ready` labels must exist.
 - The canonical validation gate must pass on `main` from a clean clone.
 
 ### 9.3 Additional locked decisions for the pipeline
 
 | # | Decision |
 |---|----------|
-| 5.12 | Autonomous agents work only via the issue-and-PR flow defined in `AGENT-EXECUTION-PIPELINE.md`. Direct commits to `main` are forbidden; auto-merge is forbidden. |
-| 5.13 | The forbidden-territory list in `AGENT-EXECUTION-PIPELINE.md` §2 is binding. Any agent change touching those paths must pause for human review. |
+| 5.12 | Autonomous agents work only via the issue-and-PR flow defined in `AGENT-EXECUTION-PIPELINE.md`. Direct commits to `main` are forbidden; Vision-owned merge is required. |
+| 5.13 | The forbidden-territory list in `AGENT-EXECUTION-PIPELINE.md` §2 is binding. Any agent change touching those paths must pause for Vision supervisor review. |
 | 5.14 | Every agent-targetable issue must have a per-issue context file under `.planning/agent-context/<issue-slug>.md` so the agent reads one source of truth instead of fishing across `.planning/` archive material. |
 
 ---
