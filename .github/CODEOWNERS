@@ -1,0 +1,49 @@
+# CODEOWNERS — forces maintainer review on forbidden-territory paths.
+#
+# Source of truth: AGENT-EXECUTION-PIPELINE.md §2 (Forbidden Territory),
+# required by §10 (Pre-flight Checklist).
+#
+# For these rules to be ENFORCED, branch protection on `main` must enable
+# "Require review from Code Owners". CODEOWNERS alone only requests review;
+# branch protection is what blocks merge.
+#
+# Autonomous agents may NOT modify these paths without explicit human approval
+# (pipeline §2). Any agent PR touching them must add the `🛑 needs-human-review`
+# label and stop short of requesting merge (pipeline §7).
+
+# --- Project identity, dependencies, classifiers (only `version` is agent-editable) ---
+/pyproject.toml                                   @ayhammouda
+
+# --- Permanent commitments and trust posture ---
+/LICENSE                                          @ayhammouda
+/SECURITY.md                                      @ayhammouda
+
+# --- Load-bearing brand assets ---
+/README.md                                        @ayhammouda
+/.planning/POSITIONING.md                         @ayhammouda
+
+# --- Release history (adding entries is fine; rewriting history is not) ---
+/CHANGELOG.md                                     @ayhammouda
+
+# --- CI/CD and supply chain (release path especially) ---
+# The single /.github/ rule covers workflows and release.yml. Last-matching-
+# pattern wins in CODEOWNERS — adding narrower entries with the same owner
+# below would be no-ops and would silently *override* this rule if a different
+# owner is ever added here, so we keep ownership of /.github/ uniform.
+/.github/                                         @ayhammouda
+
+# --- Index schema and migrations (rebuilds existing user indexes) ---
+# NOTE: the retrieved-docs *cache* table lives in
+# src/mcp_server_python_docs/services/persistent_cache.py and is NOT covered
+# here — it is best-effort, fingerprint-scoped, and agent-editable per
+# decision 5.7. Only the canonical *index* schema is forbidden territory.
+**/storage/schema.sql                             @ayhammouda
+**/migrations/                                    @ayhammouda
+
+# --- Archival roadmap history ---
+/.planning/ROADMAP.md                             @ayhammouda
+
+# --- Governing policy + strategy documents ---
+/AGENT-EXECUTION-PIPELINE.md                      @ayhammouda
+/OPENCLAW-FORGE-PROTOCOL.md                       @ayhammouda
+/STRATEGIC-ROADMAP-2026-05-29.md                  @ayhammouda
