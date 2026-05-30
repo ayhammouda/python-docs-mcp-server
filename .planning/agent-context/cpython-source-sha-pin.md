@@ -57,11 +57,22 @@
 ## 5. Decision log
 
 - Resolved SHAs (tag → 40-hex commit), one line each:
-  - 3.10 / v3.10.20 →
-  - 3.11 / v3.11.15 →
-  - 3.12 / v3.12.13 →
-  - 3.13 / v3.13.13 →
-  - 3.14 / v3.14.4 →
-- Where/how the verification aborts on mismatch:
+  - 3.10 / v3.10.20 → 842e987df856a5d4db37933c62a3456930a19092
+  - 3.11 / v3.11.15 → 2340a037f7450e70fccfe411e6531afb4d57a312
+  - 3.12 / v3.12.13 → 3bb231a6a5dc02b95658877318bf61501a7209e9
+  - 3.13 / v3.13.13 → 01104ce1beb3135c2e0c01ec835b994c1f55a1c0
+  - 3.14 / v3.14.4 → 23116f998f6789d8c2fbe5ed5b8146854c8c2a4f
+- Where/how the verification aborts on mismatch: after the shallow
+  tag-based clone in `build-index`, `git -C <clone_dir> rev-parse HEAD` is
+  compared to the authoritative config SHA. A mismatch logs the version, tag,
+  actual SHA, and expected SHA, then raises `SystemExit(1)` before Sphinx setup
+  or content ingestion can proceed.
 - **Draft SECURITY.md threat-model paragraph (for Vision to apply):**
-  >
+  > The largest build-time supply-chain input is the `build-index` clone of the
+  > upstream CPython repository, which provides the source tree used to generate
+  > canonical documentation content. Each supported CPython docs release is pinned
+  > to the exact commit SHA that its human-readable release tag currently resolves
+  > to; the tag is retained for operator readability, but the SHA is the
+  > authoritative integrity anchor. If a tag is reissued, moved, or otherwise
+  > resolves to different source content, the build fails before Sphinx setup or
+  > content ingestion rather than silently publishing changed documentation.
