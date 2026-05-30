@@ -10,7 +10,7 @@ from pathlib import Path
 
 from mcp_server_python_docs.models import GetDocsResult
 from mcp_server_python_docs.services.content import ContentService
-from mcp_server_python_docs.services.persistent_cache import PersistentDocsCache
+from mcp_server_python_docs.services.persistent_cache import _NO_ANCHOR_KEY, PersistentDocsCache
 
 
 def _doc(db, version: str, content: str, default: int = 0) -> None:
@@ -66,6 +66,76 @@ def test_cache_survives_restart_and_miss_falls_back(populated_db, tmp_path: Path
     )
     assert second == first
     assert restarted.stats().hits == 1
+
+
+def test_current_default_codec_reads_identically_after_restart(tmp_path: Path):
+    index_path, cache = _cache(tmp_path)
+    expected = _result("compressed docs payload")
+    cache.put(result=expected, max_chars=500, start_index=0)
+
+    with sqlite3.connect(cache.cache_path) as conn:
+        compression = conn.execute("SELECT compression FROM retrieved_docs_cache").fetchone()[0]
+    assert compression == "zstd"
+
+    restarted = PersistentDocsCache(tmp_path / "retrieved.sqlite3", index_path)
+    assert (
+        restarted.get(
+            version="3.12",
+            slug="library/json.html",
+            anchor=None,
+            max_chars=500,
+            start_index=0,
+        )
+        == expected
+    )
+    assert restarted.stats().hits == 1
+
+
+def test_legacy_uncompressed_cache_row_migrates_and_reads(tmp_path: Path):
+    index_path = tmp_path / "index.db"
+    index_path.write_bytes(b"index-1")
+    fingerprint = PersistentDocsCache._fingerprint_index(index_path)
+    cache_path = tmp_path / "retrieved.sqlite3"
+    expected = _result("legacy docs payload")
+    with sqlite3.connect(cache_path) as conn:
+        conn.execute(
+            "CREATE TABLE retrieved_docs_cache ("
+            "index_fingerprint TEXT NOT NULL, version TEXT NOT NULL, slug TEXT NOT NULL, "
+            "anchor TEXT NOT NULL, max_chars INTEGER NOT NULL, start_index INTEGER NOT NULL, "
+            "result_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+            "PRIMARY KEY (index_fingerprint, version, slug, anchor, max_chars, start_index))"
+        )
+        conn.execute(
+            "INSERT INTO retrieved_docs_cache "
+            "(index_fingerprint, version, slug, anchor, max_chars, start_index, result_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                fingerprint,
+                expected.version,
+                expected.slug,
+                _NO_ANCHOR_KEY,
+                500,
+                0,
+                expected.model_dump_json(),
+            ),
+        )
+
+    migrated = PersistentDocsCache(cache_path, index_path)
+    assert (
+        migrated.get(
+            version="3.12",
+            slug="library/json.html",
+            anchor=None,
+            max_chars=500,
+            start_index=0,
+        )
+        == expected
+    )
+    with sqlite3.connect(cache_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(retrieved_docs_cache)")}
+        compression = conn.execute("SELECT compression FROM retrieved_docs_cache").fetchone()[0]
+    assert "compression" in columns
+    assert compression == "none"
 
 
 def test_cache_key_includes_python_version(populated_db, tmp_path: Path):

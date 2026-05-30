@@ -140,11 +140,12 @@ def test_get_docs_cache_restart_and_corrupt_cache_fallback(tmp_path: Path):
 
     with sqlite3.connect(cache_path) as conn:
         rows = conn.execute(
-            "SELECT version, slug, anchor, max_chars, start_index, length(result_json) "
+            "SELECT version, slug, anchor, max_chars, start_index, "
+            "length(result_json), compression "
             "FROM retrieved_docs_cache"
         ).fetchall()
     assert len(rows) == 1
-    version, slug, anchor, max_chars, start_index, result_json_length = rows[0]
+    version, slug, anchor, max_chars, start_index, result_json_length, compression = rows[0]
     assert (version, slug, anchor, max_chars, start_index) == (
         "3.13",
         "library/json.html",
@@ -153,6 +154,7 @@ def test_get_docs_cache_restart_and_corrupt_cache_fallback(tmp_path: Path):
         0,
     )
     assert result_json_length > 0
+    assert compression == "zstd"
 
     restarted_page = _tool_structured_content(
         _run_server(
