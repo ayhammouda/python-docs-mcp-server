@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import runpy
 import shutil
+import subprocess
 import sys
 import types
 
@@ -51,7 +53,44 @@ class TestCPythonVersionConfig:
         for version in SUPPORTED_DOC_VERSIONS:
             config = CPYTHON_DOCS_BUILD_CONFIG[version]
             assert config["tag"].startswith(f"v{version}.")
+            assert re.fullmatch(r"[0-9a-f]{40}", config["sha"])
             assert config["sphinx_pin"].startswith("sphinx")
+
+    def test_cpython_source_sha_verification_aborts_on_mismatch(
+        self,
+        monkeypatch,
+        caplog,
+    ):
+        from mcp_server_python_docs import __main__ as cli_main
+
+        calls: list[list[str]] = []
+
+        def fake_run(
+            cmd: list[str],
+            *,
+            check: bool,
+            capture_output: bool,
+            text: bool,
+        ) -> subprocess.CompletedProcess[str]:
+            calls.append(cmd)
+            assert check is True
+            assert capture_output is True
+            assert text is True
+            return subprocess.CompletedProcess(cmd, 0, stdout="b" * 40 + "\n")
+
+        monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit) as exc_info:
+            cli_main._verify_cpython_source_sha(
+                "/tmp/cpython-3.14",
+                version="3.14",
+                tag="v3.14.4",
+                expected_sha="a" * 40,
+            )
+
+        assert exc_info.value.code == 1
+        assert calls == [["git", "-C", "/tmp/cpython-3.14", "rev-parse", "HEAD"]]
+        assert "source integrity check failed" in caplog.text
 
 
 class TestJsonBuildRequirements:

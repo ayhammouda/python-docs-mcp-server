@@ -65,6 +65,8 @@ logging.basicConfig(
 logger = logging.getLogger("mcp_server_python_docs")
 
 # === Now safe to import everything else ===
+import subprocess  # noqa: E402
+
 import click  # noqa: E402
 
 from mcp_server_python_docs.ingestion.cpython_versions import (  # noqa: E402
@@ -110,6 +112,33 @@ def serve() -> None:
         pass  # Client disconnected (HYGN-03)
 
 
+def _verify_cpython_source_sha(
+    clone_dir: str,
+    *,
+    version: str,
+    tag: str,
+    expected_sha: str,
+) -> None:
+    """Abort the docs build if a CPython tag resolves to unexpected content."""
+    rev_parse = subprocess.run(
+        ["git", "-C", clone_dir, "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    actual_sha = rev_parse.stdout.strip()
+    if actual_sha != expected_sha:
+        logger.error(
+            "CPython %s source integrity check failed: tag %s "
+            "resolved to %s, expected %s. Aborting build.",
+            version,
+            tag,
+            actual_sha,
+            expected_sha,
+        )
+        raise SystemExit(1)
+
+
 @main.command("build-index")
 @click.option(
     "--versions",
@@ -124,7 +153,6 @@ def serve() -> None:
 def build_index(versions: str, skip_content: bool) -> None:
     """Build the documentation index from objects.inv and Sphinx JSON."""
     import shutil
-    import subprocess
     import tempfile
     import venv
     from pathlib import Path
@@ -223,6 +251,12 @@ def build_index(versions: str, skip_content: bool) -> None:
                         check=True,
                         capture_output=True,
                         text=True,
+                    )
+                    _verify_cpython_source_sha(
+                        clone_dir,
+                        version=version,
+                        tag=config["tag"],
+                        expected_sha=config["sha"],
                     )
 
                     # Create dedicated Sphinx venv (INGR-C-02)
