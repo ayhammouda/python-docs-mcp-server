@@ -1,2 +1,1 @@
 """Cache tests."""
-
