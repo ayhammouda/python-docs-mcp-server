@@ -100,6 +100,9 @@ Before calling work complete:
 
 - `.planning/ROADMAP.md` and `.planning/phases/0X-…/0X-CONTEXT.md` are live,
   forward-looking specs — read these first when starting a new phase.
+- `.planning/agent-context/<issue-slug>.md` and active
+  `.planning/issues/v0.3.0/*.md` specs are live only for autonomous-agent issue
+  execution; read them when an issue or pipeline document links them.
 - Anything else in `.planning/` (especially content dated 2026-04 or earlier)
   is archival history. It may help maintainers reconstruct prior context but
   should not drive routine implementation decisions.
