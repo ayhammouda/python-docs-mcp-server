@@ -40,12 +40,10 @@ Make a pinned commit SHA — not a mutable tag — the integrity anchor for ever
 
 ## Validation commands (pipeline §5)
 
+Run the canonical four-command gate from `AGENT-EXECUTION-PIPELINE.md` §5, then
+the change-specific gate below (ingestion-touching change):
+
 ```bash
-uv run ruff check src/ tests/
-uv run pyright src/
-uv run pytest --tb=short -q
-uv run python-docs-mcp-server doctor
-# this changes ingestion — also run:
 uv run python-docs-mcp-server validate-corpus
 ```
 

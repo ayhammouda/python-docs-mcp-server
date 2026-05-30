@@ -64,12 +64,11 @@ codec that reads pre-existing uncompressed rows transparently.
 
 ## Validation commands (pipeline §5)
 
+Run the canonical four-command gate from `AGENT-EXECUTION-PIPELINE.md` §5, then
+the change-specific gate below (the cache lives on the `get_docs` path, so the
+wire smoke matters):
+
 ```bash
-uv run ruff check src/ tests/
-uv run pyright src/
-uv run pytest --tb=short -q
-uv run python-docs-mcp-server doctor
-# cache lives in the get_docs path — also run the wire smoke:
 uv run pytest tests/test_stdio_smoke.py -q
 ```
 

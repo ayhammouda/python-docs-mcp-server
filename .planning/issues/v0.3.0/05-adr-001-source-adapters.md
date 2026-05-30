@@ -37,12 +37,8 @@ Record `docs/architecture/ADR-001-source-adapters.md`: the contract for canonica
 
 ## Validation commands (pipeline §5)
 
-```bash
-uv run ruff check src/ tests/
-uv run pyright src/
-uv run pytest --tb=short -q
-uv run python-docs-mcp-server doctor
-```
+Run the canonical four-command gate from `AGENT-EXECUTION-PIPELINE.md` §5. No
+change-type-specific additional gates apply (this is a docs-only change).
 
 ## ADR template (use exactly this skeleton)
 

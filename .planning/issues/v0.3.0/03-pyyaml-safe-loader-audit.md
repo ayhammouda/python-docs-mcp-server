@@ -37,12 +37,8 @@ via `yaml.safe_load`, with the trust boundary documented and regression-guarded.
 
 ## Validation commands (pipeline §5)
 
-```bash
-uv run ruff check src/ tests/
-uv run pyright src/
-uv run pytest --tb=short -q
-uv run python-docs-mcp-server doctor
-```
+Run the canonical four-command gate from `AGENT-EXECUTION-PIPELINE.md` §5. No
+change-type-specific additional gates apply.
 
 ## PR template & recovery
 

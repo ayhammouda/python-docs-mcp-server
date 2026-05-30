@@ -6,21 +6,12 @@ body:
     attributes:
       value: |
         This template enforces the issue structure required by
-        [`AGENT-EXECUTION-PIPELINE.md` §3](../../AGENT-EXECUTION-PIPELINE.md).
-        An issue missing any required section is **not** agent-ready and will
-        not pass the §10 pre-flight checklist. Do not apply the `agent-ready`
-        label from this template; a maintainer applies it only after reading
-        the completed issue end-to-end. Read the pipeline doc and
-        [`STRATEGIC-ROADMAP-2026-05-29.md`](../../STRATEGIC-ROADMAP-2026-05-29.md)
-        before filling this out.
-  - type: input
-    id: title-check
-    attributes:
-      label: Title format confirmation
-      description: 'Confirm the issue title matches `[vX.Y.Z] <scope> — <verb> <thing>` (e.g. `[v0.3.0] cache — add zstd codec layer`).'
-      placeholder: "[v0.3.0] cache — add zstd codec layer"
-    validations:
-      required: true
+        `AGENT-EXECUTION-PIPELINE.md` §3 (in the repo root). An issue missing
+        any required section is **not** agent-ready and will not pass the §10
+        pre-flight checklist. Do not apply the `agent-ready` label from this
+        template; a maintainer applies it only after reading the completed
+        issue end-to-end. Read the pipeline doc and
+        `STRATEGIC-ROADMAP-2026-05-29.md` before filling this out.
   - type: textarea
     id: context
     attributes:

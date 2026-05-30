@@ -42,12 +42,10 @@ Make every public-facing surface consistently describe the six-tool surface
 
 ## Validation commands (pipeline §5)
 
+Run the canonical four-command gate from `AGENT-EXECUTION-PIPELINE.md` §5, then
+the change-specific gate below (README/metadata consistency):
+
 ```bash
-uv run ruff check src/ tests/
-uv run pyright src/
-uv run pytest --tb=short -q
-uv run python-docs-mcp-server doctor
-# README/metadata consistency is exercised by:
 uv run pytest tests/test_packaging.py -q
 ```
 

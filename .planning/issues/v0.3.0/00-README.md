@@ -55,13 +55,10 @@ touches the supply-chain path.
 - **01 (zstd):** add `zstandard>=0.23.0` to `pyproject.toml [project].dependencies`
   and run `uv lock` **before** queueing — the agent cannot edit forbidden territory.
 
-## How to create the issues
+## How these issues were bootstrapped
 
-```bash
-gh label create agent-ready --color 0E8A16 --description "Issue passed §10 pre-flight; scoped for an autonomous agent" 2>/dev/null || true
-gh label create "🛑 needs-human-review" --color B60205 --description "Agent PR paused at a pipeline §7 trigger; human review required" 2>/dev/null || true
-
-for f in 01 02 03 04 05 06; do
-  gh issue create -F .planning/issues/v0.3.0/$f-*.md   # labels are embedded in each file's header note
-done
-```
+Issues #46–#51 were created from the files in this directory with
+`gh issue create -F .planning/issues/v0.3.0/<file>.md`, after `agent-ready` and
+`🛑 needs-human-review` labels were created in the repo. Do **not** re-run that
+loop — it would duplicate live issues. Edit the spec file *and* the GitHub
+issue body when a change is needed.
