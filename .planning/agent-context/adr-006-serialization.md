@@ -47,6 +47,9 @@
 
 ## 5. Decision log
 
-- Final file path:
+- Final file path: `docs/architecture/ADR-006-serialization.md`
 - Any wording you were unsure mapped to a locked decision (and how you resolved it):
-- Open follow-ups (e.g. link to TOKEN-STUDY.md once it exists):
+  none; the ADR records only roadmap principles 2.5 and 2.7 plus decisions
+  5.3, 5.4, 5.5, and 5.8.
+- Open follow-ups: link the ADR to the v0.3.0 TOKEN-STUDY.md once that study
+  exists.
