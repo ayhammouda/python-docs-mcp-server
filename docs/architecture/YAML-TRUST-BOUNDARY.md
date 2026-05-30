@@ -10,11 +10,11 @@ The file is parsed only with `yaml.safe_load` in these call sites:
 - `src/mcp_server_python_docs/ingestion/sphinx_json.py` when ingestion populates
   the synonym table.
 
-There are no `yaml.load`, `yaml.unsafe_load`, or custom non-`SafeLoader` parser
-call sites in `src/`. The regression test
+There are no `yaml.load` or `yaml.unsafe_load` parser call sites in `src/` or
+`tests/`. The regression test
 `tests/test_synonyms.py::test_yaml_loaded_only_via_safe_load` scans source files
-for unsafe YAML loaders, confirms both expected `safe_load` call sites, and
-asserts that `synonyms.yaml` is the only YAML file under
+and tests for unsafe YAML loaders, confirms both expected source `safe_load`
+call sites, and asserts that `synonyms.yaml` is the only YAML file under
 `src/mcp_server_python_docs/`.
 
 Recommended future `SECURITY.md` wording for human review:
