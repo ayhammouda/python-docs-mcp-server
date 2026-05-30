@@ -18,7 +18,7 @@ via `yaml.safe_load`, with the trust boundary documented and regression-guarded.
 
 ## Acceptance criteria
 
-- [ ] `grep -rn 'yaml.load(' src/ tests/` returns **zero** hits.
+- [ ] `grep -rn 'yaml.load(' src/` returns **zero** hits.
 - [ ] `grep -rn 'yaml.safe_load(' src/` returns at least the two expected call sites (`server.py`, `ingestion/sphinx_json.py`).
 - [ ] `grep -rln '\.ya\?ml' src/mcp_server_python_docs/` shows `data/synonyms.yaml` is the only YAML **data input** loaded at runtime/ingestion (any others are config, not parsed input — enumerate them in the PR).
 - [ ] A new test `tests/test_synonyms.py::test_yaml_loaded_only_via_safe_load` (or a clearly named addition) asserts the discipline programmatically — e.g. scans `src/` for `yaml.load(` and fails if any unsafe loader appears, and confirms the synonyms loaders use `safe_load`.

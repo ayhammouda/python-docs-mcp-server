@@ -22,10 +22,12 @@ GitHub issue numbers are filled in below as issues are created (post pre-flight)
 > applying it earlier would falsely signal "passed pre-flight." Apply it per
 > issue once you've read it end-to-end.
 
-**Lead four (obvious overnight wins, de-risk the rest):** 01, 02, 03, 04.
+**Starter four (obvious overnight wins, de-risk the rest):** 02, 03, 04, 05.
 ADR-006 (04) leads the ADR work because it unblocks the v0.3.x `format` parameter.
-05 and 06 trail; 06 is PARTIAL and **must** carry `🛑 needs-human-review` (it
-produces SECURITY.md wording for a human and touches the supply-chain path).
+01 is intentionally delayed until the dependency and dictionary/context API prep
+are resolved by a maintainer. 06 trails; it is PARTIAL and **must** carry
+`🛑 needs-human-review` because it produces SECURITY.md wording for a human and
+touches the supply-chain path.
 
 ## Explicitly NOT in the agent wave (human-led, roadmap §9.1)
 

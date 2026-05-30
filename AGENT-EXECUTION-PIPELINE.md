@@ -226,103 +226,21 @@ Run this checklist before pushing the first agent-ready issue to the queue.
 
 ## 11. Template Sketches
 
-These are the minimum-viable shapes for the templates referenced in §9. Claude Code can flesh them out when generating the actual issue files.
+The files below are the authoritative templates referenced in §9. Keep this
+section as pointers so the policy doc does not drift from the checked-in
+template implementations.
 
 ### `.github/ISSUE_TEMPLATE/autonomous-agent.yml` (sketch)
 
-```yaml
-name: Autonomous Agent Task
-description: A task spec scoped for execution by an autonomous coding agent
-body:
-  - type: input
-    id: title-prefix
-    attributes:
-      label: Title prefix
-      description: Must match [vX.Y.Z] <scope> — <verb> <thing>
-    validations:
-      required: true
-  - type: textarea
-    id: context
-    attributes:
-      label: Context
-      description: Links to roadmap, pipeline doc, ADRs, related issues
-    validations:
-      required: true
-  - type: textarea
-    id: goal
-    attributes:
-      label: Goal (one sentence)
-    validations:
-      required: true
-  - type: textarea
-    id: acceptance
-    attributes:
-      label: Acceptance criteria (testable checkbox list)
-    validations:
-      required: true
-  - type: textarea
-    id: scope
-    attributes:
-      label: Scope boundaries (In scope / Out of scope)
-    validations:
-      required: true
-  - type: textarea
-    id: forbidden
-    attributes:
-      label: Forbidden territory reminders
-      description: Relevant items from AGENT-EXECUTION-PIPELINE.md §2
-    validations:
-      required: true
-  - type: textarea
-    id: validation
-    attributes:
-      label: Validation commands (per pipeline §5)
-    validations:
-      required: true
-  - type: input
-    id: effort
-    attributes:
-      label: Effort estimate (hours)
-    validations:
-      required: true
-```
+See `.github/ISSUE_TEMPLATE/autonomous-agent.yml` for the authoritative implementation.
 
 ### `.github/PULL_REQUEST_TEMPLATE/agent.md` (sketch)
 
-```markdown
-Closes #<issue-number>
-
-## Acceptance criteria
-<!-- Copy from the issue. Check boxes and add one-line evidence per item. -->
-- [ ] <criterion 1> — <evidence>
-- [ ] <criterion 2> — <evidence>
-
-## Validation gate output
-<!-- Paste tail of `uv run ruff`, `pyright`, `pytest`, `doctor` here. -->
-
-## What this does NOT touch
-<!-- Restate the relevant forbidden-territory items from the issue. -->
-
-## Why this approach
-<!-- One paragraph max. If the issue prescribed the approach, just say so. -->
-
-## Human-review triggers (if any)
-<!-- List any §7 triggers and explain why. If none, write "None." -->
-```
+See `.github/PULL_REQUEST_TEMPLATE/agent.md` for the authoritative implementation.
 
 ### `.github/CODEOWNERS` (sketch)
 
-```
-# Forbidden-territory paths — require maintainer review
-/pyproject.toml                @ayhammouda
-/LICENSE                       @ayhammouda
-/.github/workflows/            @ayhammouda
-/SECURITY.md                   @ayhammouda
-/README.md                     @ayhammouda
-/.planning/POSITIONING.md      @ayhammouda
-/CHANGELOG.md                  @ayhammouda
-/src/**/schema.sql             @ayhammouda
-```
+See `.github/CODEOWNERS` for the authoritative implementation.
 
 ---
 

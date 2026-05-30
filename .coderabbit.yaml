@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "en-US"
+
+reviews:
+  profile: "chill"
+  request_changes_workflow: false
+  high_level_summary: true
+  review_status: true
+  path_filters:
+    - "src/**"
+    - "tests/**"
+  path_instructions:
+    - path: "src/**"
+      instructions: |
+        Focus review on correctness, MCP tool behavior, runtime compatibility,
+        cache/index compatibility, packaging impact, and security boundaries.
+        Avoid comments about planning docs, release docs, or repository process
+        unless the changed source code makes those docs materially inaccurate.
+    - path: "tests/**"
+      instructions: |
+        Focus review on meaningful assertions, regression coverage, fixture
+        correctness, deterministic behavior, and avoiding network- or
+        environment-dependent tests unless the test is explicitly marked as an
+        integration smoke test.
