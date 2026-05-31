@@ -4,6 +4,40 @@ All notable changes to `python-docs-mcp-server` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-05-31
+
+### Added
+
+- **Retrieved-docs cache compression** — cached `get_docs` payloads now use a
+  versioned codec layer with `none`, `zstd`, and reserved dictionary-backed
+  `zstd-dict-v1` codec identifiers. Existing uncompressed cache rows remain
+  readable, while new rows can store compressed payloads. ([#60](https://github.com/ayhammouda/python-docs-mcp-server/pull/60))
+- **Pinned CPython documentation source configuration** — `build-index` now records
+  explicit CPython documentation build targets so supported versions are tied to
+  auditable upstream tags and Sphinx pins. ([#59](https://github.com/ayhammouda/python-docs-mcp-server/pull/59))
+- **Architecture records for source and serialization boundaries** — added
+  ADR-001 for canonical source adapters and ADR-006 for the JSON-default
+  serialization contract with future TOON work gated by empirical study.
+  ([#57](https://github.com/ayhammouda/python-docs-mcp-server/pull/57), [#55](https://github.com/ayhammouda/python-docs-mcp-server/pull/55))
+- **Autonomous-agent execution pipeline** — added the issue templates, PR template,
+  CODEOWNERS, per-issue planning context, and guardrail docs used to execute the
+  v0.3.0 issue queue through branch-based human-reviewed PRs. ([#52](https://github.com/ayhammouda/python-docs-mcp-server/pull/52))
+
+### Changed
+
+- README and Glama metadata now describe the current six-tool public surface,
+  including `compare_versions` and retrieved-docs cache behavior. ([#53](https://github.com/ayhammouda/python-docs-mcp-server/pull/53))
+- The autonomous-agent pipeline now avoids the previous human-review deadlock
+  while keeping branch-only execution, PR review, and no auto-merge as release
+  guardrails. ([#54](https://github.com/ayhammouda/python-docs-mcp-server/pull/54))
+
+### Security
+
+- Added `zstandard` as a direct runtime dependency for cache compression.
+  ([#58](https://github.com/ayhammouda/python-docs-mcp-server/pull/58))
+- Documented the packaged YAML trust boundary and added regression coverage that
+  keeps YAML parsing on `yaml.safe_load` only. ([#56](https://github.com/ayhammouda/python-docs-mcp-server/pull/56))
+
 ## [0.2.1] — 2026-05-29
 
 ### Fixed
