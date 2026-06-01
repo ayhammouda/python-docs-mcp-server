@@ -111,6 +111,26 @@ cache. It can take several minutes.
 
 ## Configure your MCP client
 
+### Claude Code
+
+This repository includes a project-scoped `.mcp.json` for clients that support
+checked-in MCP server configuration. It points at the published package:
+
+```json
+{
+  "mcpServers": {
+    "python-docs": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["python-docs-mcp-server"]
+    }
+  }
+}
+```
+
+Build the local documentation index with the first-run command above before
+expecting docs queries to return corpus-backed results.
+
 ### Claude Desktop
 
 Add this to your Claude Desktop configuration file:

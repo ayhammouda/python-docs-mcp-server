@@ -4,6 +4,18 @@ All notable changes to `python-docs-mcp-server` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] — 2026-06-01
+
+### Added
+
+- Added a checked-in `.mcp.json` project configuration for MCP clients that
+  support project-scoped server config. It starts the published server with
+  `uvx python-docs-mcp-server`.
+
+### Changed
+
+- Bumped package and MCP Registry metadata to `0.3.1`.
+
 ## [0.3.0] — 2026-05-31
 
 ### Added
