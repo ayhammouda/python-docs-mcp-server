@@ -19,6 +19,13 @@ Built for the moment your agent needs `asyncio.TaskGroup` signatures, `pathlib.P
 
 ## Why this exists
 
+There is a difference between long context and usable context. Research like the
+[*Lost in the Middle*](https://arxiv.org/abs/2307.03172) study (Liu et al., 2023)
+found that models struggle to use relevant information buried in the middle of a
+long input. Pasting an entire documentation page into the model invites that
+failure. Returning the exact symbol, section, and version keeps the answer in a
+short, high-signal context instead.
+
 Generic docs retrieval is a rough fit for Python stdlib questions:
 
 - `asyncio.TaskGroup` should resolve to the actual symbol, not a fuzzy page hit
