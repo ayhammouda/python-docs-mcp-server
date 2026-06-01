@@ -194,6 +194,9 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
+# Local planning / agent workspace
+.planning/
+
 # Cursor
 #  Keep repo-local Cursor context files tracked when present so the repository
 #  can define its own indexing boundaries.
