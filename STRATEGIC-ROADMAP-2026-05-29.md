@@ -161,6 +161,9 @@ Consolidated from prior artifacts and this consolidation.
 | 5.12 | Autonomous agents work only via the issue-and-PR flow defined in `AGENT-EXECUTION-PIPELINE.md`. Direct commits to `main` are forbidden; Vision-owned merge is required. | Agent-pipeline addition (2026-05-29) |
 | 5.13 | Forbidden-territory list in `AGENT-EXECUTION-PIPELINE.md` §2 is binding on all agents. | Agent-pipeline addition (2026-05-29) |
 | 5.14 | Every agent-targetable issue must have a per-issue context file under `.planning/agent-context/<issue-slug>.md`. | Agent-pipeline addition (2026-05-29) |
+| 5.15 | *Lost in the Middle* (Liu et al., 2023, arXiv:2307.03172) is the canonical external citation for the "long context is unreliable; precise retrieval is the antidote" framing. Used as motivation only (README / positioning / launch); never presented as this project's own benchmark. | Amendment 2026-06-01 |
+| 5.16 | Positioning discipline: **tokens are the business problem; bytes are an implementation detail.** Public-facing copy leads with precise retrieval, version-accuracy, and token economy. Byte-level compression (zstd cache, decision 5.7) is an engineering footnote, never a headline. Reinforces 2.4, 2.5, 5.7. | Amendment 2026-06-01 |
+| 5.17 | Evidence ladder: no comparative or benchmark claim ships in public copy until the v0.5.0 public benchmark harness produces reproducible data with methodology disclosure. The v0.3.0 empirical token study (Study A) stays internal and only gates the `format="toon"` decision. | Amendment 2026-06-01 |
 
 ---
 
@@ -269,3 +272,23 @@ This roadmap is reviewed at:
 - Owner's discretion when new external information arrives (e.g., another deep-research report; a sufficiently sharp critique from the community).
 
 Out-of-cycle amendments are tracked at the bottom of this file as `## Amendment YYYY-MM-DD` sections, preserving the original text. The locked-decisions table (§5) is the authoritative current state.
+
+---
+
+## Amendment 2026-06-01
+
+**Trigger:** Owner's discretion (§10) — advisory review of how the project frames *evidence* in public-facing copy.
+
+This amendment records a three-layer separation of evidence that public and internal materials must respect, plus the positioning discipline that follows from it. It adds locked decisions 5.15–5.17 (see §5).
+
+### Three layers of evidence (do not conflate)
+
+1. **External citation — use now.** *Lost in the Middle* (Liu et al., 2023, arXiv:2307.03172) is research about a failure mode: models use information poorly when it is buried in a long context. It motivates the *problem* — long context is not automatically usable context — and is cited as motivation only, never as our own measurement. (Decision 5.15.)
+2. **Internal study (Study A) — gates an engineering choice.** The v0.3.0 empirical token study measures real token cost and latency after client-side rewrap (decision 5.8) and gates whether `format="toon"` ships (decisions 5.4, 5.5; ADR-006). It stays internal and produces no public comparative claim. (Decision 5.17.)
+3. **Public benchmark (Study B) — sells the project later.** The v0.5.0 public benchmark harness (§4 v0.5.0) compares this server against eligible docs MCPs and a no-MCP baseline on correctness, tokens, and latency — reproducible from a clean clone, with mandatory methodology disclosure. It is the only artifact licensed to make a comparative claim, and only once it has data. (Decision 5.17; tracked as a GitHub issue.)
+
+### Positioning discipline
+
+Tokens are the business problem; bytes are an implementation detail. Public copy (README / PyPI / glama / launch) leads with precise retrieval, version-accuracy, and token economy. The zstd retrieved-docs cache (decision 5.7) is cache-at-rest only and stays an engineering footnote — it never becomes a headline selling point. (Decision 5.16.)
+
+This discipline also supersedes the need for a separate note in the now-local-only `.planning/POSITIONING.md`: `.planning/` is no longer tracked on `main` (see `chore: ignore local planning workspace`), so the discipline lives here, in the tracked roadmap, rather than in the planning workspace.
