@@ -165,14 +165,76 @@ def test_competitor_cell_failure_is_recorded(tmp_path: Path) -> None:
     )
 
     assert summary["failed_cells"] == 1
+    assert summary["correctness_denominator_cells"] == 1
+    assert summary["scored_cells"] == 1
+    assert summary["failed_cells_included_in_correctness_denominator"] is True
     failure_path = out_dir / "failures" / "failing-baseline" / "q001.json"
     transcript_path = out_dir / "transcripts" / "failing-baseline" / "q001.json"
+    scoring_path = out_dir / "scoring" / "failing-baseline" / "q001.json"
+    latency_path = out_dir / "latency" / "failing-baseline" / "q001.json"
     failure = json.loads(failure_path.read_text(encoding="utf-8"))
     transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
+    scoring = json.loads(scoring_path.read_text(encoding="utf-8"))
+    latency = json.loads(latency_path.read_text(encoding="utf-8"))
     assert failure["status"] == "failed"
-    assert failure["error"]["message"] == "forced fake provider failure"
+    assert failure["error"]["category"] == "tool_failure"
+    assert failure["error"]["message"] == "forced fake provider tool_failure"
+    assert failure["correctness_score"] == 0.0
+    assert failure["included_in_correctness_denominator"] is True
     assert transcript["status"] == "failed"
     assert transcript["external_provider_calls"] is False
+    assert scoring["status"] == "failed"
+    assert scoring["score"] == 0.0
+    assert scoring["requires_manual_scoring"] is False
+    assert scoring["included_in_correctness_denominator"] is True
+    assert scoring["error_category"] == "tool_failure"
+    assert latency["error_category"] == "tool_failure"
+
+
+def test_timeout_and_mcp_protocol_crash_failures_are_classified(tmp_path: Path) -> None:
+    out_dir = tmp_path / "results" / "classified-failures"
+
+    summary = run_benchmark(
+        BenchmarkConfig(
+            corpus_path=_corpus(tmp_path),
+            manifest_path=_manifest(
+                tmp_path,
+                [
+                    {
+                        "id": "timeout-baseline",
+                        "adapter": "no-mcp-baseline",
+                        "model": "fake-model",
+                        "force_failure": "timeout",
+                    },
+                    {
+                        "id": "crash-baseline",
+                        "adapter": "no-mcp-baseline",
+                        "provider": "fake-provider",
+                        "model": "fake-model",
+                        "force_failure": "mcp_protocol_crash",
+                    },
+                ],
+            ),
+            out_dir=out_dir,
+            run_id="classified-failures",
+        )
+    )
+
+    assert summary["failed_cells"] == 2
+    assert summary["correctness_denominator_cells"] == 2
+
+    timeout_scoring = json.loads(
+        (out_dir / "scoring" / "timeout-baseline" / "q001.json").read_text(encoding="utf-8")
+    )
+    crash_failure = json.loads(
+        (out_dir / "failures" / "crash-baseline" / "q001.json").read_text(encoding="utf-8")
+    )
+    assert timeout_scoring["score"] == 0.0
+    assert timeout_scoring["error_category"] == "timeout"
+    assert timeout_scoring["tool_model_key"] == "timeout-baseline:fake-model"
+    assert crash_failure["error"]["category"] == "mcp_protocol_crash"
+    assert crash_failure["tool_model_key"] == "crash-baseline:fake-provider/fake-model"
+    assert crash_failure["correctness_score"] == 0.0
 
 
 def test_cli_dry_run_outputs_summary(tmp_path: Path) -> None:

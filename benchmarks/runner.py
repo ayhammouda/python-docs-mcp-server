@@ -27,6 +27,14 @@ class BenchmarkValidationError(ValueError):
     """Raised when corpus or manifest input is not runnable."""
 
 
+class BenchmarkCellFailure(RuntimeError):
+    """A recorded failure for one competitor/question cell."""
+
+    def __init__(self, category: str, message: str) -> None:
+        super().__init__(message)
+        self.category = category
+
+
 @dataclass(frozen=True)
 class BenchmarkConfig:
     """Benchmark runner configuration."""
@@ -98,10 +106,12 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
 
     succeeded = 0
     failed = 0
+    scored_cells = 0
     if not config.dry_run:
         for cell in cells:
             result = _execute_cell(cell)
             _write_cell_artifacts(run_dir, cell, result)
+            scored_cells += 1
             if result["status"] == "succeeded":
                 succeeded += 1
             else:
@@ -118,8 +128,11 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
         "repo_commit": environment["repo_commit"],
         "external_provider_calls": False,
         "planned_cells": len(cells),
+        "correctness_denominator_cells": len(cells),
+        "scored_cells": scored_cells,
         "succeeded_cells": succeeded,
         "failed_cells": failed,
+        "failed_cells_included_in_correctness_denominator": True,
         "competitors": [competitor.id for competitor in competitors],
         "corpus_ids": [question.id for question in questions],
     }
@@ -200,14 +213,19 @@ def _execute_cell(cell: BenchmarkCell) -> dict[str, Any]:
 
     try:
         answer = _fake_provider_answer(cell)
+    except BenchmarkCellFailure as exc:
+        status = "failed"
+        error = {"category": exc.category, "type": type(exc).__name__, "message": str(exc)}
     except Exception as exc:  # noqa: BLE001 - failures are benchmark artifacts
         status = "failed"
-        error = {"type": type(exc).__name__, "message": str(exc)}
+        error = {"category": "tool_failure", "type": type(exc).__name__, "message": str(exc)}
 
     latency_ms = round((time.perf_counter() - started) * 1000, 3)
     completed_at = _utc_now()
+    tool_model_key = _tool_model_key(cell.competitor)
     transcript = {
         "competitor_id": cell.competitor.id,
+        "tool_model_key": tool_model_key,
         "corpus_id": cell.question.id,
         "adapter": cell.competitor.adapter,
         "status": status,
@@ -220,6 +238,7 @@ def _execute_cell(cell: BenchmarkCell) -> dict[str, Any]:
     }
     token_record = {
         "competitor_id": cell.competitor.id,
+        "tool_model_key": tool_model_key,
         "corpus_id": cell.question.id,
         "status": "placeholder",
         "input_characters": len(cell.question.prompt),
@@ -230,20 +249,20 @@ def _execute_cell(cell: BenchmarkCell) -> dict[str, Any]:
     }
     latency_record = {
         "competitor_id": cell.competitor.id,
+        "tool_model_key": tool_model_key,
         "corpus_id": cell.question.id,
         "status": status,
+        "error_category": None if error is None else error["category"],
         "latency_ms": latency_ms,
         "started_at": started_at,
         "completed_at": completed_at,
     }
-    scoring_record = {
-        "competitor_id": cell.competitor.id,
-        "corpus_id": cell.question.id,
-        "status": "placeholder",
-        "score": None,
-        "requires_manual_scoring": True,
-        "notes": "Correctness scoring automation is intentionally out of scope for issue #72.",
-    }
+    scoring_record = _scoring_record(
+        cell,
+        status=status,
+        tool_model_key=tool_model_key,
+        error=error,
+    )
     return {
         "status": status,
         "transcript": transcript,
@@ -257,13 +276,71 @@ def _execute_cell(cell: BenchmarkCell) -> dict[str, Any]:
 def _fake_provider_answer(cell: BenchmarkCell) -> str:
     adapter = cell.competitor.adapter
     if adapter not in _EXECUTABLE_ADAPTERS:
-        raise RuntimeError(f"adapter {adapter!r} is not implemented in issue #72 runner")
-    if cell.competitor.raw.get("force_failure") is True:
-        raise RuntimeError("forced fake provider failure")
+        raise BenchmarkCellFailure(
+            "tool_failure", f"adapter {adapter!r} is not implemented in issue #72 runner"
+        )
+    forced_failure = cell.competitor.raw.get("force_failure")
+    if forced_failure:
+        category = _forced_failure_category(forced_failure)
+        raise BenchmarkCellFailure(category, f"forced fake provider {category}")
     answer = cell.competitor.raw.get("fake_answer")
     if isinstance(answer, str):
         return answer
     return f"[fake:{cell.competitor.id}] {cell.question.prompt}"
+
+
+def _forced_failure_category(value: object) -> str:
+    if value is True:
+        return "tool_failure"
+    if value in {"tool_failure", "timeout", "mcp_protocol_crash"}:
+        return str(value)
+    return "tool_failure"
+
+
+def _tool_model_key(competitor: Competitor) -> str:
+    provider = competitor.raw.get("provider")
+    model = competitor.raw.get("model")
+    if isinstance(provider, str) and provider and isinstance(model, str) and model:
+        return f"{competitor.id}:{provider}/{model}"
+    if isinstance(model, str) and model:
+        return f"{competitor.id}:{model}"
+    return competitor.id
+
+
+def _scoring_record(
+    cell: BenchmarkCell,
+    *,
+    status: str,
+    tool_model_key: str,
+    error: dict[str, str] | None,
+) -> dict[str, Any]:
+    base = {
+        "competitor_id": cell.competitor.id,
+        "tool_model_key": tool_model_key,
+        "corpus_id": cell.question.id,
+        "included_in_correctness_denominator": True,
+        "denominator_unit": "corpus_query",
+        "error_category": None if error is None else error["category"],
+        "error": error,
+    }
+    if status == "failed":
+        return {
+            **base,
+            "status": "failed",
+            "score": 0.0,
+            "requires_manual_scoring": False,
+            "notes": (
+                "Failed query is explicitly scored as 0.0 and remains in the "
+                "correctness denominator."
+            ),
+        }
+    return {
+        **base,
+        "status": "placeholder",
+        "score": None,
+        "requires_manual_scoring": True,
+        "notes": "Correctness scoring automation is intentionally out of scope for issue #72.",
+    }
 
 
 def _write_cell_artifacts(run_dir: Path, cell: BenchmarkCell, result: dict[str, Any]) -> None:
@@ -280,7 +357,10 @@ def _write_cell_artifacts(run_dir: Path, cell: BenchmarkCell, result: dict[str, 
                 "competitor_id": competitor_id,
                 "corpus_id": corpus_id,
                 "status": "failed",
+                "tool_model_key": result["transcript"]["tool_model_key"],
                 "error": result["failure"],
+                "included_in_correctness_denominator": True,
+                "correctness_score": 0.0,
             },
         )
 
