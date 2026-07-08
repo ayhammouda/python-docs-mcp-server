@@ -421,6 +421,10 @@ def _render_report(
     methodology_link = _relative_link(methodology_path, report_path.parent)
     by_tool_model = _group_by(bundle.cells, lambda cell: cell.tool_model_key)
     by_competitor = _group_by(bundle.cells, lambda cell: cell.competitor_id)
+    manifest_hash_line = (
+        "- **Competitor manifest hash (SHA-256 of `snapshots/competitor-manifest.yml`):** "
+        f"`{bundle.manifest_hash}`"
+    )
 
     lines: list[str] = [
         f"# Benchmark Report -- {run_summary.get('run_id', 'unknown-run')}",
@@ -430,8 +434,7 @@ def _render_report(
         f"- **Methodology:** [{methodology_path.name}]({methodology_link})",
         f"- **Repo commit:** `{run_summary.get('repo_commit', 'unknown')}`",
         f"- **Corpus hash (SHA-256 of `snapshots/corpus.yml`):** `{bundle.corpus_hash}`",
-        "- **Competitor manifest hash (SHA-256 of `snapshots/competitor-manifest.yml`):** "
-        f"`{bundle.manifest_hash}`",
+        manifest_hash_line,
         f"- **Run artifact directory:** `{run_summary.get('artifact_root', str(bundle.run_dir))}`",
         "",
         "## Environment Metadata",
@@ -715,6 +718,17 @@ def _render_readme_summary(bundle: RunBundle, methodology_path: Path, summary_pa
     run_summary = bundle.run_summary
     methodology_link = _relative_link(methodology_path, summary_path.parent)
     by_tool_model = _group_by(bundle.cells, lambda cell: cell.tool_model_key)
+    raw_bundle_line = (
+        "- **Raw result bundle:** "
+        f"`{run_summary.get('artifact_root', str(bundle.run_dir))}` (see `REPORT.md` in that "
+        "directory for the full raw report)"
+    )
+    pairings_intro = (
+        "Every row below is one `tool_model_key` (a single tool paired with a single model "
+        "family) -- never a tool-only row, and never averaged across model families. Per-model "
+        "results only; see the full report for category breakdowns and any explicitly labeled "
+        "cross-model aggregate."
+    )
 
     lines: list[str] = [
         f"# Benchmark Summary (README-Safe Template) -- {run_summary.get('run_id', 'unknown-run')}",
@@ -722,18 +736,13 @@ def _render_readme_summary(bundle: RunBundle, methodology_path: Path, summary_pa
         f"> {README_SUMMARY_DISCLAIMER}",
         "",
         f"- **Methodology:** [{methodology_path.name}]({methodology_link})",
-        "- **Raw result bundle:** "
-        f"`{run_summary.get('artifact_root', str(bundle.run_dir))}` (see `REPORT.md` in that "
-        "directory for the full raw report)",
+        raw_bundle_line,
         f"- **Corpus hash (SHA-256):** `{bundle.corpus_hash}`",
         f"- **Repo commit:** `{run_summary.get('repo_commit', 'unknown')}`",
         "",
         "## Results (Strict Tool + Model Pairings)",
         "",
-        "Every row below is one `tool_model_key` (a single tool paired with a single model "
-        "family) -- never a tool-only row, and never averaged across model families. Per-model "
-        "results only; see the full report for category breakdowns and any explicitly labeled "
-        "cross-model aggregate.",
+        pairings_intro,
         "",
     ]
     lines.extend(
