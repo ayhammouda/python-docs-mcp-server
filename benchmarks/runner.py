@@ -11,6 +11,12 @@ Wiring a manifest's model-matrix pairing into this module's per-cell
 dispatch remains out of scope -- cell composition stays competitor x
 question (see the ``benchmarks.model_matrix`` module docstring for the
 confirmed composition decision).
+
+Each cell's token record (``_build_token_record``, issue #89) is the one
+exception to "no network I/O": it fills real counts via the guarded
+Anthropic count-tokens caller (``benchmarks.adapters.claude_tokens``) when
+a maintainer-run live phase is active, and otherwise stays the honest
+``None`` placeholder every CI/unit-test run produces.
 """
 
 from __future__ import annotations
