@@ -99,8 +99,8 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
             "shrinks) - use a new, empty --out directory for each run"
         )
     run_dir.mkdir(parents=True, exist_ok=True)
-    _write_artifact(run_dir / "snapshots" / "competitor-manifest.yml", manifest_data)
-    _write_artifact(run_dir / "snapshots" / "corpus.yml", corpus_data)
+    _write_snapshot(config.manifest_path, run_dir / "snapshots" / "competitor-manifest.yml")
+    _write_snapshot(config.corpus_path, run_dir / "snapshots" / "corpus.yml")
 
     started_at = _utc_now()
     environment = _environment_metadata(run_id=run_id, dry_run=config.dry_run)
@@ -411,9 +411,17 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def _write_artifact(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(data, sort_keys=True), encoding="utf-8")
+def _write_snapshot(source: Path, dest: Path) -> None:
+    """Copy ``source`` to ``dest`` byte-for-byte.
+
+    Snapshots must be exact copies of the input corpus/manifest files (not a
+    re-serialization of the parsed YAML mapping) so a frozen corpus file's
+    hash can be verified against the snapshot recorded in a given run.
+    Re-serializing via ``yaml.safe_dump`` would strip comments and re-sort
+    keys, breaking that byte-for-byte provenance guarantee.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(source.read_bytes())
 
 
 def _default_run_id() -> str:

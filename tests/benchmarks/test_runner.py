@@ -75,6 +75,41 @@ def test_runner_writes_stable_artifact_paths(tmp_path: Path) -> None:
     assert (out_dir / "scoring" / "no-mcp" / "q001.json").is_file()
 
 
+def test_snapshots_are_byte_identical_to_input_files(tmp_path: Path) -> None:
+    # Snapshots must be exact copies of the input files, not a re-serialized
+    # yaml.safe_dump of the parsed mapping, so a frozen corpus file's hash
+    # (issue #74's required corpus hash check) can be verified against the
+    # snapshot. A comment and non-alphabetical key order are included below
+    # because yaml.safe_dump(sort_keys=True) would silently drop the comment
+    # and reorder the keys, which byte-equality catches but structural
+    # equality would not.
+    out_dir = tmp_path / "results" / "byte-snapshot"
+    corpus_path = _corpus(tmp_path)
+    manifest_path = _manifest(tmp_path)
+    corpus_path.write_bytes(
+        b"# a corpus comment that yaml.safe_dump would strip\n" + corpus_path.read_bytes()
+    )
+    manifest_path.write_bytes(
+        b"competitors:\n  - id: no-mcp\n    name: No MCP baseline\n    adapter: no-mcp-baseline\n"
+    )
+    original_corpus_bytes = corpus_path.read_bytes()
+    original_manifest_bytes = manifest_path.read_bytes()
+
+    run_benchmark(
+        BenchmarkConfig(
+            corpus_path=corpus_path,
+            manifest_path=manifest_path,
+            out_dir=out_dir,
+            run_id="byte-snapshot",
+        )
+    )
+
+    assert (out_dir / "snapshots" / "corpus.yml").read_bytes() == original_corpus_bytes
+    assert (
+        out_dir / "snapshots" / "competitor-manifest.yml"
+    ).read_bytes() == original_manifest_bytes
+
+
 def test_rerun_into_non_empty_output_directory_is_rejected(tmp_path: Path) -> None:
     # A non-empty --out directory could hold orphaned per-cell JSON files
     # from a previous run (e.g. after the corpus or manifest shrinks), which
