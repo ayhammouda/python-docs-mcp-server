@@ -143,6 +143,22 @@ def test_citations_field_entirely_missing_is_rejected(tmp_path: Path) -> None:
         validate_corpus(_corpus(tmp_path / "corpus.yml", questions), REAL_SCHEMA_PATH)
 
 
+@pytest.mark.parametrize("blank_citation", ["", "   "])
+def test_blank_citation_entry_rejected(tmp_path: Path, blank_citation: str) -> None:
+    # Regression cover (CodeRabbit review on PR #97): a citations list whose
+    # only entry is an empty or whitespace-only string must be rejected the
+    # same way as a missing or empty citations list. validate_corpus requires
+    # every citation entry to be non-empty after strip
+    # (benchmarks/corpus.py:_require_nonempty_string_list).
+    questions = _minimal_valid_questions()
+    broken = copy.deepcopy(questions[0])
+    broken["citations"] = [blank_citation]
+    questions[0] = broken
+
+    with pytest.raises(BenchmarkValidationError, match="citations"):
+        validate_corpus(_corpus(tmp_path / "corpus.yml", questions), REAL_SCHEMA_PATH)
+
+
 def test_wrong_category_counts_rejected(tmp_path: Path) -> None:
     questions = _minimal_valid_questions()
     # Flip one 'applied' question to 'concept': applied drops to 4, concept
@@ -252,4 +268,36 @@ def test_cli_validate_corpus_exits_nonzero_with_clean_message(tmp_path: Path) ->
     assert result.returncode == 2
     assert result.stdout == ""
     assert "duplicate corpus question id" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_cli_validate_corpus_handles_malformed_yaml_without_traceback(tmp_path: Path) -> None:
+    # Regression cover (CodeRabbit review on PR #97): malformed corpus input
+    # must be handled cleanly through the `python -m benchmarks` CLI path too,
+    # not only via the direct validate_corpus() library surface -- a raw
+    # yaml.YAMLError traceback would exit 1 and dump a stack trace instead of
+    # taking the catch-BenchmarkValidationError-then-exit-2 path.
+    corpus_path = tmp_path / "corpus.yml"
+    corpus_path.write_text("questions: [unterminated\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "benchmarks",
+            "validate-corpus",
+            "--corpus",
+            str(corpus_path),
+            "--schema",
+            str(REAL_SCHEMA_PATH),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        cwd=REPO_ROOT,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "not valid YAML" in result.stderr
     assert "Traceback" not in result.stderr
