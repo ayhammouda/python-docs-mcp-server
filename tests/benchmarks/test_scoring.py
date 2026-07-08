@@ -230,6 +230,29 @@ def test_score_run_detects_grounding_evidence_from_tool_calls(tmp_path: Path) ->
     assert _read_queue(run_dir)["cells"][0]["grounding_evidence_present"] is True
 
 
+def test_score_run_does_not_count_error_tool_calls_as_grounding_evidence(
+    tmp_path: Path,
+) -> None:
+    # Companion to the happy-path case above (CodeRabbit review on PR #100):
+    # a recorded tool call that errored is not grounding evidence -- only a
+    # successful call with a non-empty result payload counts
+    # (benchmarks.scoring._has_grounding_evidence).
+    scoring = _scoring_record(competitor_id="tool-a", corpus_id="SYN-EX-001")
+    transcript = _transcript_record(
+        competitor_id="tool-a",
+        corpus_id="SYN-EX-001",
+        answer="Ungrounded candidate answer.",
+        tool_calls=[{"tool": "search_docs", "arguments": {}, "result": None, "is_error": True}],
+    )
+    run_dir = _build_run_dir(tmp_path, [(scoring, transcript)])
+
+    _score(run_dir)
+
+    updated = _read_scoring(run_dir, "tool-a", "SYN-EX-001")
+    assert updated["grounding_evidence_present"] is False
+    assert _read_queue(run_dir)["cells"][0]["grounding_evidence_present"] is False
+
+
 # --- Per-category rollups + denominator invariance ----------------------------
 
 
@@ -277,6 +300,52 @@ def test_score_run_produces_per_category_rollups(tmp_path: Path) -> None:
 
     on_disk = json.loads((run_dir / "scoring-rollups.json").read_text(encoding="utf-8"))
     assert on_disk == rollups
+
+
+def test_score_run_produces_per_tool_model_rollups(tmp_path: Path) -> None:
+    # Two competitors so the by_tool_model_key breakdown is meaningfully
+    # exercised (CodeRabbit review on PR #100). tool-b carries an explicit
+    # tool_model_key (the runner's `id:provider/model` format) to verify
+    # rollups key on tool_model_key, not competitor_id.
+    cells = [
+        (
+            _scoring_record(competitor_id="tool-a", corpus_id="SYN-EX-001"),
+            _transcript_record(competitor_id="tool-a", corpus_id="SYN-EX-001", answer=""),
+        ),
+        (
+            _scoring_record(
+                competitor_id="tool-b",
+                corpus_id="SYN-EX-001",
+                tool_model_key="tool-b:openai/fake-model",
+            ),
+            _transcript_record(competitor_id="tool-b", corpus_id="SYN-EX-001", answer=""),
+        ),
+        (
+            _scoring_record(
+                competitor_id="tool-b",
+                corpus_id="SYN-EX-002",
+                tool_model_key="tool-b:openai/fake-model",
+            ),
+            _transcript_record(
+                competitor_id="tool-b", corpus_id="SYN-EX-002", answer="pending answer"
+            ),
+        ),
+    ]
+    run_dir = _build_run_dir(tmp_path, cells)
+
+    result = _score(run_dir)
+    by_tool_model = result["rollups"]["by_tool_model_key"]
+
+    assert set(by_tool_model) == {"tool-a", "tool-b:openai/fake-model"}
+    assert by_tool_model["tool-a"]["total_cells"] == 1
+    assert by_tool_model["tool-a"]["scored_cells"] == 1
+    assert by_tool_model["tool-a"]["pending_manual_scoring_cells"] == 0
+    assert by_tool_model["tool-b:openai/fake-model"]["total_cells"] == 2
+    assert by_tool_model["tool-b:openai/fake-model"]["scored_cells"] == 1
+    assert by_tool_model["tool-b:openai/fake-model"]["pending_manual_scoring_cells"] == 1
+
+    on_disk = json.loads((run_dir / "scoring-rollups.json").read_text(encoding="utf-8"))
+    assert on_disk["by_tool_model_key"] == by_tool_model
 
 
 def test_score_run_denominator_includes_every_scoring_file(tmp_path: Path) -> None:
