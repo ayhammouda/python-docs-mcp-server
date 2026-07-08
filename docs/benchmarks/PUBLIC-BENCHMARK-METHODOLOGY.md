@@ -1,7 +1,6 @@
 # Public Benchmark Methodology
 
-**Status:** Draft methodology for issue
-[#63](https://github.com/ayhammouda/python-docs-mcp-server/issues/63).
+**Status:** Accepted (blessed 2026-07-08; see PLAN-2026-07-08-benchmark-plumbing.md Amendment 1)
 Do not publish comparative claims until the harness has produced reproducible
 data from this methodology.
 
