@@ -93,7 +93,9 @@ class _CallToolSession(Protocol):
 
     async def call_tool(
         self, name: str, arguments: dict[str, Any] | None = None
-    ) -> _CallToolResult: ...
+    ) -> _CallToolResult:
+        """Invoke one MCP tool by name and return its raw call result."""
+        raise NotImplementedError
 
 
 def _default_command() -> list[str]:
