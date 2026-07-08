@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -74,8 +75,28 @@ def test_runner_writes_stable_artifact_paths(tmp_path: Path) -> None:
     assert (out_dir / "scoring" / "no-mcp" / "q001.json").is_file()
 
 
-def test_environment_metadata_captures_repo_commit_and_python(tmp_path: Path) -> None:
+def test_environment_metadata_captures_repo_commit_and_python(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     out_dir = tmp_path / "results" / "metadata"
+    fake_sha = "deadbeefcafefeed0000000000000000000000"
+    real_run = subprocess.run
+
+    def _fake_git_rev_parse(cmd: Any, *args: Any, **kwargs: Any) -> Any:
+        # Only fake out the runner's `git rev-parse HEAD` call; delegate
+        # everything else (e.g. stdlib internals that also shell out) to the
+        # real subprocess.run so we don't destabilize unrelated behavior.
+        if list(cmd) == ["git", "rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout=f"{fake_sha}\n", stderr=""
+            )
+        return real_run(cmd, *args, **kwargs)
+
+    # The real `git rev-parse HEAD` call is environment-dependent (it returns
+    # "unknown" when git is unavailable, e.g. minimal CI containers or a
+    # non-git checkout). Monkeypatch the subprocess call so the assertion
+    # below stays deterministic and at full strength in every environment.
+    monkeypatch.setattr("benchmarks.runner.subprocess.run", _fake_git_rev_parse)
 
     run_benchmark(
         BenchmarkConfig(
@@ -88,7 +109,7 @@ def test_environment_metadata_captures_repo_commit_and_python(tmp_path: Path) ->
 
     metadata = json.loads((out_dir / "environment.json").read_text(encoding="utf-8"))
     assert metadata["run_id"] == "metadata"
-    assert metadata["repo_commit"]
+    assert metadata["repo_commit"] == fake_sha
     assert metadata["repo_commit"] != "unknown"
     assert metadata["python_version"].startswith(f"{sys.version_info.major}.")
     assert metadata["external_provider_calls"] is False
