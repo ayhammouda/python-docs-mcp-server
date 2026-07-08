@@ -144,7 +144,10 @@ def _load_yaml_mapping(path: Path, label: str) -> dict[str, Any]:
     if not path.exists():
         raise BenchmarkValidationError(f"{label} file does not exist: {path}")
     with path.open("r", encoding="utf-8") as file:
-        data = yaml.safe_load(file)
+        try:
+            data = yaml.safe_load(file)
+        except yaml.YAMLError as exc:
+            raise BenchmarkValidationError(f"{label} file is not valid YAML: {exc}") from exc
     if not isinstance(data, dict):
         raise BenchmarkValidationError(f"{label} file must contain a YAML mapping")
     return data

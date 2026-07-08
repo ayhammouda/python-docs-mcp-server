@@ -164,6 +164,37 @@ def test_missing_corpus_id_is_rejected(tmp_path: Path) -> None:
         )
 
 
+def test_malformed_corpus_yaml_raises_validation_error(tmp_path: Path) -> None:
+    # A syntactically invalid YAML file must surface as BenchmarkValidationError
+    # (the CLI's established validation exit path, see benchmarks/__main__.py),
+    # not as a raw yaml.YAMLError traceback.
+    corpus_path = tmp_path / "corpus.yml"
+    corpus_path.write_text("questions: [unterminated\n", encoding="utf-8")
+
+    with pytest.raises(BenchmarkValidationError, match="not valid YAML"):
+        run_benchmark(
+            BenchmarkConfig(
+                corpus_path=corpus_path,
+                manifest_path=_manifest(tmp_path),
+                out_dir=tmp_path / "out",
+            )
+        )
+
+
+def test_malformed_manifest_yaml_raises_validation_error(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "competitors.yml"
+    manifest_path.write_text("competitors: [unterminated\n", encoding="utf-8")
+
+    with pytest.raises(BenchmarkValidationError, match="not valid YAML"):
+        run_benchmark(
+            BenchmarkConfig(
+                corpus_path=_corpus(tmp_path),
+                manifest_path=manifest_path,
+                out_dir=tmp_path / "out",
+            )
+        )
+
+
 def test_competitor_cell_failure_is_recorded(tmp_path: Path) -> None:
     out_dir = tmp_path / "results" / "failure"
 
