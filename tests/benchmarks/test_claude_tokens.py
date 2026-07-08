@@ -153,6 +153,13 @@ def test_live_claude_token_counter_refuses_with_flag_but_no_key(
     monkeypatch.setenv(LIVE_PROVIDERS_ENABLED_ENV, "1")
     monkeypatch.delenv(ANTHROPIC_KEY_ENV, raising=False)
 
+    def _network_must_not_be_called(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("network reached")
+
+    # Fail closed: if the guard order ever regresses, this test must fail on
+    # the stubbed network call, never actually reach the network.
+    monkeypatch.setattr("urllib.request.urlopen", _network_must_not_be_called)
+
     with pytest.raises(LiveProviderDisabledError, match=ANTHROPIC_KEY_ENV):
         LiveClaudeTokenCounter().count([{"role": "user", "content": "prompt"}])
 
@@ -162,6 +169,13 @@ def test_live_claude_token_counter_refuses_with_key_but_no_flag(
 ) -> None:
     monkeypatch.delenv(LIVE_PROVIDERS_ENABLED_ENV, raising=False)
     monkeypatch.setenv(ANTHROPIC_KEY_ENV, "fake-not-a-real-key")
+
+    def _network_must_not_be_called(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("network reached")
+
+    # Fail closed: if the guard order ever regresses, this test must fail on
+    # the stubbed network call, never actually reach the network.
+    monkeypatch.setattr("urllib.request.urlopen", _network_must_not_be_called)
 
     with pytest.raises(LiveProviderDisabledError, match=LIVE_PROVIDERS_ENABLED_ENV):
         LiveClaudeTokenCounter().count([{"role": "user", "content": "prompt"}])
