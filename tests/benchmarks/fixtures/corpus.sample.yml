@@ -1,0 +1,703 @@
+# SYNTHETIC/FIXTURE DATA -- NOT A REAL CORPUS.
+#
+# This file is a placeholder fixture for tests/benchmarks/test_corpus_validation.py
+# and benchmarks/corpus.py's schema validator (issue #94, split from #71 under
+# maintainer approval D4; see PLAN.md Amendment 2026-07-08, decision D4, and the
+# agent-context comment on issue #94).
+#
+# Every question below is mechanically generated, references a fictional
+# `synthstdlib` module that does not exist in any real Python standard library,
+# and cites only the reserved example.invalid domain (RFC 2606). None of this
+# content is a real Python documentation question, a real citation, or a real
+# answer. Zero real corpus questions were authored to produce this file.
+#
+# The real, human-authored 50-question corpus is tracked on issue #71 and will
+# live at docs/benchmarks/corpus.yml once frozen. This file must never be
+# confused with that corpus and must never be copied there.
+#
+# Shape: validates against docs/benchmarks/corpus.schema.json, including the
+# schema's declared category distribution (15 exact_symbol / 10 concept /
+# 15 cross_version / 5 pep_adjacent / 5 applied = 50 total), so it also serves
+# as the "valid fixture" happy-path case in test_corpus_validation.py.
+
+questions:
+- id: SYN-EX-001
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_ex_1()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_ex_1()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/ex/1#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-EX-002
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_ex_2()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_ex_2()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/ex/2#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-EX-003
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_ex_3()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_ex_3()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/ex/3#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-EX-004
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_ex_4()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_ex_4()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/ex/4#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-EX-005
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_ex_5()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_ex_5()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/ex/5#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-EX-006
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_ex_6()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_ex_6()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/ex/6#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-EX-007
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_ex_7()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_ex_7()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/ex/7#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-EX-008
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_ex_8()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_ex_8()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/ex/8#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-EX-009
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_ex_9()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_ex_9()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/ex/9#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-EX-010
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_ex_10()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_ex_10()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/ex/10#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-EX-011
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_ex_11()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_ex_11()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/ex/11#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-EX-012
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_ex_12()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_ex_12()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/ex/12#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-EX-013
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_ex_13()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_ex_13()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/ex/13#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-EX-014
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_ex_14()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_ex_14()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/ex/14#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-EX-015
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_ex_15()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_ex_15()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/ex/15#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-CN-001
+  category: concept
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_cn_1()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_cn_1()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/cn/1#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-CN-002
+  category: concept
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_cn_2()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_cn_2()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/cn/2#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-CN-003
+  category: concept
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_cn_3()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_cn_3()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/cn/3#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-CN-004
+  category: concept
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_cn_4()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_cn_4()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/cn/4#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-CN-005
+  category: concept
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_cn_5()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_cn_5()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/cn/5#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-CN-006
+  category: concept
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_cn_6()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_cn_6()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/cn/6#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-CN-007
+  category: concept
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_cn_7()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_cn_7()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/cn/7#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-CN-008
+  category: concept
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_cn_8()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_cn_8()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/cn/8#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-CN-009
+  category: concept
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_cn_9()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_cn_9()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/cn/9#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-CN-010
+  category: concept
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_cn_10()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_cn_10()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/cn/10#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-XV-001
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: '[SYNTHETIC FIXTURE] Between Python 3.12 and 3.13, what changed about the fictional stdlib callable
+    `synthstdlib.fixture_symbol_xv_1()`?'
+  answer_key: '[SYNTHETIC FIXTURE] In 3.13, `synthstdlib.fixture_symbol_xv_1()` gained a fictional `strict=`
+    keyword-only parameter; no such API exists in real CPython.'
+  citations:
+  - https://example.invalid/fixture-docs/xv/1#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-XV-002
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: '[SYNTHETIC FIXTURE] Between Python 3.12 and 3.13, what changed about the fictional stdlib callable
+    `synthstdlib.fixture_symbol_xv_2()`?'
+  answer_key: '[SYNTHETIC FIXTURE] In 3.13, `synthstdlib.fixture_symbol_xv_2()` gained a fictional `strict=`
+    keyword-only parameter; no such API exists in real CPython.'
+  citations:
+  - https://example.invalid/fixture-docs/xv/2#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-XV-003
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: '[SYNTHETIC FIXTURE] Between Python 3.12 and 3.13, what changed about the fictional stdlib callable
+    `synthstdlib.fixture_symbol_xv_3()`?'
+  answer_key: '[SYNTHETIC FIXTURE] In 3.13, `synthstdlib.fixture_symbol_xv_3()` gained a fictional `strict=`
+    keyword-only parameter; no such API exists in real CPython.'
+  citations:
+  - https://example.invalid/fixture-docs/xv/3#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-XV-004
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: '[SYNTHETIC FIXTURE] Between Python 3.12 and 3.13, what changed about the fictional stdlib callable
+    `synthstdlib.fixture_symbol_xv_4()`?'
+  answer_key: '[SYNTHETIC FIXTURE] In 3.13, `synthstdlib.fixture_symbol_xv_4()` gained a fictional `strict=`
+    keyword-only parameter; no such API exists in real CPython.'
+  citations:
+  - https://example.invalid/fixture-docs/xv/4#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-XV-005
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: '[SYNTHETIC FIXTURE] Between Python 3.12 and 3.13, what changed about the fictional stdlib callable
+    `synthstdlib.fixture_symbol_xv_5()`?'
+  answer_key: '[SYNTHETIC FIXTURE] In 3.13, `synthstdlib.fixture_symbol_xv_5()` gained a fictional `strict=`
+    keyword-only parameter; no such API exists in real CPython.'
+  citations:
+  - https://example.invalid/fixture-docs/xv/5#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-XV-006
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: '[SYNTHETIC FIXTURE] Between Python 3.12 and 3.13, what changed about the fictional stdlib callable
+    `synthstdlib.fixture_symbol_xv_6()`?'
+  answer_key: '[SYNTHETIC FIXTURE] In 3.13, `synthstdlib.fixture_symbol_xv_6()` gained a fictional `strict=`
+    keyword-only parameter; no such API exists in real CPython.'
+  citations:
+  - https://example.invalid/fixture-docs/xv/6#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-XV-007
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: '[SYNTHETIC FIXTURE] Between Python 3.12 and 3.13, what changed about the fictional stdlib callable
+    `synthstdlib.fixture_symbol_xv_7()`?'
+  answer_key: '[SYNTHETIC FIXTURE] In 3.13, `synthstdlib.fixture_symbol_xv_7()` gained a fictional `strict=`
+    keyword-only parameter; no such API exists in real CPython.'
+  citations:
+  - https://example.invalid/fixture-docs/xv/7#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-XV-008
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: '[SYNTHETIC FIXTURE] Between Python 3.12 and 3.13, what changed about the fictional stdlib callable
+    `synthstdlib.fixture_symbol_xv_8()`?'
+  answer_key: '[SYNTHETIC FIXTURE] In 3.13, `synthstdlib.fixture_symbol_xv_8()` gained a fictional `strict=`
+    keyword-only parameter; no such API exists in real CPython.'
+  citations:
+  - https://example.invalid/fixture-docs/xv/8#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-XV-009
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: '[SYNTHETIC FIXTURE] Between Python 3.12 and 3.13, what changed about the fictional stdlib callable
+    `synthstdlib.fixture_symbol_xv_9()`?'
+  answer_key: '[SYNTHETIC FIXTURE] In 3.13, `synthstdlib.fixture_symbol_xv_9()` gained a fictional `strict=`
+    keyword-only parameter; no such API exists in real CPython.'
+  citations:
+  - https://example.invalid/fixture-docs/xv/9#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-XV-010
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: '[SYNTHETIC FIXTURE] Between Python 3.12 and 3.13, what changed about the fictional stdlib callable
+    `synthstdlib.fixture_symbol_xv_10()`?'
+  answer_key: '[SYNTHETIC FIXTURE] In 3.13, `synthstdlib.fixture_symbol_xv_10()` gained a fictional `strict=`
+    keyword-only parameter; no such API exists in real CPython.'
+  citations:
+  - https://example.invalid/fixture-docs/xv/10#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-XV-011
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: '[SYNTHETIC FIXTURE] Between Python 3.12 and 3.13, what changed about the fictional stdlib callable
+    `synthstdlib.fixture_symbol_xv_11()`?'
+  answer_key: '[SYNTHETIC FIXTURE] In 3.13, `synthstdlib.fixture_symbol_xv_11()` gained a fictional `strict=`
+    keyword-only parameter; no such API exists in real CPython.'
+  citations:
+  - https://example.invalid/fixture-docs/xv/11#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-XV-012
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: '[SYNTHETIC FIXTURE] Between Python 3.12 and 3.13, what changed about the fictional stdlib callable
+    `synthstdlib.fixture_symbol_xv_12()`?'
+  answer_key: '[SYNTHETIC FIXTURE] In 3.13, `synthstdlib.fixture_symbol_xv_12()` gained a fictional `strict=`
+    keyword-only parameter; no such API exists in real CPython.'
+  citations:
+  - https://example.invalid/fixture-docs/xv/12#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-XV-013
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: '[SYNTHETIC FIXTURE] Between Python 3.12 and 3.13, what changed about the fictional stdlib callable
+    `synthstdlib.fixture_symbol_xv_13()`?'
+  answer_key: '[SYNTHETIC FIXTURE] In 3.13, `synthstdlib.fixture_symbol_xv_13()` gained a fictional `strict=`
+    keyword-only parameter; no such API exists in real CPython.'
+  citations:
+  - https://example.invalid/fixture-docs/xv/13#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-XV-014
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: '[SYNTHETIC FIXTURE] Between Python 3.12 and 3.13, what changed about the fictional stdlib callable
+    `synthstdlib.fixture_symbol_xv_14()`?'
+  answer_key: '[SYNTHETIC FIXTURE] In 3.13, `synthstdlib.fixture_symbol_xv_14()` gained a fictional `strict=`
+    keyword-only parameter; no such API exists in real CPython.'
+  citations:
+  - https://example.invalid/fixture-docs/xv/14#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-XV-015
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: '[SYNTHETIC FIXTURE] Between Python 3.12 and 3.13, what changed about the fictional stdlib callable
+    `synthstdlib.fixture_symbol_xv_15()`?'
+  answer_key: '[SYNTHETIC FIXTURE] In 3.13, `synthstdlib.fixture_symbol_xv_15()` gained a fictional `strict=`
+    keyword-only parameter; no such API exists in real CPython.'
+  citations:
+  - https://example.invalid/fixture-docs/xv/15#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-PEP-001
+  category: pep_adjacent
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_pep_1()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_pep_1()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/pep/1#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-PEP-002
+  category: pep_adjacent
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_pep_2()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_pep_2()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/pep/2#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-PEP-003
+  category: pep_adjacent
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_pep_3()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_pep_3()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/pep/3#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-PEP-004
+  category: pep_adjacent
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_pep_4()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_pep_4()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/pep/4#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-PEP-005
+  category: pep_adjacent
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_pep_5()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_pep_5()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/pep/5#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-APP-001
+  category: applied
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_app_1()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_app_1()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/app/1#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-APP-002
+  category: applied
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_app_2()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_app_2()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/app/2#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-APP-003
+  category: applied
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_app_3()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_app_3()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/app/3#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-APP-004
+  category: applied
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_app_4()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_app_4()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/app/4#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
+- id: SYN-APP-005
+  category: applied
+  python_version: '3.13'
+  prompt: '[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_app_5()` do in Python
+    3.13?'
+  answer_key: '[SYNTHETIC FIXTURE] `synthstdlib.fixture_symbol_app_5()` is a made-up placeholder API invented
+    only for tests/benchmarks/fixtures/corpus.sample.yml; it is not part of any real Python standard library.'
+  citations:
+  - https://example.invalid/fixture-docs/app/5#synthstdlib
+  expected_properties:
+  - mentions-synthetic-symbol
+  - cites-fixture-source
+  ambiguity_notes: null
