@@ -143,8 +143,13 @@ def test_require_live_environment_rejects_unknown_provider(
 ) -> None:
     monkeypatch.setenv(LIVE_PROVIDERS_ENABLED_ENV, "1")
 
+    # D6b sanction (issue #89 pre-flight amendment, 2026-07-08): registering
+    # "anthropic" in PROVIDER_API_KEY_ENV for the guarded Claude count-tokens
+    # caller means "anthropic" is no longer an unknown provider here, so
+    # this assertion is re-pointed at a still-unregistered provider string.
+    # This is the sole merged-test change the sanction covers.
     with pytest.raises(LiveProviderDisabledError, match="unknown provider"):
-        require_live_environment("anthropic")
+        require_live_environment("not-a-registered-provider")
 
 
 # --- Live adapter stubs: guard enforced, no network ever possible -----------

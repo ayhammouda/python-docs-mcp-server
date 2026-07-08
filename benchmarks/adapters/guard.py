@@ -6,12 +6,21 @@ that guardrail: any live adapter (see ``openai_adapter.LiveOpenAIAdapter`` /
 ``google_adapter.LiveGoogleAdapter``) must call
 :func:`require_live_environment` before doing anything else.
 
-This package never makes a live or paid API call, with or without the
-guard passing -- the live adapters in this release are stubs that, after
-the guard passes, still refuse via ``LiveExecutionNotImplementedError``.
-Actually implementing a live call is out of scope for issue #73's mocked
-plumbing and is reserved for a maintainer-run, human-supervised phase (see
-PLAN.md Amendment 2026-07-08).
+The OpenAI/Google adapters in this package never make a live or paid API
+call, with or without the guard passing -- they are stubs that, after the
+guard passes, still refuse via ``LiveExecutionNotImplementedError``.
+Actually implementing a live call for those providers is out of scope for
+issue #73's mocked plumbing and is reserved for a maintainer-run,
+human-supervised phase (see PLAN.md Amendment 2026-07-08).
+
+Issue #89 is the one exception: ``benchmarks.adapters.claude_tokens``'s
+Anthropic count-tokens caller *does* perform a real HTTP call once this
+guard passes, because the maintainer-run live phase is exactly what that
+call is for (Claude token counting after client-side rewrap, roadmap
+decision 5.8). It still never runs in CI or unit tests -- tests use a fake
+counter -- and it is structurally incapable of running without both
+``BENCHMARK_LIVE_PROVIDERS_ENABLED`` and ``ANTHROPIC_API_KEY`` set, exactly
+like every other provider gated here.
 """
 
 from __future__ import annotations
@@ -25,9 +34,14 @@ from benchmarks.runner import BenchmarkCellFailure
 LIVE_PROVIDERS_ENABLED_ENV = "BENCHMARK_LIVE_PROVIDERS_ENABLED"
 
 #: Per-provider environment variable that must also be non-empty.
+#:
+#: ``anthropic`` (issue #89) is not a competitor/model-matrix provider --
+#: it gates the Claude count-tokens methodology caller in
+#: ``benchmarks.adapters.claude_tokens``, not a competitor answer adapter.
 PROVIDER_API_KEY_ENV = {
     "openai": "OPENAI_API_KEY",
     "google": "GOOGLE_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
 }
 
 _TRUTHY = {"1", "true", "yes"}
