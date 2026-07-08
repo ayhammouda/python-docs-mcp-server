@@ -10,6 +10,7 @@ from pathlib import Path
 from benchmarks.corpus import validate_corpus
 from benchmarks.report import generate_readme_summary, generate_report
 from benchmarks.runner import BenchmarkConfig, BenchmarkValidationError, run_benchmark
+from benchmarks.scoring import ingest_adjudication_verdicts, score_run
 
 _DEFAULT_MODEL_MATRIX = Path("docs/benchmarks/model-matrix.yml")
 _DEFAULT_METHODOLOGY = Path("docs/benchmarks/PUBLIC-BENCHMARK-METHODOLOGY.md")
@@ -88,6 +89,63 @@ def _build_parser() -> argparse.ArgumentParser:
         default=_DEFAULT_CORPUS_SCHEMA,
         help=f"Path to the corpus JSON schema file (default: {_DEFAULT_CORPUS_SCHEMA}).",
     )
+
+    # `score` and `adjudicate` (issue #88): the correctness scorer and its
+    # manual-adjudication ingest hook. Both read the answer-key corpus via
+    # the same `benchmarks.corpus.validate_corpus` gate as `validate-corpus`
+    # above, so a run can only be scored against a schema-valid corpus.
+    score_parser = subparsers.add_parser(
+        "score",
+        help=(
+            "Apply the automatic correctness-scoring pass to a run's scoring "
+            "placeholders and write the adjudication queue + rollups."
+        ),
+    )
+    score_parser.add_argument(
+        "--run-dir", required=True, type=Path, help="Path to a run's artifact directory."
+    )
+    score_parser.add_argument(
+        "--corpus",
+        required=True,
+        type=Path,
+        help="Path to the answer-key corpus file (validated against --schema).",
+    )
+    score_parser.add_argument(
+        "--schema",
+        type=Path,
+        default=_DEFAULT_CORPUS_SCHEMA,
+        help=f"Path to the corpus JSON schema file (default: {_DEFAULT_CORPUS_SCHEMA}).",
+    )
+
+    adjudicate_parser = subparsers.add_parser(
+        "adjudicate",
+        help=(
+            "Ingest human adjudication verdicts for queued cells and re-emit "
+            "final scoring records. A human verdict is never overwritten by a "
+            "later `score` run."
+        ),
+    )
+    adjudicate_parser.add_argument(
+        "--run-dir", required=True, type=Path, help="Path to a run's artifact directory."
+    )
+    adjudicate_parser.add_argument(
+        "--verdicts",
+        required=True,
+        type=Path,
+        help="Path to a JSON or YAML file of human verdicts (see benchmarks.scoring).",
+    )
+    adjudicate_parser.add_argument(
+        "--corpus",
+        required=True,
+        type=Path,
+        help="Path to the answer-key corpus file (validated against --schema).",
+    )
+    adjudicate_parser.add_argument(
+        "--schema",
+        type=Path,
+        default=_DEFAULT_CORPUS_SCHEMA,
+        help=f"Path to the corpus JSON schema file (default: {_DEFAULT_CORPUS_SCHEMA}).",
+    )
     return parser
 
 
@@ -154,6 +212,29 @@ def main(argv: list[str] | None = None) -> int:
                 sort_keys=True,
             )
         )
+        return 0
+
+    if args.command == "score":
+        try:
+            result = score_run(args.run_dir, corpus_path=args.corpus, schema_path=args.schema)
+        except BenchmarkValidationError as exc:
+            parser.exit(2, f"benchmark scoring failed: {exc}\n")
+
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "adjudicate":
+        try:
+            result = ingest_adjudication_verdicts(
+                args.run_dir,
+                args.verdicts,
+                corpus_path=args.corpus,
+                schema_path=args.schema,
+            )
+        except BenchmarkValidationError as exc:
+            parser.exit(2, f"benchmark adjudication ingest failed: {exc}\n")
+
+        print(json.dumps(result, indent=2, sort_keys=True))
         return 0
 
     parser.print_help()
