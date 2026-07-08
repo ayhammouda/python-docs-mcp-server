@@ -496,3 +496,81 @@ def test_unrecognized_adapter_id_fails_cleanly_without_crashing(tmp_path: Path) 
     )
     assert failure["error"]["category"] == "tool_failure"
     assert "not implemented in this runner" in failure["error"]["message"]
+
+
+# --- Claude token-count integration (issue #89) ------------------------------
+#
+# The count-tokens call itself is unit-tested in isolation, with a fake
+# counter, in tests/benchmarks/test_claude_tokens.py. These tests only cover
+# how benchmarks.runner wires that module in: the guard-disabled default
+# (every CI/unit-test run, since BENCHMARK_LIVE_PROVIDERS_ENABLED +
+# ANTHROPIC_API_KEY are never both set here) and the guard-enabled path with
+# LiveClaudeTokenCounter substituted for a fake counter -- never the real
+# Anthropic API.
+
+
+def test_token_record_is_the_honest_placeholder_when_live_guard_is_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from benchmarks.adapters.guard import LIVE_PROVIDERS_ENABLED_ENV, PROVIDER_API_KEY_ENV
+    from benchmarks.model_matrix import METHODOLOGY_TOKEN_LABEL
+
+    monkeypatch.delenv(LIVE_PROVIDERS_ENABLED_ENV, raising=False)
+    monkeypatch.delenv(PROVIDER_API_KEY_ENV["anthropic"], raising=False)
+    out_dir = tmp_path / "results" / "token-guard-disabled"
+
+    run_benchmark(
+        BenchmarkConfig(
+            corpus_path=_corpus(tmp_path),
+            manifest_path=_manifest(tmp_path),
+            out_dir=out_dir,
+            run_id="token-guard-disabled",
+        )
+    )
+
+    token_record = json.loads(
+        (out_dir / "tokens" / "no-mcp" / "q001.json").read_text(encoding="utf-8")
+    )
+    assert token_record["status"] == "placeholder"
+    assert token_record["client_wrapped_tokens"] is None
+    assert token_record["raw_payload_tokens"] is None
+    assert token_record["approximation"] is False
+    assert token_record["token_label"] == METHODOLOGY_TOKEN_LABEL
+
+
+def test_token_record_is_filled_when_live_guard_passes_with_a_fake_counter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from benchmarks.adapters.claude_tokens import FakeTokenCounter
+    from benchmarks.adapters.guard import LIVE_PROVIDERS_ENABLED_ENV, PROVIDER_API_KEY_ENV
+    from benchmarks.model_matrix import METHODOLOGY_TOKEN_LABEL
+
+    # Simulate a maintainer-run live phase's environment, but substitute a
+    # fake counter for LiveClaudeTokenCounter so this test -- like every
+    # other test in this suite -- never calls the real Anthropic API.
+    monkeypatch.setenv(LIVE_PROVIDERS_ENABLED_ENV, "1")
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV["anthropic"], "fake-not-a-real-key")
+    monkeypatch.setattr(
+        "benchmarks.adapters.claude_tokens.LiveClaudeTokenCounter",
+        lambda: FakeTokenCounter(tokens_per_call=55),
+    )
+    out_dir = tmp_path / "results" / "token-guard-enabled"
+
+    run_benchmark(
+        BenchmarkConfig(
+            corpus_path=_corpus(tmp_path),
+            manifest_path=_manifest(tmp_path),
+            out_dir=out_dir,
+            run_id="token-guard-enabled",
+        )
+    )
+
+    token_record = json.loads(
+        (out_dir / "tokens" / "no-mcp" / "q001.json").read_text(encoding="utf-8")
+    )
+    assert token_record["status"] == "counted"
+    assert token_record["client_wrapped_tokens"] == 55
+    assert token_record["raw_payload_tokens"] == 55
+    assert token_record["approximation"] is False
+    assert token_record["token_label"] == METHODOLOGY_TOKEN_LABEL
+    assert token_record["serialization_latency_ms"] >= 0

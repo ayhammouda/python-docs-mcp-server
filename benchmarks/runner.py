@@ -263,17 +263,7 @@ def _execute_cell(cell: BenchmarkCell) -> dict[str, Any]:
         "error": error,
         "external_provider_calls": False,
     }
-    token_record = {
-        "competitor_id": cell.competitor.id,
-        "tool_model_key": tool_model_key,
-        "corpus_id": cell.question.id,
-        "status": "placeholder",
-        "input_characters": len(cell.question.prompt),
-        "output_characters": len(answer),
-        "client_wrapped_tokens": None,
-        "raw_payload_tokens": None,
-        "notes": "Token counting integration is intentionally out of scope for issue #72.",
-    }
+    token_record = _build_token_record(cell, tool_model_key, answer, tool_calls)
     latency_record = {
         "competitor_id": cell.competitor.id,
         "tool_model_key": tool_model_key,
@@ -297,6 +287,91 @@ def _execute_cell(cell: BenchmarkCell) -> dict[str, Any]:
         "latency": latency_record,
         "scoring": scoring_record,
         "failure": error,
+    }
+
+
+def _build_token_record(
+    cell: BenchmarkCell,
+    tool_model_key: str,
+    answer: str,
+    tool_calls: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Build one cell's token record (issue #89).
+
+    Fills ``client_wrapped_tokens`` / ``raw_payload_tokens`` via the
+    Anthropic count-tokens API only when
+    ``benchmarks.adapters.guard.require_live_environment("anthropic")``
+    passes -- i.e. only in a maintainer-run live phase with
+    ``BENCHMARK_LIVE_PROVIDERS_ENABLED`` and ``ANTHROPIC_API_KEY`` both set.
+    CI and unit tests never set those, so this always returns the honest
+    ``None`` placeholder there, matching this record's pre-#89 shape (see
+    ``tests/benchmarks/test_runner.py``, which only asserts the tokens file
+    exists, not its content).
+
+    A count-tokens call failure (e.g. a live-phase network error) is
+    recorded as this cell's own ``failed`` token status rather than
+    propagated -- a token-counting problem must never crash the whole
+    benchmark run or mask a competitor's actual answer/latency/scoring
+    results for the same cell.
+
+    Imported lazily, for the same reason ``_python_docs_mcp_stdio_answer``
+    imports its adapter lazily: ``benchmarks.adapters.guard`` and
+    ``benchmarks.model_matrix`` both import from this module at their own
+    module scope, so this module cannot import from them at module scope
+    without a circular import.
+    """
+    from benchmarks.adapters.claude_tokens import LiveClaudeTokenCounter, count_cell_tokens
+    from benchmarks.adapters.guard import LiveProviderDisabledError, require_live_environment
+    from benchmarks.model_matrix import METHODOLOGY_TOKEN_LABEL
+
+    base_fields = {
+        "competitor_id": cell.competitor.id,
+        "tool_model_key": tool_model_key,
+        "corpus_id": cell.question.id,
+        "token_label": METHODOLOGY_TOKEN_LABEL,
+        "input_characters": len(cell.question.prompt),
+        "output_characters": len(answer),
+    }
+    try:
+        require_live_environment("anthropic")
+    except LiveProviderDisabledError as exc:
+        return {
+            **base_fields,
+            "status": "placeholder",
+            "client_wrapped_tokens": None,
+            "raw_payload_tokens": None,
+            "approximation": False,
+            "notes": (
+                "Claude token-count integration (issue #89) is gated behind "
+                "BENCHMARK_LIVE_PROVIDERS_ENABLED + ANTHROPIC_API_KEY for a "
+                f"maintainer-run live phase; disabled here: {exc}"
+            ),
+        }
+
+    try:
+        result = count_cell_tokens(
+            prompt=cell.question.prompt,
+            tool_calls=tool_calls,
+            counter=LiveClaudeTokenCounter(),
+        )
+    except BenchmarkCellFailure as exc:
+        return {
+            **base_fields,
+            "status": "failed",
+            "client_wrapped_tokens": None,
+            "raw_payload_tokens": None,
+            "approximation": False,
+            "notes": f"Claude count-tokens call failed: {exc}",
+        }
+
+    return {
+        **base_fields,
+        "status": "counted",
+        "client_wrapped_tokens": result.client_wrapped_tokens,
+        "raw_payload_tokens": result.raw_payload_tokens,
+        "approximation": result.approximation,
+        "serialization_latency_ms": result.serialization_latency_ms,
+        "notes": result.notes,
     }
 
 
