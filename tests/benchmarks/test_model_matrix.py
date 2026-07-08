@@ -11,8 +11,9 @@ from benchmarks.model_matrix import (
     ModelFamily,
     load_model_matrix,
     tool_model_cells,
+    validate_manifest_against_matrix,
 )
-from benchmarks.runner import BenchmarkValidationError
+from benchmarks.runner import BenchmarkValidationError, Competitor
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODEL_MATRIX_PATH = REPO_ROOT / "docs" / "benchmarks" / "model-matrix.yml"
@@ -205,3 +206,66 @@ def test_tool_model_cells_cross_multiplies_without_averaging() -> None:
     assert ("python-docs-mcp-server", "google-test") in cells
     assert ("no-mcp-baseline", "openai-test") in cells
     assert ("no-mcp-baseline", "google-test") in cells
+
+
+# --- validate_manifest_against_matrix (issue #86) --------------------------
+#
+# Confirmed composition decision: the competitor manifest enumerates one
+# entry per tool x model pairing; a manifest entry whose declared
+# provider/model pair is absent from the model matrix must fail validation
+# with a clean BenchmarkValidationError.
+
+
+def test_validate_manifest_against_matrix_accepts_a_known_pairing(tmp_path: Path) -> None:
+    matrix = load_model_matrix(_matrix_yaml(tmp_path / "matrix.yml"))
+    competitors = [
+        Competitor(
+            id="python-docs-mcp-server",
+            adapter="python-docs-mcp-stdio",
+            raw={"provider": "openai", "model": "gpt-4o-mini"},
+        )
+    ]
+
+    validate_manifest_against_matrix(competitors, matrix)  # must not raise
+
+
+def test_validate_manifest_against_matrix_rejects_an_unknown_pairing(tmp_path: Path) -> None:
+    matrix = load_model_matrix(_matrix_yaml(tmp_path / "matrix.yml"))
+    competitors = [
+        Competitor(
+            id="python-docs-mcp-server",
+            adapter="python-docs-mcp-stdio",
+            raw={"provider": "openai", "model": "gpt-4o-does-not-exist"},
+        )
+    ]
+
+    with pytest.raises(BenchmarkValidationError) as exc_info:
+        validate_manifest_against_matrix(competitors, matrix)
+
+    assert "python-docs-mcp-server" in str(exc_info.value)
+    assert "openai/gpt-4o-does-not-exist" in str(exc_info.value)
+
+
+def test_validate_manifest_against_matrix_skips_entries_without_a_full_pairing(
+    tmp_path: Path,
+) -> None:
+    matrix = load_model_matrix(_matrix_yaml(tmp_path / "matrix.yml"))
+    competitors = [
+        Competitor(id="no-mcp-baseline", adapter="no-mcp-baseline", raw={}),
+        Competitor(id="partial", adapter="fake", raw={"provider": "openai"}),
+    ]
+
+    validate_manifest_against_matrix(competitors, matrix)  # must not raise: no full pairing
+
+
+def test_validate_manifest_against_matrix_against_the_real_model_matrix_file() -> None:
+    matrix = load_model_matrix(MODEL_MATRIX_PATH)
+    competitors = [
+        Competitor(
+            id="python-docs-mcp-server",
+            adapter="python-docs-mcp-stdio",
+            raw={"provider": "openai", "model": "gpt-4o-mini"},
+        )
+    ]
+
+    validate_manifest_against_matrix(competitors, matrix)  # must not raise

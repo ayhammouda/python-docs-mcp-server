@@ -1,7 +1,16 @@
 """Benchmark runner artifact plumbing.
 
-This module intentionally contains only local fake/baseline execution. Real
-provider adapters and report generation are follow-up work packages.
+Dispatches each competitor/question cell to an adapter looked up by the
+competitor manifest's ``adapter`` id (see ``_ADAPTER_DISPATCH``): the local
+fake/baseline adapter (issue #72), or the offline stdio adapter that runs
+python-docs-mcp-server itself as a system under test (issue #86, see
+``benchmarks.adapters.python_docs_mcp_adapter``). Live LLM provider
+adapters (``benchmarks.adapters.openai_adapter`` / ``google_adapter``,
+issue #73) and report generation (issue #74/#90) live in separate modules.
+Wiring a manifest's model-matrix pairing into this module's per-cell
+dispatch remains out of scope -- cell composition stays competitor x
+question (see the ``benchmarks.model_matrix`` module docstring for the
+confirmed composition decision).
 """
 
 from __future__ import annotations
@@ -12,6 +21,7 @@ import re
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,7 +30,6 @@ from typing import Any
 import yaml
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-_EXECUTABLE_ADAPTERS = {"fake", "no-mcp-baseline", "no_mcp_baseline"}
 
 
 class BenchmarkValidationError(ValueError):
@@ -221,9 +230,12 @@ def _execute_cell(cell: BenchmarkCell) -> dict[str, Any]:
     status = "succeeded"
     error: dict[str, str] | None = None
     answer = ""
+    tool_calls: list[dict[str, Any]] | None = None
 
     try:
-        answer = _fake_provider_answer(cell)
+        dispatched = _dispatch_adapter(cell)
+        answer = dispatched.answer
+        tool_calls = dispatched.tool_calls
     except BenchmarkCellFailure as exc:
         status = "failed"
         error = {"category": exc.category, "type": type(exc).__name__, "message": str(exc)}
@@ -244,6 +256,10 @@ def _execute_cell(cell: BenchmarkCell) -> dict[str, Any]:
         "completed_at": completed_at,
         "messages": [{"role": "user", "content": cell.question.prompt}],
         "answer": answer,
+        # Raw tool call/response payloads for adapters that make them
+        # available (e.g. the python-docs-mcp-stdio adapter, issue #86).
+        # None for adapters that do not record raw payloads.
+        "tool_calls": tool_calls,
         "error": error,
         "external_provider_calls": False,
     }
@@ -284,20 +300,77 @@ def _execute_cell(cell: BenchmarkCell) -> dict[str, Any]:
     }
 
 
-def _fake_provider_answer(cell: BenchmarkCell) -> str:
-    adapter = cell.competitor.adapter
-    if adapter not in _EXECUTABLE_ADAPTERS:
-        raise BenchmarkCellFailure(
-            "tool_failure", f"adapter {adapter!r} is not implemented in issue #72 runner"
-        )
+@dataclass(frozen=True)
+class _CellDispatchResult:
+    """Return value of one adapter dispatch call (see ``_ADAPTER_DISPATCH``).
+
+    ``tool_calls`` is optional raw tool call/response metadata (e.g. the
+    python-docs-mcp-stdio adapter's ``search_docs``/``get_docs`` payloads,
+    issue #86) merged into the cell's transcript record. Adapters with
+    nothing extra to record (the fake/baseline adapter) leave it ``None``.
+    """
+
+    answer: str
+    tool_calls: list[dict[str, Any]] | None = None
+
+
+def _fake_adapter_answer(cell: BenchmarkCell) -> _CellDispatchResult:
+    """The mocked-plumbing fake/no-mcp-baseline adapter (issue #72)."""
     forced_failure = cell.competitor.raw.get("force_failure")
     if forced_failure:
         category = _forced_failure_category(forced_failure)
         raise BenchmarkCellFailure(category, f"forced fake provider {category}")
     answer = cell.competitor.raw.get("fake_answer")
     if isinstance(answer, str):
-        return answer
-    return f"[fake:{cell.competitor.id}] {cell.question.prompt}"
+        return _CellDispatchResult(answer=answer)
+    return _CellDispatchResult(answer=f"[fake:{cell.competitor.id}] {cell.question.prompt}")
+
+
+def _python_docs_mcp_stdio_answer(cell: BenchmarkCell) -> _CellDispatchResult:
+    """Dispatch to the offline python-docs-mcp-server stdio adapter (issue #86).
+
+    Imported lazily to avoid a module-level import cycle: adapter modules
+    import ``BenchmarkCellFailure`` from this module, so this module cannot
+    import from ``benchmarks.adapters`` at module scope.
+    """
+    from benchmarks.adapters.python_docs_mcp_adapter import PythonDocsMcpAdapter
+
+    result = PythonDocsMcpAdapter().run(cell.question.prompt)
+    return _CellDispatchResult(
+        answer=result.answer,
+        tool_calls=[
+            {
+                "tool": call.tool,
+                "arguments": call.arguments,
+                "result": call.result,
+                "is_error": call.is_error,
+            }
+            for call in result.tool_calls
+        ],
+    )
+
+
+#: Adapter-id -> dispatch function registry (issue #86), replacing the
+#: prior hardcoded ``_EXECUTABLE_ADAPTERS`` allowlist membership check.
+#: Adding a new dispatchable adapter means adding one entry here; an
+#: unrecognized adapter id still fails cleanly with a ``tool_failure``
+#: (see ``_dispatch_adapter``), matching the prior allowlist's behavior.
+_ADAPTER_DISPATCH: dict[str, Callable[[BenchmarkCell], _CellDispatchResult]] = {
+    "fake": _fake_adapter_answer,
+    "no-mcp-baseline": _fake_adapter_answer,
+    "no_mcp_baseline": _fake_adapter_answer,
+    "python-docs-mcp-stdio": _python_docs_mcp_stdio_answer,
+}
+
+
+def _dispatch_adapter(cell: BenchmarkCell) -> _CellDispatchResult:
+    adapter = cell.competitor.adapter
+    handler = _ADAPTER_DISPATCH.get(adapter)
+    if handler is None:
+        raise BenchmarkCellFailure(
+            "tool_failure", f"adapter {adapter!r} is not implemented in this runner"
+        )
+    return handler(cell)
 
 
 def _forced_failure_category(value: object) -> str:

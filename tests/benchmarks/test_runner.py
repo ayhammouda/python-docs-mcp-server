@@ -376,3 +376,123 @@ def test_cli_dry_run_outputs_summary(tmp_path: Path) -> None:
     assert summary["dry_run"] is True
     assert summary["planned_cells"] == 1
     assert (out_dir / "run-summary.json").is_file()
+
+
+# --- python-docs-mcp-stdio adapter dispatch (issue #86) ---------------------
+#
+# These tests exercise the runner's dispatch-registry wiring only, via a
+# fake product-adapter class monkeypatched over the real one -- no real MCP
+# server subprocess is spawned. See tests/benchmarks/test_python_docs_mcp_adapter.py
+# for the adapter's own unit tests against a fake/stubbed MCP transport.
+
+
+class _FakeProductAdapter:
+    """Stands in for ``PythonDocsMcpAdapter`` to test dispatch wiring only."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        pass
+
+    def run(self, prompt: str) -> Any:
+        from benchmarks.adapters.python_docs_mcp_adapter import (
+            PythonDocsMcpResult,
+            ToolCallRecord,
+        )
+
+        return PythonDocsMcpResult(
+            answer=f"fake-retrieved-content for {prompt}",
+            tool_calls=[
+                ToolCallRecord(
+                    tool="search_docs",
+                    arguments={"query": prompt, "max_results": 3},
+                    result={"hits": [{"slug": "lib/x.html", "anchor": "a1"}]},
+                    is_error=False,
+                ),
+                ToolCallRecord(
+                    tool="get_docs",
+                    arguments={"slug": "lib/x.html", "anchor": "a1"},
+                    result={"content": f"fake-retrieved-content for {prompt}"},
+                    is_error=False,
+                ),
+            ],
+        )
+
+
+def test_python_docs_mcp_stdio_adapter_is_dispatchable_and_records_tool_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "benchmarks.adapters.python_docs_mcp_adapter.PythonDocsMcpAdapter",
+        _FakeProductAdapter,
+    )
+    out_dir = tmp_path / "results" / "product-adapter"
+
+    summary = run_benchmark(
+        BenchmarkConfig(
+            corpus_path=_corpus(tmp_path),
+            manifest_path=_manifest(
+                tmp_path,
+                [{"id": "python-docs-mcp-server", "adapter": "python-docs-mcp-stdio"}],
+            ),
+            out_dir=out_dir,
+            run_id="product-adapter",
+        )
+    )
+
+    assert summary["succeeded_cells"] == 1
+    transcript = json.loads(
+        (out_dir / "transcripts" / "python-docs-mcp-server" / "q001.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert transcript["status"] == "succeeded"
+    assert transcript["answer"].startswith("fake-retrieved-content")
+    assert transcript["tool_calls"][0]["tool"] == "search_docs"
+    assert transcript["tool_calls"][1]["tool"] == "get_docs"
+    assert transcript["external_provider_calls"] is False
+
+
+def test_dry_run_validates_python_docs_mcp_stdio_manifest_without_an_index(
+    tmp_path: Path,
+) -> None:
+    # dry-run must validate and plan cells for the new adapter without ever
+    # touching a local index or spawning a subprocess (issue #86).
+    out_dir = tmp_path / "results" / "product-adapter-dry-run"
+
+    summary = run_benchmark(
+        BenchmarkConfig(
+            corpus_path=_corpus(tmp_path),
+            manifest_path=_manifest(
+                tmp_path,
+                [{"id": "python-docs-mcp-server", "adapter": "python-docs-mcp-stdio"}],
+            ),
+            out_dir=out_dir,
+            run_id="product-adapter-dry-run",
+            dry_run=True,
+        )
+    )
+
+    assert summary["dry_run"] is True
+    assert summary["planned_cells"] == 1
+    assert not (out_dir / "transcripts").exists()
+
+
+def test_unrecognized_adapter_id_fails_cleanly_without_crashing(tmp_path: Path) -> None:
+    out_dir = tmp_path / "results" / "unknown-adapter"
+
+    summary = run_benchmark(
+        BenchmarkConfig(
+            corpus_path=_corpus(tmp_path),
+            manifest_path=_manifest(
+                tmp_path, [{"id": "mystery", "adapter": "totally-unknown-adapter"}]
+            ),
+            out_dir=out_dir,
+            run_id="unknown-adapter",
+        )
+    )
+
+    assert summary["failed_cells"] == 1
+    failure = json.loads(
+        (out_dir / "failures" / "mystery" / "q001.json").read_text(encoding="utf-8")
+    )
+    assert failure["error"]["category"] == "tool_failure"
+    assert "not implemented in this runner" in failure["error"]["message"]
