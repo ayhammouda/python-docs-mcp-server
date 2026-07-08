@@ -7,11 +7,13 @@ import json
 import sys
 from pathlib import Path
 
+from benchmarks.corpus import validate_corpus
 from benchmarks.report import generate_readme_summary, generate_report
 from benchmarks.runner import BenchmarkConfig, BenchmarkValidationError, run_benchmark
 
 _DEFAULT_MODEL_MATRIX = Path("docs/benchmarks/model-matrix.yml")
 _DEFAULT_METHODOLOGY = Path("docs/benchmarks/PUBLIC-BENCHMARK-METHODOLOGY.md")
+_DEFAULT_CORPUS_SCHEMA = Path("docs/benchmarks/corpus.schema.json")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -59,6 +61,33 @@ def _build_parser() -> argparse.ArgumentParser:
     report.add_argument(
         "--readme-summary-out", type=Path, help="Defaults to <run-dir>/README-SUMMARY.md."
     )
+
+    # Note on naming: this is `python -m benchmarks validate-corpus`, a distinct
+    # program (`prog="python -m benchmarks"`, set above) from the server's own
+    # `python-docs-mcp-server validate-corpus` (src/mcp_server_python_docs/__main__.py),
+    # which smoke-tests a built docs *index* database and is unrelated to the
+    # benchmark evaluation corpus validated here. The two commands cannot be
+    # invoked interchangeably and do not share any code path.
+    validate_corpus_parser = subparsers.add_parser(
+        "validate-corpus",
+        help=(
+            "Validate a benchmark evaluation corpus file against "
+            "docs/benchmarks/corpus.schema.json (distinct from "
+            "`python-docs-mcp-server validate-corpus`, which validates a built docs index)."
+        ),
+    )
+    validate_corpus_parser.add_argument(
+        "--corpus",
+        required=True,
+        type=Path,
+        help="Path to the corpus YAML or JSON file to validate.",
+    )
+    validate_corpus_parser.add_argument(
+        "--schema",
+        type=Path,
+        default=_DEFAULT_CORPUS_SCHEMA,
+        help=f"Path to the corpus JSON schema file (default: {_DEFAULT_CORPUS_SCHEMA}).",
+    )
     return parser
 
 
@@ -101,6 +130,26 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {"report_path": str(report_path), "readme_summary_path": str(summary_path)},
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    if args.command == "validate-corpus":
+        try:
+            result = validate_corpus(args.corpus, args.schema)
+        except BenchmarkValidationError as exc:
+            parser.exit(2, f"benchmark corpus validation failed: {exc}\n")
+
+        print(
+            json.dumps(
+                {
+                    "corpus_path": str(args.corpus),
+                    "schema_path": str(args.schema),
+                    "question_count": result.question_count,
+                    "category_counts": result.category_counts,
+                },
                 indent=2,
                 sort_keys=True,
             )
