@@ -75,6 +75,29 @@ def test_runner_writes_stable_artifact_paths(tmp_path: Path) -> None:
     assert (out_dir / "scoring" / "no-mcp" / "q001.json").is_file()
 
 
+def test_rerun_into_non_empty_output_directory_is_rejected(tmp_path: Path) -> None:
+    # A non-empty --out directory could hold orphaned per-cell JSON files
+    # from a previous run (e.g. after the corpus or manifest shrinks), which
+    # a future report generator (#74) would otherwise ingest as live results.
+    out_dir = tmp_path / "results" / "rerun"
+    out_dir.mkdir(parents=True)
+    (out_dir / "transcripts").mkdir()
+    (out_dir / "transcripts" / "stale.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(BenchmarkValidationError, match="output directory is not empty"):
+        run_benchmark(
+            BenchmarkConfig(
+                corpus_path=_corpus(tmp_path),
+                manifest_path=_manifest(tmp_path),
+                out_dir=out_dir,
+                run_id="rerun",
+            )
+        )
+
+    # The stale artifact must be left untouched, not silently cleaned up.
+    assert (out_dir / "transcripts" / "stale.json").is_file()
+
+
 def test_environment_metadata_captures_repo_commit_and_python(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

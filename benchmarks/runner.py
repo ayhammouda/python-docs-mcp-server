@@ -90,6 +90,14 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
 
     run_id = config.run_id or _default_run_id()
     run_dir = config.out_dir
+    if run_dir.exists() and any(run_dir.iterdir()):
+        raise BenchmarkValidationError(
+            f"output directory is not empty: {run_dir}; refusing to run into a "
+            "directory that may contain stale artifacts from a previous run "
+            "(e.g. orphaned per-cell JSON files under transcripts/, tokens/, "
+            "latency/, scoring/, or failures/ after the corpus or manifest "
+            "shrinks) - use a new, empty --out directory for each run"
+        )
     run_dir.mkdir(parents=True, exist_ok=True)
     _write_artifact(run_dir / "snapshots" / "competitor-manifest.yml", manifest_data)
     _write_artifact(run_dir / "snapshots" / "corpus.yml", corpus_data)
