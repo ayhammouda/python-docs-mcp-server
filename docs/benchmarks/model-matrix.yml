@@ -29,9 +29,13 @@ schema_version: 1
 #
 # Maintainer decision (PLAN.md Amendment 2026-07-08): real Claude token
 # counting via the Anthropic count-tokens API is confined to the
-# maintainer-run live phase. Nothing in benchmarks/model_matrix.py or
-# benchmarks/adapters/ calls that API; this file and the mocked adapters
-# only record where/how that count would be produced.
+# maintainer-run live phase. Nothing in benchmarks/model_matrix.py calls
+# that API. benchmarks/adapters/claude_tokens.py (issue #89) is the one
+# module that does, and only after benchmarks.adapters.guard's live-phase
+# guard passes (BENCHMARK_LIVE_PROVIDERS_ENABLED + ANTHROPIC_API_KEY, both
+# maintainer-set) -- CI and unit tests never reach that call. This file and
+# the mocked OpenAI/Google adapters only record where/how that count would
+# be produced for those model families.
 methodology_token_label: "Claude Tokens (Normalized Payload)"
 
 model_families:
