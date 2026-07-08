@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ayhammouda/python-docs-mcp-server/docs/benchmarks/corpus.schema.json",
+  "title": "Python docs MCP public benchmark corpus",
+  "description": "Shape of docs/benchmarks/corpus.yml, the frozen 50-question evaluation pack for the v0.5.0 public benchmark (see docs/benchmarks/PUBLIC-BENCHMARK-METHODOLOGY.md, 'Corpus Design'). This file defines the STRUCTURAL contract for one question and the corpus as a whole. It is loaded and enforced by benchmarks/corpus.py:validate_corpus(), which is invoked via `python -m benchmarks validate-corpus`. Corpus question AUTHORSHIP is out of scope for that validator and for issue #94 -- it is tracked separately on issue #71 and remains permanently maintainer-owned.",
+  "type": "object",
+  "required": [
+    "questions"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Reserved for future corpus schema revisions. Not yet enforced by the validator."
+    },
+    "questions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/question"
+      }
+    }
+  },
+  "$defs": {
+    "question": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "category",
+        "python_version",
+        "prompt",
+        "answer_key",
+        "citations",
+        "expected_properties"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+          "description": "Stable question ID, unique across the whole corpus. Must not change once the corpus is frozen."
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "exact_symbol",
+            "concept",
+            "cross_version",
+            "pep_adjacent",
+            "applied"
+          ],
+          "description": "One of the five methodology categories (PUBLIC-BENCHMARK-METHODOLOGY.md 'Corpus Design')."
+        },
+        "python_version": {
+          "description": "The single Python version this question targets, or the exact two-version pair being compared (required for category 'cross_version').",
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ]
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The exact prompt shown to the model under test. Must not leak the answer key or rubric."
+        },
+        "answer_key": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The official-docs-sourced correct answer used for correctness scoring."
+        },
+        "citations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Required citations or source sections (CPython docs source, generated official docs, or official What's New pages) supporting the answer key."
+        },
+        "expected_properties": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Properties a correct candidate answer must exhibit (e.g. version-specific wording, named symbol, required caveat)."
+        },
+        "ambiguity_notes": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Known ambiguity notes, if any. Optional; null or omitted when there are none."
+        }
+      }
+    }
+  },
+  "x-category-distribution-comment": "Exact per-category question counts required by PUBLIC-BENCHMARK-METHODOLOGY.md 'Corpus Design'. Not a standard JSON Schema keyword -- standard JSON Schema has no clean way to express 'exactly N items with property X = Y' across a whole array without draft2019-09+ contains/minContains/maxContains gymnastics for every category. benchmarks/corpus.py:validate_corpus() reads the 'x-category-distribution' mapping below directly so the 15/10/15/5/5 distribution is declared exactly once, here, instead of being duplicated (and risking drift) as a second hard-coded constant in the validator.",
+  "x-category-distribution": {
+    "exact_symbol": 15,
+    "concept": 10,
+    "cross_version": 15,
+    "pep_adjacent": 5,
+    "applied": 5
+  }
+}
