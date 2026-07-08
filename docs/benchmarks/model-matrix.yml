@@ -1,0 +1,99 @@
+# Model / client matrix for the v0.5.0 public benchmark.
+#
+# Context: issue #73 (parent #63). See
+# docs/benchmarks/PUBLIC-BENCHMARK-METHODOLOGY.md for the full methodology,
+# in particular "Token Measurement" (roadmap decision 5.8 / ADR-006) and
+# "Systems Under Test".
+#
+# This file defines the MODEL axis of the benchmark's evaluation matrix. The
+# TOOL axis (competitor manifest: python-docs-mcp-server, Context7, GitMCP,
+# DeepWiki, Ref.tools, no-MCP baseline) is defined separately in the
+# benchmark manifest consumed by `benchmarks.runner`. The evaluation matrix
+# cross-multiplies these two axes: every eligible tool is evaluated against
+# every model family listed here, independently. Tool scores are never
+# averaged across model families; any aggregate across model families is
+# secondary and must be clearly labeled as an aggregate in reports (see
+# benchmarks/model_matrix.py:tool_model_cells).
+#
+# Loaded and schema-validated by benchmarks.model_matrix.load_model_matrix().
+schema_version: 1
+
+# Tokens computed by the benchmark's own methodology tokenizer (per
+# PUBLIC-BENCHMARK-METHODOLOGY.md "Token Measurement": Claude token counting
+# after client-side rewrap) are always reported under this exact label,
+# regardless of which provider/model produced the answer. This keeps the
+# cross-model comparable metric from ever being confused with a provider's
+# own billing/usage tokens (OpenAI `usage.total_tokens`,
+# Google `usage_metadata.total_token_count`, etc.), which are recorded
+# per-entry below only as separate diagnostic data.
+#
+# Maintainer decision (PLAN.md Amendment 2026-07-08): real Claude token
+# counting via the Anthropic count-tokens API is confined to the
+# maintainer-run live phase. Nothing in benchmarks/model_matrix.py or
+# benchmarks/adapters/ calls that API; this file and the mocked adapters
+# only record where/how that count would be produced.
+methodology_token_label: "Claude Tokens (Normalized Payload)"
+
+model_families:
+  - id: openai-gpt-4o-mini
+    provider: openai
+    model_id: gpt-4o-mini
+    client: openai-python
+    client_wrapper: benchmarks.adapters.openai_adapter.OpenAIAdapter
+    # How the primary, cross-model comparable token count is produced for
+    # this entry. `claude_normalized_payload` means: the methodology
+    # tokenizer is applied to the client-rewrapped message envelope, per
+    # PUBLIC-BENCHMARK-METHODOLOGY.md; that count is reported under the
+    # `methodology_token_label` above, never as this provider's own tokens.
+    token_count_method: claude_normalized_payload
+    # Diagnostic-only: this provider's own native/billing token usage field,
+    # recorded separately and never reported under methodology_token_label.
+    provider_native_token_field: usage.total_tokens
+    latency_scope: request_dispatch_to_final_answer
+    headline_eligible: false
+    headline_ineligibility_reason: >-
+      No live benchmark run has been executed against this model family yet;
+      per roadmap decision 5.17, no comparative claim may cite this entry
+      until the harness produces reproducible live data.
+
+  - id: openai-gpt-4o
+    provider: openai
+    model_id: gpt-4o
+    client: openai-python
+    client_wrapper: benchmarks.adapters.openai_adapter.OpenAIAdapter
+    token_count_method: claude_normalized_payload
+    provider_native_token_field: usage.total_tokens
+    latency_scope: request_dispatch_to_final_answer
+    headline_eligible: false
+    headline_ineligibility_reason: >-
+      No live benchmark run has been executed against this model family yet;
+      per roadmap decision 5.17, no comparative claim may cite this entry
+      until the harness produces reproducible live data.
+
+  - id: google-gemini-1.5-flash
+    provider: google
+    model_id: gemini-1.5-flash
+    client: google-genai
+    client_wrapper: benchmarks.adapters.google_adapter.GoogleAdapter
+    token_count_method: claude_normalized_payload
+    provider_native_token_field: usage_metadata.total_token_count
+    latency_scope: request_dispatch_to_final_answer
+    headline_eligible: false
+    headline_ineligibility_reason: >-
+      No live benchmark run has been executed against this model family yet;
+      per roadmap decision 5.17, no comparative claim may cite this entry
+      until the harness produces reproducible live data.
+
+  - id: google-gemini-1.5-pro
+    provider: google
+    model_id: gemini-1.5-pro
+    client: google-genai
+    client_wrapper: benchmarks.adapters.google_adapter.GoogleAdapter
+    token_count_method: claude_normalized_payload
+    provider_native_token_field: usage_metadata.total_token_count
+    latency_scope: request_dispatch_to_final_answer
+    headline_eligible: false
+    headline_ineligibility_reason: >-
+      No live benchmark run has been executed against this model family yet;
+      per roadmap decision 5.17, no comparative claim may cite this entry
+      until the harness produces reproducible live data.
