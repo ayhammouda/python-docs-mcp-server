@@ -23,12 +23,19 @@ required run metadata, the corpus-hash source file, or raw per-cell result
 files are missing, so a README-ready block can never be produced from an
 incomplete run.
 
-Known gap inherited from issue #73/#74 (do not fix here): the model matrix
-is not yet wired into ``benchmarks.runner._execute_cell`` dispatch, so a
-given run's ``tool_model_key`` values come from the competitor manifest, not
-from ``docs/benchmarks/model-matrix.yml``. This module treats the model
-matrix as descriptive context (the benchmark's target model axis) and never
-assumes an observed ``tool_model_key`` corresponds to a matrix entry.
+Confirmed design decision (issue #86, 2026-07-08), narrowing the prior
+issue #73/#74 known gap: cell composition stays competitor x question, not
+competitor x model x question, so the model matrix is intentionally not
+wired into ``benchmarks.runner._execute_cell`` dispatch -- a given run's
+``tool_model_key`` values come from the competitor manifest (one manifest
+entry per tool x model pairing), not from an automatic per-cell lookup
+against ``docs/benchmarks/model-matrix.yml``. Issue #86 adds
+``benchmarks.model_matrix.validate_manifest_against_matrix`` so a
+manifest's declared provider/model pairings can be checked against this
+matrix before a run, but that check is not invoked automatically by
+``run_benchmark``. This module treats the model matrix as descriptive
+context (the benchmark's target model axis) and never assumes an observed
+``tool_model_key`` corresponds to a matrix entry.
 """
 
 from __future__ import annotations
@@ -452,11 +459,13 @@ def _render_report(
     lines.append("")
     lines.append(
         "Defines the benchmark's target model axis (`docs/benchmarks/model-matrix.yml`, "
-        f"token label `{matrix.methodology_token_label}`). **Known gap (inherited, not fixed "
-        "by this report):** the model matrix is not yet wired into the runner's per-cell "
-        "dispatch (tracked as a follow-up to issue #73). The `tool_model_key` values observed "
-        "below come from the competitor manifest, not necessarily from a matching entry in "
-        "this matrix."
+        f"token label `{matrix.methodology_token_label}`). **Design note (issue #86, "
+        "confirmed 2026-07-08):** cell composition stays competitor x question, so this "
+        "matrix is intentionally not wired into the runner's per-cell dispatch -- "
+        "`benchmarks.model_matrix.validate_manifest_against_matrix` can check a manifest's "
+        "declared provider/model pairings against this matrix before a run, but the "
+        "`tool_model_key` values observed below still come from the competitor manifest, "
+        "not from an automatic lookup against this matrix."
     )
     lines.append("")
     lines.extend(
@@ -662,8 +671,8 @@ def _render_report(
     if not any_aggregate:
         lines.append(
             "No cross-model aggregation applies to this run: every competitor present exactly "
-            "one `tool_model_key` (the model matrix is not yet wired into the runner's "
-            "dispatch; see 'Model / Client Matrix' above)."
+            "one `tool_model_key` (cell composition stays competitor x question by design; "
+            "see 'Model / Client Matrix' above)."
         )
         lines.append("")
 
