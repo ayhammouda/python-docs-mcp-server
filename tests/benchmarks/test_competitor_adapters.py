@@ -122,9 +122,11 @@ def _patch_no_transport(monkeypatch: pytest.MonkeyPatch, module: Any) -> None:
     Patches the adapter module's owned ``_transport_factory`` seam (the one
     symbol all transport construction is routed through, per PLAN-87
     section 2.1/Codex round-1 finding 4), plus ``asyncio.run`` (so
-    ``_run_async`` can never even begin) and the global ``socket.socket``
-    (defense-in-depth, matching the fail-closed pattern established by
-    ``test_python_docs_mcp_adapter.py::test_run_missing_index_check_never_opens_a_socket``).
+    ``_run_async`` can never even begin), the global ``socket.socket``, and
+    the global ``subprocess.Popen`` (defense-in-depth for Context7's stdio
+    path, matching the fail-closed pattern established by
+    ``test_python_docs_mcp_adapter.py::test_run_missing_index_check_never_opens_a_socket``
+    and PLAN-87 section 4 item 3's "subprocess/stdio + socket.socket" list).
     """
 
     def _boom(*args: Any, **kwargs: Any) -> Any:
@@ -133,6 +135,7 @@ def _patch_no_transport(monkeypatch: pytest.MonkeyPatch, module: Any) -> None:
     monkeypatch.setattr(module, "_transport_factory", _boom)
     monkeypatch.setattr(module.asyncio, "run", _boom)
     monkeypatch.setattr(socket, "socket", _boom)
+    monkeypatch.setattr(subprocess, "Popen", _boom)
 
 
 # =============================================================================

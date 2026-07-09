@@ -484,10 +484,16 @@ def _context7_answer(cell: BenchmarkCell) -> _CellDispatchResult:
     the adapter itself reads the actual API key value from
     ``CONTEXT7_API_KEY`` (see
     ``benchmarks.adapters.context7_adapter.Context7Adapter``).
+
+    Re-validates eligibility (plan §2.4 defense in depth): unreachable for
+    an excluded competitor by construction, since ``_validate_manifest_eligibility``
+    already refused at manifest-load time before any cell was built.
     """
     from benchmarks.adapters.context7_adapter import Context7Adapter
+    from benchmarks.adapters.eligibility import validate_competitor_eligibility
 
     raw = cell.competitor.raw
+    validate_competitor_eligibility(raw)
     kwargs: dict[str, Any] = {}
     if isinstance(raw.get("mode"), str):
         kwargs["mode"] = raw["mode"]
@@ -509,10 +515,16 @@ def _gitmcp_answer(cell: BenchmarkCell) -> _CellDispatchResult:
 
     Imported lazily to avoid a module-level import cycle (see
     ``_python_docs_mcp_stdio_answer``).
+
+    Re-validates eligibility (plan §2.4 defense in depth): unreachable for
+    an excluded competitor by construction, since ``_validate_manifest_eligibility``
+    already refused at manifest-load time before any cell was built.
     """
+    from benchmarks.adapters.eligibility import validate_competitor_eligibility
     from benchmarks.adapters.gitmcp_adapter import GitMcpAdapter
 
     raw = cell.competitor.raw
+    validate_competitor_eligibility(raw)
     kwargs: dict[str, Any] = {}
     if isinstance(raw.get("endpoint"), str):
         kwargs["endpoint"] = raw["endpoint"]
@@ -530,10 +542,16 @@ def _deepwiki_answer(cell: BenchmarkCell) -> _CellDispatchResult:
 
     Imported lazily to avoid a module-level import cycle (see
     ``_python_docs_mcp_stdio_answer``).
+
+    Re-validates eligibility (plan §2.4 defense in depth): unreachable for
+    an excluded competitor by construction, since ``_validate_manifest_eligibility``
+    already refused at manifest-load time before any cell was built.
     """
     from benchmarks.adapters.deepwiki_adapter import DeepWikiAdapter
+    from benchmarks.adapters.eligibility import validate_competitor_eligibility
 
     raw = cell.competitor.raw
+    validate_competitor_eligibility(raw)
     kwargs: dict[str, Any] = {}
     if isinstance(raw.get("endpoint"), str):
         kwargs["endpoint"] = raw["endpoint"]
@@ -556,10 +574,16 @@ def _ref_tools_answer(cell: BenchmarkCell) -> _CellDispatchResult:
     from the manifest entry's raw config; the adapter itself reads the
     required API key value from ``REF_API_KEY`` (see
     ``benchmarks.adapters.ref_tools_adapter.RefToolsAdapter``).
+
+    Re-validates eligibility (plan §2.4 defense in depth): unreachable for
+    an excluded competitor by construction, since ``_validate_manifest_eligibility``
+    already refused at manifest-load time before any cell was built.
     """
+    from benchmarks.adapters.eligibility import validate_competitor_eligibility
     from benchmarks.adapters.ref_tools_adapter import RefToolsAdapter
 
     raw = cell.competitor.raw
+    validate_competitor_eligibility(raw)
     kwargs: dict[str, Any] = {}
     if isinstance(raw.get("endpoint"), str):
         kwargs["endpoint"] = raw["endpoint"]

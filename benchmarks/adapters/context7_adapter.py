@@ -243,8 +243,9 @@ def _transport_factory(
     # Built directly (rather than via the SDK's internal
     # ``create_mcp_http_client`` helper, which pyright flags as a private
     # re-export) with the same defaults that helper applies: redirects
-    # followed, a 30s timeout unless the caller already sized one via
-    # ``timeout_seconds`` on the adapter.
+    # followed, a fixed 30s connection timeout. ``timeout_seconds`` on the
+    # adapter is not wired into this client; it is enforced only by the
+    # outer ``asyncio.wait_for`` in ``_run_async``.
     http_client = (
         httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=30.0)
         if headers

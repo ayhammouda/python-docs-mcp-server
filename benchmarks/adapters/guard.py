@@ -23,13 +23,13 @@ counter -- and it is structurally incapable of running without both
 like every other provider gated here.
 
 Issue #87 adds :func:`require_live_competitor` for the keyless competitor
-docs MCPs (GitMCP, DeepWiki): they have no per-provider API key to gate on,
-so a second non-secret latch (:data:`LIVE_COMPETITORS_ENV`, a comma-separated
-allowlist) stands in for the key, keeping the same two-latch shape (global
-flag + per-target opt-in) as the keyed providers above. Keyed competitors
-(Context7 in key mode, Ref.tools) still go through
-:func:`require_live_environment` via their own ``PROVIDER_API_KEY_ENV``
-entries.
+docs MCPs (GitMCP, DeepWiki, and Context7 in its default keyless mode): they
+have no per-provider API key to gate on, so a second non-secret latch
+(:data:`LIVE_COMPETITORS_ENV`, a comma-separated allowlist) stands in for
+the key, keeping the same two-latch shape (global flag + per-target opt-in)
+as the keyed providers above. Keyed competitors (Context7 in key mode,
+Ref.tools) still go through :func:`require_live_environment` via their own
+``PROVIDER_API_KEY_ENV`` entries.
 """
 
 from __future__ import annotations
