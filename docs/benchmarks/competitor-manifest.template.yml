@@ -1,0 +1,170 @@
+# TEMPLATE -- not a benchmark result. Live-run manifests are
+# maintainer-authored copies of this file; per
+# docs/benchmarks/PUBLIC-BENCHMARK-METHODOLOGY.md ("Do not drop failed
+# systems silently. If a competitor cannot run, report the failure reason
+# and exclude it from scored comparisons."), exclusions must be reported,
+# not hidden -- see the `exclusions:` block at the bottom of this file.
+#
+# Context: issue #87 (parent #63). Loaded and eligibility-screened by
+# benchmarks.runner.run_benchmark() -> benchmarks.adapters.eligibility
+# .validate_manifest_eligibility() before any cell executes (see that
+# module's docstring for why exclusion is a manifest-load-time refusal,
+# never a per-cell outcome). Competitor pins/terms below are transcribed
+# from the researched dossiers in PLAN-87-competitor-adapters.md section 1
+# (mirrored as a comment on issue #87), captured 2026-07-09. `source_url`
+# values point at each vendor's general terms page; a maintainer authoring
+# a live-run manifest from this template should reconfirm the exact
+# URL/anchor before citing it, since this change performs no live network
+# fetch of its own (see the run's forbidden-territory list: zero live
+# network calls anywhere in this task).
+#
+# The `no-mcp-baseline` and `python-docs-mcp-server` (adapter:
+# python-docs-mcp-stdio) entries from the methodology's candidate matrix are
+# NOT repeated here -- they carry no pin/terms_check metadata (issues
+# #72/#86) and belong in a full run manifest assembled separately; this
+# template covers only the four competitor docs-MCP adapters added by
+# issue #87.
+
+competitors:
+  # --- Context7 (Upstash) -----------------------------------------------
+  # PLAN-87 section 1.1. Strongest pin of the four (npm client + version);
+  # doc index itself is hosted and unpinnable.
+  - id: context7
+    name: "Context7 (Upstash)"
+    adapter: context7
+    mode: stdio
+    key_mode: false
+    timeout_seconds: 30
+    pin:
+      kind: npm-version
+      value: "@upstash/context7-mcp@3.2.3"
+      access_date: "2026-07-09"
+    terms_check:
+      verdict: forbidden-without-permission
+      clause: >-
+        You must not perform any benchmark tests or analyses relating to
+        Upstash's Website or Services without express permission of
+        Upstash. (Upstash ToS section C.8, April 2025; the Context7
+        Addendum, August 2025, licenses evaluation use and sanctions
+        automated MCP access but contains no benchmark clause, so section
+        C.8 stands.)
+      checked_on: "2026-07-09"
+      source_url: "https://upstash.com/trust/terms"
+      permission: not-obtained
+    eligibility:
+      status: conditional
+      conditions:
+        - "Publishing comparative results requires express permission from Upstash (support@upstash.com); not yet obtained."
+        - "Live-run inclusion is a maintainer decision deferred to the live-authoring phase (T13)."
+
+  # --- GitMCP -------------------------------------------------------------
+  # PLAN-87 section 1.2. Weak pin: hosted endpoint + access date + live
+  # serverInfo.version, no npm/tag/release/Docker exists. The npm package
+  # named `git-mcp` is an UNRELATED project -- never reference it.
+  - id: gitmcp
+    name: "GitMCP"
+    adapter: gitmcp
+    endpoint: "https://gitmcp.io/python/cpython"
+    timeout_seconds: 30
+    pin:
+      kind: endpoint-date
+      value: "https://gitmcp.io/python/cpython"
+      access_date: "2026-07-09"
+      server_info_version: "1.1.0"
+      code_sha: "c487a29"
+      code_reference: "idosal/git-mcp@main"
+    terms_check:
+      verdict: permitted
+      clause: >-
+        Apache-2.0 licensed code; no hosted-service terms-of-use document
+        exists; the project README explicitly invites programmatic agent
+        access.
+      checked_on: "2026-07-09"
+      source_url: "https://github.com/idosal/git-mcp"
+    eligibility:
+      status: conditional
+      conditions:
+        - "Weak pin (endpoint + access date only, no immutable package/image version) must be disclosed in any report alongside results."
+        - "search_cpython_documentation returns no results for stdlib queries (no llms.txt in cpython) -- this is a reportable finding about the tool, not grounds for exclusion; the adapter falls back to search_cpython_code -> fetch_generic_url_content."
+        - "Keep concurrency low: the GitHub API quota behind the hosted service is shared."
+
+  # --- DeepWiki (Cognition) ------------------------------------------------
+  # PLAN-87 section 1.3. Weakest pin of the four: no package/image/self-host
+  # exists at all. Third-party npm "deepwiki" packages are NOT Cognition's
+  # server -- never reference them.
+  - id: deepwiki
+    name: "DeepWiki (Cognition)"
+    adapter: deepwiki
+    endpoint: "https://mcp.deepwiki.com/mcp"
+    repo_name: "python/cpython"
+    timeout_seconds: 60
+    answer_generation: "llm"
+    pin:
+      kind: endpoint-date
+      value: "https://mcp.deepwiki.com/mcp"
+      access_date: "2026-07-09"
+      server_info_version: "2.14.3"
+      target_wiki_last_indexed: "2026-06-24"
+    terms_check:
+      verdict: unclear-permission-recommended
+      clause: >-
+        No DeepWiki-specific terms of use exist. The Cognition Platform
+        Terms of Service and Acceptable Use Policy (June 2026) contain no
+        benchmark-specific clause, but the AUP's competitive-use language
+        is a gray zone given DeepWiki's publisher operates a competing
+        documentation tool.
+      checked_on: "2026-07-09"
+      source_url: "https://cognition.ai/terms-of-service"
+    eligibility:
+      status: conditional
+      conditions:
+        - "ask_question returns an LLM-generated answer (~13.5s, nondeterministic across identical calls), not retrieved source content; any report must disclose answer_generation: llm and never present it as plain retrieval."
+        - "Competitive-use language in Cognition's AUP is a gray zone; the maintainer may instead choose to exclude at live-authoring time."
+
+  # --- Ref.tools ------------------------------------------------------------
+  # PLAN-87 section 1.4. Effective pin = client version + run date (backend
+  # api.ref.tools is itself unpinnable). No keyless mode -- an API key is
+  # always required.
+  - id: ref-tools
+    name: "Ref.tools"
+    adapter: ref-tools
+    endpoint: "https://api.ref.tools/mcp"
+    timeout_seconds: 30
+    pin:
+      kind: npm-version
+      value: "ref-tools-mcp@3.0.3"
+      access_date: "2026-07-09"
+    terms_check:
+      verdict: unclear-permission-recommended
+      clause: >-
+        Section 3 prohibits automated or non-human access without
+        permission; section 7 prohibits systematic retrieval without
+        written permission; the license is personal, non-commercial use
+        only. No benchmark/evaluation clause exists, but the
+        systematic-retrieval restriction itself names the cure: written
+        permission.
+      checked_on: "2026-07-09"
+      source_url: "https://ref.tools/terms"
+    eligibility:
+      status: conditional
+      conditions:
+        - "Requires a maintainer API key and paid credits to run live (free tier: 200 one-time credits, ~1 credit per tool call)."
+        - "Publishing comparative results needs a written-permission decision from Ref.tools at the live-authoring phase (T13)."
+        - "Each question must use a fresh MCP session (Ref.tools dedupes/trims within a session) -- satisfied by construction: the runner instantiates a fresh RefToolsAdapter per cell."
+
+# No competitor from the methodology's initial candidate matrix is excluded
+# in this TEMPLATE -- all four are built and included above (each still
+# carrying at least one condition; see each entry's `eligibility.conditions`).
+# A live-run manifest excludes a competitor by moving its entry here
+# instead of `competitors:`, in this shape:
+#
+# exclusions:
+#   - id: some-competitor
+#     reason: "why it was excluded"
+#     terms_check:
+#       verdict: forbidden-without-permission
+#       clause: "..."
+#       checked_on: "YYYY-MM-DD"
+#       source_url: "https://..."
+#     decided_on: "YYYY-MM-DD"
+exclusions: []
