@@ -624,13 +624,13 @@ _KEYLESS_REFUSAL_CASES = [
 _KEYLESS_ADAPTERS = [
     pytest.param(
         context7_adapter,
-        lambda: context7_adapter.Context7Adapter(),
+        context7_adapter.Context7Adapter,
         "context7",
         id="context7-keyless",
     ),
-    pytest.param(gitmcp_adapter, lambda: gitmcp_adapter.GitMcpAdapter(), "gitmcp", id="gitmcp"),
+    pytest.param(gitmcp_adapter, gitmcp_adapter.GitMcpAdapter, "gitmcp", id="gitmcp"),
     pytest.param(
-        deepwiki_adapter, lambda: deepwiki_adapter.DeepWikiAdapter(), "deepwiki", id="deepwiki"
+        deepwiki_adapter, deepwiki_adapter.DeepWikiAdapter, "deepwiki", id="deepwiki"
     ),
 ]
 
@@ -680,7 +680,7 @@ _KEYED_ADAPTERS = [
     ),
     pytest.param(
         ref_tools_adapter,
-        lambda: ref_tools_adapter.RefToolsAdapter(),
+        ref_tools_adapter.RefToolsAdapter,
         PROVIDER_API_KEY_ENV["ref"],
         id="ref-tools",
     ),
@@ -811,7 +811,7 @@ def test_validate_competitor_eligibility_rejects_missing_pin() -> None:
 
 
 def test_validate_competitor_eligibility_rejects_unrecognized_pin_kind() -> None:
-    with pytest.raises(BenchmarkValidationError, match="pin.kind"):
+    with pytest.raises(BenchmarkValidationError, match=r"pin\.kind"):
         validate_competitor_eligibility(
             _valid_competitor_entry(
                 pin={"kind": "made-up", "value": "x", "access_date": "2026-07-09"}
@@ -828,7 +828,7 @@ def test_validate_competitor_eligibility_rejects_missing_terms_check() -> None:
 
 
 def test_validate_competitor_eligibility_rejects_unrecognized_terms_verdict() -> None:
-    with pytest.raises(BenchmarkValidationError, match="terms_check.verdict"):
+    with pytest.raises(BenchmarkValidationError, match=r"terms_check\.verdict"):
         validate_competitor_eligibility(
             _valid_competitor_entry(
                 terms_check={
@@ -844,7 +844,7 @@ def test_validate_competitor_eligibility_rejects_missing_eligibility() -> None:
     entry = _valid_competitor_entry()
     del entry["eligibility"]
 
-    with pytest.raises(BenchmarkValidationError, match="eligibility.status"):
+    with pytest.raises(BenchmarkValidationError, match=r"eligibility\.status"):
         validate_competitor_eligibility(entry)
 
 
@@ -968,6 +968,7 @@ def test_cli_exits_2_for_manifest_with_excluded_competitor_entry(tmp_path: Path)
         capture_output=True,
         text=True,
         timeout=15,
+        cwd=_REPO_ROOT,
     )
 
     assert result.returncode == 2
