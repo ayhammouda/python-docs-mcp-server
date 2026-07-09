@@ -9,7 +9,11 @@ files) plus ``docs/benchmarks/model-matrix.yml`` (the model axis, see
 - A full raw report (``REPORT.md``): methodology link, corpus hash, repo
   commit, model/client matrix, competitor manifest, correctness by category,
   token counts after client rewrap (with honest ``None`` placeholders),
-  latency median/p95, failures/exclusions, and environment metadata.
+  latency median/p95, failures/exclusions, and environment metadata. Token
+  records marked ``approximation: true`` (issue #89 -- the client could not
+  expose its exact client-wrapped message envelope; see
+  ``benchmarks.adapters.claude_tokens``) are counted and shown separately,
+  never folded into the headline-eligible median (see ``_basic_stats``).
 - A compact README-safe summary template: strict tool+model
   (``tool_model_key``) pairings only -- never tool-only rows -- with an
   error/timeout-rate column, plus links to the methodology and the raw
@@ -108,6 +112,11 @@ class CellRecord:
     latency_ms: float | None
     client_wrapped_tokens: int | None
     raw_payload_tokens: int | None
+    token_approximation: bool
+    """True when the token record's ``client_wrapped_tokens`` count (if any) is an
+    approximation -- issue #89 / methodology "Token Measurement": the client
+    could not expose its exact wrapped message envelope. Approximate counts must
+    never be used for headline claims (see ``_basic_stats``, which excludes them)."""
 
 
 @dataclass(frozen=True)
@@ -229,6 +238,7 @@ def _load_run_bundle(run_dir: Path) -> RunBundle:
                 latency_ms=latency_record.get("latency_ms"),
                 client_wrapped_tokens=token_record.get("client_wrapped_tokens"),
                 raw_payload_tokens=token_record.get("raw_payload_tokens"),
+                token_approximation=bool(token_record.get("approximation", False)),
             )
         )
 
@@ -366,9 +376,20 @@ def _basic_stats(cells: list[CellRecord]) -> dict[str, Any]:
     scored = [cell.score for cell in cells if cell.score is not None]
     pending = sum(1 for cell in cells if cell.requires_manual_scoring)
     latencies = [cell.latency_ms for cell in cells if cell.latency_ms is not None]
+    # Headline-eligible token counts exclude approximations (issue #89 /
+    # methodology "Token Measurement": approximate counts must never be used
+    # for headline claims). `tokens_approximated` surfaces how many were
+    # excluded so a reader can see the gap isn't silently dropped.
     tokens = [
-        cell.client_wrapped_tokens for cell in cells if cell.client_wrapped_tokens is not None
+        cell.client_wrapped_tokens
+        for cell in cells
+        if cell.client_wrapped_tokens is not None and not cell.token_approximation
     ]
+    tokens_approximated = sum(
+        1
+        for cell in cells
+        if cell.client_wrapped_tokens is not None and cell.token_approximation
+    )
     return {
         "total_cells": total,
         "succeeded_cells": total - failed,
@@ -382,7 +403,8 @@ def _basic_stats(cells: list[CellRecord]) -> dict[str, Any]:
         "latency_median_ms": statistics.median(latencies) if latencies else None,
         "latency_p95_ms": _percentile(latencies, 0.95) if latencies else None,
         "tokens_present": len(tokens),
-        "tokens_placeholder": total - len(tokens),
+        "tokens_approximated": tokens_approximated,
+        "tokens_placeholder": total - len(tokens) - tokens_approximated,
         "median_client_wrapped_tokens": statistics.median(tokens) if tokens else None,
     }
 
@@ -401,10 +423,20 @@ def _fmt_score(scored: int, total: int, mean: float | None) -> str:
     return f"{mean:.2f} ({scored}/{total} scored)"
 
 
-def _fmt_tokens(present: int, placeholder: int, median: float | None) -> str:
+def _fmt_tokens(present: int, placeholder: int, median: float | None, approximated: int = 0) -> str:
     if present == 0:
+        if approximated:
+            return (
+                f"None headline-eligible (approximation:true excludes {approximated} cell(s); "
+                f"{placeholder} placeholder)"
+            )
         return f"None (placeholder -- {placeholder} cell(s) pending token-count integration)"
-    suffix = f", {placeholder} placeholder" if placeholder else ""
+    suffixes = []
+    if placeholder:
+        suffixes.append(f"{placeholder} placeholder")
+    if approximated:
+        suffixes.append(f"{approximated} approximation:true excluded")
+    suffix = f", {', '.join(suffixes)}" if suffixes else ""
     return f"{median:.0f}{suffix}"
 
 
@@ -567,7 +599,9 @@ def _render_report(
     lines.append(
         f"Primary metric label: `{METHODOLOGY_TOKEN_LABEL}` (see the methodology's 'Token "
         "Measurement' section). `None` placeholders are surfaced honestly below, never "
-        "reported as zero."
+        "reported as zero. Records marked `approximation: true` (issue #89 -- the client "
+        "could not expose its exact wrapped message envelope) are excluded from this "
+        "headline-eligible median; the excluded count is shown alongside it."
     )
     lines.append("")
     lines.extend(
@@ -580,6 +614,7 @@ def _render_report(
                         (stats := _basic_stats(by_tool_model[tool_model_key]))["tokens_present"],
                         stats["tokens_placeholder"],
                         stats["median_client_wrapped_tokens"],
+                        stats["tokens_approximated"],
                     ),
                 ]
                 for tool_model_key in sorted(by_tool_model)
@@ -781,6 +816,7 @@ def _render_readme_summary(bundle: RunBundle, methodology_path: Path, summary_pa
                         stats["tokens_present"],
                         stats["tokens_placeholder"],
                         stats["median_client_wrapped_tokens"],
+                        stats["tokens_approximated"],
                     ),
                 ]
                 for tool_model_key in sorted(by_tool_model)

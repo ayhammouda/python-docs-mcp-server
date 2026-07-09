@@ -536,3 +536,134 @@ def test_no_aggregate_section_claims_when_each_tool_has_one_model(tmp_path: Path
     ).read_text(encoding="utf-8")
 
     assert "No cross-model aggregation applies to this run" in text
+
+
+# --- Token approximation exclusion from headline-eligible tables (#89) ------
+#
+# The count-tokens integration itself lives in benchmarks/adapters/claude_
+# tokens.py (see tests/benchmarks/test_claude_tokens.py). These tests only
+# cover the additive report.py contract: a token record marked
+# ``approximation: true`` is counted and disclosed, but never folded into a
+# headline-eligible median (methodology "Token Measurement": "Approximate
+# counts must not be used for headline claims").
+
+
+def _write_run_dir_with_one_approximated_and_one_exact_token_record(tmp_path: Path) -> Path:
+    """One competitor, two corpus questions: one exact count, one approximation.
+
+    Both cells share a ``tool_model_key`` ("tool-a") so they land in the same
+    headline-eligible aggregation group, isolating the approximation filter
+    as the only variable.
+    """
+    run_dir = tmp_path / "run"
+    _write_json(
+        run_dir / "run-summary.json",
+        {
+            "run_id": "token-approximation",
+            "repo_commit": "deadbeef",
+            "artifact_root": str(run_dir),
+            "competitors": ["tool-a"],
+            "corpus_ids": ["q001", "q002"],
+            "planned_cells": 2,
+            "scored_cells": 2,
+            "succeeded_cells": 2,
+            "failed_cells": 0,
+        },
+    )
+    _write_json(
+        run_dir / "environment.json",
+        {
+            "run_id": "token-approximation",
+            "created_at": "2026-07-08T00:00:00Z",
+            "repo_commit": "deadbeef",
+            "python_version": "3.12.0",
+            "platform": "test-platform",
+            "system": "Test",
+            "machine": "x86_64",
+        },
+    )
+    _write_yaml(
+        run_dir / "snapshots" / "corpus.yml",
+        {
+            "questions": [
+                {"id": "q001", "category": "exact-symbol", "prompt": "p1"},
+                {"id": "q002", "category": "exact-symbol", "prompt": "p2"},
+            ]
+        },
+    )
+    _write_yaml(
+        run_dir / "snapshots" / "competitor-manifest.yml",
+        {"competitors": [{"id": "tool-a", "adapter": "no-mcp-baseline"}]},
+    )
+    for corpus_id in ("q001", "q002"):
+        _write_json(
+            run_dir / "scoring" / "tool-a" / f"{corpus_id}.json",
+            {
+                "competitor_id": "tool-a",
+                "corpus_id": corpus_id,
+                "tool_model_key": "tool-a",
+                "status": "succeeded",
+                "score": None,
+                "requires_manual_scoring": True,
+                "included_in_correctness_denominator": True,
+                "error_category": None,
+            },
+        )
+        _write_json(
+            run_dir / "latency" / "tool-a" / f"{corpus_id}.json",
+            {
+                "competitor_id": "tool-a",
+                "corpus_id": corpus_id,
+                "latency_ms": 10.0,
+                "status": "succeeded",
+            },
+        )
+    _write_json(
+        run_dir / "tokens" / "tool-a" / "q001.json",
+        {
+            "competitor_id": "tool-a",
+            "corpus_id": "q001",
+            "status": "counted",
+            "client_wrapped_tokens": 100,
+            "raw_payload_tokens": 100,
+            "approximation": False,
+        },
+    )
+    _write_json(
+        run_dir / "tokens" / "tool-a" / "q002.json",
+        {
+            "competitor_id": "tool-a",
+            "corpus_id": "q002",
+            "status": "counted",
+            # An outlier value: if this were folded into the headline median
+            # alongside q001's 100, the median would move. It must not be.
+            "client_wrapped_tokens": 999999,
+            "raw_payload_tokens": 999999,
+            "approximation": True,
+        },
+    )
+    return run_dir
+
+
+def test_report_excludes_approximated_tokens_from_headline_median(tmp_path: Path) -> None:
+    run_dir = _write_run_dir_with_one_approximated_and_one_exact_token_record(tmp_path)
+
+    text = generate_report(
+        run_dir, model_matrix_path=MODEL_MATRIX_PATH, methodology_path=METHODOLOGY_PATH
+    ).read_text(encoding="utf-8")
+
+    # Only the exact count (100) drives the headline-eligible median -- the
+    # approximation (999999) must never move it.
+    assert "| tool-a | 100, 1 approximation:true excluded |" in text
+    assert "999999" not in text
+
+
+def test_readme_summary_excludes_approximated_tokens_from_headline_row(tmp_path: Path) -> None:
+    run_dir = _write_run_dir_with_one_approximated_and_one_exact_token_record(tmp_path)
+
+    text = generate_readme_summary(
+        run_dir, methodology_path=METHODOLOGY_PATH
+    ).read_text(encoding="utf-8")
+
+    assert "100, 1 approximation:true excluded" in text
+    assert "999999" not in text
