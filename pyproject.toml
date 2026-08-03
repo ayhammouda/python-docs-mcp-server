@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "mcp>=1.27.0,<2.0.0",
+    "mcp>=1.27.0,<3.0.0",
     "sphobjinv>=2.4,<3.0",
     "pydantic>=2.0.0,<3.0",
     "click>=8.1.7,<9.0",
