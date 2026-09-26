@@ -44,8 +44,8 @@ If `uv` is not on your `PATH` after installation, reopen the shell or use
 Core verification commands:
 
 ```bash
-uv run ruff check src/ tests/
-uv run pyright src/
+uv run ruff check src/ tests/ benchmarks/
+uv run pyright src/ benchmarks/
 uv run pytest --tb=short -q
 ```
 

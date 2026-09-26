@@ -99,8 +99,8 @@ An issue missing any of these is not agent-ready. The pre-flight checklist (§10
 **Must pass, in this order, before any PR is opened:**
 
 ```bash
-uv run ruff check src/ tests/
-uv run pyright src/
+uv run ruff check src/ tests/ benchmarks/
+uv run pyright src/ benchmarks/
 uv run pytest --tb=short -q
 uv run python-docs-mcp-server doctor
 ```
