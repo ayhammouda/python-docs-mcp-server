@@ -86,6 +86,10 @@ def app_jwt(role: str) -> str:
 
 @functools.lru_cache
 def token(role: str) -> str:
+    if role not in {"owner", "verifier"}:
+        raise ValueError("Unknown identity")
+    if temporary_auth():
+        return (CONFIG / "temporary-token").read_text().strip()
     settings = json.loads((CONFIG / f"{role}.json").read_text())
     jwt = app_jwt(role)
     permissions = (
@@ -107,6 +111,10 @@ def token(role: str) -> str:
         {"repositories": [REPO.split("/")[1]], "permissions": permissions},
     )
     return response["token"]
+
+
+def temporary_auth() -> bool:
+    return (CONFIG / "temporary-token").is_file()
 
 
 def api(path: str, method="GET", data=None, role="owner"):
@@ -255,6 +263,18 @@ def evidence(data: dict) -> None:
 
 
 def require_verified(pr: dict, head: str, base: str) -> dict:
+    if temporary_auth():
+        checkpoint = STATE / f"verify-{pr['number']}-{base}-{head}.json"
+        result = json.loads(checkpoint.read_text()) if checkpoint.exists() else {}
+        if (
+            pr["head"]["sha"] != head
+            or pr["state"] != "open"
+            or pr["base"]["ref"] != "main"
+            or result.get("status") != "success"
+            or result.get("policy") != hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+        ):
+            raise ValueError("Missing/stale trusted verification; reverify current head and main")
+        return result
     app_id = json.loads((CONFIG / "verifier.json").read_text())["app_id"]
     checks = api(f"commits/{head}/check-runs?per_page=100")["check_runs"]
     checks = [
@@ -387,9 +407,11 @@ def verify(number: int, head: str, decision: dict):
         status="in_progress",
         updated_at=int(time.time()),
         decision=decision,
+        policy=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
     )
     checkpoint.write_text(json.dumps(prior))
-    check = api(
+    temporary = temporary_auth()
+    check = None if temporary else api(
         "check-runs",
         "POST",
         {
@@ -413,6 +435,17 @@ def verify(number: int, head: str, decision: dict):
         verdict = {"approved": False, "summary": f"{type(exc).__name__}: {str(exc)[:500]}"}
     prior.update(verdict=verdict, updated_at=int(time.time()))
     checkpoint.write_text(json.dumps(prior))
+    if temporary:
+        # OAuth cannot issue App check-runs. Only this root-owned receipt permits merge;
+        # the public comment is evidence, never an authorization input.
+        comment = api(
+            f"issues/{number}/comments", "POST",
+            {"body": "Vision — automated project maintainer\n\n"
+             f"Independent verification (temporary credential): **{prior['status']}**\n\n"
+             f"Head: `{head}`; main: `{base}`.\n\n"
+             "```json\n" + json.dumps(verdict, indent=2)[:60000] + "\n```"},
+        )
+        return {"status": prior["status"], "comment_url": comment["html_url"]}
     return api(
         f"check-runs/{check['id']}",
         "PATCH",
@@ -476,6 +509,8 @@ def resolve_thread(number: int, head: str, thread_id: str, reason: str):
 
 
 def release(sha: str, tag: str):
+    if temporary_auth():
+        raise ValueError("Releases require GitHub App activation; temporary token cannot release")
     if not SHA.fullmatch(sha) or not re.fullmatch(r"v\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?", tag):
         raise ValueError("Exact commit and semantic version tag required")
     app_id = json.loads((CONFIG / "verifier.json").read_text())["app_id"]
@@ -501,6 +536,8 @@ def dispatch(data: dict):
         return {
             "repository": REPO,
             "ready": (CONFIG / "activated").exists(),
+            "authentication": "temporary-token" if temporary_auth() else "github-apps",
+            "releases_enabled": (CONFIG / "activated").exists() and not temporary_auth(),
             "blocked_verifications": [
                 json.loads(p.read_text())
                 for p in STATE.glob("verify-*.json")
@@ -508,7 +545,7 @@ def dispatch(data: dict):
             ],
         }
     if not (CONFIG / "activated").exists():
-        raise ValueError("Scoped GitHub Apps are not activated; project writes are disabled")
+        raise ValueError("GitHub credentials are not activated; project writes are disabled")
     if operation == "api":
         validate_api(data["method"], data["path"], data.get("body"))
         return api(data["path"], data["method"], data.get("body"))

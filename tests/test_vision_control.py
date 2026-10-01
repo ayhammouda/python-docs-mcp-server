@@ -1,6 +1,8 @@
 """Negative cases for the fixed-repository privileged broker boundary."""
 
 import base64
+import hashlib
+import json
 import runpy
 from pathlib import Path
 
@@ -202,3 +204,66 @@ def test_malformed_verifier_result_completes_check_as_failure(tmp_path, monkeypa
     )
     assert calls[-1]["status"] == "completed"
     assert calls[-1]["conclusion"] == "failure"
+
+
+def test_temporary_auth_uses_only_the_broker_and_keeps_releases_disabled(tmp_path, monkeypatch):
+    module = CONTROL["dispatch"].__globals__
+    monkeypatch.setitem(module, "CONFIG", tmp_path)
+    monkeypatch.setitem(module, "STATE", tmp_path)
+    (tmp_path / "temporary-token").write_text("test-credential")
+    (tmp_path / "activated").write_text("1")
+    assert CONTROL["token"].__wrapped__("owner") == "test-credential"
+    with pytest.raises(ValueError, match="Unknown identity"):
+        CONTROL["token"].__wrapped__("arbitrary")
+    status = CONTROL["dispatch"]({"operation": "status"})
+    assert status["ready"] is True
+    assert status["authentication"] == "temporary-token"
+    assert status["releases_enabled"] is False
+    assert "test-credential" not in json.dumps(status)
+    with pytest.raises(ValueError, match="Releases require GitHub App"):
+        CONTROL["release"]("a" * 40, "v1.0.0")
+    (tmp_path / "activated").unlink()
+    with pytest.raises(ValueError, match="not activated"):
+        CONTROL["dispatch"]({"operation": "merge", "pr": 1, "head_sha": "a" * 40})
+
+
+def test_temporary_verification_requires_current_private_receipt(tmp_path, monkeypatch):
+    module = CONTROL["verify"].__globals__
+    monkeypatch.setitem(module, "CONFIG", tmp_path)
+    monkeypatch.setitem(module, "STATE", tmp_path)
+    (tmp_path / "temporary-token").write_text("test-credential")
+    head, base = "a" * 40, "b" * 40
+    pr = {"number": 1, "head": {"sha": head}, "base": {"ref": "main"}, "state": "open"}
+    verdict = {"approved": True, "head_sha": head, "base_sha": base, "blockers": []}
+    calls = []
+
+    def api(path, method="GET", data=None, role="owner"):
+        calls.append((path, method))
+        if path == "pulls/1":
+            return pr
+        if path == "branches/main":
+            return {"commit": {"sha": base}}
+        assert path == "issues/1/comments" and method == "POST"
+        return {"html_url": "https://github.com/example/evidence"}
+
+    monkeypatch.setitem(module, "api", api)
+    monkeypatch.setitem(module, "review", lambda *args: verdict)
+    with pytest.raises(ValueError, match="Missing/stale"):
+        CONTROL["require_verified"](pr, head, base)
+    result = CONTROL["verify"](
+        1, head, {"kind": "maintenance", "rationale": "Repair", "acceptance": "Tests"}
+    )
+    assert result["status"] == "success"
+    assert CONTROL["require_verified"](pr, head, base)["verdict"] == verdict
+    with pytest.raises(ValueError, match="Missing/stale"):
+        CONTROL["require_verified"](pr, head, "c" * 40)
+    with pytest.raises(ValueError, match="Missing/stale"):
+        CONTROL["require_verified"]({**pr, "head": {"sha": "c" * 40}}, head, base)
+    path = tmp_path / f"verify-1-{base}-{head}.json"
+    receipt = json.loads(path.read_text())
+    assert receipt["policy"] == hashlib.sha256(Path(module["__file__"]).read_bytes()).hexdigest()
+    for invalid in [{**receipt, "policy": "outdated"}, {**receipt, "status": "failure"}]:
+        path.write_text(json.dumps(invalid))
+        with pytest.raises(ValueError, match="Missing/stale"):
+            CONTROL["require_verified"](pr, head, base)
+    assert all(not p.startswith("check-runs") for p, _ in calls)

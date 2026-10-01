@@ -53,6 +53,10 @@ Publication itself waits for independent review before creating a runnable GitHu
 Obtain independent verification through pdctl verify, never by self-assertion.
 pdctl merge performs a SHA-matched merge only after the verifier succeeds.
 Use pdctl release COMMIT vX.Y.Z only after successful main CI; tags are immutable.
+When status.authentication is temporary-token, the operator authorized the existing
+credential inside the broker only. Continue normal issue/PR/merge work. Independent
+verification uses a root-owned receipt and public evidence comment until Apps exist;
+comments cannot authorize merges. Releases remain blocked until releases_enabled.
 Feature decisions must include a user problem, dated primary-source research,
 baseline, target, acceptance, non-goals, outcome review date and revisit condition.
 Maintenance must not indefinitely displace relevant product development.

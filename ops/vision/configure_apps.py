@@ -258,6 +258,7 @@ def activate():
         operator_api(
             "environments/pypi/deployment-branch-policies", "POST", {"name": "v*", "type": "tag"}
         )
+    (CONFIG / "temporary-token").unlink(missing_ok=True)
     (CONFIG / "activated").write_text(str(int(time.time())))
     print(
         "Both Apps are scoped to one repository. Independent verification is required. "
@@ -265,16 +266,43 @@ def activate():
     )
 
 
+def enable_temporary():
+    if any((CONFIG / f"{role}.json").exists() for role in PERMISSIONS):
+        raise ValueError("Apps already registered; complete activation instead of downgrading")
+    (CONFIG / "activated").unlink(missing_ok=True)
+    result = subprocess.run(
+        ["/usr/sbin/runuser", "-u", "ahammouda", "--",
+         "/home/linuxbrew/.linuxbrew/bin/gh", "auth", "token", "--hostname", "github.com"],
+        env=CONTROL["ENV"], capture_output=True, text=True, check=True,
+    )
+    credential = result.stdout.strip()
+    account = CONTROL["request"]("https://api.github.com/user", credential)
+    repository = CONTROL["request"](f"https://api.github.com/repos/{REPO}", credential)
+    if account["login"] != REPO.split("/")[0] or not repository["permissions"]["push"]:
+        raise ValueError("Expected Vision's existing repository-owner credential with write access")
+    fd = os.open(
+        CONFIG / "temporary-token", os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600
+    )
+    with os.fdopen(fd, "w") as output:
+        os.fchmod(output.fileno(), 0o600)
+        output.write(credential)
+    (CONFIG / "activated").write_text(str(int(time.time())))
+    print("Temporary broker authentication enabled. Independent review and CI remain required. "
+          "Releases still require Apps; workers never receive the credential.")
+
+
 def main():
     if os.geteuid() != 0 or os.environ.get("SUDO_USER") != "ahammouda":
         raise PermissionError("Operator sudo session required")
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["serve", "activate"])
+    parser.add_argument("operation", choices=["serve", "activate", "enable-temporary"])
     parser.add_argument("--port", type=int, default=8766)
     args = parser.parse_args()
     if args.operation == "activate":
         activate()
+    elif args.operation == "enable-temporary":
+        enable_temporary()
     else:
         print(
             f"Operator-only setup: http://127.0.0.1:{args.port}/?key={SETUP_KEY}",
