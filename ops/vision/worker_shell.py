@@ -61,6 +61,10 @@ def main():
         "--setenv",
         "HOME",
         str(home),
+        # Keep temporary build artifacts and cache publications on one mount.
+        "--setenv",
+        "XDG_CACHE_HOME",
+        "/tmp/cache",
         "--setenv",
         "PATH",
         "/usr/local/bin:/usr/bin:/bin",
