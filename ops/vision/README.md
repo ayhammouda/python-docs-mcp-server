@@ -151,6 +151,11 @@ project accounts/agents. Root helpers in `/opt/python-docs-vision` cannot be
 updated by Vision, even if a PR changes their source. Apply reviewed updates as
 the operator. The installer does not change the existing job or activate Apps.
 
+Host MCP servers use native `codex.agents` scoping to exclude project agents before
+connection, avoiding false incomplete-MCP blockers. Existing agent access and
+explicit restrictions are preserved. Add future host agents to those allowlists
+when granting them connector access.
+
 Check native agent execution, credential unreadability, root/SSH write denial,
 worker isolation, refused publication without independent review, wrong-App or
 stale-head checks, failed CI and release eligibility. Run the repository tests

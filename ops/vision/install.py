@@ -121,6 +121,17 @@ def owned(path, text, uid, gid, mode=0o600):
         output.write(text)
 
 
+def scope_host_mcp(config):
+    project_agents = {f"pd-{role}" for role in ROLES}
+    for server in config.get("mcp", {}).get("servers", {}).values():
+        codex = server.setdefault("codex", {})
+        codex["agents"] = [
+            agent
+            for agent in codex.get("agents", config["agents"]["entries"])
+            if agent.strip().lower() not in project_agents
+        ]
+
+
 def main():
     if os.geteuid() != 0 or os.environ.get("SUDO_USER") != HOST_USER:
         raise PermissionError("Run through the trusted operator's sudo session")
@@ -166,6 +177,7 @@ def main():
     entries = config["agents"]["entries"]
     if not isinstance(entries, dict):
         raise ValueError("Unexpected agent configuration shape")
+    scope_host_mcp(config)
     for role in ROLES:
         user = f"pd-{role}"
         try:
@@ -311,7 +323,7 @@ def main():
             {
                 "installed": True,
                 "backup": str(backup),
-                "github_writes": "pending App setup",
+                "github_writes": "unchanged; run pdctl status",
                 "scheduler_changed": False,
             }
         )

@@ -159,6 +159,33 @@ def test_installer_rejects_worker_symlinks_before_ownership_changes(tmp_path):
     assert secret.read_text() == "unchanged"
 
 
+def test_host_mcp_scoping_preserves_other_agents_and_existing_restrictions():
+    scope = runpy.run_path(str(Path(__file__).parents[1] / "ops/vision/install.py"))[
+        "scope_host_mcp"
+    ]
+    config = {
+        "agents": {"entries": {"main": {}, "piquetbot": {}, "pd-owner": {}}},
+        "mcp": {
+            "servers": {
+                "unscoped": {"url": "https://example.test/mcp"},
+                "restricted": {"codex": {"agents": ["main", "future", "PD-Verifier"]}},
+                "disabled": {"codex": {"agents": []}},
+            }
+        },
+    }
+    scope(config)
+    servers = config["mcp"]["servers"]
+    assert servers["unscoped"] == {
+        "url": "https://example.test/mcp",
+        "codex": {"agents": ["main", "piquetbot"]},
+    }
+    assert servers["restricted"]["codex"]["agents"] == ["main", "future"]
+    assert servers["disabled"]["codex"]["agents"] == []
+    before = json.dumps(config)
+    scope(config)
+    assert json.dumps(config) == before
+
+
 def test_thread_resolution_rejects_a_thread_from_another_pr(monkeypatch):
     module = CONTROL["resolve_thread"].__globals__
     monkeypatch.setitem(module, "api", lambda *args: {"commit": {"sha": "b" * 40}})
@@ -281,11 +308,19 @@ def test_temporary_capture_and_app_activation_lifecycle(tmp_path, monkeypatch, c
     monkeypatch.setitem(module, "CONFIG", tmp_path)
     credential = "private-test-credential"
     rules = {
-        "name": "main", "target": "branch", "enforcement": "active",
-        "bypass_actors": [], "conditions": {},
-        "rules": [{"type": "required_status_checks", "parameters": {
-            "required_status_checks": [{"context": "Existing CI", "integration_id": 15368}]
-        }}],
+        "name": "main",
+        "target": "branch",
+        "enforcement": "active",
+        "bypass_actors": [],
+        "conditions": {},
+        "rules": [
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "required_status_checks": [{"context": "Existing CI", "integration_id": 15368}]
+                },
+            }
+        ],
     }
 
     def run(command, **kwargs):
@@ -300,11 +335,11 @@ def test_temporary_capture_and_app_activation_lifecycle(tmp_path, monkeypatch, c
         if url.endswith("/repos/" + CONTROL["REPO"]):
             return {"permissions": {"push": True}}
         if url.endswith("/app"):
-            return {"owner": {"login": "ayhammouda"},
-                    "permissions": setup["PERMISSIONS"][token]}
+            return {"owner": {"login": "ayhammouda"}, "permissions": setup["PERMISSIONS"][token]}
         if url.endswith("/app/installations"):
-            return [{"id": 1, "account": {"login": "ayhammouda"},
-                     "repository_selection": "selected"}]
+            return [
+                {"id": 1, "account": {"login": "ayhammouda"}, "repository_selection": "selected"}
+            ]
         if url.endswith("/access_tokens"):
             return {"token": "scoped-installation-test"}
         assert url.endswith("/installation/repositories")
