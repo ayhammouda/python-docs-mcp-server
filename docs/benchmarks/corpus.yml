@@ -1,0 +1,668 @@
+# Maintainer-review draft corpus for issue #71. No benchmark results were consulted.
+# Generated docs citations are versioned; CPython source tags below pin the reference releases.
+# Freeze only after a maintainer has checked question quality and answer keys.
+schema_version: 1
+source_tags:
+  '3.11': https://github.com/python/cpython/tree/v3.11.0/Doc
+  '3.12': https://github.com/python/cpython/tree/v3.12.0/Doc
+  '3.13': https://github.com/python/cpython/tree/v3.13.0/Doc
+questions:
+- id: EX-001
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: In Python 3.13, what sequence does itertools.accumulate() produce by default, and how can the
+    operation be changed?
+  answer_key: It yields successive accumulated results, using addition by default. The optional func argument
+    supplies another binary operation.
+  citations:
+  - https://docs.python.org/3.13/library/itertools.html#itertools.accumulate
+  expected_properties:
+  - running accumulated results
+  - addition default and func override
+  ambiguity_notes: null
+- id: EX-002
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: What does itertools.pairwise() emit for a finite input in Python 3.13?
+  answer_key: It returns overlapping consecutive pairs; an input with fewer than two items yields no pairs.
+  citations:
+  - https://docs.python.org/3.13/library/itertools.html#itertools.pairwise
+  expected_properties:
+  - overlapping consecutive pairs
+  - short-input case
+  ambiguity_notes: null
+- id: EX-003
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: What ordering property matters when using itertools.groupby() in Python 3.13?
+  answer_key: groupby groups consecutive runs sharing a key; unlike SQL GROUP BY, it does not gather equal
+    keys that are separated. Sort first when all equal keys must be together.
+  citations:
+  - https://docs.python.org/3.13/library/itertools.html#itertools.groupby
+  expected_properties:
+  - consecutive runs
+  - sorting caveat
+  ambiguity_notes: null
+- id: EX-004
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: How does functools.cache() differ from a size-limited cache in Python 3.13?
+  answer_key: It is an unbounded memoizing cache, equivalent to lru_cache(maxsize=None), so entries are
+    not evicted for capacity.
+  citations:
+  - https://docs.python.org/3.13/library/functools.html#functools.cache
+  expected_properties:
+  - unbounded
+  - lru_cache(maxsize=None) equivalence
+  ambiguity_notes: null
+- id: EX-005
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: What does functools.cached_property() do on first and later instance access in Python 3.13?
+  answer_key: It computes a value on first access and stores it in the instance dictionary; later accesses
+    use that stored value until the attribute is deleted.
+  citations:
+  - https://docs.python.org/3.13/library/functools.html#functools.cached_property
+  expected_properties:
+  - first-access computation
+  - subsequent stored value
+  ambiguity_notes: null
+- id: EX-006
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: What role does functools.singledispatch() use to choose an implementation?
+  answer_key: It dispatches a generic function according to the type of its first argument, with registered
+    implementations and a default base function.
+  citations:
+  - https://docs.python.org/3.13/library/functools.html#functools.singledispatch
+  expected_properties:
+  - first-argument type
+  - registered implementation
+  ambiguity_notes: null
+- id: EX-007
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: Does pathlib.Path.glob() yield absolute or relative paths, and what is its base?
+  answer_key: It yields Path objects prefixed with the Path on which glob() was called; the resulting
+    paths are absolute only if that base Path is absolute.
+  citations:
+  - https://docs.python.org/3.13/library/pathlib.html#pathlib.Path.glob
+  expected_properties:
+  - base-path prefix
+  - conditional absoluteness
+  ambiguity_notes: null
+- id: EX-008
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: What does pathlib.Path.read_text() return and how is its encoding chosen?
+  answer_key: It opens the path in text mode and returns its contents as a string. An explicit encoding
+    can be supplied; otherwise the platform-dependent default encoding is used.
+  citations:
+  - https://docs.python.org/3.13/library/pathlib.html#pathlib.Path.read_text
+  expected_properties:
+  - string result
+  - explicit/default encoding
+  ambiguity_notes: null
+- id: EX-009
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: What does pathlib.PurePath.is_relative_to(other) test in Python 3.13?
+  answer_key: 'It performs a lexical path comparison: it is true if the path is relative to other, without
+    accessing the filesystem or resolving .. components.'
+  citations:
+  - https://docs.python.org/3.13/library/pathlib.html#pathlib.PurePath.is_relative_to
+  expected_properties:
+  - lexical comparison
+  - does not resolve filesystem
+  ambiguity_notes: null
+- id: EX-010
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: What does collections.Counter.total() return?
+  answer_key: It returns the sum of the counts, including any zero or negative counts present in the Counter.
+  citations:
+  - https://docs.python.org/3.13/library/collections.html#collections.Counter.total
+  expected_properties:
+  - sum of counts
+  - negative-count caveat
+  ambiguity_notes: null
+- id: EX-011
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: What does collections.deque.rotate(n) do for positive and negative n?
+  answer_key: Positive n rotates to the right; negative n rotates to the left. The deque is changed in
+    place.
+  citations:
+  - https://docs.python.org/3.13/library/collections.html#collections.deque.rotate
+  expected_properties:
+  - direction by sign
+  - in-place
+  ambiguity_notes: null
+- id: EX-012
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: What is the role of weights in statistics.fmean(data, weights=...) in Python 3.13?
+  answer_key: fmean converts input data to floats and returns a floating-point arithmetic mean; optional
+    weights produce a weighted mean and must match the number of data points.
+  citations:
+  - https://docs.python.org/3.13/library/statistics.html#statistics.fmean
+  expected_properties:
+  - floating-point mean
+  - weighted-length requirement
+  ambiguity_notes: null
+- id: EX-013
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: What value does statistics.NormalDist.inv_cdf(p) compute?
+  answer_key: It returns the x value such that the normal distribution cumulative probability at x equals
+    p, for a probability strictly between 0 and 1.
+  citations:
+  - https://docs.python.org/3.13/library/statistics.html#statistics.NormalDist.inv_cdf
+  expected_properties:
+  - inverse cumulative distribution
+  - probability domain
+  ambiguity_notes: null
+- id: EX-014
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: What is the cleanup behavior of contextlib.ExitStack when its context exits?
+  answer_key: It invokes registered exit callbacks in reverse order, and it can unwind even if an earlier
+    setup step failed after callbacks were registered.
+  citations:
+  - https://docs.python.org/3.13/library/contextlib.html#contextlib.ExitStack
+  expected_properties:
+  - reverse-order callbacks
+  - cleanup on partial setup
+  ambiguity_notes: null
+- id: EX-015
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: When is a tempfile.TemporaryDirectory removed by default?
+  answer_key: The directory and its contents are removed on context-manager exit or when the object is
+    cleaned up; cleanup() can remove it explicitly.
+  citations:
+  - https://docs.python.org/3.13/library/tempfile.html#tempfile.TemporaryDirectory
+  expected_properties:
+  - automatic cleanup
+  - explicit cleanup method
+  ambiguity_notes: null
+- id: CO-001
+  category: concept
+  python_version: '3.13'
+  prompt: When should code use pathlib.PurePath rather than pathlib.Path?
+  answer_key: PurePath performs path manipulation without filesystem I/O; Path extends it with concrete
+    filesystem operations such as stat or open.
+  citations:
+  - https://docs.python.org/3.13/library/pathlib.html#pure-paths
+  - https://docs.python.org/3.13/library/pathlib.html#concrete-paths
+  expected_properties:
+  - pure versus concrete
+  - filesystem I/O distinction
+  ambiguity_notes: null
+- id: CO-002
+  category: concept
+  python_version: '3.13'
+  prompt: What does contextlib.suppress() do, and what happens to exceptions not named in it?
+  answer_key: It suppresses only the specified exception types inside its with block; unmatched exceptions
+    propagate normally.
+  citations:
+  - https://docs.python.org/3.13/library/contextlib.html#contextlib.suppress
+  expected_properties:
+  - specified exception types
+  - unmatched propagation
+  ambiguity_notes: null
+- id: CO-003
+  category: concept
+  python_version: '3.13'
+  prompt: Why use decimal.localcontext() around a calculation?
+  answer_key: It supplies a temporary copy of the active decimal context so precision or rounding changes
+    are scoped to the with block rather than persisting in the outer context.
+  citations:
+  - https://docs.python.org/3.13/library/decimal.html#decimal.localcontext
+  expected_properties:
+  - temporary context
+  - outer context restored
+  ambiguity_notes: null
+- id: CO-004
+  category: concept
+  python_version: '3.13'
+  prompt: What happens to sibling tasks in asyncio.TaskGroup when one task fails with a non-cancellation
+    exception?
+  answer_key: The remaining tasks are cancelled; after all tasks finish, non-cancellation failures are
+    combined into an ExceptionGroup or BaseExceptionGroup and raised.
+  citations:
+  - https://docs.python.org/3.13/library/asyncio-task.html#asyncio.TaskGroup
+  expected_properties:
+  - sibling cancellation
+  - grouped exception
+  ambiguity_notes: null
+- id: CO-005
+  category: concept
+  python_version: '3.13'
+  prompt: How does concurrent.futures.as_completed() order the futures it yields?
+  answer_key: It yields futures as they complete, not in the input order; futures already completed when
+    called are yielded first.
+  citations:
+  - https://docs.python.org/3.13/library/concurrent.futures.html#concurrent.futures.as_completed
+  expected_properties:
+  - completion order
+  - not input order
+  ambiguity_notes: null
+- id: CO-006
+  category: concept
+  python_version: '3.13'
+  prompt: How does csv.DictReader choose field names when fieldnames is omitted?
+  answer_key: It uses the first row as field names and then returns subsequent rows as dictionaries keyed
+    by those names.
+  citations:
+  - https://docs.python.org/3.13/library/csv.html#csv.DictReader
+  expected_properties:
+  - header row
+  - dictionary rows
+  ambiguity_notes: null
+- id: CO-007
+  category: concept
+  python_version: '3.13'
+  prompt: Which json.loads() hook can preserve the order and duplicate names of object members for custom
+    handling?
+  answer_key: object_pairs_hook receives each object as an ordered list of key-value pairs, before a regular
+    dict would collapse duplicate keys.
+  citations:
+  - https://docs.python.org/3.13/library/json.html#json.load
+  expected_properties:
+  - object_pairs_hook
+  - ordered pairs and duplicates
+  ambiguity_notes: The hook is also accepted by json.load(); this question names loads() but the shared
+    docs section describes both.
+- id: CO-008
+  category: concept
+  python_version: '3.13'
+  prompt: Does shutil.copy2() guarantee preservation of every file metadata item?
+  answer_key: No. It copies file data and attempts to preserve metadata through copystat(), but it cannot
+    preserve all metadata on every platform and does not raise solely because some metadata cannot be
+    preserved.
+  citations:
+  - https://docs.python.org/3.13/library/shutil.html#shutil.copy2
+  expected_properties:
+  - attempts metadata preservation
+  - no cross-platform guarantee
+  ambiguity_notes: null
+- id: CO-009
+  category: concept
+  python_version: '3.13'
+  prompt: How should variable values be passed to sqlite3 SQL statements?
+  answer_key: Use parameter placeholders and pass values separately to execute(), rather than constructing
+    SQL by string formatting; qmark placeholders are a standard option.
+  citations:
+  - https://docs.python.org/3.13/library/sqlite3.html#how-to-use-placeholders-to-bind-values-in-sql-queries
+  expected_properties:
+  - bound parameters
+  - no string formatting
+  ambiguity_notes: null
+- id: CO-010
+  category: concept
+  python_version: '3.13'
+  prompt: How does propagation affect a record emitted by a child logging logger?
+  answer_key: With propagate enabled, the record is offered to handlers on ancestor loggers as well as
+    the child; setting propagate to false stops that ancestor traversal.
+  citations:
+  - https://docs.python.org/3.13/library/logging.html#logging.Logger.propagate
+  expected_properties:
+  - ancestor handlers
+  - propagate flag
+  ambiguity_notes: null
+- id: XV-001
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: Between Python 3.12 and 3.13, what changed in the stdlib API for Z85 encoding?
+  answer_key: Python 3.12 has no base64.z85encode/z85decode. Python 3.13 adds those functions to encode
+    bytes as Z85 data and decode Z85 data to bytes.
+  citations:
+  - https://docs.python.org/3.12/library/base64.html
+  - https://docs.python.org/3.13/whatsnew/3.13.html#base64
+  expected_properties:
+  - absence in 3.12
+  - new 3.13 function names
+  ambiguity_notes: null
+- id: XV-002
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: How did the standard copy module change from Python 3.12 to 3.13 for replacing fields in supported
+    objects?
+  answer_key: 3.12 has copy.copy and copy.deepcopy but no copy.replace. 3.13 adds copy.replace(obj, **changes)
+    and the __replace__ protocol for supported objects.
+  citations:
+  - https://docs.python.org/3.12/library/copy.html
+  - https://docs.python.org/3.13/whatsnew/3.13.html#copy
+  expected_properties:
+  - 3.12 absence
+  - 3.13 replace protocol
+  ambiguity_notes: null
+- id: XV-003
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: What changed in the default dbm backend between Python 3.12 and 3.13?
+  answer_key: 3.13 adds dbm.sqlite3 and makes it the default backend; 3.12 does not have dbm.sqlite3 and
+    used a different selection order.
+  citations:
+  - https://docs.python.org/3.12/library/dbm.html
+  - https://docs.python.org/3.13/whatsnew/3.13.html#dbm
+  expected_properties:
+  - new module
+  - default backend change
+  ambiguity_notes: Which backend 3.12 actually selected depended on installed modules; score the selection-order
+    distinction, not a single universal 3.12 backend.
+- id: XV-004
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: What new deprecation facility does argparse provide in Python 3.13 compared with 3.12?
+  answer_key: 3.13 adds a deprecated parameter to add_argument() and add_parser() so options, positionals
+    and subcommands can be marked deprecated; 3.12 lacks that parameter.
+  citations:
+  - https://docs.python.org/3.12/library/argparse.html
+  - https://docs.python.org/3.13/whatsnew/3.13.html#argparse
+  expected_properties:
+  - deprecated parameter
+  - both APIs
+  ambiguity_notes: null
+- id: XV-005
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: How did ssl.create_default_context() verification flags change from Python 3.12 to 3.13?
+  answer_key: In 3.13 its default verify_flags include VERIFY_X509_PARTIAL_CHAIN and VERIFY_X509_STRICT;
+    they were not both defaults in 3.12. Strict verification may reject malformed or older certificates.
+  citations:
+  - https://docs.python.org/3.12/library/ssl.html
+  - https://docs.python.org/3.13/whatsnew/3.13.html#ssl
+  expected_properties:
+  - both flags
+  - strictness caveat
+  ambiguity_notes: null
+- id: XV-006
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: What changed for running the random module from the command line between Python 3.12 and 3.13?
+  answer_key: Python 3.13 adds a documented command-line interface for random; 3.12 did not offer that
+    CLI.
+  citations:
+  - https://docs.python.org/3.12/library/random.html
+  - https://docs.python.org/3.13/whatsnew/3.13.html#random
+  expected_properties:
+  - CLI introduced in 3.13
+  - old version distinction
+  ambiguity_notes: null
+- id: XV-007
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: How did itertools.batched() handle a short final batch in Python 3.12 versus 3.13?
+  answer_key: 3.12 yields the short final batch and has no strict option; 3.13 adds strict=True, which
+    raises ValueError for an incomplete final batch, while the default still yields it.
+  citations:
+  - https://docs.python.org/3.12/library/itertools.html#itertools.batched
+  - https://docs.python.org/3.13/whatsnew/3.13.html#itertools
+  expected_properties:
+  - new strict parameter
+  - default remains permissive
+  ambiguity_notes: null
+- id: XV-008
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: What changed in queue.Queue termination support from Python 3.12 to 3.13?
+  answer_key: 3.13 adds Queue.shutdown() and the queue.ShutDown exception for terminating queues; 3.12
+    has neither public API.
+  citations:
+  - https://docs.python.org/3.12/library/queue.html
+  - https://docs.python.org/3.13/whatsnew/3.13.html#queue
+  expected_properties:
+  - shutdown method
+  - ShutDown exception
+  ambiguity_notes: null
+- id: XV-009
+  category: cross_version
+  python_version:
+  - '3.11'
+  - '3.12'
+  prompt: What happened to stdlib distutils between Python 3.11 and 3.12?
+  answer_key: distutils was available in the 3.11 stdlib but removed from the 3.12 standard library; third-party
+    setuptools may still supply a replacement.
+  citations:
+  - https://docs.python.org/3.11/library/distutils.html
+  - https://docs.python.org/3.12/whatsnew/3.12.html#summary-release-highlights
+  expected_properties:
+  - stdlib removal
+  - setuptools caveat
+  ambiguity_notes: null
+- id: XV-010
+  category: cross_version
+  python_version:
+  - '3.11'
+  - '3.12'
+  prompt: What changed about setuptools availability in newly created venv environments in Python 3.12
+    versus 3.11?
+  answer_key: venv no longer installs setuptools by default in 3.12, whereas 3.11 did; projects requiring
+    it must install it separately.
+  citations:
+  - https://docs.python.org/3.11/library/venv.html
+  - https://docs.python.org/3.12/whatsnew/3.12.html#summary-release-highlights
+  expected_properties:
+  - 3.12 no default setuptools
+  - explicit installation
+  ambiguity_notes: null
+- id: XV-011
+  category: cross_version
+  python_version:
+  - '3.11'
+  - '3.12'
+  prompt: What stdlib CLI did sqlite3 gain in Python 3.12 compared with 3.11?
+  answer_key: 3.12 adds a command-line interface invocable with python -m sqlite3; 3.11 did not provide
+    the documented module CLI.
+  citations:
+  - https://docs.python.org/3.11/library/sqlite3.html
+  - https://docs.python.org/3.12/whatsnew/3.12.html#sqlite3
+  expected_properties:
+  - python -m sqlite3
+  - 3.12 introduction
+  ambiguity_notes: null
+- id: XV-012
+  category: cross_version
+  python_version:
+  - '3.11'
+  - '3.12'
+  prompt: What changed about invoking the uuid module from the command line in Python 3.12?
+  answer_key: Python 3.12 adds a uuid command-line interface via python -m uuid; 3.11 has no corresponding
+    documented CLI.
+  citations:
+  - https://docs.python.org/3.11/library/uuid.html
+  - https://docs.python.org/3.12/whatsnew/3.12.html#uuid
+  expected_properties:
+  - python -m uuid
+  - 3.12 introduction
+  ambiguity_notes: null
+- id: XV-013
+  category: cross_version
+  python_version:
+  - '3.11'
+  - '3.12'
+  prompt: How did pathlib.Path tree traversal change from Python 3.11 to 3.12?
+  answer_key: 3.12 adds Path.walk() to generate directory and file names while walking a tree, similar
+    to os.walk(); 3.11 Path has no walk() method.
+  citations:
+  - https://docs.python.org/3.11/library/pathlib.html
+  - https://docs.python.org/3.12/whatsnew/3.12.html#pathlib
+  expected_properties:
+  - Path.walk introduction
+  - os.walk analogy
+  ambiguity_notes: null
+- id: XV-014
+  category: cross_version
+  python_version:
+  - '3.11'
+  - '3.12'
+  prompt: How did shutil.rmtree() error-handler arguments change in Python 3.12?
+  answer_key: 3.12 adds onexc, whose callback receives an exception instance, and deprecates onerror,
+    whose callback received an exc_info tuple; 3.11 only has the older onerror form.
+  citations:
+  - https://docs.python.org/3.11/library/shutil.html#shutil.rmtree
+  - https://docs.python.org/3.12/whatsnew/3.12.html#shutil
+  expected_properties:
+  - onexc introduced
+  - onerror deprecation and signature difference
+  ambiguity_notes: null
+- id: XV-015
+  category: cross_version
+  python_version:
+  - '3.11'
+  - '3.12'
+  prompt: What changed for tempfile.NamedTemporaryFile cleanup control in Python 3.12 versus 3.11?
+  answer_key: 3.12 adds the delete_on_close parameter to control whether deletion occurs on file close
+    or context-manager exit; 3.11 has no delete_on_close parameter.
+  citations:
+  - https://docs.python.org/3.11/library/tempfile.html#tempfile.NamedTemporaryFile
+  - https://docs.python.org/3.12/whatsnew/3.12.html#tempfile
+  expected_properties:
+  - delete_on_close parameter
+  - 3.11 absence
+  ambiguity_notes: null
+- id: PE-001
+  category: pep_adjacent
+  python_version: '3.13'
+  prompt: In CPython 3.13, is free-threaded execution the default, and how is it selected?
+  answer_key: No. The PEP 703 free-threaded mode is experimental and requires a separate free-threaded
+    build, commonly python3.13t or a build configured with --disable-gil.
+  citations:
+  - https://docs.python.org/3.13/whatsnew/3.13.html#free-threaded-cpython
+  expected_properties:
+  - experimental
+  - separate build
+  ambiguity_notes: null
+- id: PE-002
+  category: pep_adjacent
+  python_version: '3.13'
+  prompt: Which type-parameter objects gained support for defaults in Python 3.13?
+  answer_key: PEP 696 adds defaults for TypeVar, ParamSpec, and TypeVarTuple.
+  citations:
+  - https://docs.python.org/3.13/whatsnew/3.13.html#summary-release-highlights
+  - https://docs.python.org/3.13/library/typing.html#typing.TypeVar
+  expected_properties:
+  - all three parameter types
+  - defaults
+  ambiguity_notes: null
+- id: PE-003
+  category: pep_adjacent
+  python_version: '3.13'
+  prompt: What does warnings.deprecated provide in Python 3.13?
+  answer_key: The PEP 702 decorator marks a function, class or overload as deprecated for static typing
+    and emits a DeprecationWarning on runtime use as specified by the API.
+  citations:
+  - https://docs.python.org/3.13/library/warnings.html#warnings.deprecated
+  - https://docs.python.org/3.13/whatsnew/3.13.html#warnings
+  expected_properties:
+  - deprecation marker for type checkers
+  - runtime warning
+  ambiguity_notes: null
+- id: PE-004
+  category: pep_adjacent
+  python_version: '3.13'
+  prompt: What does typing.ReadOnly mean for a TypedDict item in Python 3.13?
+  answer_key: PEP 705 introduces ReadOnly to mark an individual TypedDict item as read-only for type checkers;
+    it does not enforce immutability at runtime.
+  citations:
+  - https://docs.python.org/3.13/library/typing.html#typing.ReadOnly
+  expected_properties:
+  - per-item TypedDict annotation
+  - static not runtime enforcement
+  ambiguity_notes: null
+- id: PE-005
+  category: pep_adjacent
+  python_version: '3.13'
+  prompt: What is the distinction between typing.TypeIs and typing.TypeGuard in Python 3.13?
+  answer_key: PEP 742 TypeIs narrows the true branch to the specified type and can also narrow the false
+    branch by exclusion; TypeGuard narrows only the true branch.
+  citations:
+  - https://docs.python.org/3.13/library/typing.html#typing.TypeIs
+  expected_properties:
+  - both branches for TypeIs
+  - true-only TypeGuard
+  ambiguity_notes: null
+- id: AP-001
+  category: applied
+  python_version: '3.13'
+  prompt: In Python 3.13, which stdlib API should generate an unpredictable URL-safe token for a password-reset
+    link?
+  answer_key: Use secrets.token_urlsafe(nbytes) rather than the non-cryptographic random module; it returns
+    a URL-safe text token from cryptographically strong random bytes.
+  citations:
+  - https://docs.python.org/3.13/library/secrets.html#secrets.token_urlsafe
+  expected_properties:
+  - secrets.token_urlsafe
+  - cryptographic randomness
+  ambiguity_notes: null
+- id: AP-002
+  category: applied
+  python_version: '3.13'
+  prompt: An object has a close() method but does not implement the context-manager protocol. Which Python
+    3.13 stdlib helper gives it deterministic with-block cleanup?
+  answer_key: Use contextlib.closing(obj), which wraps the object in a context manager that calls obj.close()
+    on exit.
+  citations:
+  - https://docs.python.org/3.13/library/contextlib.html#contextlib.closing
+  expected_properties:
+  - contextlib.closing
+  - calls close on exit
+  ambiguity_notes: null
+- id: AP-003
+  category: applied
+  python_version: '3.13'
+  prompt: You need to open a text file using an explicit UTF-8 encoding and automatically close it after
+    the block. Which stdlib pattern fits?
+  answer_key: Use with open(path, encoding="utf-8") as file (or Path.open with the same encoding); the
+    context manager closes it on exit.
+  citations:
+  - https://docs.python.org/3.13/library/functions.html#open
+  - https://docs.python.org/3.13/library/pathlib.html#pathlib.Path.open
+  expected_properties:
+  - explicit UTF-8
+  - context manager
+  ambiguity_notes: null
+- id: AP-004
+  category: applied
+  python_version: '3.13'
+  prompt: A program must validate and parse a command line with named options and generated help text.
+    Which stdlib API fits?
+  answer_key: Use argparse.ArgumentParser, add arguments with add_argument(), and call parse_args(); argparse
+    also generates usage/help.
+  citations:
+  - https://docs.python.org/3.13/library/argparse.html#argparse.ArgumentParser
+  expected_properties:
+  - ArgumentParser
+  - parse_args and help
+  ambiguity_notes: null
+- id: AP-005
+  category: applied
+  python_version: '3.13'
+  prompt: You need to hash a binary file through an already open file object without loading the whole
+    file into memory at once. Which stdlib API fits?
+  answer_key: Use hashlib.file_digest(fileobj, digest), which hashes the contents of a binary file-like
+    object and returns a digest object.
+  citations:
+  - https://docs.python.org/3.13/library/hashlib.html#hashlib.file_digest
+  expected_properties:
+  - hashlib.file_digest
+  - binary file object
+  ambiguity_notes: null

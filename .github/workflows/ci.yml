@@ -32,10 +32,10 @@ jobs:
         run: uv sync --dev
 
       - name: Run linter
-        run: uv run ruff check src/ tests/
+        run: uv run ruff check src/ tests/ benchmarks/
 
       - name: Run type checker
-        run: uv run pyright src/
+        run: uv run pyright src/ benchmarks/
 
       - name: Run tests
         run: uv run pytest --tb=short -q
