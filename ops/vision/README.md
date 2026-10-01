@@ -67,6 +67,8 @@ pdctl publish --branch codex/example --base BASE_SHA --message 'Fix example' \
   --decision decision.json
 pdctl api POST pulls --body pull-request.json
 pdctl verify PR_NUMBER EXACT_HEAD_SHA --decision decision.json
+pdctl threads PR_NUMBER
+pdctl resolve PR_NUMBER EXACT_HEAD_SHA THREAD_ID --reason 'Evidence for resolution'
 pdctl merge PR_NUMBER EXACT_HEAD_SHA
 pdctl release EXACT_MAIN_COMMIT vX.Y.Z
 ```
@@ -81,7 +83,9 @@ circuit. A global lock serializes publication, verification and merging.
 The verifier checks the full diff and runs the locked commands itself. The
 required GitHub check is issued only through its separate App, then main/head
 are rechecked before merge. GitHub enforces all other required checks and
-resolved conversations. Neither agent can alter branch protection, write an
+resolved conversations. The resolve operation binds thread IDs to this PR and
+records a rationale; it handles the first 100 threads per PR and fails closed
+beyond that ceiling. Neither agent can alter branch protection, write an
 arbitrary status/check, delete the repository or use an admin merge bypass.
 
 `decision.json` uses one of:

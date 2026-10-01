@@ -136,3 +136,44 @@ def test_activation_missing_and_stale_or_forged_review_fail_closed(tmp_path, mon
         monkeypatch.setitem(module, "api", lambda *_, wrong=wrong: {"check_runs": [wrong]})
         with pytest.raises(ValueError, match="Missing/stale"):
             CONTROL["require_verified"](pr, "a" * 40, "b" * 40)
+
+
+def test_installer_rejects_worker_symlinks_before_ownership_changes(tmp_path):
+    installer = runpy.run_path(str(Path(__file__).parents[1] / "ops/vision/install.py"))
+    privileged = tmp_path / "privileged"
+    privileged.mkdir()
+    link = tmp_path / ".cache"
+    link.symlink_to(privileged)
+    with pytest.raises(ValueError, match="symlink"):
+        installer["directory"](link)
+    secret = privileged / "config"
+    secret.write_text("unchanged")
+    target = tmp_path / "authorized_keys"
+    target.symlink_to(secret)
+    import os
+
+    with pytest.raises(OSError):
+        installer["owned"](target, "replacement", os.getuid(), os.getgid())
+    assert secret.read_text() == "unchanged"
+
+
+def test_thread_resolution_rejects_a_thread_from_another_pr(monkeypatch):
+    module = CONTROL["resolve_thread"].__globals__
+    monkeypatch.setitem(module, "api", lambda *args: {"commit": {"sha": "b" * 40}})
+    monkeypatch.setitem(module, "require_verified", lambda *args: {})
+    monkeypatch.setitem(module, "token", lambda *args: "test")
+    monkeypatch.setitem(
+        module,
+        "request",
+        lambda *args: {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {"nodes": [{"id": "own", "isResolved": False}]}
+                    }
+                }
+            }
+        },
+    )
+    with pytest.raises(ValueError, match="must belong"):
+        CONTROL["resolve_thread"](1, "a" * 40, "other", "Reviewed and fixed")

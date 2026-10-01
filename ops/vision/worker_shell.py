@@ -35,7 +35,8 @@ def main():
         "/proc",
         "--dev",
         "/dev",
-        "--tmpfs",
+        "--bind",
+        str(home / "tmp"),
         "/tmp",
         "--tmpfs",
         "/run",
@@ -43,7 +44,11 @@ def main():
         str(home),
         str(home),
     ]
-    for name in ["sandboxes", ".cache", ".local"]:
+    # On systemd hosts /etc/resolv.conf points into /run, which is otherwise hidden.
+    resolver = Path("/etc/resolv.conf").resolve()
+    if resolver.is_file() and str(resolver).startswith("/run/"):
+        args += ["--ro-bind", str(resolver), str(resolver)]
+    for name in ["sandboxes", ".cache", ".local", "tmp"]:
         path = str(home / name)
         args += ["--bind", path, path]
     if role == "implementer":

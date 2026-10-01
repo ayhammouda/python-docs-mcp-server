@@ -39,6 +39,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="operation", required=True)
     commands.add_parser("status")
+    threads = commands.add_parser("threads")
+    threads.add_argument("pr", type=int)
     api = commands.add_parser("api")
     api.add_argument("method", choices=["GET", "POST", "PATCH"])
     api.add_argument("path")
@@ -51,10 +53,13 @@ def main():
     release = commands.add_parser("release")
     release.add_argument("sha")
     release.add_argument("tag")
-    for name in ["verify", "merge"]:
+    for name in ["verify", "merge", "resolve"]:
         command = commands.add_parser(name)
         command.add_argument("pr", type=int)
         command.add_argument("head_sha")
+        if name == "resolve":
+            command.add_argument("thread_id")
+            command.add_argument("--reason", required=True)
         if name == "verify":
             command.add_argument("--decision", required=True, help="Path to product decision JSON")
     args = parser.parse_args()

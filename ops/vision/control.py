@@ -279,7 +279,7 @@ def reset_verifier():
     if home != Path("/var/lib/python-docs/verifier"):
         raise ValueError("Unexpected verifier home")
     subprocess.run(["/usr/bin/pkill", "-KILL", "-u", str(account.pw_uid)], check=False)
-    for name in ["sandboxes", ".cache", ".local"]:
+    for name in ["sandboxes", ".cache", ".local", "tmp"]:
         path = home / name
         if path.is_symlink():
             path.unlink()
@@ -291,7 +291,8 @@ def reset_verifier():
 
 def review(head: str, base: str, decision: dict):
     policy = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
-    checkpoint = STATE / f"review-{policy}-{base}-{head}.json"
+    rationale = hashlib.sha256(json.dumps(decision, sort_keys=True).encode()).hexdigest()[:16]
+    checkpoint = STATE / f"review-{policy}-{base}-{head}-{rationale}.json"
     if checkpoint.exists():
         return json.loads(checkpoint.read_text())
     tree = api(f"git/commits/{head}")["tree"]["sha"]
@@ -428,6 +429,53 @@ def verify(number: int, head: str, decision: dict):
     )
 
 
+def review_threads(number: int):
+    query = """query($pr:Int!) {
+      repository(owner:"ayhammouda", name:"python-docs-mcp-server") {
+        pullRequest(number:$pr) { reviewThreads(first:100) { nodes {
+          id isResolved comments(first:1) { nodes { url body } }
+        } } }
+      }
+    }"""
+    result = request(
+        "https://api.github.com/graphql",
+        token("owner"),
+        "POST",
+        {"query": query, "variables": {"pr": number}},
+    )
+    return result["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
+
+
+def resolve_thread(number: int, head: str, thread_id: str, reason: str):
+    if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 4000:
+        raise ValueError("A bounded review-triage rationale is required")
+    pr = api(f"pulls/{number}")
+    require_verified(pr, head, api("branches/main")["commit"]["sha"])
+    threads = review_threads(number)
+    if not any(t["id"] == thread_id and not t["isResolved"] for t in threads):
+        raise ValueError("Unresolved thread must belong to this project PR's first 100 threads")
+    api(
+        f"issues/{number}/comments",
+        "POST",
+        {
+            "body": f"Vision — automated project maintainer: resolving review thread {thread_id} "
+            f"on verified head {head}.\n\n{reason}"
+        },
+    )
+    mutation = """mutation($thread:ID!) {
+      resolveReviewThread(input:{threadId:$thread}) { thread { id isResolved } }
+    }"""
+    result = request(
+        "https://api.github.com/graphql",
+        token("owner"),
+        "POST",
+        {"query": mutation, "variables": {"thread": thread_id}},
+    )
+    if result.get("errors"):
+        raise ValueError("GitHub refused to resolve the review thread")
+    return result["data"]["resolveReviewThread"]["thread"]
+
+
 def release(sha: str, tag: str):
     if not SHA.fullmatch(sha) or not re.fullmatch(r"v\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?", tag):
         raise ValueError("Exact commit and semantic version tag required")
@@ -465,17 +513,24 @@ def dispatch(data: dict):
     if operation == "api":
         validate_api(data["method"], data["path"], data.get("body"))
         return api(data["path"], data["method"], data.get("body"))
+    if operation == "threads":
+        number = data.get("pr")
+        if type(number) is not int or number < 1:
+            raise ValueError("Positive PR number required")
+        return review_threads(number)
     if operation == "publish":
         return publish(data)
     if operation == "release":
         return release(data.get("sha", ""), data.get("tag", ""))
-    if operation not in {"verify", "merge"}:
+    if operation not in {"verify", "merge", "resolve"}:
         raise ValueError("Unknown operation")
     number, head = data.get("pr"), data.get("head_sha", "")
     if type(number) is not int or number < 1 or not SHA.fullmatch(head):
         raise ValueError("Positive PR number and exact head SHA required")
     if operation == "verify":
         return verify(number, head, data.get("decision", {}))
+    if operation == "resolve":
+        return resolve_thread(number, head, data.get("thread_id", ""), data.get("reason", ""))
     pr = api(f"pulls/{number}")
     require_verified(pr, head, api("branches/main")["commit"]["sha"])
     # GitHub enforces all remaining required checks and resolved conversations atomically.

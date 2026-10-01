@@ -38,7 +38,13 @@ def require_eligible(api, sha: str, verifier_app_id: int) -> None:
         for c in reviews
         if c["name"] == "Independent verification" and c["app"]["id"] == verifier_app_id
     ]
-    if not reviews or max(reviews, key=lambda c: c["id"])["conclusion"] != "success":
+    parents = api(f"git/commits/{sha}")["parents"]
+    latest = max(reviews, key=lambda c: c["id"], default={})
+    if (
+        len(parents) != 1
+        or latest.get("conclusion") != "success"
+        or latest.get("external_id") != f"{parents[0]['sha']}:{head}"
+    ):
         raise ValueError("Missing successful independent verification for merged PR head")
     checks = api(f"commits/{sha}/check-runs?per_page=100")["check_runs"]
     latest = {}
