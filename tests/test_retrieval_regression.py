@@ -111,6 +111,9 @@ def regression_db(tmp_path):
         "'function', 'library/json.html#json.loads', 'json.loads')"
     )
 
+    # The page store contains the complete body, including all section text.
+    conn.execute("UPDATE documents SET content_text = ? WHERE id = 1", (asyncio_312,))
+    conn.execute("UPDATE documents SET content_text = ? WHERE id = 2", (asyncio_313,))
     conn.commit()
     conn.execute("INSERT INTO sections_fts(sections_fts) VALUES('rebuild')")
     conn.execute("INSERT INTO symbols_fts(symbols_fts) VALUES('rebuild')")

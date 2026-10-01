@@ -287,9 +287,16 @@ def extract_sections(body_html: str, doc_uri: str) -> list[dict]:
         return []
 
     soup = BeautifulSoup(body_html, "html.parser")
+    # Modern Sphinx puts the ID on a section; only its first direct heading names it.
+    for section in soup.find_all(["section", "div"], id=True):
+        if section.name != "section" and "section" not in (section.get("class") or []):
+            continue
+        heading = section.find(re.compile(r"^h[1-6]$"), recursive=False)
+        if isinstance(heading, Tag) and not heading.get("id"):
+            heading["id"] = section["id"]
     heading_tags = soup.find_all(re.compile(r"^h[1-6]$"), id=True)
 
-    if not heading_tags:
+    if not heading_tags and not soup.find("dt", id=True):
         # No headings with id — create a single section covering the whole body
         content = html_to_markdown(body_html)
         if not content:
@@ -346,6 +353,24 @@ def extract_sections(body_html: str, doc_uri: str) -> list[dict]:
             }
         )
 
+    # Sphinx API signatures carry independent anchors inside definition lists.
+    anchors = {section["anchor"] for section in sections}
+    for signature in soup.find_all("dt", id=True):
+        anchor = str(signature["id"])
+        if anchor in anchors:
+            continue
+        anchors.add(anchor)
+        description = signature.find_next_sibling("dd")
+        content = html_to_markdown(str(signature) + (str(description) if description else ""))
+        sections.append({
+            "anchor": anchor,
+            "heading": signature.get_text(" ", strip=True).rstrip("¶").strip(),
+            "level": 3,
+            "ordinal": len(sections),
+            "content_text": content,
+            "char_count": len(content),
+            "uri": f"{doc_uri}#{anchor}",
+        })
     return sections
 
 

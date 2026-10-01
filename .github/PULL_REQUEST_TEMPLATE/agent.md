@@ -16,10 +16,10 @@ Closes #<issue-number>
 ## Validation gate output
 <!-- Paste the tail of each gate command. All must be green before opening this PR. -->
 ```text
-$ uv run ruff check src/ tests/
-$ uv run pyright src/
-$ uv run pytest --tb=short -q
-$ uv run python-docs-mcp-server doctor
+$ uv run --locked ruff check src/ tests/ benchmarks/ ops/ .github/scripts/
+$ uv run --locked pyright src/ benchmarks/
+$ uv run --locked pytest --tb=short -q
+$ uv run --locked python-docs-mcp-server doctor
 ```
 <!-- Plus any change-type-specific gates from pipeline §5 (stdio smoke,
      validate-corpus, uv lock --check) that applied to this change. -->
@@ -42,3 +42,17 @@ Pending.
      If any fired: apply `supervisor-review` for Vision to decide. Vision can
      resolve it and merge after separate verification; delegates cannot self-merge. -->
 None.
+
+
+## Product decision and independent evidence
+
+- Kind: feature / bugfix / maintenance / policy
+- User problem or reproducible failure:
+- Dated research and alternative/market comparison (features):
+- Baseline → target; acceptance evidence:
+- Non-goals; compatibility/security impact:
+- Outcome review date and revisit/removal condition (features):
+- Exact head/base SHA; independent verifier check; unresolved limitations:
+
+<!-- Keep the corresponding pdctl decision JSON with this evidence. A label or
+     another agent's summary does not replace the independent check. -->

@@ -21,7 +21,7 @@ required issue structure, the canonical validation gate, the supervisor-review
 triggers, and the recovery procedure. The *what and why* lives in
 `STRATEGIC-ROADMAP-2026-05-29.md`; the *how, with what guardrails* lives in the
 pipeline doc. Read its **2026-10-01 ownership amendment first**: Aymen delegated
-full project stewardship to Vision (`main`), including roadmap decisions, issue
+full project stewardship to Vision (`pd-owner`), including roadmap decisions, issue
 replies, CI repairs, dependency upgrades, merges, and releases. No routine human
 approval is required. Vision is accountable for the project promise and quality.
 
@@ -44,7 +44,7 @@ python -m pip install uv
 Bootstrap the repo:
 
 ```bash
-uv sync --dev
+uv sync --locked --dev
 ```
 
 If `uv` is not on your `PATH` after installation, reopen the shell or use
@@ -53,17 +53,17 @@ If `uv` is not on your `PATH` after installation, reopen the shell or use
 Core verification commands:
 
 ```bash
-uv run ruff check src/ tests/ benchmarks/
-uv run pyright src/ benchmarks/
-uv run pytest --tb=short -q
+uv run --locked ruff check src/ tests/ benchmarks/ ops/ .github/scripts/
+uv run --locked pyright src/ benchmarks/
+uv run --locked pytest --tb=short -q
 ```
 
 Build and inspect a local docs index:
 
 ```bash
-uv run python-docs-mcp-server build-index --versions 3.12,3.13
-uv run python-docs-mcp-server doctor
-uv run python-docs-mcp-server validate-corpus
+uv run --locked python-docs-mcp-server build-index --versions 3.12,3.13
+uv run --locked python-docs-mcp-server doctor
+uv run --locked python -m benchmarks validate-corpus --corpus docs/benchmarks/corpus.yml --schema docs/benchmarks/corpus.schema.json
 ```
 
 Package smoke check:
