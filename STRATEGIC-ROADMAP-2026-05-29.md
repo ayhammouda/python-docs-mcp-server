@@ -2,6 +2,9 @@
 
 **Adopted:** 2026-05-29
 **Status:** Active. This document is the canonical forward-looking strategy; review at each minor release.
+**Ownership (2026-10-01):** Vision owns delivery and may revise this roadmap with
+recorded evidence. The pipeline ownership amendment supersedes historical
+human-led assignments, approval gates, and mandatory context-file requirements.
 **Supersedes / consolidates:** the four prior strategy artifacts listed in §7.
 
 ---
@@ -292,3 +295,15 @@ This amendment records a three-layer separation of evidence that public and inte
 Tokens are the business problem; bytes are an implementation detail. Public copy (README / PyPI / glama / launch) leads with precise retrieval, version-accuracy, and token economy. The zstd retrieved-docs cache (decision 5.7) is cache-at-rest only and stays an engineering footnote — it never becomes a headline selling point. (Decision 5.16.)
 
 This discipline also supersedes the need for a separate note in the now-local-only `.planning/POSITIONING.md`: `.planning/` is no longer tracked on `main` (see `chore: ignore local planning workspace`), so the discipline lives here, in the tracked roadmap, rather than in the planning workspace.
+
+
+## Amendment 2026-10-01 — Autonomous Project Ownership
+
+Aymen delegated project ownership and merge authority to Vision. Vision owns
+roadmap priorities, engineering and benchmark-methodology decisions, issue
+communication, dependency and CI maintenance, and verified releases. Historical
+human-led assignments now route to Vision. Decisions 5.12–5.14 are governed by
+the pipeline's 2026-10-01 ownership amendment: branch/PR delivery and independent
+verification remain required, while context may live directly in an issue.
+The mission, free MIT promise, canonical sources, and evidence standards remain
+the measure of success. Revise stale milestones from live implementation evidence.
