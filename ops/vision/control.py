@@ -381,7 +381,10 @@ def review(head: str, base: str, decision: dict):
             or any(not any(check in command for command in recorded) for check in mandatory)
             or any(c.get("exit_code") != 0 for c in commands)
         ):
-            raise ValueError("Independent reviewer did not approve complete current-head evidence")
+            raise ValueError(
+                "Independent review rejected: "
+                + str(verdict.get("blockers") or "incomplete check evidence")
+            )
         checkpoint.write_text(json.dumps(verdict))
         return verdict
     except Exception:

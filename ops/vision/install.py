@@ -93,6 +93,9 @@ run local checks and review it, recording hosted CI as pending. The broker and
 GitHub enforce hosted checks separately at merge. Never treat skipped CodeRabbit
 or a mocked benchmark as substantive verification.
 Report blockers if access, tests, review or product evidence is incomplete.
+Host MCP connectors are intentionally excluded, not an acceptance requirement.
+Their absence belongs in limitations, not blockers, when the required repository
+checks and sandbox tools are available. Never skip a required check on that basis.
 Return only the JSON verdict schema in the trusted task. Every command must have
 its real exit_code. No completion without fresh evidence.
 """,

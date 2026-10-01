@@ -183,6 +183,7 @@ def test_thread_resolution_rejects_a_thread_from_another_pr(monkeypatch):
 
 def test_malformed_verifier_result_completes_check_as_failure(tmp_path, monkeypatch):
     module = CONTROL["verify"].__globals__
+    monkeypatch.setitem(module, "CONFIG", tmp_path)
     monkeypatch.setitem(module, "STATE", tmp_path)
     calls = []
 
