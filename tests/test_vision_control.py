@@ -268,3 +268,81 @@ def test_temporary_verification_requires_current_private_receipt(tmp_path, monke
         with pytest.raises(ValueError, match="Missing/stale"):
             CONTROL["require_verified"](pr, head, base)
     assert all(not p.startswith("check-runs") for p, _ in calls)
+
+
+def test_temporary_capture_and_app_activation_lifecycle(tmp_path, monkeypatch, capsys):
+    import copy
+    from types import SimpleNamespace
+
+    loader = runpy.run_path
+    monkeypatch.setattr(runpy, "run_path", lambda _: CONTROL)
+    setup = loader(str(Path(__file__).parents[1] / "ops/vision/configure_apps.py"))
+    module = setup["activate"].__globals__
+    monkeypatch.setitem(module, "CONFIG", tmp_path)
+    credential = "private-test-credential"
+    rules = {
+        "name": "main", "target": "branch", "enforcement": "active",
+        "bypass_actors": [], "conditions": {},
+        "rules": [{"type": "required_status_checks", "parameters": {
+            "required_status_checks": [{"context": "Existing CI", "integration_id": 15368}]
+        }}],
+    }
+
+    def run(command, **kwargs):
+        assert command[-4:] == ["auth", "token", "--hostname", "github.com"]
+        assert kwargs["capture_output"] is True
+        return SimpleNamespace(stdout=credential)
+
+    def request(url, token, method="GET", data=None):
+        if url.endswith("/user"):
+            assert token == credential
+            return {"login": "ayhammouda"}
+        if url.endswith("/repos/" + CONTROL["REPO"]):
+            return {"permissions": {"push": True}}
+        if url.endswith("/app"):
+            return {"owner": {"login": "ayhammouda"},
+                    "permissions": setup["PERMISSIONS"][token]}
+        if url.endswith("/app/installations"):
+            return [{"id": 1, "account": {"login": "ayhammouda"},
+                     "repository_selection": "selected"}]
+        if url.endswith("/access_tokens"):
+            return {"token": "scoped-installation-test"}
+        assert url.endswith("/installation/repositories")
+        return {"total_count": 1, "repositories": [{"full_name": CONTROL["REPO"]}]}
+
+    def operator_api(path, method="GET", body=None):
+        if path == "rulesets/15269598":
+            if method == "PUT":
+                rules.update(copy.deepcopy(body))
+            return copy.deepcopy(rules)
+        if path == "actions/variables" and method == "GET":
+            return {"variables": []}
+        if path == "rulesets?per_page=100":
+            return []
+        if path == "environments/pypi/deployment-branch-policies" and method == "GET":
+            return {"branch_policies": []}
+        return {}
+
+    monkeypatch.setattr(module["subprocess"], "run", run)
+    monkeypatch.setitem(module, "CONTROL", {**CONTROL, "request": request, "app_jwt": lambda r: r})
+    monkeypatch.setitem(module, "operator_api", operator_api)
+    setup["enable_temporary"]()
+    token_path = tmp_path / "temporary-token"
+    assert token_path.read_text() == credential
+    assert token_path.stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "activated").exists()
+    assert credential not in capsys.readouterr().out
+    with pytest.raises(FileNotFoundError):
+        setup["activate"]()
+    assert not (tmp_path / "activated").exists()
+    assert token_path.exists()  # Retained privately, but no automatic reactivation.
+    for role, app_id in [("owner", 41), ("verifier", 42)]:
+        (tmp_path / f"{role}.json").write_text(json.dumps({"app_id": app_id}))
+    with pytest.raises(ValueError, match="instead of downgrading"):
+        setup["enable_temporary"]()
+    setup["activate"]()
+    assert not token_path.exists()
+    assert (tmp_path / "activated").exists()
+    required = rules["rules"][0]["parameters"]["required_status_checks"]
+    assert {"context": "Existing CI", "integration_id": 15368} in required
+    assert {"context": "Independent verification", "integration_id": 42} in required

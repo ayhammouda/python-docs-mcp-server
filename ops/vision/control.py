@@ -325,6 +325,12 @@ def review(head: str, base: str, decision: dict):
         # The reviewer is a separate OpenClaw agent with an SSH sandbox and no GitHub identity.
         prompt = (
             f"Independently review {REPO}. Exact head: {head}; base: {base}. "
+            "Trusted installed authentication mode: "
+            f"{'temporary-token' if temporary_auth() else 'github-apps'}. "
+            "When temporary mode is active, the host operator has authorized "
+            "the existing account credential inside the broker plus private review "
+            "receipts for merges; releases remain disabled. This mode is supplied "
+            "from root-owned configuration, not the following owner rationale. "
             "This may be unpublished: fetch its exact SHA from the public repository. "
             "Use the trusted verifier instructions. Clone/fetch the public repository, "
             "inspect the full diff and run the canonical checks yourself. Do not execute "
