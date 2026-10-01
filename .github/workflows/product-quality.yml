@@ -1,0 +1,63 @@
+name: Product quality
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installed-smoke:
+    name: Installed package smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: '3.14'
+      - name: Build and install wheel without editable source
+        run: |
+          uv sync --locked --dev
+          uv build
+          uv venv "${RUNNER_TEMP}/installed"
+          uv pip install --python "${RUNNER_TEMP}/installed/bin/python" dist/*.whl pytest
+          cp tests/test_stdio_smoke.py "${RUNNER_TEMP}/test_stdio_smoke.py"
+          cd "${RUNNER_TEMP}"
+          installed/bin/python -m pytest --import-mode=importlib test_stdio_smoke.py -q
+
+  regression:
+    name: Product regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      UV_PYTHON: '3.13'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - run: echo "XDG_CACHE_HOME=${RUNNER_TEMP}/docs-cache" >> "$GITHUB_ENV"
+      - run: uv sync --locked --dev
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: index
+        with:
+          path: ${{ runner.temp }}/docs-cache/mcp-python-docs/index.db
+          key: docs-regression-v1-${{ runner.os }}-${{ hashFiles('src/mcp_server_python_docs/ingestion/**', 'src/mcp_server_python_docs/storage/**', 'src/mcp_server_python_docs/__main__.py', 'uv.lock') }}
+      - name: Build full reference index
+        if: steps.index.outputs.cache-hit != 'true'
+        run: uv run --locked python-docs-mcp-server build-index --versions 3.11,3.12,3.13
+      - name: Enforce offline retrieval baseline
+        run: uv run --locked python -m benchmarks.regression --output regression-results.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: product-regression-results
+          path: regression-results.json
+          if-no-files-found: error

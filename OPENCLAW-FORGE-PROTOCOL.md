@@ -290,3 +290,14 @@ Pause the forge and remove `agent-ready` from the queue if any of these happen:
 When paused, Vision writes a short incident note and fixes the protocol before
 new work resumes. Small pauses are cheaper than turning a public repo into a
 committee-authored incident report.
+
+
+## 2026-10-01 quality and isolation update
+
+The latest amendment in `AGENT-EXECUTION-PIPELINE.md` supersedes historical shared
+`main`/`arch`/`test` execution for this project. Use the project-only `pd-owner`,
+`pd-implementer`, and `pd-verifier` agents and the installed `pdctl` broker.
+The owner retains roadmap, issue reply, merge and release authority. GitHub App
+activation is a one-time operator handoff; while pending, public research and
+planning continue without falling back to the personal host credentials.
+See `ops/vision/README.md` for installation, activation, checks and recovery.

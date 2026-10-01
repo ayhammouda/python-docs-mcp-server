@@ -6,22 +6,30 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python-version: ["3.12", "3.13"]
+        python-version: ["3.12", "3.13", "3.14"]
 
+    timeout-minutes: 20
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
     name: Test (Python ${{ matrix.python-version }}, ${{ matrix.os }})
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           cache-suffix: py${{ matrix.python-version }}
 
@@ -29,21 +37,24 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --locked --dev
 
       - name: Run linter
-        run: uv run ruff check src/ tests/ benchmarks/
+        run: uv run --locked ruff check src/ tests/ benchmarks/ ops/ .github/scripts/
 
       - name: Run type checker
-        run: uv run pyright src/ benchmarks/
+        run: uv run --locked pyright src/ benchmarks/
+
+      - name: Validate frozen benchmark corpus
+        run: uv run --locked python -m benchmarks validate-corpus --corpus docs/benchmarks/corpus.yml --schema docs/benchmarks/corpus.schema.json
 
       - name: Run tests
-        run: uv run pytest --tb=short -q
+        run: uv run --locked pytest --tb=short -q
 
       - name: Verify wheel contents
         run: |
           uv build
-          uv run python -c "
+          uv run --locked python -c "
           import zipfile, glob, sys
           wheels = glob.glob('dist/*.whl')
           if not wheels:

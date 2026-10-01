@@ -42,6 +42,13 @@ body:
     validations:
       required: true
   - type: textarea
+    id: product-evidence
+    attributes:
+      label: Product evidence
+      description: For features include dated sources, a relevant alternative, baseline and target, non-goals, review date, and a revisit/removal condition. For repairs provide the reproduction or maintenance rationale.
+    validations:
+      required: true
+  - type: textarea
     id: scope
     attributes:
       label: Scope boundaries
@@ -68,10 +75,10 @@ body:
       description: The exact canonical gate, in order, plus any change-type-specific gates. Must pass before any PR is opened.
       value: |
         ```bash
-        uv run ruff check src/ tests/
-        uv run pyright src/
-        uv run pytest --tb=short -q
-        uv run python-docs-mcp-server doctor
+        uv run --locked ruff check src/ tests/ benchmarks/ ops/ .github/scripts/
+        uv run --locked pyright src/ benchmarks/
+        uv run --locked pytest --tb=short -q
+        uv run --locked python-docs-mcp-server doctor
         ```
     validations:
       required: true

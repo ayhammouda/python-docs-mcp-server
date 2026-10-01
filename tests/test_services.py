@@ -47,7 +47,7 @@ def populated_with_content(populated_db):
     db.execute(
         "INSERT INTO documents (doc_set_id, uri, slug, title, content_text, char_count) "
         "VALUES (?, 'library/asyncio-task.html', 'library/asyncio-task.html', "
-        "'asyncio.Task', 'Full page content here', 5000)",
+        "'asyncio.Task', 'TaskGroup and create_task full page content here', 5000)",
         (doc_set_id,),
     )
     doc_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -135,7 +135,7 @@ class TestSearchService:
         assert hit.slug == "library/json"
         assert hit.anchor is None
         docs = ContentService(db).get_docs(hit.slug, hit.version, hit.anchor)
-        assert "json.dumps guidance" in docs.content
+        assert "json page content" in docs.content
 
     def test_search_no_results(self, populated_with_content):
         svc = SearchService(populated_with_content, {})

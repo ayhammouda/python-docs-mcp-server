@@ -67,7 +67,7 @@ class ContentService:
         # Find the document
         doc_row = self._db.execute(
             """
-            SELECT d.id, d.title, d.slug
+            SELECT d.id, d.title, d.slug, d.content_text
             FROM documents d
             JOIN doc_sets ds ON d.doc_set_id = ds.id
             WHERE d.slug = ? AND ds.version = ?
@@ -105,29 +105,8 @@ class ContentService:
                     f"Section {anchor!r} not found in {slug!r} v{resolved_version}"
                 )
         else:
-            # Page-level retrieval: concatenate all sections in ordinal order
-            section_rows = self._db.execute(
-                """
-                SELECT heading, content_text
-                FROM sections
-                WHERE document_id = ?
-                ORDER BY ordinal
-                """,
-                (doc_id,),
-            ).fetchall()
-
-            if not section_rows:
-                full_text = ""
-            else:
-                parts = []
-                for row in section_rows:
-                    heading = row["heading"] or ""
-                    content = row["content_text"] or ""
-                    if heading:
-                        parts.append(f"## {heading}\n\n{content}")
-                    else:
-                        parts.append(content)
-                full_text = "\n\n".join(parts)
+            # The stored page is canonical; nested anchor excerpts can overlap.
+            full_text = doc_row["content_text"] or ""
 
             title = doc_title
 

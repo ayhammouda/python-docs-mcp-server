@@ -9,34 +9,58 @@ concurrency:
   group: release-${{ github.ref_name }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
+  eligibility:
+    name: Release eligibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      checks: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Require verified main commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERIFIER_APP_ID: ${{ vars.VISION_VERIFIER_APP_ID }}
+        run: python .github/scripts/release_gate.py
+
   build:
+    needs: eligibility
     runs-on: ubuntu-latest
     name: Build & Test
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: Set up Python 3.13
         run: uv python install 3.13
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --locked --dev
 
       - name: Verify tag matches package version
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
-          PKG_VERSION=$(uv run python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          PKG_VERSION=$(uv run --locked python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
           if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
             echo "::error::Tag ${GITHUB_REF_NAME} does not match pyproject.toml version ${PKG_VERSION}"
             exit 1
           fi
-          SERVER_VERSION=$(uv run python -c "import json; print(json.load(open('server.json'))['version'])")
-          PACKAGE_VERSION=$(uv run python -c "import json; print(json.load(open('server.json'))['packages'][0]['version'])")
+          SERVER_VERSION=$(uv run --locked python -c "import json; print(json.load(open('server.json'))['version'])")
+          PACKAGE_VERSION=$(uv run --locked python -c "import json; print(json.load(open('server.json'))['packages'][0]['version'])")
           if [ "$TAG_VERSION" != "$SERVER_VERSION" ]; then
             echo "::error::Tag ${GITHUB_REF_NAME} does not match server.json version ${SERVER_VERSION}"
             exit 1
@@ -48,20 +72,28 @@ jobs:
           echo "Version check passed: ${PKG_VERSION}"
 
       - name: Run linter
-        run: uv run ruff check src/ tests/
+        run: uv run --locked ruff check src/ tests/ benchmarks/ ops/ .github/scripts/
 
       - name: Run type checker
-        run: uv run pyright src/
+        run: uv run --locked pyright src/ benchmarks/
 
       - name: Run tests
-        run: uv run pytest --tb=short -q
+        run: uv run --locked pytest --tb=short -q
+
+      - name: Validate frozen benchmark corpus
+        run: uv run --locked python -m benchmarks validate-corpus --corpus docs/benchmarks/corpus.yml --schema docs/benchmarks/corpus.schema.json
+
+      - name: Validate MCP manifest before publication
+        run: |
+          bash .github/scripts/install_publisher.sh
+          "${RUNNER_TEMP}/mcp-publisher" validate server.json
 
       - name: Build package
         run: uv build
 
       - name: Verify wheel contents
         run: |
-          uv run python -c "
+          uv run --locked python -c "
           import zipfile, glob, sys
           wheels = glob.glob('dist/*.whl')
           if not wheels:
@@ -76,13 +108,19 @@ jobs:
           "
 
       - name: Upload dist artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: dist
           path: dist/
 
-  publish:
+  integration:
     needs: build
+    uses: ./.github/workflows/e2e.yml
+    with:
+      artifact-name: dist
+
+  publish:
+    needs: [build, integration]
     runs-on: ubuntu-latest
     name: Publish to PyPI
     timeout-minutes: 10
@@ -94,18 +132,18 @@ jobs:
 
     steps:
       - name: Download dist artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: dist
           path: dist/
 
       - name: Generate artifact attestation
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-path: 'dist/*'
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
 
   publish-mcp-registry:
     needs: publish
@@ -117,21 +155,18 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
-      - name: Install mcp-publisher
-        run: |
-          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" \
-            | tar xz mcp-publisher
-
-      - name: Validate server.json
-        run: ./mcp-publisher validate server.json
+      - name: Install verified MCP publisher
+        run: bash .github/scripts/install_publisher.sh
 
       - name: Authenticate to MCP Registry
-        run: ./mcp-publisher login github-oidc
+        run: '"${RUNNER_TEMP}/mcp-publisher" login github-oidc'
 
       - name: Publish to MCP Registry
-        run: ./mcp-publisher publish
+        run: '"${RUNNER_TEMP}/mcp-publisher" publish'
 
   github-release:
     needs:
@@ -145,13 +180,13 @@ jobs:
 
     steps:
       - name: Download dist artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: dist
           path: dist/
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           files: dist/*
           generate_release_notes: true
