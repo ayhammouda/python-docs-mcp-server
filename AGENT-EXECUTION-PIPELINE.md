@@ -408,3 +408,15 @@ Until activation, authenticated project operations fail closed.
   propose policy improvements through a reviewed PR; it cannot replace its own
   installed trust boundary. Paid model benchmarking stays disabled without a
   separately specified budget.
+
+## Amendment 2026-10-01 — Authorized temporary credential
+
+Aymen authorized using Vision's existing GitHub credential until the two Apps
+are configured. Only the root-owned fixed-repository broker may hold it; no
+worker receives the token. Independent prepublication review remains mandatory.
+For this temporary mode, merge authorization uses a root-owned verification
+receipt bound to the exact PR head, current main and installed broker policy.
+Public evidence comments cannot replace that receipt. Required GitHub CI/security
+checks, resolved conversations and SHA-matched merging remain enforced. Releases
+remain disabled until App activation. Successful App activation removes the
+temporary credential and enables the separate verifier identity/check requirement.

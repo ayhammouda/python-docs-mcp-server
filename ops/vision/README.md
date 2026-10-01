@@ -6,9 +6,25 @@ at **08:17 and 20:17 Europe/Paris**. Account ownership stays with Aymen.
 
 ## Finish GitHub identity setup later
 
-The host preparation does not activate authenticated bot actions. No personal
-GitHub token is handed to a project worker. The user explicitly deferred this
-one-time browser step.
+The user authorized temporary use of Vision's existing GitHub credential while
+deferring the two Apps. The operator enables it with:
+
+```sh
+ssh -t ahammouda@vision \
+  'sudo /opt/python-docs-vision/configure_apps.py enable-temporary'
+```
+
+The broker privately captures the existing host credential into a root-only file;
+workers never receive it. Issues, publication, review and merges work through the
+same fixed-repository allowlist. Independent reviews produce root-owned receipts
+bound to the current PR head, main and installed policy, plus public evidence
+comments. Comments and account-issued statuses cannot authorize merges. The eleven
+required CI/security checks remain unchanged. The credential itself retains its
+existing account scope; this temporary mode does not provide separate App identity.
+Releases stay disabled until App activation, which removes the temporary copy.
+Removing `/etc/python-docs-vision/activated` stops either authentication mode.
+
+To switch to the Apps:
 
 1. Open an operator terminal and keep this SSH tunnel running:
 
@@ -134,6 +150,11 @@ The installer validates OpenClaw configuration and keeps its previous config in
 project accounts/agents. Root helpers in `/opt/python-docs-vision` cannot be
 updated by Vision, even if a PR changes their source. Apply reviewed updates as
 the operator. The installer does not change the existing job or activate Apps.
+
+Host MCP servers use native `codex.agents` scoping to exclude project agents before
+connection, avoiding false incomplete-MCP blockers. Existing agent access and
+explicit restrictions are preserved. Add future host agents to those allowlists
+when granting them connector access.
 
 Check native agent execution, credential unreadability, root/SSH write denial,
 worker isolation, refused publication without independent review, wrong-App or

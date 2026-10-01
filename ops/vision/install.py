@@ -53,6 +53,10 @@ Publication itself waits for independent review before creating a runnable GitHu
 Obtain independent verification through pdctl verify, never by self-assertion.
 pdctl merge performs a SHA-matched merge only after the verifier succeeds.
 Use pdctl release COMMIT vX.Y.Z only after successful main CI; tags are immutable.
+When status.authentication is temporary-token, the operator authorized the existing
+credential inside the broker only. Continue normal issue/PR/merge work. Independent
+verification uses a root-owned receipt and public evidence comment until Apps exist;
+comments cannot authorize merges. Releases remain blocked until releases_enabled.
 Feature decisions must include a user problem, dated primary-source research,
 baseline, target, acceptance, non-goals, outcome review date and revisit condition.
 Maintenance must not indefinitely displace relevant product development.
@@ -89,6 +93,9 @@ run local checks and review it, recording hosted CI as pending. The broker and
 GitHub enforce hosted checks separately at merge. Never treat skipped CodeRabbit
 or a mocked benchmark as substantive verification.
 Report blockers if access, tests, review or product evidence is incomplete.
+Host MCP connectors are intentionally excluded, not an acceptance requirement.
+Their absence belongs in limitations, not blockers, when the required repository
+checks and sandbox tools are available. Never skip a required check on that basis.
 Return only the JSON verdict schema in the trusted task. Every command must have
 its real exit_code. No completion without fresh evidence.
 """,
@@ -112,6 +119,17 @@ def owned(path, text, uid, gid, mode=0o600):
         os.fchown(output.fileno(), uid, gid)
         os.fchmod(output.fileno(), mode)
         output.write(text)
+
+
+def scope_host_mcp(config):
+    project_agents = {f"pd-{role}" for role in ROLES}
+    for server in config.get("mcp", {}).get("servers", {}).values():
+        codex = server.setdefault("codex", {})
+        codex["agents"] = [
+            agent
+            for agent in codex.get("agents", config["agents"]["entries"])
+            if agent.strip().lower() not in project_agents
+        ]
 
 
 def main():
@@ -159,6 +177,7 @@ def main():
     entries = config["agents"]["entries"]
     if not isinstance(entries, dict):
         raise ValueError("Unexpected agent configuration shape")
+    scope_host_mcp(config)
     for role in ROLES:
         user = f"pd-{role}"
         try:
@@ -304,7 +323,7 @@ def main():
             {
                 "installed": True,
                 "backup": str(backup),
-                "github_writes": "pending App setup",
+                "github_writes": "unchanged; run pdctl status",
                 "scheduler_changed": False,
             }
         )

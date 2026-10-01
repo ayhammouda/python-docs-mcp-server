@@ -1,6 +1,8 @@
 """Negative cases for the fixed-repository privileged broker boundary."""
 
 import base64
+import hashlib
+import json
 import runpy
 from pathlib import Path
 
@@ -157,6 +159,33 @@ def test_installer_rejects_worker_symlinks_before_ownership_changes(tmp_path):
     assert secret.read_text() == "unchanged"
 
 
+def test_host_mcp_scoping_preserves_other_agents_and_existing_restrictions():
+    scope = runpy.run_path(str(Path(__file__).parents[1] / "ops/vision/install.py"))[
+        "scope_host_mcp"
+    ]
+    config = {
+        "agents": {"entries": {"main": {}, "piquetbot": {}, "pd-owner": {}}},
+        "mcp": {
+            "servers": {
+                "unscoped": {"url": "https://example.test/mcp"},
+                "restricted": {"codex": {"agents": ["main", "future", "PD-Verifier"]}},
+                "disabled": {"codex": {"agents": []}},
+            }
+        },
+    }
+    scope(config)
+    servers = config["mcp"]["servers"]
+    assert servers["unscoped"] == {
+        "url": "https://example.test/mcp",
+        "codex": {"agents": ["main", "piquetbot"]},
+    }
+    assert servers["restricted"]["codex"]["agents"] == ["main", "future"]
+    assert servers["disabled"]["codex"]["agents"] == []
+    before = json.dumps(config)
+    scope(config)
+    assert json.dumps(config) == before
+
+
 def test_thread_resolution_rejects_a_thread_from_another_pr(monkeypatch):
     module = CONTROL["resolve_thread"].__globals__
     monkeypatch.setitem(module, "api", lambda *args: {"commit": {"sha": "b" * 40}})
@@ -181,6 +210,7 @@ def test_thread_resolution_rejects_a_thread_from_another_pr(monkeypatch):
 
 def test_malformed_verifier_result_completes_check_as_failure(tmp_path, monkeypatch):
     module = CONTROL["verify"].__globals__
+    monkeypatch.setitem(module, "CONFIG", tmp_path)
     monkeypatch.setitem(module, "STATE", tmp_path)
     calls = []
 
@@ -202,3 +232,152 @@ def test_malformed_verifier_result_completes_check_as_failure(tmp_path, monkeypa
     )
     assert calls[-1]["status"] == "completed"
     assert calls[-1]["conclusion"] == "failure"
+
+
+def test_temporary_auth_uses_only_the_broker_and_keeps_releases_disabled(tmp_path, monkeypatch):
+    module = CONTROL["dispatch"].__globals__
+    monkeypatch.setitem(module, "CONFIG", tmp_path)
+    monkeypatch.setitem(module, "STATE", tmp_path)
+    (tmp_path / "temporary-token").write_text("test-credential")
+    (tmp_path / "activated").write_text("1")
+    assert CONTROL["token"].__wrapped__("owner") == "test-credential"
+    with pytest.raises(ValueError, match="Unknown identity"):
+        CONTROL["token"].__wrapped__("arbitrary")
+    status = CONTROL["dispatch"]({"operation": "status"})
+    assert status["ready"] is True
+    assert status["authentication"] == "temporary-token"
+    assert status["releases_enabled"] is False
+    assert "test-credential" not in json.dumps(status)
+    with pytest.raises(ValueError, match="Releases require GitHub App"):
+        CONTROL["release"]("a" * 40, "v1.0.0")
+    (tmp_path / "activated").unlink()
+    with pytest.raises(ValueError, match="not activated"):
+        CONTROL["dispatch"]({"operation": "merge", "pr": 1, "head_sha": "a" * 40})
+
+
+def test_temporary_verification_requires_current_private_receipt(tmp_path, monkeypatch):
+    module = CONTROL["verify"].__globals__
+    monkeypatch.setitem(module, "CONFIG", tmp_path)
+    monkeypatch.setitem(module, "STATE", tmp_path)
+    (tmp_path / "temporary-token").write_text("test-credential")
+    head, base = "a" * 40, "b" * 40
+    pr = {"number": 1, "head": {"sha": head}, "base": {"ref": "main"}, "state": "open"}
+    verdict = {"approved": True, "head_sha": head, "base_sha": base, "blockers": []}
+    calls = []
+
+    def api(path, method="GET", data=None, role="owner"):
+        calls.append((path, method))
+        if path == "pulls/1":
+            return pr
+        if path == "branches/main":
+            return {"commit": {"sha": base}}
+        assert path == "issues/1/comments" and method == "POST"
+        return {"html_url": "https://github.com/example/evidence"}
+
+    monkeypatch.setitem(module, "api", api)
+    monkeypatch.setitem(module, "review", lambda *args: verdict)
+    with pytest.raises(ValueError, match="Missing/stale"):
+        CONTROL["require_verified"](pr, head, base)
+    result = CONTROL["verify"](
+        1, head, {"kind": "maintenance", "rationale": "Repair", "acceptance": "Tests"}
+    )
+    assert result["status"] == "success"
+    assert CONTROL["require_verified"](pr, head, base)["verdict"] == verdict
+    with pytest.raises(ValueError, match="Missing/stale"):
+        CONTROL["require_verified"](pr, head, "c" * 40)
+    with pytest.raises(ValueError, match="Missing/stale"):
+        CONTROL["require_verified"]({**pr, "head": {"sha": "c" * 40}}, head, base)
+    path = tmp_path / f"verify-1-{base}-{head}.json"
+    receipt = json.loads(path.read_text())
+    assert receipt["policy"] == hashlib.sha256(Path(module["__file__"]).read_bytes()).hexdigest()
+    for invalid in [{**receipt, "policy": "outdated"}, {**receipt, "status": "failure"}]:
+        path.write_text(json.dumps(invalid))
+        with pytest.raises(ValueError, match="Missing/stale"):
+            CONTROL["require_verified"](pr, head, base)
+    assert all(not p.startswith("check-runs") for p, _ in calls)
+
+
+def test_temporary_capture_and_app_activation_lifecycle(tmp_path, monkeypatch, capsys):
+    import copy
+    from types import SimpleNamespace
+
+    loader = runpy.run_path
+    monkeypatch.setattr(runpy, "run_path", lambda _: CONTROL)
+    setup = loader(str(Path(__file__).parents[1] / "ops/vision/configure_apps.py"))
+    module = setup["activate"].__globals__
+    monkeypatch.setitem(module, "CONFIG", tmp_path)
+    credential = "private-test-credential"
+    rules = {
+        "name": "main",
+        "target": "branch",
+        "enforcement": "active",
+        "bypass_actors": [],
+        "conditions": {},
+        "rules": [
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "required_status_checks": [{"context": "Existing CI", "integration_id": 15368}]
+                },
+            }
+        ],
+    }
+
+    def run(command, **kwargs):
+        assert command[-4:] == ["auth", "token", "--hostname", "github.com"]
+        assert kwargs["capture_output"] is True
+        return SimpleNamespace(stdout=credential)
+
+    def request(url, token, method="GET", data=None):
+        if url.endswith("/user"):
+            assert token == credential
+            return {"login": "ayhammouda"}
+        if url.endswith("/repos/" + CONTROL["REPO"]):
+            return {"permissions": {"push": True}}
+        if url.endswith("/app"):
+            return {"owner": {"login": "ayhammouda"}, "permissions": setup["PERMISSIONS"][token]}
+        if url.endswith("/app/installations"):
+            return [
+                {"id": 1, "account": {"login": "ayhammouda"}, "repository_selection": "selected"}
+            ]
+        if url.endswith("/access_tokens"):
+            return {"token": "scoped-installation-test"}
+        assert url.endswith("/installation/repositories")
+        return {"total_count": 1, "repositories": [{"full_name": CONTROL["REPO"]}]}
+
+    def operator_api(path, method="GET", body=None):
+        if path == "rulesets/15269598":
+            if method == "PUT":
+                rules.update(copy.deepcopy(body))
+            return copy.deepcopy(rules)
+        if path == "actions/variables" and method == "GET":
+            return {"variables": []}
+        if path == "rulesets?per_page=100":
+            return []
+        if path == "environments/pypi/deployment-branch-policies" and method == "GET":
+            return {"branch_policies": []}
+        return {}
+
+    monkeypatch.setattr(module["subprocess"], "run", run)
+    monkeypatch.setitem(module, "CONTROL", {**CONTROL, "request": request, "app_jwt": lambda r: r})
+    monkeypatch.setitem(module, "operator_api", operator_api)
+    setup["enable_temporary"]()
+    token_path = tmp_path / "temporary-token"
+    assert token_path.read_text() == credential
+    assert token_path.stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "activated").exists()
+    assert credential not in capsys.readouterr().out
+    with pytest.raises(FileNotFoundError):
+        setup["activate"]()
+    assert not (tmp_path / "activated").exists()
+    assert token_path.exists()  # Retained privately, but no automatic reactivation.
+    for role, app_id in [("owner", 41), ("verifier", 42)]:
+        (tmp_path / f"{role}.json").write_text(json.dumps({"app_id": app_id}))
+    with pytest.raises(ValueError, match="instead of downgrading"):
+        setup["enable_temporary"]()
+    setup["activate"]()
+    assert not token_path.exists()
+    assert (tmp_path / "activated").exists()
+    required = rules["rules"][0]["parameters"]["required_status_checks"]
+    assert {"context": "Existing CI", "integration_id": 15368} in required
+    assert {"context": "Independent verification", "integration_id": 42} in required
