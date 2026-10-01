@@ -1,6 +1,8 @@
 <!--
 Autonomous-agent PR template. Enforces AGENT-EXECUTION-PIPELINE.md §6.
-PR title MUST match the issue title verbatim. Never self-merge.
+PR title MUST match the issue title verbatim. Implementers do not self-verify.
+Vision may merge after separate current-head verification and required checks
+under the 2026-10-01 ownership amendment; no human approval is required.
 -->
 
 Closes #<issue-number>
@@ -37,6 +39,6 @@ Pending.
 
 ## Why this triggered supervisor review
 <!-- List any pipeline §7 triggers and explain each. If none, write "None."
-     If any fired: this PR is opened for supervisor review only; do not merge it yourself,
-     and ensure the `supervisor-review` label is applied. -->
+     If any fired: apply `supervisor-review` for Vision to decide. Vision can
+     resolve it and merge after separate verification; delegates cannot self-merge. -->
 None.

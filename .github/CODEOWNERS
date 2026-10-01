@@ -3,9 +3,11 @@
 # Source of truth: AGENT-EXECUTION-PIPELINE.md §2 (Forbidden Territory),
 # required by §10 (Pre-flight Checklist).
 #
-# For these rules to be ENFORCED, branch protection on `main` must enable
-# "Require review from Code Owners". CODEOWNERS alone only requests review;
-# branch protection only blocks merge when review rules are enabled.
+# These entries retain GitHub account visibility, not a human approval gate.
+# Vision owns project decisions under the 2026-10-01 pipeline amendment.
+# Required PR/CI rules enforce delivery; independent agent verification is
+# recorded against the current head. Do not require a self-approval from this
+# shared GitHub identity or treat CODEOWNERS as an independent verification.
 #
 # Autonomous agents may NOT modify these paths without explicit Vision approval
 # (pipeline §2). Any agent PR touching them must add the `supervisor-review`

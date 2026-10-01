@@ -16,9 +16,9 @@ body:
     id: context
     attributes:
       label: Context (self-containment)
-      description: Link to the per-issue context file, this pipeline doc, the roadmap, any relevant ADR or `.planning/phases/0X-*` directory, and prior related issues.
+      description: Include working context here or link an existing context file, the pipeline, roadmap, relevant ADRs, and related issues (2026-10-01 ownership amendment).
       value: |
-        - Per-issue context file: `.planning/agent-context/<issue-slug>.md` (read this first)
+        - Working context or existing context-file link:
         - Pipeline: `AGENT-EXECUTION-PIPELINE.md`
         - Roadmap: `STRATEGIC-ROADMAP-2026-05-29.md` §<section>
         - Related issues:
@@ -100,7 +100,7 @@ body:
     attributes:
       label: Agent acknowledgements
       options:
-        - label: I will work on a branch, never on `main`, and will not self-merge.
+        - label: I will work on a branch; Vision may merge only after separate current-head verification and required checks.
           required: true
         - label: I will stop and comment rather than silently expand scope or touch forbidden territory.
           required: true
