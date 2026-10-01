@@ -400,7 +400,6 @@ def verify(number: int, head: str, decision: dict):
         },
         "verifier",
     )
-    verdict = {"approved": False, "summary": "Verifier did not complete"}
     try:
         verdict = review(head, base, decision)
         if (
@@ -409,7 +408,7 @@ def verify(number: int, head: str, decision: dict):
         ):
             raise ValueError("Head or main changed during verification")
         prior["status"] = "success"
-    except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
+    except Exception as exc:
         prior["status"] = "failure"
         verdict = {"approved": False, "summary": f"{type(exc).__name__}: {str(exc)[:500]}"}
     prior.update(verdict=verdict, updated_at=int(time.time()))

@@ -177,3 +177,28 @@ def test_thread_resolution_rejects_a_thread_from_another_pr(monkeypatch):
     )
     with pytest.raises(ValueError, match="must belong"):
         CONTROL["resolve_thread"](1, "a" * 40, "other", "Reviewed and fixed")
+
+
+def test_malformed_verifier_result_completes_check_as_failure(tmp_path, monkeypatch):
+    module = CONTROL["verify"].__globals__
+    monkeypatch.setitem(module, "STATE", tmp_path)
+    calls = []
+
+    def api(path, method="GET", data=None, role="owner"):
+        if path == "pulls/1":
+            return {"head": {"sha": "a" * 40}, "base": {"ref": "main"}, "state": "open"}
+        if path == "branches/main":
+            return {"commit": {"sha": "b" * 40}}
+        calls.append(data)
+        return {"id": 42}
+
+    def malformed(*args):
+        raise TypeError("Malformed verifier payload")
+
+    monkeypatch.setitem(module, "api", api)
+    monkeypatch.setitem(module, "review", malformed)
+    CONTROL["verify"](
+        1, "a" * 40, {"kind": "maintenance", "rationale": "Repair", "acceptance": "Test"}
+    )
+    assert calls[-1]["status"] == "completed"
+    assert calls[-1]["conclusion"] == "failure"

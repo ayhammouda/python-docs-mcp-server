@@ -21,6 +21,12 @@ def test_regression_gate_rejects_losses_and_allows_improvements():
         },
     }
     assert regressions(deepcopy(baseline), baseline) == []
+    improved = deepcopy(baseline)
+    improved["cases"]["EX-001/3.13"]["seconds"] = 0.005
+    improved["cases"]["EX-001/3.13"]["resolved_citations"].append(
+        "https://docs.python.org/3.13/b.html"
+    )
+    assert regressions(improved, baseline) == []
     for field, value in [("retrieval_hit_at_5", False), ("resolved_citations", []), ("seconds", 1)]:
         changed = deepcopy(baseline)
         changed["cases"]["EX-001/3.13"][field] = value

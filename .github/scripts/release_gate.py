@@ -32,10 +32,13 @@ def require_eligible(api, sha: str, verifier_app_id: int) -> None:
     if len(prs) != 1:
         raise ValueError("Release must be a uniquely identified merged PR")
     head = prs[0]["head"]["sha"]
-    reviews = api(f"commits/{head}/check-runs?per_page=100")["check_runs"]
+    head_checks = api(f"commits/{head}/check-runs?per_page=100")["check_runs"]
+    codeql = [c for c in head_checks if c["name"] == "CodeQL" and c["app"]["id"] == 57789]
+    if not codeql or max(codeql, key=lambda c: c["id"])["conclusion"] != "success":
+        raise ValueError("Missing or failing CodeQL findings check on merged PR head")
     reviews = [
         c
-        for c in reviews
+        for c in head_checks
         if c["name"] == "Independent verification" and c["app"]["id"] == verifier_app_id
     ]
     parents = api(f"git/commits/{sha}")["parents"]

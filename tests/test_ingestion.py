@@ -370,10 +370,12 @@ class TestExtractSections:
             assert "<" not in section["content_text"] or "&" in section["content_text"]
 
     def test_modern_sphinx_section_and_api_anchors(self):
-        body = '<section id="iterators"><h1>Iterators</h1><p>Introduction</p>'
+        body = '<section id="iterators"><h1>Iterators</h1><p>Introduction</p><h2>Overview</h2>'
         body += '<dl class="py function"><dt id="itertools.accumulate">accumulate()</dt>'
         body += '<dd><p>Return accumulated sums.</p></dd></dl></section>'
-        sections = {s["anchor"]: s for s in extract_sections(body, "library/itertools.html")}
+        extracted = extract_sections(body, "library/itertools.html")
+        sections = {s["anchor"]: s for s in extracted}
+        assert len(extracted) == len(sections) == 2
         assert "Introduction" in sections["iterators"]["content_text"]
         assert "Return accumulated sums." in sections["itertools.accumulate"]["content_text"]
         assert sections["itertools.accumulate"]["uri"].endswith("#itertools.accumulate")

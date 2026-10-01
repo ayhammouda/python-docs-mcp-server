@@ -21,6 +21,7 @@ def test_release_eligibility_rejects_incomplete_or_wrong_identity_evidence():
         "conclusion": "success",
         "external_id": "c" * 40 + ":" + head,
     }
+    codeql = {"id": 100, "name": "CodeQL", "app": {"id": 57789}, "conclusion": "success"}
     state = {
         f"git/commits/{sha}": {"parents": [{"sha": "c" * 40}]},
         f"compare/{sha}...main": {"status": "ahead"},
@@ -32,7 +33,7 @@ def test_release_eligibility_rejects_incomplete_or_wrong_identity_evidence():
                 "head": {"sha": head},
             }
         ],
-        f"commits/{head}/check-runs?per_page=100": {"check_runs": [review]},
+        f"commits/{head}/check-runs?per_page=100": {"check_runs": [review, codeql]},
         f"commits/{sha}/check-runs?per_page=100": {"check_runs": checks},
     }
     gate = GATE["require_eligible"]
@@ -53,6 +54,10 @@ def test_release_eligibility_rejects_incomplete_or_wrong_identity_evidence():
     with pytest.raises(ValueError, match="independent"):
         gate(state.__getitem__, sha, 123)
     review["external_id"] = "c" * 40 + ":" + head
+    codeql["conclusion"] = "failure"
+    with pytest.raises(ValueError, match="CodeQL findings"):
+        gate(state.__getitem__, sha, 123)
+    codeql["conclusion"] = "success"
     checks.pop()
     with pytest.raises(ValueError, match="main checks"):
         gate(state.__getitem__, sha, 123)

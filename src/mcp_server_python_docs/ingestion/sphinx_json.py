@@ -287,11 +287,13 @@ def extract_sections(body_html: str, doc_uri: str) -> list[dict]:
         return []
 
     soup = BeautifulSoup(body_html, "html.parser")
-    # Modern Sphinx puts heading IDs on the enclosing section, not the heading.
-    for heading in soup.find_all(re.compile(r"^h[1-6]$")):
-        parent = heading.parent
-        if not heading.get("id") and isinstance(parent, Tag) and parent.get("id"):
-            heading["id"] = parent["id"]
+    # Modern Sphinx puts the ID on a section; only its first direct heading names it.
+    for section in soup.find_all(["section", "div"], id=True):
+        if section.name != "section" and "section" not in (section.get("class") or []):
+            continue
+        heading = section.find(re.compile(r"^h[1-6]$"), recursive=False)
+        if isinstance(heading, Tag) and not heading.get("id"):
+            heading["id"] = section["id"]
     heading_tags = soup.find_all(re.compile(r"^h[1-6]$"), id=True)
 
     if not heading_tags and not soup.find("dt", id=True):

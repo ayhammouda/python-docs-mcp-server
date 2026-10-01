@@ -107,7 +107,7 @@ def directory(path, mode=0o700):
 
 def owned(path, text, uid, gid, mode=0o600):
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w") as output:
         os.fchown(output.fileno(), uid, gid)
         os.fchmod(output.fileno(), mode)

@@ -82,8 +82,8 @@ circuit. A global lock serializes publication, verification and merging.
 
 The verifier checks the full diff and runs the locked commands itself. The
 required GitHub check is issued only through its separate App, then main/head
-are rechecked before merge. GitHub enforces all other required checks and
-resolved conversations. The resolve operation binds thread IDs to this PR and
+are rechecked before merge. GitHub enforces all other required checks, including the CodeQL findings
+check from GitHub Advanced Security (not merely the analysis job), and resolved conversations. The resolve operation binds thread IDs to this PR and
 records a rationale; it handles the first 100 threads per PR and fails closed
 beyond that ceiling. Neither agent can alter branch protection, write an
 arbitrary status/check, delete the repository or use an admin merge bypass.
@@ -110,6 +110,7 @@ has 1,603 pages, eight direct natural-language retrieval hits at five and 69
 resolved canonical citations. It prevents loss of those successes, checks
 version/budget constraints and rejects cases above a two-second ceiling. This
 is an offline retrieval regression test, **not generated-answer accuracy**.
+Overlapping overview/API search excerpts are tracked in issue #134.
 The remaining retrieval/citation misses are visible improvement work; a passing
 baseline does not make them solved. No paid model calls are used.
 
