@@ -4,11 +4,79 @@ import base64
 import hashlib
 import json
 import runpy
+import subprocess
 from pathlib import Path
 
 import pytest
 
 CONTROL = runpy.run_path(str(Path(__file__).parents[1] / "ops/vision/control.py"))
+
+
+@pytest.mark.parametrize("failure_kind", ["exit", "timeout", "rejected", "malformed"])
+def test_review_deadline_and_failure_handoff(tmp_path, monkeypatch, failure_kind):
+    from types import SimpleNamespace
+
+    module = CONTROL["review"].__globals__
+    monkeypatch.setitem(module, "CONFIG", tmp_path)
+    monkeypatch.setitem(module, "STATE", tmp_path)
+    monkeypatch.setitem(module, "api", lambda *_: {"tree": {"sha": "c" * 40}})
+    cleanups = []
+    monkeypatch.setitem(module, "reset_verifier", lambda: cleanups.append(True))
+    calls = []
+
+    def fail(args, **kwargs):
+        calls.append((args, kwargs))
+        if failure_kind == "timeout":
+            raise subprocess.TimeoutExpired(args, kwargs["timeout"], stderr="private-output")
+        if failure_kind == "exit":
+            raise subprocess.CalledProcessError(1, args, stderr="private-output")
+        verdict = {
+            "head_sha": "a" * 40,
+            "base_sha": "b" * 40,
+            "approved": False,
+            "blockers": ["private-output"],
+            "commands": [],
+        }
+        text = json.dumps(verdict) if failure_kind == "rejected" else "private-output"
+        return SimpleNamespace(stdout=json.dumps({"payloads": [{"text": text}]}))
+
+    monkeypatch.setattr(module["subprocess"], "run", fail)
+    with pytest.raises(ValueError) as error:
+        CONTROL["review"]("a" * 40, "b" * 40, {})
+    args, kwargs = calls[0]
+    assert args[args.index("--timeout") + 1] == "1500"
+    assert kwargs["timeout"] == 1560
+    assert len(cleanups) == 2
+    status = CONTROL["dispatch"]({"operation": "status"})
+    failure = status["review_failures"][0]
+    assert failure["failures"] == 1
+    assert failure["head_sha"] == "a" * 40
+    assert failure["base_sha"] == "b" * 40
+    assert failure["session_id"] == args[args.index("--session-id") + 1]
+    assert "Independent review" in failure["last_error"]
+    assert "private-output" not in json.dumps(status)
+    if failure_kind in {"exit", "timeout"}:
+        assert "private-output" not in str(error)
+    verdict = {
+        "head_sha": "a" * 40,
+        "base_sha": "b" * 40,
+        "approved": True,
+        "blockers": [],
+        "commands": [
+            {"command": command, "exit_code": 0}
+            for command in ["uv sync --locked --dev", "ruff check", "pyright", "pytest"]
+        ],
+    }
+    monkeypatch.setattr(
+        module["subprocess"],
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout=json.dumps({"payloads": [{"text": json.dumps(verdict)}]})
+        ),
+    )
+    assert CONTROL["review"]("a" * 40, "b" * 40, {}) == verdict
+    assert CONTROL["dispatch"]({"operation": "status"})["review_failures"] == []
+    assert json.loads(next(tmp_path.glob("attempts-*.json")).read_text())["failures"] == 1
 
 
 def test_api_rejects_credentials_protections_checks_merges_and_other_repositories():

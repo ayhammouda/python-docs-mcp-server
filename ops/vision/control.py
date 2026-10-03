@@ -35,6 +35,7 @@ STATE = Path("/var/lib/python-docs-control")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 BRANCH = re.compile(r"(?:codex|agent)/[A-Za-z0-9][A-Za-z0-9._/-]{0,150}\Z")
 MAX_BYTES = 8 * 1024 * 1024
+REVIEW_TIMEOUT = 1500
 ENV = {
     "PATH": "/usr/bin:/bin:/home/linuxbrew/.linuxbrew/bin:/home/ahammouda/.local/bin",
     "LANG": "C.UTF-8",
@@ -321,6 +322,7 @@ def review(head: str, base: str, decision: dict):
     if attempts["failures"] >= 2:
         raise ValueError("Repair circuit open for unchanged content: new revision required")
     reset_verifier()
+    session_id = str(uuid.uuid4())
     try:
         # The reviewer is a separate OpenClaw agent with an SSH sandbox and no GitHub identity.
         prompt = (
@@ -353,17 +355,17 @@ def review(head: str, base: str, decision: dict):
                 "--agent",
                 "pd-verifier",
                 "--session-id",
-                str(uuid.uuid4()),
+                session_id,
                 "--message",
                 prompt,
                 "--json",
                 "--timeout",
-                "900",
+                str(REVIEW_TIMEOUT),
             ],
             env=ENV,
             capture_output=True,
             text=True,
-            timeout=960,
+            timeout=REVIEW_TIMEOUT + 60,
             check=True,
         )
         response = json.loads(run.stdout[run.stdout.index("{") :])
@@ -392,10 +394,28 @@ def review(head: str, base: str, decision: dict):
                 + str(verdict.get("blockers") or "incomplete check evidence")
             )
         checkpoint.write_text(json.dumps(verdict))
-        return verdict
-    except Exception:
-        attempts["failures"] += 1
+        attempts["status"] = "success"
         circuit.write_text(json.dumps(attempts))
+        return verdict
+    except Exception as exc:
+        if isinstance(exc, subprocess.TimeoutExpired):
+            reason = f"Independent review execution timed out after {REVIEW_TIMEOUT + 60}s"
+        elif isinstance(exc, subprocess.CalledProcessError):
+            reason = f"Independent review execution failed with exit {exc.returncode}"
+        else:
+            reason = f"Independent review failed ({type(exc).__name__})"
+        attempts["failures"] += 1
+        attempts.update(
+            status="failure",
+            head_sha=head,
+            base_sha=base,
+            tree_sha=tree,
+            session_id=session_id,
+            last_error=reason,
+        )
+        circuit.write_text(json.dumps(attempts))
+        if isinstance(exc, (subprocess.TimeoutExpired, subprocess.CalledProcessError)):
+            raise ValueError(f"{reason}; verifier session {session_id}") from None
         raise
     finally:
         reset_verifier()
@@ -547,6 +567,13 @@ def dispatch(data: dict):
             "ready": (CONFIG / "activated").exists(),
             "authentication": "temporary-token" if temporary_auth() else "github-apps",
             "releases_enabled": (CONFIG / "activated").exists() and not temporary_auth(),
+            "review_failures": [
+                result
+                for p in STATE.glob(
+                    f"attempts-{hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]}-*.json"
+                )
+                if (result := json.loads(p.read_text())).get("status") == "failure"
+            ],
             "blocked_verifications": [
                 json.loads(p.read_text())
                 for p in STATE.glob("verify-*.json")

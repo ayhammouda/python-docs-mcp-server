@@ -50,6 +50,12 @@ pd-implementer with runTimeoutSeconds=900; do not run contributed code here.
 The implementer must return a commit bundle in /var/lib/python-docs/exchange/implementation.
 Import that bundle into your repository, then pdctl publish its committed diff with --decision.
 Publication itself waits for independent review before creating a runnable GitHub ref.
+Independent review can take 25 minutes while rebuilding official docs. Start
+pdctl publish/verify only with at least 27 minutes left in the owner deadline;
+otherwise checkpoint the prepared commit for the next cycle. Use an exec timeout
+of 1620 seconds and short yields with process polling; do not kill a live review
+at an earlier client timeout. Record review_failures from pdctl status, including
+the verifier session ID, instead of retrying an unexplained failure.
 Obtain independent verification through pdctl verify, never by self-assertion.
 pdctl merge performs a SHA-matched merge only after the verifier succeeds.
 Use pdctl release COMMIT vX.Y.Z only after successful main CI; tags are immutable.

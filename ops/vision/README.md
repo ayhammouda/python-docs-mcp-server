@@ -2,7 +2,7 @@
 
 Vision owns `ayhammouda/python-docs-mcp-server`: maintenance, issue replies,
 research-driven development, merges and releases. The existing owner job runs
-at **08:17 and 20:17 Europe/Paris**. Account ownership stays with Aymen.
+**every two hours at minute 17, Europe/Paris**. Account ownership stays with Aymen.
 
 ## Finish GitHub identity setup later
 
@@ -95,6 +95,13 @@ including workflow changes. A later PR verification reuses that trusted result
 only for the identical head/base and installed policy. Different code or main
 requires new review. Two failed reviews of identical content open the repair
 circuit. A global lock serializes publication, verification and merging.
+
+Independent reviews have a 25-minute deadline so a clean three-version index can
+finish. The broker waits one further minute for the CLI response. Start review
+only with 27 minutes left in the 30-minute owner cycle, or checkpoint the prepared
+commit for the next cycle. Use a 1620-second exec timeout with short yields and
+process polling. `pdctl status` exposes failed review head/base, session and a
+bounded error; subprocess output and credentials are never included.
 
 The verifier checks the full diff and runs the locked commands itself. The
 required GitHub check is issued only through its separate App, then main/head
