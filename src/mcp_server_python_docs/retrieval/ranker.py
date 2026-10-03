@@ -9,7 +9,9 @@ Receives sqlite3.Connection as parameter -- does not import storage.
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
+from difflib import SequenceMatcher
 
 from mcp_server_python_docs.models import SymbolHit
 
@@ -133,6 +135,32 @@ def _normalize_scores(hits: list[SymbolHit]) -> list[SymbolHit]:
     return normalized
 
 
+def _section_excerpt_overlaps(first: sqlite3.Row, second: sqlite3.Row) -> bool:
+    """Only collapse nested sections when their *matched excerpts* are redundant.
+
+    A shared page is not enough: an overview can independently answer a broad
+    query while a nearby API section answers a precise one. The content and the
+    FTS snippet must both overlap substantially before they compete for a slot.
+    """
+    if first["version"] != second["version"] or first["slug"] != second["slug"]:
+        return False
+    first_content = " ".join(first["content_text"].casefold().split())
+    second_content = " ".join(second["content_text"].casefold().split())
+    if not first_content or not second_content:
+        return False
+    if first_content not in second_content and second_content not in first_content:
+        return False
+
+    first_words = re.findall(r"\w+", first["snippet_text"].casefold())
+    second_words = re.findall(r"\w+", second["snippet_text"].casefold())
+    shorter = min(len(first_words), len(second_words))
+    if shorter < 8:
+        return False
+    shared = SequenceMatcher(None, first_words, second_words, autojunk=False)
+    match = shared.find_longest_match(0, len(first_words), 0, len(second_words))
+    return match.size >= max(8, (7 * shorter + 9) // 10)
+
+
 def search_sections(
     conn: sqlite3.Connection,
     match_expr: str,
@@ -154,10 +182,15 @@ def search_sections(
     Returns:
         List of SymbolHit with kind="section" and FTS5 snippets.
     """
+    # Inspect a fixed, ranked window even after the result slots fill: a later
+    # narrow API anchor can replace an earlier enclosing overview. The server
+    # caps max_results at 20, so this examines at most 160 candidates and does
+    # not paginate through an unbounded run of overlapping sections.
+    candidate_limit = max(40, max_results * 8)
     try:
-        cursor = conn.execute(
+        candidates = conn.execute(
             """
-            SELECT s.id, s.heading, s.uri, s.anchor,
+            SELECT s.id, s.heading, s.uri, s.anchor, s.content_text,
                    d.version, doc.slug,
                    bm25(sections_fts, 10.0, 1.0) as score,
                    snippet(sections_fts, 1, '**', '**', '...', 32) as snippet_text
@@ -167,15 +200,32 @@ def search_sections(
             JOIN doc_sets d ON doc.doc_set_id = d.id
             WHERE sections_fts MATCH ?
               AND (? IS NULL OR d.version = ?)
-            ORDER BY bm25(sections_fts, 10.0, 1.0)
+            ORDER BY bm25(sections_fts, 10.0, 1.0), s.id
             LIMIT ?
             """,
-            (match_expr, version, version, max_results),
-        )
-        rows = cursor.fetchall()
+            (match_expr, version, version, candidate_limit),
+        ).fetchall()
     except sqlite3.OperationalError:
         logger.warning("FTS5 query failed for sections: %r", match_expr)
         return []
+
+    selected: list[sqlite3.Row] = []
+    for row in candidates:
+        duplicate = next(
+            (i for i, prior in enumerate(selected)
+             if _section_excerpt_overlaps(prior, row)),
+            None,
+        )
+        if duplicate is None:
+            selected.append(row)
+        elif len(row["content_text"]) < len(selected[duplicate]["content_text"]):
+            # The narrower section gives a more precise canonical anchor
+            # for the same matched text. The overview stays available
+            # through its anchor and whole-page get_docs retrieval.
+            selected[duplicate] = row
+
+    selected.sort(key=lambda row: (row["score"], row["id"]))
+    rows = selected[:max_results]
 
     hits = [
         SymbolHit(

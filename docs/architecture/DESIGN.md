@@ -317,6 +317,17 @@ pure functions with no storage or MCP imports:
   carrying a `snippet()`-generated excerpt; an `sqlite3.OperationalError`
   from a malformed match expression is caught, logged, and returns an empty
   list rather than raising.
+- Section result slots are filled after examining a ranked candidate window. A
+  same-version, same-page overview and API section compete for one slot only
+  when one stored section contains the other **and** their highlighted FTS
+  excerpts share at least 70% of the shorter excerpt (minimum eight words).
+  The narrower canonical anchor wins for that matched passage. An overview
+  with independently matching introductory text, or a distinct topic on the
+  same page, remains a separate hit. This changes search result selection only:
+  direct symbol/anchor lookup and whole-page `get_docs` content are unchanged.
+  The entire ranked window is examined even after the result slots fill, so a
+  later narrow API anchor can replace an overview. The window is bounded to
+  `max(40, 8 * max_results)` candidates (at most 160 through the public API).
 - `search_symbols` (line 197) queries `symbols_fts` with column weights
   (`qualified_name` 10.0, `module` 1.0) the same way.
 - `search_examples` (line 256) queries `examples_fts` for code-sample hits.
