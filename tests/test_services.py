@@ -447,12 +447,15 @@ class TestToolRegistration:
                 annotations.openWorldHint is False
             ), f"{name} openWorldHint should be False"
 
-    def test_six_tools_registered(self):
+    def test_seven_tools_registered(self):
         from mcp_server_python_docs.server import create_server
 
         server = create_server()
         tools = server._tool_manager._tools
-        assert len(tools) == 6
+        assert set(tools) == {
+            "search_docs", "get_docs", "lookup_package_docs", "list_versions",
+            "detect_python_version", "compare_versions", "whatsnew_for_version",
+        }
 
     def test_runtime_tool_schemas_include_input_constraints(self):
         import anyio

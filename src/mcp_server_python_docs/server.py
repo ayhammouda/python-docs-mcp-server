@@ -34,6 +34,8 @@ from mcp_server_python_docs.models import (
     ListVersionsResult,
     PackageDocsResult,
     SearchDocsResult,
+    WhatsNewKind,
+    WhatsNewResult,
 )
 from mcp_server_python_docs.services.compare import CompareService
 from mcp_server_python_docs.services.content import ContentService
@@ -41,6 +43,7 @@ from mcp_server_python_docs.services.package_docs import PackageDocsService
 from mcp_server_python_docs.services.persistent_cache import PersistentDocsCache
 from mcp_server_python_docs.services.search import SearchService
 from mcp_server_python_docs.services.version import VersionService
+from mcp_server_python_docs.services.whatsnew import WhatsNewService
 from mcp_server_python_docs.storage.db import (
     get_cache_dir,
     get_index_path,
@@ -162,6 +165,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         content_svc = ContentService(db, persistent_cache=persistent_docs_cache)
         compare_svc = CompareService(db, content_svc)
         version_svc = VersionService(db)
+        whatsnew_svc = WhatsNewService(db)
         package_docs_svc = PackageDocsService()
 
         # Detect user's Python version and match to indexed versions
@@ -188,6 +192,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                 content_service=content_svc,
                 compare_service=compare_svc,
                 version_service=version_svc,
+                whatsnew_service=whatsnew_svc,
                 package_docs_service=package_docs_svc,
                 persistent_docs_cache=persistent_docs_cache,
                 detected_python_version=matched,
@@ -409,6 +414,29 @@ def create_server() -> FastMCP:
             raise ToolError(str(e))
         except Exception as e:
             logger.exception("Unexpected error in compare_versions")
+            raise ToolError(f"Internal error: {type(e).__name__}")
+
+    @mcp.tool(annotations=_TOOL_ANNOTATIONS)
+    def whatsnew_for_version(
+        version: CompareVersionParam,
+        kind: WhatsNewKind | None = None,
+        start_index: StartIndexParam = 0,
+        max_sections: MaxResultsParam = 20,
+        ctx: Context = None,  # type: ignore[assignment]
+    ) -> WhatsNewResult:
+        """Browse indexed official What's New sections in document order.
+
+        Use kind to narrow the release topics. Sections are bounded; for full
+        text use get_docs(slug='whatsnew/X.Y', version='X.Y', anchor=section.anchor).
+        Pagination start_index counts nonempty sections after kind filtering.
+        """
+        app_ctx: AppContext = ctx.request_context.lifespan_context
+        try:
+            return app_ctx.whatsnew_service.get(version, kind, start_index, max_sections)
+        except DocsServerError as e:
+            raise ToolError(str(e))
+        except Exception as e:
+            logger.exception("Unexpected error in whatsnew_for_version")
             raise ToolError(f"Internal error: {type(e).__name__}")
 
     # SRVR-07: _meta hint for get_docs tool.

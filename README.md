@@ -204,7 +204,7 @@ Contributor commands and validation steps live in
 
 ## Tools
 
-The server currently exposes six MCP tools:
+The server currently exposes seven MCP tools:
 
 | Tool | Description |
 |------|-------------|
@@ -214,6 +214,7 @@ The server currently exposes six MCP tools:
 | `list_versions` | List all indexed Python versions with metadata. |
 | `detect_python_version` | Detect the user's local Python version and report whether that version has been indexed. |
 | `compare_versions` | Diff a Python stdlib symbol between two indexed versions. Returns `change=added|removed|changed|unchanged` with optional `new_in`, `changed_in`, `deprecated_in`, `signature_delta` (advisory heuristic), `see_also_added/removed`, `section_diff`, and `note` deltas. Token-frugal — emits only changed fields, not full content. |
+| `whatsnew_for_version` | Browse nonempty sections of the already-indexed official What's New page for one Python version. Optional `kind` filters by conservative heading-hierarchy category. `start_index` and `max_sections` paginate the filtered results; the structured response is capped at 20,000 characters, and truncated excerpts include a stable anchor and `get_docs` follow-up hint. Querying is offline. |
 
 ## Why not Context7 or generic docs retrieval?
 
