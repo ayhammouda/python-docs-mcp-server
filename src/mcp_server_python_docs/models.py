@@ -301,3 +301,29 @@ class CompareVersionsResult(BaseModel):
             "therefore based on symbol presence alone."
         ),
     )
+
+
+# --- whatsnew_for_version models ---
+
+WhatsNewKind = Literal[
+    "new_module", "new_feature", "deprecation", "removal",
+    "performance", "syntax", "other",
+]
+
+
+class WhatsNewSection(BaseModel):
+    """A nonempty, bounded section from an indexed official release page."""
+
+    title: str = Field(description="Official section heading")
+    anchor: str = Field(description="Stable section anchor for get_docs follow-up")
+    body: str = Field(
+        description="Bounded section text; truncated sections include a get_docs hint"
+    )
+    kind: WhatsNewKind = Field(description="Conservative heading-hierarchy category")
+
+
+class WhatsNewResult(BaseModel):
+    """Paginated sections from What's New in one Python version."""
+
+    sections: list[WhatsNewSection] = Field(default_factory=list)
+    next_start_index: int | None = Field(default=None)

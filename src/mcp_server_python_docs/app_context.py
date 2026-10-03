@@ -16,6 +16,7 @@ from mcp_server_python_docs.services.package_docs import PackageDocsService
 from mcp_server_python_docs.services.persistent_cache import PersistentDocsCache
 from mcp_server_python_docs.services.search import SearchService
 from mcp_server_python_docs.services.version import VersionService
+from mcp_server_python_docs.services.whatsnew import WhatsNewService
 
 
 @dataclass
@@ -28,6 +29,7 @@ class AppContext:
     content_service: ContentService
     compare_service: CompareService
     version_service: VersionService
+    whatsnew_service: WhatsNewService
     package_docs_service: PackageDocsService = field(default_factory=PackageDocsService)
     persistent_docs_cache: PersistentDocsCache | None = None
     synonyms: dict[str, list[str]] = field(default_factory=dict)
