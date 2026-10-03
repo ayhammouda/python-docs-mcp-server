@@ -394,11 +394,14 @@ Until activation, authenticated project operations fail closed.
   regressions, installation success and latency, not stars/downloads alone.
   Preserve this evidence in issues/PRs and `state/project.json`; revisit planned
   outcomes each owner cycle when their review date is due.
-- Keep one implementation in flight, leaf workers, a 900-second worker budget,
+- Keep one implementation in flight, leaf workers, a 900-second implementer budget,
+  a 1500-second independent review deadline (1560-second broker wait),
   the 1800-second owner deadline, and a checkpoint within 25 minutes. The broker
   serializes mutations and verification; two failed reviews of the same head/base
   open its circuit. Stop repeated attempts without a concrete new hypothesis.
-- Preserve exactly two owner runs daily: 08:17 and 20:17 Europe/Paris. Reuse the
+- Aymen changed the schedule on 2026-10-02: run every two hours at minute 17,
+  Europe/Paris. Start publication/verification with at least 27 minutes left in
+  the owner deadline, or checkpoint it for the next cycle. Reuse the
   existing job and state. Notify only meaningful results, failure or required
   operator action. Record a credential blocker once; do not repeat it every run.
 - Release only a verified main commit with passing main checks and matching
