@@ -767,3 +767,112 @@ def test_no_raw_match_in_source():
         "Raw MATCH string concatenation found (RETR-02 violation):\n"
         + "\n".join(violations)
     )
+
+
+def test_later_api_replaces_full_window_overview_without_losing_other_topic():
+    """Inspect past filled slots, but never beyond the fixed candidate window."""
+    api = (
+        "Cumulative totals combine each input with the previous result and "
+        "return every intermediate value in the original iterator order."
+    )
+    overview = "A broad introduction to iterator utilities. " + api
+    snippet = (
+        "**Cumulative** totals combine each input with the previous result "
+        "and return every intermediate value"
+    )
+
+    def row(section_id, anchor, content, score, excerpt=snippet):
+        return {
+            "id": section_id,
+            "heading": anchor,
+            "uri": f"library/itertools.html#{anchor}",
+            "anchor": anchor,
+            "content_text": content,
+            "version": "3.13",
+            "slug": "library/itertools",
+            "score": score,
+            "snippet_text": excerpt,
+        }
+
+    candidates = [
+        row(1, "overview", overview, -20.0),
+        row(2, "recipes", "Distinct grouped-iterator recipe for cumulative batches.",
+            -19.9, "**Cumulative** batches are collected by a distinct grouped-iterator recipe"),
+    ]
+    candidates.extend(
+        row(i, f"copied-{i}", overview + f" Additional note {i}.", -20 + i / 10)
+        for i in range(3, 21)
+    )
+    candidates.append(row(21, "accumulate", api, -17.9))
+    candidates.extend(
+        row(i, f"copied-{i}", overview + f" Additional note {i}.", -20 + i / 10)
+        for i in range(22, 41)
+    )
+    candidates.append(row(41, "outside-window", "A separate cumulative topic.", -15.9))
+
+    class RankedConnection:
+        def __init__(self):
+            self.limits = []
+            self.rows = []
+
+        def execute(self, _sql, params):
+            limit = params[-2] if len(params) == 5 else params[-1]
+            offset = params[-1] if len(params) == 5 else 0
+            self.limits.append(limit)
+            self.rows = candidates[offset:offset + limit]
+            return self
+
+        def fetchall(self):
+            return self.rows
+
+    conn = RankedConnection()
+    hits = search_sections(conn, '"cumulative"', "3.13", 2)
+    assert [hit.anchor for hit in hits] == ["recipes", "accumulate"]
+    assert hits[0].score > hits[1].score
+    assert all(hit.version == "3.13" for hit in hits)
+    assert conn.limits == [40]
+
+
+def test_nested_api_excerpt_does_not_consume_section_slot(fts_db):
+    """A copied API passage uses one slot, but another same-page topic survives."""
+    from mcp_server_python_docs.services.content import ContentService
+
+    api = (
+        "Cumulative totals are produced by repeatedly combining each value "
+        "with the prior result while preserving the order of the input. "
+        "The operation returns every intermediate total to the caller."
+    )
+    overview = "A general introduction to iterator tools.\n\n" + api
+    distinct = (
+        "Cumulative recipes can reset a running window at group boundaries "
+        "and use a separate iterator to collect the resulting batches."
+    )
+    rows = [
+        (3, "overview", "Cumulative overview", overview),
+        (4, "accumulate", "Cumulative API", api),
+        (5, "recipes", "Cumulative recipes", distinct),
+    ]
+    for section_id, anchor, heading, content in rows:
+        fts_db.execute(
+            "INSERT INTO sections (id, document_id, uri, anchor, heading, level, "
+            "ordinal, content_text, char_count) VALUES (?, 1, ?, ?, ?, 2, ?, ?, ?)",
+            (section_id, f"library/asyncio-task.html#{anchor}", anchor,
+             heading, section_id, content, len(content)),
+        )
+    fts_db.execute(
+        "UPDATE documents SET content_text = ? WHERE id = 1", (overview + "\n\n" + distinct,)
+    )
+    fts_db.commit()
+    fts_db.execute("INSERT INTO sections_fts(sections_fts) VALUES('rebuild')")
+
+    hits = search_sections(fts_db, fts5_escape("cumulative"), "3.13", 2)
+    assert {hit.anchor for hit in hits} == {"accumulate", "recipes"}
+    assert all(hit.slug == "library/asyncio-task.html" for hit in hits)
+    overview_hits = search_sections(
+        fts_db, fts5_escape("general"), "3.13", 2
+    )
+    assert [hit.anchor for hit in overview_hits] == ["overview"]
+
+    content = ContentService(fts_db)
+    assert content.get_docs("library/asyncio-task.html", "3.13", "accumulate").content == api
+    assert distinct in content.get_docs("library/asyncio-task.html", "3.13").content
