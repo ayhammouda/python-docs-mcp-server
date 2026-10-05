@@ -6,6 +6,7 @@ No MCP types imported — dependency rule enforced.
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 
 from mcp_server_python_docs.models import SearchDocsResult
@@ -22,6 +23,8 @@ from mcp_server_python_docs.retrieval.ranker import (
 )
 from mcp_server_python_docs.services.observability import log_tool_call
 from mcp_server_python_docs.services.version_resolution import resolve_version_permissive
+
+_DOTTED_IDENTIFIER = re.compile(r"\b[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+\b")
 
 
 class SearchService:
@@ -108,4 +111,24 @@ class SearchService:
                 hits = search_symbols(self._db, match_expr, resolved_version, max_results)
 
         self._last_resolution = "fts"
+        if not hits and kind == "auto" and resolved_version is not None:
+            # Prompt-only candidates; ambiguity is decided in the requested inventory.
+            known = {
+                name
+                for name in set(_DOTTED_IDENTIFIER.findall(query))
+                if self._db.execute(
+                    "SELECT 1 FROM symbols s JOIN doc_sets d ON d.id = s.doc_set_id "
+                    "WHERE s.qualified_name = ? AND d.version = ? LIMIT 1",
+                    (name, resolved_version),
+                ).fetchone() is not None
+            }
+            if len(known) == 1:
+                name = known.pop()
+                hits = lookup_symbols_exact(self._db, name, resolved_version, max_results)
+                if hits:
+                    self._last_resolution = "exact"
+                    return SearchDocsResult(
+                        hits=hits,
+                        note=f"No full-query results; showing symbol matches for {name!r}.",
+                    )
         return SearchDocsResult(hits=hits)
