@@ -215,6 +215,16 @@ The server currently exposes six MCP tools:
 | `detect_python_version` | Detect the user's local Python version and report whether that version has been indexed. |
 | `compare_versions` | Diff a Python stdlib symbol between two indexed versions. Returns `change=added|removed|changed|unchanged` with optional `new_in`, `changed_in`, `deprecated_in`, `signature_delta` (advisory heuristic), `see_also_added/removed`, `section_diff`, and `note` deltas. Token-frugal — emits only changed fields, not full content. |
 
+For `search_docs` with `kind="auto"` and an explicit indexed `version`, the
+original lookup and full-text search run first. If both return no hits, the
+server looks for dotted Python identifiers in the prompt. Exactly one distinct
+identifier registered in that version enables a symbol-lookup fallback; repeated
+mentions count once and unknown identifiers do not count. Multiple known
+identifiers leave the result empty. A result note identifies fallback matches,
+which are symbol documentation, not an answer to the complete prompt. Explicit
+kinds, searches without a version, nonempty results, and result budgets are
+unchanged.
+
 ## Why not Context7 or generic docs retrieval?
 
 Use this server when you want precise local Python docs retrieval rather than
