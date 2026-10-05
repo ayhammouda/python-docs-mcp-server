@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from urllib.parse import urlsplit
 
-from mcp_server_python_docs.models import SearchDocsResult
+from mcp_server_python_docs.models import SearchDocsResult, SymbolHit
 from mcp_server_python_docs.retrieval.query import (
     build_match_expression,
     classify_query,
@@ -58,6 +59,47 @@ class SearchService:
         ).fetchone()
         return row is not None
 
+    def _known_identifiers(self, query: str, version: str) -> set[str]:
+        """Count exact prompt identifiers only in the requested inventory."""
+        return {
+            name
+            for name in set(_DOTTED_IDENTIFIER.findall(query))
+            if self._db.execute(
+                "SELECT 1 FROM symbols s JOIN doc_sets d ON d.id = s.doc_set_id "
+                "WHERE s.qualified_name = ? AND d.version = ? LIMIT 1",
+                (name, version),
+            ).fetchone() is not None
+        }
+
+    def _append_canonical(
+        self, original: SearchDocsResult, query: str, version: str | None,
+        kind: str, max_results: int,
+    ) -> SearchDocsResult:
+        """Fill at most one spare slot without altering semantic evidence."""
+        if kind != "auto" or version is None or not original.hits:
+            return original
+        if len(original.hits) >= max_results:
+            return original
+        known = self._known_identifiers(query, version)
+        if len(known) != 1:
+            return original
+        name = known.pop()
+        candidates = lookup_symbols_exact(self._db, name, version, 1)
+        if not candidates or candidates[0].title != name:
+            return original
+        candidate = candidates[0]
+
+        def location(hit: SymbolHit) -> tuple[str, str, str]:
+            uri = urlsplit(hit.uri)
+            return (hit.version, (hit.slug or uri.path).removesuffix(".html"),
+                    hit.anchor or uri.fragment)
+
+        if any(location(hit) == location(candidate) for hit in original.hits):
+            return original
+        proposed = original.model_copy(update={"hits": [*original.hits, candidate]})
+        # Admission only: never cap, replace or truncate the original response.
+        return proposed if len(proposed.model_dump_json().encode("utf-8")) <= 8000 else original
+
     @log_tool_call("search_docs")
     def search(
         self,
@@ -87,7 +129,9 @@ class SearchService:
             hits = lookup_symbols_exact(self._db, query, resolved_version, max_results)
             if hits:
                 self._last_resolution = "exact"
-                return SearchDocsResult(hits=hits)
+                return self._append_canonical(
+                    SearchDocsResult(hits=hits), query, resolved_version, kind, max_results,
+                )
             # Fall through to FTS if symbol lookup found nothing and kind is auto
             if kind == "symbol":
                 self._last_resolution = "exact"
@@ -113,15 +157,7 @@ class SearchService:
         self._last_resolution = "fts"
         if not hits and kind == "auto" and resolved_version is not None:
             # Prompt-only candidates; ambiguity is decided in the requested inventory.
-            known = {
-                name
-                for name in set(_DOTTED_IDENTIFIER.findall(query))
-                if self._db.execute(
-                    "SELECT 1 FROM symbols s JOIN doc_sets d ON d.id = s.doc_set_id "
-                    "WHERE s.qualified_name = ? AND d.version = ? LIMIT 1",
-                    (name, resolved_version),
-                ).fetchone() is not None
-            }
+            known = self._known_identifiers(query, resolved_version)
             if len(known) == 1:
                 name = known.pop()
                 hits = lookup_symbols_exact(self._db, name, resolved_version, max_results)
@@ -131,4 +167,6 @@ class SearchService:
                         hits=hits,
                         note=f"No full-query results; showing symbol matches for {name!r}.",
                     )
-        return SearchDocsResult(hits=hits)
+        return self._append_canonical(
+            SearchDocsResult(hits=hits), query, resolved_version, kind, max_results,
+        )
