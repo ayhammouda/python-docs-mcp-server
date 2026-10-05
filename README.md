@@ -98,6 +98,20 @@ pipx install python-docs-mcp-server
 If `uv` is installed but the `uv` command is not on your `PATH`, reopen your
 shell or use `python -m uv ...` as a fallback for local contributor commands.
 
+## Search result behavior
+
+For `kind="auto"` with an explicit version, a nonempty search with spare result
+slots may append **one** exact inventory target when the prompt contains one
+known qualified identifier in that version. Original hits, snippets, scores,
+order and notes are preserved. Full results, ambiguous identifiers, other kinds
+and versionless queries are unchanged; the existing empty-result fallback is
+unchanged. Canonical locations are deduplicated, including inventory aliases.
+
+The append is admitted only when the **complete proposed response** serialized
+by Pydantic's compact `model_dump_json()` is at most **8000 UTF-8 bytes**. This is
+not a global search cap: oversized original responses remain unchanged. It is
+separate from `get_docs(max_chars=8000)`, which limits content **characters**.
+
 ## First run
 
 Build the local documentation index:
