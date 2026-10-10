@@ -232,3 +232,10 @@ session. A personal access token's repository administration permission is not a
 GitHub App registration API. App activation remains necessary for this release
 architecture. Do not claim full publishing autonomy before activation and an
 end-to-end proof.
+
+Failure-detail summaries are private operational diagnostics, not public evidence.
+They are bounded and redacted defensively, but arbitrary natural-language text
+cannot be guaranteed secret-free by pattern matching. Never automatically copy
+free-form diagnostics into public comments/checks. Public failure evidence uses
+broker-generated reason/check codes; the trusted operator lane can inspect the
+private failure detail when escalation is necessary.
