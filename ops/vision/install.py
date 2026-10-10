@@ -286,6 +286,7 @@ def main():
                 "mode": "all",
                 "backend": "ssh",
                 "scope": "session" if role == "verifier" else "agent",
+                "sessionToolsVisibility": "all" if role == "owner" else "spawned",
                 "workspaceAccess": "rw",
                 "ssh": {
                     "target": f"{user}@127.0.0.1",

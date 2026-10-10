@@ -239,3 +239,9 @@ cannot be guaranteed secret-free by pattern matching. Never automatically copy
 free-form diagnostics into public comments/checks. Public failure evidence uses
 broker-generated reason/check codes; the trusted operator lane can inspect the
 private failure detail when escalation is necessary.
+
+The owner sandbox permits cross-session sending (`sessionToolsVisibility=all`)
+so maintenance requests can reach main. The global agent-to-agent allowlist stays
+restricted to main and pd-owner; the owner receives sessions_send, not cross-agent
+history/list tools. Implementer/verifier retain spawned-session visibility and
+receive no host messaging authority. This does not alter filesystem isolation.
