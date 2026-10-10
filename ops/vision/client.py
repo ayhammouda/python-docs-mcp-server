@@ -39,6 +39,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="operation", required=True)
     commands.add_parser("status")
+    rerun = commands.add_parser("rerun", help="Retry failed current-main CI jobs only")
+    rerun.add_argument("run_id", type=int)
+    rerun.add_argument("--failed", action="store_true", help="Default; only failed jobs rerun")
     threads = commands.add_parser("threads")
     threads.add_argument("pr", type=int)
     api = commands.add_parser("api")
@@ -64,6 +67,7 @@ def main():
             command.add_argument("--decision", required=True, help="Path to product decision JSON")
     args = parser.parse_args()
     data = vars(args).copy()
+    data.pop("failed", None)
     if args.operation == "publish":
         data = publication(args.branch, args.base, args.message)
         with open(args.decision) as source:

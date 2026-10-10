@@ -27,7 +27,7 @@ PERMISSIONS = {
         "issues": "write",
         "workflows": "write",
         "checks": "read",
-        "actions": "read",
+        "actions": "write",
     },
     "verifier": {"contents": "read", "pull_requests": "read", "checks": "write"},
 }

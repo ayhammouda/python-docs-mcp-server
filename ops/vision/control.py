@@ -100,7 +100,7 @@ def token(role: str) -> str:
             "issues": "write",
             "workflows": "write",
             "checks": "read",
-            "actions": "read",
+            "actions": "write",
         }
         if role == "owner"
         else {"contents": "read", "pull_requests": "read", "checks": "write"}
@@ -310,6 +310,62 @@ def reset_verifier():
         os.chown(path, account.pw_uid, account.pw_gid)
 
 
+class ReviewFailure(ValueError):
+    """Only broker-generated diagnostics cross the privileged boundary."""
+
+    def __init__(self, kind, diagnostics):
+        self.kind = kind
+        self.diagnostics = diagnostics
+        super().__init__(f"Independent review {kind}: " + json.dumps(diagnostics))
+
+
+def receipt_status(result):
+    # Never expose owner rationale, raw verifier output or historic exception text.
+    keys = ("status", "head_sha", "base_sha", "tree_sha", "session_id", "failures",
+            "infrastructure_failures", "failure_kind", "diagnostics", "updated_at",
+            "retry_after", "last_error")
+    safe = {key: result[key] for key in keys if key in result}
+    safe["last_error"] = "Independent review requires recovery"
+    return safe
+
+
+def rerun(run_id):
+    """Retry only unsuccessful CI on current main, never release/tag/PR workflows."""
+    if type(run_id) is not int or not 1 <= run_id <= 2**63 - 1:
+        raise ValueError("Positive workflow run ID required")
+    run = api(f"actions/runs/{run_id}")
+    main = api("branches/main")["commit"]["sha"]
+    if (run.get("id") != run_id
+            or run.get("head_repository", {}).get("full_name") != REPO
+            or run.get("pull_requests") != []
+            or run.get("head_sha") != main or run.get("head_branch") != "main"
+            or run.get("event") != "push"
+            or run.get("repository", {}).get("full_name") != REPO
+            or run.get("path") not in {".github/workflows/ci.yml",
+                                       ".github/workflows/codeql.yml",
+                                       ".github/workflows/security.yml",
+                                       ".github/workflows/e2e.yml",
+                                       ".github/workflows/product-quality.yml"}
+            or run.get("status") != "completed"
+            or run.get("conclusion") not in {"failure", "cancelled", "timed_out"}):
+        raise ValueError("Only unsuccessful current-main CI push runs may be retried")
+    checkpoint = STATE / f"rerun-{run_id}.json"
+    prior = json.loads(checkpoint.read_text()) if checkpoint.exists() else {}
+    now = int(time.time())
+    if prior.get("attempts", 0) >= 3 or now < prior.get("retry_after", 0):
+        raise ValueError("CI rerun limit/cooldown reached; inspect and repair the cause")
+    if api("branches/main")["commit"]["sha"] != main:
+        raise ValueError("Main changed before CI rerun")
+    receipt = {"run_id": run_id, "head_sha": main, "attempts": prior.get("attempts", 0) + 1,
+               "updated_at": now, "retry_after": now + 900, "status": "requested"}
+    # Record before sending: an ambiguous HTTP failure must not create an unbounded retry loop.
+    checkpoint.write_text(json.dumps(receipt))
+    api(f"actions/runs/{run_id}/rerun-failed-jobs", "POST")
+    receipt["status"] = "accepted"
+    checkpoint.write_text(json.dumps(receipt))
+    return receipt
+
+
 def review(head: str, base: str, decision: dict):
     policy = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
     rationale = hashlib.sha256(json.dumps(decision, sort_keys=True).encode()).hexdigest()[:16]
@@ -320,10 +376,14 @@ def review(head: str, base: str, decision: dict):
     circuit = STATE / f"attempts-{policy}-{base}-{tree}.json"
     attempts = json.loads(circuit.read_text()) if circuit.exists() else {"failures": 0}
     if attempts["failures"] >= 2:
-        raise ValueError("Repair circuit open for unchanged content: new revision required")
-    reset_verifier()
+        raise ReviewFailure("rejection", {"reason": "two_rejections_new_revision_required"})
+    now = int(time.time())
+    if (attempts.get("infrastructure_failures", 0) >= 3
+            or now < attempts.get("retry_after", 0)):
+        raise ReviewFailure("infrastructure", {"reason": "retry_limit_or_cooldown"})
     session_id = str(uuid.uuid4())
     try:
+        reset_verifier()
         # The reviewer is a separate OpenClaw agent with an SSH sandbox and no GitHub identity.
         prompt = (
             f"Independently review {REPO}. Exact head: {head}; base: {base}. "
@@ -372,53 +432,66 @@ def review(head: str, base: str, decision: dict):
         payloads = response.get("result", response).get("payloads", [])
         text = "\n".join(p.get("text", "") for p in payloads).strip()
         verdict = json.loads(text.removeprefix("```json").removesuffix("```").strip())
-        commands = verdict.get("commands", [])
-        mandatory = [
-            "uv sync --locked --dev",
-            "ruff check",
-            "pyright",
-            "pytest",
-        ]
-        recorded = [c.get("command", "") for c in commands]
-        if (
-            verdict.get("head_sha") != head
-            or verdict.get("base_sha") != base
-            or verdict.get("approved") is not True
-            or verdict.get("blockers") != []
-            or not commands
-            or any(not any(check in command for command in recorded) for check in mandatory)
-            or any(c.get("exit_code") != 0 for c in commands)
-        ):
-            raise ValueError(
-                "Independent review rejected: "
-                + str(verdict.get("blockers") or "incomplete check evidence")
-            )
+        if (not isinstance(verdict, dict) or not isinstance(verdict.get("commands"), list)
+                or not isinstance(verdict.get("blockers"), list)
+                or any(not isinstance(c, dict) for c in verdict["commands"])):
+            raise ReviewFailure("infrastructure", {"reason": "malformed_verdict"})
+        commands = verdict["commands"]
+        mandatory = ["uv sync --locked --dev", "ruff check", "pyright", "pytest"]
+        recorded = [str(c.get("command", "")) for c in commands]
+        missing = [check for check in mandatory
+                   if not any(check in command for command in recorded)]
+        failed = [check for check in mandatory if any(
+            check in str(c.get("command", "")) and c.get("exit_code") != 0 for c in commands)]
+        if (verdict.get("head_sha") != head or verdict.get("base_sha") != base):
+            raise ReviewFailure("infrastructure", {"reason": "sha_mismatch"})
+        if (verdict.get("approved") is not True or verdict["blockers"]
+                or missing or not commands or any(c.get("exit_code") != 0 for c in commands)):
+            raise ReviewFailure("rejection", {
+                "reason": "review_or_check_evidence_rejected",
+                "blocker_count": len(verdict["blockers"]),
+                "approved": verdict.get("approved") is True,
+                "reasons": [reason for reason, present in (
+                    ("approved_false", verdict.get("approved") is not True),
+                    ("blockers_present", bool(verdict["blockers"])),
+                    ("incomplete_commands", bool(missing) or not commands),
+                    ("failed_commands", any(c.get("exit_code") != 0 for c in commands)),
+                ) if present],
+                "missing_checks": missing, "failed_checks": failed,
+            })
         checkpoint.write_text(json.dumps(verdict))
         attempts["status"] = "success"
         circuit.write_text(json.dumps(attempts))
         return verdict
     except Exception as exc:
-        if isinstance(exc, subprocess.TimeoutExpired):
-            reason = f"Independent review execution timed out after {REVIEW_TIMEOUT + 60}s"
-        elif isinstance(exc, subprocess.CalledProcessError):
-            reason = f"Independent review execution failed with exit {exc.returncode}"
-        else:
-            reason = f"Independent review failed ({type(exc).__name__})"
-        attempts["failures"] += 1
-        attempts.update(
-            status="failure",
-            head_sha=head,
-            base_sha=base,
-            tree_sha=tree,
-            session_id=session_id,
-            last_error=reason,
-        )
+        failure = exc if isinstance(exc, ReviewFailure) else ReviewFailure(
+            "infrastructure", {"reason": (
+                "timeout" if isinstance(exc, subprocess.TimeoutExpired) else
+                "process_exit" if isinstance(exc, subprocess.CalledProcessError) else
+                "invalid_response_or_execution_error")})
+        kind = failure.kind
+        counter = "failures" if kind == "rejection" else "infrastructure_failures"
+        attempts[counter] = attempts.get(counter, 0) + 1
+        attempts.update(status="failure", head_sha=head, base_sha=base, tree_sha=tree,
+                        session_id=session_id, failure_kind=kind,
+                        diagnostics=failure.diagnostics, updated_at=int(time.time()),
+                        retry_after=int(time.time()) + 900 if kind == "infrastructure" else 0,
+                        last_error="Independent review " + kind)
         circuit.write_text(json.dumps(attempts))
-        if isinstance(exc, (subprocess.TimeoutExpired, subprocess.CalledProcessError)):
-            raise ValueError(f"{reason}; verifier session {session_id}") from None
-        raise
+        raise failure from None
     finally:
-        reset_verifier()
+        try:
+            reset_verifier()
+        except Exception:
+            # Cleanup failure cannot turn approval into an authorizing response.
+            checkpoint.unlink(missing_ok=True)
+            attempts.update(status="failure", failure_kind="infrastructure",
+                            diagnostics={"reason": "verifier_cleanup_failed"},
+                            head_sha=head, base_sha=base, session_id=session_id,
+                            infrastructure_failures=attempts.get("infrastructure_failures", 0) + 1,
+                            retry_after=int(time.time()) + 900)
+            circuit.write_text(json.dumps(attempts))
+            raise ReviewFailure("infrastructure", {"reason": "verifier_cleanup_failed"}) from None
 
 
 def verify(number: int, head: str, decision: dict):
@@ -429,8 +502,6 @@ def verify(number: int, head: str, decision: dict):
         raise ValueError("PR head changed or PR is not open against main")
     checkpoint = STATE / f"verify-{number}-{base}-{head}.json"
     prior = json.loads(checkpoint.read_text()) if checkpoint.exists() else {"attempts": 0}
-    if prior["attempts"] >= 2 and prior.get("status") != "success":
-        raise ValueError("Repair circuit open: two failed verifications; new revision required")
     prior.update(
         attempts=prior["attempts"] + 1,
         status="in_progress",
@@ -461,7 +532,11 @@ def verify(number: int, head: str, decision: dict):
         prior["status"] = "success"
     except Exception as exc:
         prior["status"] = "failure"
-        verdict = {"approved": False, "summary": f"{type(exc).__name__}: {str(exc)[:500]}"}
+        prior["failure_kind"] = exc.kind if isinstance(exc, ReviewFailure) else "infrastructure"
+        prior["diagnostics"] = (exc.diagnostics if isinstance(exc, ReviewFailure)
+                                else {"reason": "verification_execution_error"})
+        verdict = {"approved": False, "summary": "Independent verification failed",
+                   "failure_kind": prior["failure_kind"], "diagnostics": prior["diagnostics"]}
     prior.update(verdict=verdict, updated_at=int(time.time()))
     checkpoint.write_text(json.dumps(prior))
     if temporary:
@@ -568,14 +643,14 @@ def dispatch(data: dict):
             "authentication": "temporary-token" if temporary_auth() else "github-apps",
             "releases_enabled": (CONFIG / "activated").exists() and not temporary_auth(),
             "review_failures": [
-                result
+                receipt_status(result)
                 for p in STATE.glob(
                     f"attempts-{hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]}-*.json"
                 )
                 if (result := json.loads(p.read_text())).get("status") == "failure"
             ],
             "blocked_verifications": [
-                json.loads(p.read_text())
+                receipt_status(json.loads(p.read_text()))
                 for p in STATE.glob("verify-*.json")
                 if '"status": "failure"' in p.read_text()
             ],
@@ -585,6 +660,8 @@ def dispatch(data: dict):
     if operation == "api":
         validate_api(data["method"], data["path"], data.get("body"))
         return api(data["path"], data["method"], data.get("body"))
+    if operation == "rerun":
+        return rerun(data.get("run_id"))
     if operation == "threads":
         number = data.get("pr")
         if type(number) is not int or number < 1:
