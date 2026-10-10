@@ -26,9 +26,9 @@ amendment** takes precedence over older issue specs and role restrictions.
 
 | Role | Agent | Responsibility | May modify code? | May merge? |
 |---|---|---|---|---|
-| Project owner | Vision (`main`) | Roadmap, issues, public replies, CI/dependencies, delegation, merge and release decisions | Yes, with separate verification | Yes, after current-head verification and required checks |
-| Implementer | Gilfoyle (`arch`) | Implement exactly one `agent-ready` issue, open/update one PR, run the canonical gate | Yes | No |
-| Verifier | Heimdall (`test`) | Independently validate PR behavior, test evidence, packaging/install smoke, security/release risks | Only test artifacts or diagnostic notes when explicitly assigned | No |
+| Project owner | Vision (`pd-owner`) | Roadmap, issues, public replies, CI/dependencies, delegation, merge and release decisions | Yes, with separate verification | Yes, after current-head verification and required checks |
+| Implementer | Gilfoyle (`pd-implementer`) | Implement exactly one `agent-ready` issue, open/update one PR, run the canonical gate | Yes | No |
+| Verifier | Heimdall (`pd-verifier`) | Independently validate PR behavior, test evidence, packaging/install smoke, security/release risks | Only test artifacts or diagnostic notes when explicitly assigned | No |
 | Automated reviewer | CodeRabbit | Static review comments, maintainability findings, and security-adjacent review signal | No | No |
 | Designer | Saga (`design`) | Not in the default loop; no UI exists | No | No |
 | Merger | Pipeline Monitor (`merge`) | Disabled for this repo unless Vision explicitly enables assisted merge checks | No | No |
@@ -301,3 +301,14 @@ The owner retains roadmap, issue reply, merge and release authority. GitHub App
 activation is a one-time operator handoff; while pending, public research and
 planning continue without falling back to the personal host credentials.
 See `ops/vision/README.md` for installation, activation, checks and recovery.
+
+## Operational recovery amendment — 2026-10-10
+
+The dedicated owner owns product and releases. Vision main is a separate trusted
+operator-maintenance lane, authorized by Aymen to use gh/provided credentials for
+repository-scoped provisioning and infrastructure recovery, including installation
+of independently reviewed broker changes. This supersedes older operator-only
+human dependency for that work, not independent verification or CI. See
+ops/vision/README.md for stalled-cycle recovery, the 48-hour ready-patch target,
+release-debt tracking and the sole nightly stakeholder reporting contract. The
+existing two-hour owner loop remains the only project implementation loop.
