@@ -34,7 +34,7 @@ def test_review_deadline_and_failure_handoff(tmp_path, monkeypatch, failure_kind
             "head_sha": "a" * 40,
             "base_sha": "b" * 40,
             "approved": False,
-            "blockers": ["private-output"],
+            "blockers": ["token=private-output"],
             "commands": [],
         }
         text = json.dumps(verdict) if failure_kind == "rejected" else "private-output"
@@ -49,7 +49,10 @@ def test_review_deadline_and_failure_handoff(tmp_path, monkeypatch, failure_kind
     assert len(cleanups) == 2
     status = CONTROL["dispatch"]({"operation": "status"})
     failure = status["review_failures"][0]
-    assert failure["failures"] == 1
+    assert failure["failures"] == (1 if failure_kind == "rejected" else 0)
+    assert failure["failure_kind"] == (
+        "rejection" if failure_kind == "rejected" else "infrastructure"
+    )
     assert failure["head_sha"] == "a" * 40
     assert failure["base_sha"] == "b" * 40
     assert failure["session_id"] == args[args.index("--session-id") + 1]
@@ -74,9 +77,12 @@ def test_review_deadline_and_failure_handoff(tmp_path, monkeypatch, failure_kind
             stdout=json.dumps({"payloads": [{"text": json.dumps(verdict)}]})
         ),
     )
+    monkeypatch.setattr(module["time"], "time", lambda: 9999999999)
     assert CONTROL["review"]("a" * 40, "b" * 40, {}) == verdict
     assert CONTROL["dispatch"]({"operation": "status"})["review_failures"] == []
-    assert json.loads(next(tmp_path.glob("attempts-*.json")).read_text())["failures"] == 1
+    assert json.loads(next(tmp_path.glob("attempts-*.json")).read_text())["failures"] == (
+        1 if failure_kind == "rejected" else 0
+    )
 
 
 def test_api_rejects_credentials_protections_checks_merges_and_other_repositories():
@@ -449,3 +455,184 @@ def test_temporary_capture_and_app_activation_lifecycle(tmp_path, monkeypatch, c
     required = rules["rules"][0]["parameters"]["required_status_checks"]
     assert {"context": "Existing CI", "integration_id": 15368} in required
     assert {"context": "Independent verification", "integration_id": 42} in required
+
+
+def test_rerun_is_bounded_audited_and_fixed_to_current_main(tmp_path, monkeypatch):
+    module = CONTROL["rerun"].__globals__
+    monkeypatch.setitem(module, "STATE", tmp_path)
+    run = {"id": 7, "head_sha": "a" * 40, "head_branch": "main", "event": "push",
+           "repository": {"full_name": CONTROL["REPO"]},
+           "head_repository": {"full_name": CONTROL["REPO"]}, "pull_requests": [],
+           "path": ".github/workflows/ci.yml", "status": "completed", "conclusion": "failure"}
+    posts = []
+
+    def api(path, method="GET", data=None):
+        if method == "POST":
+            posts.append(path)
+            return {}
+        return run if path.startswith("actions/") else {"commit": {"sha": "a" * 40}}
+
+    monkeypatch.setitem(module, "api", api)
+    for key, bad in [("head_sha", "b" * 40), ("event", "pull_request"),
+                     ("path", ".github/workflows/release.yml"), ("conclusion", "success"),
+                     ("head_repository", {"full_name": "other/repo"})]:
+        original = run[key]
+        run[key] = bad
+        with pytest.raises(ValueError):
+            CONTROL["rerun"](7)
+        run[key] = original
+    assert posts == []
+    for number in [True, -1, "7"]:
+        with pytest.raises(ValueError):
+            CONTROL["rerun"](number)
+    assert CONTROL["rerun"](7)["status"] == "accepted"
+    with pytest.raises(ValueError, match="cooldown"):
+        CONTROL["rerun"](7)
+    for now in [9999999999, 9999999999 + 1000]:
+        monkeypatch.setattr(module["time"], "time", lambda now=now: now)
+        CONTROL["rerun"](7)
+    monkeypatch.setattr(module["time"], "time", lambda: 9999999999 + 2000)
+    with pytest.raises(ValueError, match="limit"):
+        CONTROL["rerun"](7)
+    assert posts == ["actions/runs/7/rerun-failed-jobs"] * 3
+
+
+@pytest.mark.parametrize("kind,limit", [("rejection", 2), ("infrastructure", 3)])
+def test_review_retry_circuit_distinguishes_failures(tmp_path, monkeypatch, kind, limit):
+    module = CONTROL["review"].__globals__
+    monkeypatch.setitem(module, "STATE", tmp_path)
+    monkeypatch.setitem(module, "CONFIG", tmp_path)
+    monkeypatch.setitem(module, "api", lambda *_: {"tree": {"sha": "c" * 40}})
+    monkeypatch.setitem(module, "reset_verifier", lambda: None)
+    calls = []
+
+    def fail(*args, **kwargs):
+        calls.append(True)
+        raise CONTROL["ReviewFailure"](kind, {"reason": "test"})
+
+    monkeypatch.setattr(module["subprocess"], "run", fail)
+    for attempt in range(limit + 1):
+        monkeypatch.setattr(module["time"], "time", lambda attempt=attempt: attempt * 1000)
+        with pytest.raises(ValueError):
+            CONTROL["review"]("a" * 40, "b" * 40, {})
+    assert len(calls) == limit
+
+
+def test_status_omits_raw_verdict_and_owner_rationale(tmp_path, monkeypatch):
+    module = CONTROL["dispatch"].__globals__
+    monkeypatch.setitem(module, "STATE", tmp_path)
+    monkeypatch.setitem(module, "CONFIG", tmp_path)
+    (tmp_path / "verify-test.json").write_text(json.dumps({
+        "status": "failure", "decision": {"secret": "private"},
+        "verdict": {"summary": "private"}, "head_sha": "a" * 40,
+    }))
+    status = CONTROL["dispatch"]({"operation": "status"})
+    assert "private" not in json.dumps(status)
+    assert status["blocked_verifications"][0]["head_sha"] == "a" * 40
+
+
+def test_rerun_refuses_main_race_without_post(tmp_path, monkeypatch):
+    module = CONTROL["rerun"].__globals__
+    monkeypatch.setitem(module, "STATE", tmp_path)
+    reads = []
+
+    def api(path, method="GET", data=None):
+        assert method == "GET"
+        if path == "branches/main":
+            reads.append(True)
+            return {"commit": {"sha": ("a" if len(reads) == 1 else "b") * 40}}
+        return {"id": 7, "head_sha": "a" * 40, "head_branch": "main", "event": "push",
+                "repository": {"full_name": CONTROL["REPO"]},
+                "head_repository": {"full_name": CONTROL["REPO"]}, "pull_requests": [],
+                "path": ".github/workflows/ci.yml", "status": "completed",
+                "conclusion": "cancelled"}
+
+    monkeypatch.setitem(module, "api", api)
+    with pytest.raises(ValueError, match="Main changed"):
+        CONTROL["rerun"](7)
+    assert not list(tmp_path.glob("rerun-*"))
+
+
+def test_owner_token_requests_only_scoped_actions_write(tmp_path, monkeypatch):
+    module = CONTROL["token"].__wrapped__.__globals__
+    monkeypatch.setitem(module, "CONFIG", tmp_path)
+    (tmp_path / "owner.json").write_text(json.dumps({"installation_id": 1}))
+    monkeypatch.setitem(module, "app_jwt", lambda role: "test")
+    requests = []
+    monkeypatch.setitem(module, "request", lambda *args: requests.append(args) or {"token": "test"})
+    CONTROL["token"].__wrapped__("owner")
+    body = requests[0][3]
+    assert body["repositories"] == ["python-docs-mcp-server"]
+    assert body["permissions"]["actions"] == "write"
+    assert "administration" not in body["permissions"]
+
+
+def test_diagnostics_redact_secrets_preserve_useful_failures_and_bound_legacy_status(
+    tmp_path, monkeypatch
+):
+    module = CONTROL["dispatch"].__globals__
+    monkeypatch.setitem(module, "STATE", tmp_path)
+    monkeypatch.setitem(module, "CONFIG", tmp_path)
+    dangerous = ("doctor index missing; Bearer supersecret token=private-output "
+                 "ghp_privatevalue -----BEGIN PRIVATE KEY-----hiddenmaterial"
+                 "-----END PRIVATE KEY-----\x00")
+    diagnostics = {"summary": dangerous, "blockers": [dangerous] * 20,
+                   "failed_commands": [{"command": "doctor --token=private-output",
+                                        "exit_code": 2}] * 20,
+                   "arbitrary_secret": "must not escape"}
+    for number in range(55):
+        (tmp_path / f"verify-{number}.json").write_text(json.dumps({
+            "status": "failure", "diagnostics": diagnostics,
+        }))
+    results = CONTROL["dispatch"]({"operation": "status"})["blocked_verifications"]
+    assert len(results) == 50
+    text = json.dumps(results)
+    for secret in ["supersecret", "private-output", "ghp_privatevalue", "hiddenmaterial",
+                   "must not escape"]:
+        assert secret not in text
+    assert "doctor index missing" in text
+    result = results[0]["diagnostics"]
+    assert len(result["blockers"]) == len(result["failed_commands"]) == 8
+    assert result["failed_commands"][0]["exit_code"] == 2
+    assert len(CONTROL["diagnostic_text"]("x " * 10000)) <= 400
+
+
+@pytest.mark.parametrize("temporary", [True, False])
+@pytest.mark.parametrize("approved", [True, False])
+def test_public_verification_never_publishes_freeform_findings(
+    tmp_path, monkeypatch, temporary, approved
+):
+    module = CONTROL["verify"].__globals__
+    monkeypatch.setitem(module, "STATE", tmp_path)
+    monkeypatch.setitem(module, "CONFIG", tmp_path)
+    if temporary:
+        (tmp_path / "temporary-token").write_text("test")
+    sentinel = "innocent looking freeform secret sentinel"
+    head, base = "a" * 40, "b" * 40
+    posts = []
+
+    def api(path, method="GET", data=None, role="owner"):
+        if path == "pulls/1":
+            return {"head": {"sha": head}, "base": {"ref": "main"}, "state": "open"}
+        if path == "branches/main":
+            return {"commit": {"sha": base}}
+        posts.append(data)
+        return {"id": 42, "html_url": "https://example.test/evidence"}
+
+    def review(*args):
+        if not approved:
+            raise CONTROL["ReviewFailure"]("rejection", {
+                "summary": sentinel, "blockers": [sentinel], "reason": sentinel,
+                "reasons": [sentinel, "failed_commands"], "failed_checks": [sentinel, "pytest"],
+                "failed_commands": [{"command": sentinel, "exit_code": 1}], "blocker_count": 1,
+            })
+        return {"approved": True, "summary": sentinel, "head_sha": head, "base_sha": base,
+                "blockers": [], "commands": [{"command": "pytest " + sentinel, "exit_code": 0}]}
+
+    monkeypatch.setitem(module, "api", api)
+    monkeypatch.setitem(module, "review", review)
+    CONTROL["verify"](1, head, {"kind": "maintenance", "rationale": "Repair", "acceptance": "Test"})
+    assert sentinel not in json.dumps(posts)
+    assert sentinel in (tmp_path / f"verify-1-{base}-{head}.json").read_text()
+    assert "pytest" in json.dumps(posts)
+    assert CONTROL["diagnostic_text"]("password is abc123") == "credential=[REDACTED]"

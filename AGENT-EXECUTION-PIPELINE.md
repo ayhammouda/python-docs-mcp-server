@@ -423,3 +423,20 @@ Public evidence comments cannot replace that receipt. Required GitHub CI/securit
 checks, resolved conversations and SHA-matched merging remain enforced. Releases
 remain disabled until App activation. Successful App activation removes the
 temporary credential and enables the separate verifier identity/check requirement.
+
+## Amendment 2026-10-10 — Trusted operational repair lane
+
+Aymen explicitly authorized Vision main to use gh/provided GitHub credentials to
+provision missing repository access and carry out infrastructure recovery. Main may
+install independently reviewed exact helper revisions, retaining root ownership,
+backups, validation and rollback. Project workers cannot install their own boundary
+changes. Routine product writes still use pdctl; independent exact-head review,
+required CI/security checks, compatibility evidence and immutable release artifacts
+remain enforced. App activation is still required by the release architecture.
+
+Use the recovery and delivery contract in ops/vision/README.md: two unchanged
+blocked cycles trigger one deduplicated internal main maintenance request; 24-hour
+blockers go in the existing nightly digest; ready patches target shipment within
+48 hours without waiting for unrelated work. These rules supersede older per-run
+notification instructions. One implementation at a time, one existing two-hour
+owner loop, and no routine human self-approval.
