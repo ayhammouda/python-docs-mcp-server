@@ -34,7 +34,7 @@ def test_review_deadline_and_failure_handoff(tmp_path, monkeypatch, failure_kind
             "head_sha": "a" * 40,
             "base_sha": "b" * 40,
             "approved": False,
-            "blockers": ["private-output"],
+            "blockers": ["token=private-output"],
             "commands": [],
         }
         text = json.dumps(verdict) if failure_kind == "rejected" else "private-output"
@@ -565,3 +565,33 @@ def test_owner_token_requests_only_scoped_actions_write(tmp_path, monkeypatch):
     assert body["repositories"] == ["python-docs-mcp-server"]
     assert body["permissions"]["actions"] == "write"
     assert "administration" not in body["permissions"]
+
+
+def test_diagnostics_redact_secrets_preserve_useful_failures_and_bound_legacy_status(
+    tmp_path, monkeypatch
+):
+    module = CONTROL["dispatch"].__globals__
+    monkeypatch.setitem(module, "STATE", tmp_path)
+    monkeypatch.setitem(module, "CONFIG", tmp_path)
+    dangerous = ("doctor index missing; Bearer supersecret token=private-output "
+                 "ghp_privatevalue -----BEGIN PRIVATE KEY-----hiddenmaterial"
+                 "-----END PRIVATE KEY-----\x00")
+    diagnostics = {"summary": dangerous, "blockers": [dangerous] * 20,
+                   "failed_commands": [{"command": "doctor --token=private-output",
+                                        "exit_code": 2}] * 20,
+                   "arbitrary_secret": "must not escape"}
+    for number in range(55):
+        (tmp_path / f"verify-{number}.json").write_text(json.dumps({
+            "status": "failure", "diagnostics": diagnostics,
+        }))
+    results = CONTROL["dispatch"]({"operation": "status"})["blocked_verifications"]
+    assert len(results) == 50
+    text = json.dumps(results)
+    for secret in ["supersecret", "private-output", "ghp_privatevalue", "hiddenmaterial",
+                   "must not escape"]:
+        assert secret not in text
+    assert "doctor index missing" in text
+    result = results[0]["diagnostics"]
+    assert len(result["blockers"]) == len(result["failed_commands"]) == 8
+    assert result["failed_commands"][0]["exit_code"] == 2
+    assert len(CONTROL["diagnostic_text"]("x " * 10000)) <= 400

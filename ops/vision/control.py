@@ -315,18 +315,81 @@ class ReviewFailure(ValueError):
 
     def __init__(self, kind, diagnostics):
         self.kind = kind
-        self.diagnostics = diagnostics
-        super().__init__(f"Independent review {kind}: " + json.dumps(diagnostics))
+        self.diagnostics = safe_diagnostics(diagnostics)
+        super().__init__(f"Independent review {kind}: " + json.dumps(self.diagnostics))
+
+
+def diagnostic_text(value, limit=400):
+    """Bounded public-code findings, never raw subprocess output or credentials."""
+    if not isinstance(value, str):
+        return ""
+    value = value[:8000]
+    value = re.sub(r"-----BEGIN [^-]+-----.*?(?:-----END [^-]+-----|$)",
+                   "[REDACTED KEY]", value, flags=re.DOTALL)
+    value = re.sub(r"(?i)bearer\s+\S+", "Bearer [REDACTED]", value)
+    value = re.sub(r"(?i)(?:token|password|secret|api[_-]?key|authorization)"
+                   r"[\s\"']*[:=][\s\"']*[^\s,;]+", "credential=[REDACTED]", value)
+    value = re.sub(r"(?:gh[pousr]_|github_pat_|sk-)[A-Za-z0-9_-]+", "[REDACTED]", value)
+    value = re.sub(r"https?://[^\s]+", "[URL omitted]", value)
+    value = re.sub(r"[A-Za-z0-9+/=]{32,}", "[REDACTED LONG VALUE]", value)
+    value = " ".join("".join(c if c.isprintable() else " " for c in value).split())
+    return value[:limit]
+
+
+def safe_diagnostics(value):
+    if not isinstance(value, dict):
+        return {}
+    result = {}
+    for key in ("reason", "summary"):
+        if isinstance(value.get(key), str):
+            result[key] = diagnostic_text(value[key])
+    for key in ("reasons", "missing_checks", "failed_checks", "blockers"):
+        if isinstance(value.get(key), list):
+            result[key] = [diagnostic_text(v) for v in value[key][:8] if isinstance(v, str)]
+    if type(value.get("blocker_count")) is int:
+        result["blocker_count"] = max(0, min(10000, value["blocker_count"]))
+    if type(value.get("approved")) is bool:
+        result["approved"] = value["approved"]
+    if isinstance(value.get("failed_commands"), list):
+        result["failed_commands"] = [
+            {"command": diagnostic_text(c.get("command"), 160),
+             "exit_code": c["exit_code"] if type(c.get("exit_code")) is int
+             and -255 <= c["exit_code"] <= 255 else None}
+            for c in value["failed_commands"][:8] if isinstance(c, dict)
+        ]
+    return result
 
 
 def receipt_status(result):
-    # Never expose owner rationale, raw verifier output or historic exception text.
-    keys = ("status", "head_sha", "base_sha", "tree_sha", "session_id", "failures",
-            "infrastructure_failures", "failure_kind", "diagnostics", "updated_at",
-            "retry_after", "last_error")
-    safe = {key: result[key] for key in keys if key in result}
-    safe["last_error"] = "Independent review requires recovery"
+    # Revalidate legacy receipts too; never relay arbitrary stored diagnostics.
+    safe = {"last_error": "Independent review requires recovery"}
+    for key in ("status", "failure_kind"):
+        if isinstance(result.get(key), str):
+            safe[key] = diagnostic_text(result[key], 80)
+    session = result.get("session_id")
+    if isinstance(session, str) and re.fullmatch(
+        r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}", session
+    ):
+        safe["session_id"] = session
+    for key in ("head_sha", "base_sha", "tree_sha"):
+        if isinstance(result.get(key), str) and SHA.fullmatch(result[key]):
+            safe[key] = result[key]
+    for key in ("failures", "infrastructure_failures", "updated_at", "retry_after"):
+        if type(result.get(key)) is int:
+            safe[key] = max(0, min(2**63 - 1, result[key]))
+    safe["diagnostics"] = safe_diagnostics(result.get("diagnostics"))
     return safe
+
+
+def failure_status(pattern):
+    results = []
+    for path in sorted(STATE.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True):
+        result = json.loads(path.read_text())
+        if result.get("status") == "failure":
+            results.append(receipt_status(result))
+        if len(results) >= 50:
+            break
+    return results
 
 
 def rerun(run_id):
@@ -343,6 +406,7 @@ def rerun(run_id):
             or run.get("repository", {}).get("full_name") != REPO
             or run.get("path") not in {".github/workflows/ci.yml",
                                        ".github/workflows/codeql.yml",
+                                       ".github/workflows/scorecard.yml",
                                        ".github/workflows/security.yml",
                                        ".github/workflows/e2e.yml",
                                        ".github/workflows/product-quality.yml"}
@@ -458,6 +522,9 @@ def review(head: str, base: str, decision: dict):
                     ("failed_commands", any(c.get("exit_code") != 0 for c in commands)),
                 ) if present],
                 "missing_checks": missing, "failed_checks": failed,
+                "summary": verdict.get("summary", ""),
+                "blockers": verdict["blockers"],
+                "failed_commands": [c for c in commands if c.get("exit_code") != 0],
             })
         checkpoint.write_text(json.dumps(verdict))
         attempts["status"] = "success"
@@ -642,18 +709,10 @@ def dispatch(data: dict):
             "ready": (CONFIG / "activated").exists(),
             "authentication": "temporary-token" if temporary_auth() else "github-apps",
             "releases_enabled": (CONFIG / "activated").exists() and not temporary_auth(),
-            "review_failures": [
-                receipt_status(result)
-                for p in STATE.glob(
-                    f"attempts-{hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]}-*.json"
-                )
-                if (result := json.loads(p.read_text())).get("status") == "failure"
-            ],
-            "blocked_verifications": [
-                receipt_status(json.loads(p.read_text()))
-                for p in STATE.glob("verify-*.json")
-                if '"status": "failure"' in p.read_text()
-            ],
+            "review_failures": failure_status(
+                f"attempts-{hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]}-*.json"
+            ),
+            "blocked_verifications": failure_status("verify-*.json"),
         }
     if not (CONFIG / "activated").exists():
         raise ValueError("GitHub credentials are not activated; project writes are disabled")
