@@ -371,6 +371,64 @@ def test_temporary_verification_requires_current_private_receipt(tmp_path, monke
     assert all(not p.startswith("check-runs") for p, _ in calls)
 
 
+def test_app_manifests_disable_unused_webhooks(monkeypatch):
+    loader = runpy.run_path
+    monkeypatch.setattr(runpy, "run_path", lambda _: CONTROL)
+    setup = loader(str(Path(__file__).parents[1] / "ops/vision/configure_apps.py"))
+    for role, permissions in setup["PERMISSIONS"].items():
+        manifest = setup["manifest"](role, 8766)
+        assert manifest["hook_attributes"] == {"url": "", "active": False}
+        assert manifest["default_events"] == []
+        assert manifest["redirect_url"] == "http://127.0.0.1:8766/callback"
+        assert manifest["default_permissions"] == permissions
+        assert manifest["public"] is False
+
+
+def test_app_setup_serves_requests_with_an_idle_connection(monkeypatch):
+    import queue
+    import socket
+    import threading
+    import urllib.request
+
+    loader = runpy.run_path
+    monkeypatch.setattr(runpy, "run_path", lambda _: CONTROL)
+    setup = loader(str(Path(__file__).parents[1] / "ops/vision/configure_apps.py"))
+    module = setup["main"].__globals__
+    monkeypatch.setattr(module["os"], "geteuid", lambda: 0)
+    monkeypatch.setattr(module["os"], "umask", lambda _: None)
+    monkeypatch.setenv("SUDO_USER", "ahammouda")
+    monkeypatch.setattr("sys.argv", ["configure_apps.py", "serve", "--port", "0"])
+    servers = queue.Queue()
+
+    def capture(server_type):
+        def create(*args):
+            server = server_type(*args)
+            servers.put(server)
+            return server
+
+        return create
+
+    for name in ["HTTPServer", "ThreadingHTTPServer"]:
+        monkeypatch.setattr(
+            module["http"].server, name, capture(getattr(module["http"].server, name))
+        )
+    thread = threading.Thread(target=setup["main"], daemon=True)
+    thread.start()
+    server = servers.get(timeout=5)
+    idle = socket.create_connection(server.server_address, timeout=5)
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/not-found"
+        with pytest.raises(urllib.error.HTTPError) as response:
+            urllib.request.urlopen(url, timeout=2)
+        assert response.value.code == 404
+    finally:
+        idle.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    assert not thread.is_alive()
+
+
 def test_temporary_capture_and_app_activation_lifecycle(tmp_path, monkeypatch, capsys):
     import copy
     from types import SimpleNamespace

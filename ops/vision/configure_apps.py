@@ -41,7 +41,7 @@ def manifest(role, port):
         "url": f"https://github.com/{REPO}",
         "description": f"Scoped autonomous Python docs {role}; no account administration.",
         "public": False,
-        "hook_attributes": {"url": f"http://127.0.0.1:{port}/unused", "active": False},
+        "hook_attributes": {"url": "", "active": False},
         "redirect_url": f"http://127.0.0.1:{port}/callback",
         "default_events": [],
         "default_permissions": PERMISSIONS[role],
@@ -308,7 +308,7 @@ def main():
             f"Operator-only setup: http://127.0.0.1:{args.port}/?key={SETUP_KEY}",
             flush=True,
         )
-        http.server.HTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
+        http.server.ThreadingHTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
 
 
 if __name__ == "__main__":
