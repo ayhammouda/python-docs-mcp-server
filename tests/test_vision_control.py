@@ -595,3 +595,44 @@ def test_diagnostics_redact_secrets_preserve_useful_failures_and_bound_legacy_st
     assert len(result["blockers"]) == len(result["failed_commands"]) == 8
     assert result["failed_commands"][0]["exit_code"] == 2
     assert len(CONTROL["diagnostic_text"]("x " * 10000)) <= 400
+
+
+@pytest.mark.parametrize("temporary", [True, False])
+@pytest.mark.parametrize("approved", [True, False])
+def test_public_verification_never_publishes_freeform_findings(
+    tmp_path, monkeypatch, temporary, approved
+):
+    module = CONTROL["verify"].__globals__
+    monkeypatch.setitem(module, "STATE", tmp_path)
+    monkeypatch.setitem(module, "CONFIG", tmp_path)
+    if temporary:
+        (tmp_path / "temporary-token").write_text("test")
+    sentinel = "innocent looking freeform secret sentinel"
+    head, base = "a" * 40, "b" * 40
+    posts = []
+
+    def api(path, method="GET", data=None, role="owner"):
+        if path == "pulls/1":
+            return {"head": {"sha": head}, "base": {"ref": "main"}, "state": "open"}
+        if path == "branches/main":
+            return {"commit": {"sha": base}}
+        posts.append(data)
+        return {"id": 42, "html_url": "https://example.test/evidence"}
+
+    def review(*args):
+        if not approved:
+            raise CONTROL["ReviewFailure"]("rejection", {
+                "summary": sentinel, "blockers": [sentinel], "reason": sentinel,
+                "reasons": [sentinel, "failed_commands"], "failed_checks": [sentinel, "pytest"],
+                "failed_commands": [{"command": sentinel, "exit_code": 1}], "blocker_count": 1,
+            })
+        return {"approved": True, "summary": sentinel, "head_sha": head, "base_sha": base,
+                "blockers": [], "commands": [{"command": "pytest " + sentinel, "exit_code": 0}]}
+
+    monkeypatch.setitem(module, "api", api)
+    monkeypatch.setitem(module, "review", review)
+    CONTROL["verify"](1, head, {"kind": "maintenance", "rationale": "Repair", "acceptance": "Test"})
+    assert sentinel not in json.dumps(posts)
+    assert sentinel in (tmp_path / f"verify-1-{base}-{head}.json").read_text()
+    assert "pytest" in json.dumps(posts)
+    assert CONTROL["diagnostic_text"]("password is abc123") == "credential=[REDACTED]"

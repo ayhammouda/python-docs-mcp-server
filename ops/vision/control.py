@@ -311,7 +311,7 @@ def reset_verifier():
 
 
 class ReviewFailure(ValueError):
-    """Only broker-generated diagnostics cross the privileged boundary."""
+    """Private, untrusted findings for the owner; never publish this exception text."""
 
     def __init__(self, kind, diagnostics):
         self.kind = kind
@@ -320,7 +320,11 @@ class ReviewFailure(ValueError):
 
 
 def diagnostic_text(value, limit=400):
-    """Bounded public-code findings, never raw subprocess output or credentials."""
+    """Defense-in-depth redaction for PRIVATE untrusted findings, not a secrecy guarantee.
+
+    Arbitrary prose can encode secrets in unknown formats. Only public_evidence's
+    closed vocabulary is safe to publish. Never pass raw subprocess logs here.
+    """
     if not isinstance(value, str):
         return ""
     value = value[:8000]
@@ -328,7 +332,7 @@ def diagnostic_text(value, limit=400):
                    "[REDACTED KEY]", value, flags=re.DOTALL)
     value = re.sub(r"(?i)bearer\s+\S+", "Bearer [REDACTED]", value)
     value = re.sub(r"(?i)(?:token|password|secret|api[_-]?key|authorization)"
-                   r"[\s\"']*[:=][\s\"']*[^\s,;]+", "credential=[REDACTED]", value)
+                   r"(?:[\s\"']*[:=][\s\"']*|\s+is\s+)[^\s,;]+", "credential=[REDACTED]", value)
     value = re.sub(r"(?:gh[pousr]_|github_pat_|sk-)[A-Za-z0-9_-]+", "[REDACTED]", value)
     value = re.sub(r"https?://[^\s]+", "[URL omitted]", value)
     value = re.sub(r"[A-Za-z0-9+/=]{32,}", "[REDACTED LONG VALUE]", value)
@@ -358,6 +362,38 @@ def safe_diagnostics(value):
             for c in value["failed_commands"][:8] if isinstance(c, dict)
         ]
     return result
+
+
+def public_evidence(verdict, status, head, base):
+    """Closed-vocabulary public receipt: no freeform reviewer text ever leaves."""
+    families = {"uv sync --locked --dev", "ruff check", "pyright", "pytest"}
+    reasons = {"review_or_check_evidence_rejected", "approved_false", "blockers_present",
+               "incomplete_commands", "failed_commands", "sha_mismatch", "malformed_verdict",
+               "two_rejections_new_revision_required", "retry_limit_or_cooldown", "timeout",
+               "process_exit", "invalid_response_or_execution_error", "verifier_cleanup_failed",
+               "verification_execution_error"}
+    output = {"approved": status == "success", "head_sha": head, "base_sha": base}
+    diagnostics = verdict.get("diagnostics", {})
+    if not isinstance(diagnostics, dict):
+        diagnostics = {}
+    output["reason_codes"] = sorted({
+        code for code in [diagnostics.get("reason"), *diagnostics.get("reasons", [])]
+        if isinstance(code, str) and code in reasons
+    })
+    for key in ("missing_checks", "failed_checks"):
+        values = diagnostics.get(key, [])
+        output[key] = sorted({v for v in values if isinstance(v, str) and v in families})
+    count = diagnostics.get("blocker_count")
+    output["blocker_count"] = max(0, min(10000, count)) if type(count) is int else 0
+    # Success command evidence also stays in a closed vocabulary. Complete command
+    # strings and all raw verdict fields are available only in the private receipt.
+    commands = verdict.get("commands", [])
+    output["passed_check_families"] = sorted({
+        family for family in families for command in commands
+        if isinstance(command, dict) and command.get("exit_code") == 0
+        and isinstance(command.get("command"), str) and family in command["command"]
+    })
+    return output
 
 
 def receipt_status(result):
@@ -606,6 +642,7 @@ def verify(number: int, head: str, decision: dict):
                    "failure_kind": prior["failure_kind"], "diagnostics": prior["diagnostics"]}
     prior.update(verdict=verdict, updated_at=int(time.time()))
     checkpoint.write_text(json.dumps(prior))
+    public = public_evidence(verdict, prior["status"], head, base)
     if temporary:
         # OAuth cannot issue App check-runs. Only this root-owned receipt permits merge;
         # the public comment is evidence, never an authorization input.
@@ -614,7 +651,7 @@ def verify(number: int, head: str, decision: dict):
             {"body": "Vision — automated project maintainer\n\n"
              f"Independent verification (temporary credential): **{prior['status']}**\n\n"
              f"Head: `{head}`; main: `{base}`.\n\n"
-             "```json\n" + json.dumps(verdict, indent=2)[:60000] + "\n```"},
+             "```json\n" + json.dumps(public, indent=2) + "\n```"},
         )
         return {"status": prior["status"], "comment_url": comment["html_url"]}
     return api(
@@ -625,7 +662,7 @@ def verify(number: int, head: str, decision: dict):
             "conclusion": prior["status"],
             "output": {
                 "title": "Independent project verification",
-                "summary": json.dumps(verdict)[:60000],
+                "summary": json.dumps(public),
             },
         },
         "verifier",
