@@ -4,6 +4,35 @@ All notable changes to `python-docs-mcp-server` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] — 2026-10-10
+
+### Fixed
+
+- Improved canonical documentation ranking for natural-language searches.
+  Page-level `get_docs` now returns canonical stored page text instead of
+  concatenating overlapping nested sections.
+  ([#137](https://github.com/ayhammouda/python-docs-mcp-server/pull/137))
+- Added one-symbol recovery when an explicit-version search returns no results.
+  ([#139](https://github.com/ayhammouda/python-docs-mcp-server/pull/139))
+- Append canonical targets into spare result slots for nonempty, explicit-version
+  `kind="auto"` searches without reordering or replacing existing hits.
+  ([#146](https://github.com/ayhammouda/python-docs-mcp-server/pull/146))
+
+### Security
+
+- Updated the dependency lock to patched security releases.
+  ([#128](https://github.com/ayhammouda/python-docs-mcp-server/pull/128))
+- Raised the supported MCP SDK floor to `mcp>=1.30.0,<2.0.0`, retaining MCP v1.
+  ([#145](https://github.com/ayhammouda/python-docs-mcp-server/pull/145))
+
+### Changed
+
+- Aligned package and MCP Registry metadata to `0.3.2`; the original six-tool
+  public API is unchanged.
+- Development maintenance improved benchmark tooling, CI, and owner infrastructure.
+  The frozen 50-question, 65-case regression baseline records 35 retrieval hits;
+  it measures retrieval and canonical citations, not generated-answer superiority.
+
 ## [0.3.1] — 2026-06-01
 
 ### Added
