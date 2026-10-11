@@ -14,6 +14,7 @@ from mcp_server_python_docs.services.compare import CompareService
 from mcp_server_python_docs.services.content import ContentService
 from mcp_server_python_docs.services.search import SearchService
 from mcp_server_python_docs.services.version import VersionService
+from mcp_server_python_docs.services.whatsnew import WhatsNewService
 from mcp_server_python_docs.storage.db import bootstrap_schema, get_readwrite_connection
 
 _CASES_PATH = Path(__file__).parent / "fixtures" / "retrieval_regression_cases.json"
@@ -134,6 +135,7 @@ def _make_app_context(db, detected_python_version: str | None) -> AppContext:
         content_service=content_service,
         compare_service=CompareService(db, content_service),
         version_service=VersionService(db),
+        whatsnew_service=WhatsNewService(db),
         detected_python_version=detected_python_version,
         detected_python_source="test fixture",
     )
