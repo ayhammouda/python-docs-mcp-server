@@ -4,6 +4,27 @@ All notable changes to `python-docs-mcp-server` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — Unreleased
+
+### Added
+
+- Added the seventh tool, `whatsnew_for_version`, for offline, read-only
+  discovery of indexed official Python release notes for an explicit version.
+  Filtered pagination preserves canonical sections, their order and fields,
+  and advances through matching sections without gaps. Returned sections have
+  nonempty excerpts; truncated excerpts include canonical `get_docs`
+  continuation instructions. A section that cannot fit with nonempty content
+  and its required canonical fields returns an explicit bounded error.
+  Successful responses are bounded to 20,000 Unicode characters in the model
+  JSON, not the MCP wire envelope.
+  ([#153](https://github.com/ayhammouda/python-docs-mcp-server/pull/153))
+
+### Changed
+
+- Aligned package and MCP Registry metadata to `0.4.0`. Canonical,
+  version-aware documentation queries remain offline and read-only;
+  distribution remains free under the MIT license.
+
 ## [0.3.2] — 2026-10-10
 
 ### Fixed
