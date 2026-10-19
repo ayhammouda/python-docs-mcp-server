@@ -1,0 +1,65 @@
+{
+  "provenance": {
+    "source": "https://github.com/python/cpython",
+    "tag": "v3.15.0",
+    "commit": "d220409a13b77de7a6c30abe16ea90db01528edc",
+    "note": "Small authored offline ingestion fixtures using source-backed excerpts; not a full-index build substitute."
+  },
+  "symbols": [
+    {
+      "name": "asyncio.TaskGroup.cancel",
+      "slug": "library/asyncio-task",
+      "anchor": "asyncio.TaskGroup.cancel",
+      "change": "added",
+      "bodies": {
+        "3.15": "Request cancellation of all tasks in the group. New in version 3.15."
+      }
+    },
+    {
+      "name": "base64.z85encode",
+      "slug": "library/base64",
+      "anchor": "base64.z85encode",
+      "change": "changed",
+      "bodies": {
+        "3.14": "Encode bytes-like object b in Z85 format.",
+        "3.15": "Encode bytes-like object b in Z85 format. Changed in version 3.15: Added the pad parameter."
+      }
+    },
+    {
+      "name": "http.server.CGIHTTPRequestHandler",
+      "slug": "library/http.server",
+      "anchor": "http.server.CGIHTTPRequestHandler",
+      "change": "removed",
+      "bodies": {
+        "3.14": "CGIHTTPRequestHandler serves CGI scripts. Deprecated since version 3.13."
+      }
+    }
+  ],
+  "whatsnew": [
+    [
+      "new-features",
+      "New Features",
+      ""
+    ],
+    [
+      "whatsnew315-frozendict",
+      "PEP 814: Add frozendict built-in type",
+      "A new immutable type, frozendict, is added to the builtins module."
+    ],
+    [
+      "whatsnew315-sentinel",
+      "PEP 661: Add sentinel built-in type",
+      "A new sentinel type is added to the builtins module."
+    ],
+    [
+      "removed",
+      "Removed",
+      ""
+    ],
+    [
+      "http-server",
+      "http.server",
+      "Removed the CGIHTTPRequestHandler class and the --cgi flag."
+    ]
+  ]
+}

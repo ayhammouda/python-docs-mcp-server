@@ -130,6 +130,34 @@ The first build downloads Python's `objects.inv` files, clones CPython docs
 sources, runs `sphinx-build -b json`, and writes an SQLite index to your local
 cache. It can take several minutes.
 
+### Python 3.15 documentation (opt-in)
+
+The source-pinned documentation targets include Python 3.10–3.15. To index
+3.15 alongside 3.14, explicitly run:
+
+```bash
+uvx python-docs-mcp-server build-index --versions 3.14,3.15
+```
+
+A build replaces the local index with the requested versions; include every
+version you want to keep. The first-run examples above intentionally remain
+unchanged. The builder still marks the highest **requested** version as the
+index default; adding this target does not select 3.15 in an existing index.
+`get_docs` without a version uses the configured/detected default, while
+versionless search spans indexed versions. Pass `version="3.15"` for isolated
+3.15 answers. `list_versions` reports the actual index, not all build targets;
+an unindexed explicit version raises an error, never an older-docs fallback.
+
+This is documentation coverage, **not** a claim that the server runs on Python
+3.15 or that a named MCP client was tested with it. Queries remain offline and
+read-only after a successful build. Until it is indexed, consult the
+[official 3.15 docs](https://docs.python.org/3.15/) directly.
+
+The 3.15 target is CPython tag `v3.15.0`, commit
+`d220409a13b77de7a6c30abe16ea90db01528edc`, with Sphinx `8.2.3`.
+See [integration checks](.github/INTEGRATION-TEST.md#python-315-documentation-checks)
+for explicit-version and comparison examples.
+
 ## Configure your MCP client
 
 ### Claude Code
@@ -418,8 +446,10 @@ For contributor setup and verification:
 Tested on macOS and Linux. Windows should work, but it is not verified on
 every release.
 
-The server requires Python 3.12+ to run. Its generated documentation corpus
-covers Python documentation versions 3.10 through 3.14.
+The server requires Python 3.12+ to run. Source-pinned documentation targets
+cover Python 3.10 through 3.15; Python 3.15 is opt-in. The versions available
+for queries depend on the documentation versions selected when building the
+index.
 
 ## License
 

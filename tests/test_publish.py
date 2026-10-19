@@ -257,12 +257,13 @@ class TestSmokeTests:
         assert any("OK" in m for m in messages)
 
     def test_pass_on_supported_issue_5_version_range(self, tmp_path):
-        """Smoke tests accept the full supported docs version range."""
+        """Preserve the original 3.10–3.14 build/default contract."""
+        versions = ("3.10", "3.11", "3.12", "3.13", "3.14")
         db_path = tmp_path / "issue-5-range.db"
-        self._create_populated_db(db_path, versions=SUPPORTED_DOC_VERSIONS)
+        self._create_populated_db(db_path, versions=versions)
 
         passed, messages = run_smoke_tests(
-            db_path, expected_versions=SUPPORTED_DOC_VERSIONS
+            db_path, expected_versions=versions
         )
 
         assert passed is True
@@ -271,6 +272,19 @@ class TestSmokeTests:
             in messages
         )
         assert "OK: doc_sets: default version is 3.14" in messages
+
+    def test_pass_on_python315_version_range(self, tmp_path):
+        db_path = tmp_path / "issue-156-range.db"
+        self._create_populated_db(db_path, versions=SUPPORTED_DOC_VERSIONS)
+        passed, messages = run_smoke_tests(
+            db_path, expected_versions=SUPPORTED_DOC_VERSIONS
+        )
+        assert passed is True
+        assert (
+            "OK: doc_sets: expected versions present: 3.10, 3.11, 3.12, 3.13, 3.14, 3.15"
+            in messages
+        )
+        assert "OK: doc_sets: default version is 3.15" in messages
 
     def test_fails_when_expected_version_is_missing(self, tmp_path):
         """Smoke tests fail when a requested build version is absent."""

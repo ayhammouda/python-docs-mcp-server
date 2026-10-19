@@ -18,6 +18,7 @@ SUPPORTED_DOC_VERSIONS: Final[tuple[str, ...]] = (
     "3.12",
     "3.13",
     "3.14",
+    "3.15",
 )
 
 SUPPORTED_DOC_VERSIONS_CSV: Final[str] = ",".join(SUPPORTED_DOC_VERSIONS)
@@ -44,6 +45,13 @@ CPYTHON_DOCS_BUILD_CONFIG: Final[dict[str, CPythonDocsBuildConfig]] = {
         "tag": "v3.13.13",
         "sha": "01104ce1beb3135c2e0c01ec835b994c1f55a1c0",
         "sphinx_pin": "sphinx<9.0.0",
+    },
+    # v3.15.0 annotated tag peeled via git ls-remote on 2026-10-15;
+    # Doc/requirements.txt at this commit requires Sphinx <9.
+    "3.15": {
+        "tag": "v3.15.0",
+        "sha": "d220409a13b77de7a6c30abe16ea90db01528edc",
+        "sphinx_pin": "sphinx==8.2.3",
     },
     "3.14": {
         "tag": "v3.14.4",
