@@ -44,8 +44,9 @@ from mcp_server_python_docs.ingestion.sphinx_json import (
 
 class TestCPythonVersionConfig:
     def test_supports_python_3_10_through_3_14(self):
-        assert SUPPORTED_DOC_VERSIONS == ("3.10", "3.11", "3.12", "3.13", "3.14")
-        assert SUPPORTED_DOC_VERSIONS_CSV == "3.10,3.11,3.12,3.13,3.14"
+        assert SUPPORTED_DOC_VERSIONS[:5] == ("3.10", "3.11", "3.12", "3.13", "3.14")
+        assert SUPPORTED_DOC_VERSIONS == ("3.10", "3.11", "3.12", "3.13", "3.14", "3.15")
+        assert SUPPORTED_DOC_VERSIONS_CSV == "3.10,3.11,3.12,3.13,3.14,3.15"
 
     def test_supported_versions_have_pinned_docs_build_config(self):
         assert set(CPYTHON_DOCS_BUILD_CONFIG) == set(SUPPORTED_DOC_VERSIONS)

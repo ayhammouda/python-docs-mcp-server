@@ -142,6 +142,34 @@ or supported Python versions.
 - [ ] Inspect uploaded logs if a job fails
   - Expected: Sphinx/build logs are available as workflow artifacts
 
+## Python 3.15 documentation checks
+
+This opt-in content target does not expand the runtime-support matrix or the
+existing hosted workflow coverage. Record the interpreter used separately from
+the documentation versions; do not infer named-client compatibility.
+
+1. Build a fresh index with
+   `uv run --locked python-docs-mcp-server build-index --versions 3.14,3.15`.
+   This replaces the index; include any other versions you need to retain.
+2. Run `doctor`; confirm both versions contain documents and sections.
+3. Disconnect network access for query checks. Verify `list_versions` lists
+   exactly the indexed versions, and that an explicit 3.15 request against a
+   3.14-only index returns an error.
+4. Search `asyncio.TaskGroup.cancel` with `version="3.15", kind="symbol"`
+   and retrieve the returned slug/anchor. Check the canonical location is
+   `https://docs.python.org/3.15/library/asyncio-task.html#asyncio.TaskGroup.cancel`.
+5. Compare `asyncio.TaskGroup.cancel` (added), `base64.z85encode` (changed),
+   and `http.server.CGIHTTPRequestHandler` (removed) from 3.14 to 3.15.
+   Removed content belongs to the old version; consult the 3.15 What's New
+   removal section for migration guidance.
+6. Paginate `whatsnew_for_version(version="3.15", max_sections=2)` using every
+   returned `next_start_index`. Check no gaps/duplicate anchors and bounded
+   response bodies. Retrieve individual sections via
+   `get_docs(slug="whatsnew/3.15", version="3.15", anchor=...)`.
+7. Preserve the original 3.11–3.13 frozen regression index and run
+   `uv run --locked python -m benchmarks.regression --index <retained-index> --output regression-results.json`.
+   The new separate 3.15 fixtures do not replace that gate.
+
 ## Evidence log
 
 | Test | Pass/Fail | Tester | Date | Notes |
