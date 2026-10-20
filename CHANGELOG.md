@@ -4,7 +4,31 @@ All notable changes to `python-docs-mcp-server` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.0] — Unreleased
+## [0.5.0] — Unreleased
+
+### Added
+
+- Opt-in Python 3.15 canonical documentation content target, pinned to CPython
+  `v3.15.0` commit `d220409a13b77de7a6c30abe16ea90db01528edc`.
+  Build it explicitly with `build-index --versions 3.15`.
+  The pin covers CPython documentation content, not the live `objects.inv`
+  inventory. This documentation target does not imply a tested Python 3.15
+  server runtime.
+  ([#156](https://github.com/ayhammouda/python-docs-mcp-server/issues/156))
+
+### Changed
+
+- Aligned package and MCP Registry metadata to `0.5.0`. `list_versions` reports
+  versions actually indexed locally; an explicit unindexed version returns an
+  actionable error rather than silently falling back. Adding the 3.15 target
+  does not change existing defaults, the Python 3.12+ runtime requirement, or
+  the seven-tool MCP wire interface. Queries remain offline and read-only;
+  distribution remains free under the MIT license.
+- Clarified the distinction between documentation content targets and tested
+  server runtimes or client integrations.
+  ([#158](https://github.com/ayhammouda/python-docs-mcp-server/pull/158))
+
+## [0.4.0] — 2026-10-19
 
 ### Added
 
