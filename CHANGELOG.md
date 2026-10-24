@@ -24,6 +24,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Aligned package and MCP Registry metadata to `0.4.0`. Canonical,
   version-aware documentation queries remain offline and read-only;
   distribution remains free under the MIT license.
+- Updated locked Click, Platformdirs, Pydantic and Ruff versions, plus the
+  pinned setup-uv, CodeQL and cache actions.
+
+### Security
+
+- Updated locked Certifi to `2026.10.23` to address
+  [PYSEC-2026-4320](https://github.com/certifi/python-certifi/security/advisories/GHSA-6q48-6c7w-9gw2).
 
 ## [0.3.2] — 2026-10-10
 

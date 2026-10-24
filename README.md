@@ -15,6 +15,8 @@
 [![No API Keys](https://img.shields.io/badge/API%20keys-none-success)](#why-use-it)
 [![Official Python Docs](https://img.shields.io/badge/source-official%20python%20docs-informational)](https://docs.python.org/3/)
 
+[![Python Docs MCP server](https://mcprush.com/badge/python-docs-mcp/card.svg)](https://mcprush.com/to/python-docs-mcp?ref=badge)
+
 Built for the moment your agent needs `asyncio.TaskGroup` signatures, `pathlib.Path` semantics, or what changed in 3.12 — *not* a web fetch, *not* a hosted API, *not* a vector store hallucinating section anchors. Just an indexed slice of `docs.python.org`, returned by symbol or by query, scoped to the version you actually ship on.
 
 ## Why this exists
