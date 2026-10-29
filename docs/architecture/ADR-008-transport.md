@@ -128,8 +128,10 @@ read as ruling that out.
 - **Invariants:** The client's stdout pipe carries only JSON-RPC protocol
   frames. Before `run()`, the import-time fd swap keeps stray output off fd 1.
   During `run()`, the MCP SDK (v2) writes frames through a private duplicate
-  of the restored fd 1 and points fd 1 itself at stderr, so even a stray
-  `print()` inside a tool lands on stderr. All logging and any print output
+  of the restored fd 1 and points fd 1 itself at stderr. When `run()` returns,
+  the SDK hands fd 1 back to the client pipe and `serve()` points it at stderr
+  again, so a stray `print()` inside a tool lands on stderr even if it is
+  still buffered at exit. All logging and any print output
   are on stderr for the whole process lifetime; SIGPIPE is ignored so client
   disconnect cannot crash the process with a signal; `serve()` catches
   `BrokenPipeError` with `except*` because the SDK raises it inside an

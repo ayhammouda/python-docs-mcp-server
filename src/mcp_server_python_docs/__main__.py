@@ -111,6 +111,10 @@ def serve() -> None:
         mcp_server.run(transport="stdio")
     except* BrokenPipeError:
         pass  # Client disconnected (HYGN-03); the SDK raises it inside an ExceptionGroup
+    finally:
+        # The SDK hands fd 1 back to the client pipe when run() returns; point it
+        # at stderr so output still buffered in sys.stdout is flushed there at exit.
+        os.dup2(2, 1)
 
 
 def _verify_cpython_source_sha(

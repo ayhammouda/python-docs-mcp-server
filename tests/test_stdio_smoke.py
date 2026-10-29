@@ -185,8 +185,34 @@ def _request_ids(stdin_data: bytes) -> list[int]:
     return request_ids
 
 
+# Runs the real entry point (its import-time fd swap included) with one extra
+# tool that prints without flushing, leaving the text in sys.stdout's buffer.
+_STRAY_PRINT_DRIVER = """
+import mcp_server_python_docs.__main__ as entry
+import mcp_server_python_docs.server as server_module
+
+_create_server = server_module.create_server
+
+
+def _create_server_with_stray_print():
+    mcp = _create_server()
+
+    @mcp.tool()
+    async def stray_print() -> str:
+        print("STRAY-STDOUT", end="")
+        return "ok"
+
+    return mcp
+
+
+server_module.create_server = _create_server_with_stray_print
+entry.serve.callback()
+"""
+
+
 def _run_server_until_responses(
     stdin_data: bytes, env: dict[str, str], timeout: int = 15,
+    server_args: list[str] | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the MCP server, stream stdin, and wait for every expected response.
 
@@ -195,9 +221,10 @@ def _run_server_until_responses(
     stdout (or the timeout/exit fires). That avoids a race where the server's
     read loop shuts down on stdin EOF before the final ``tools/call`` handler
     flushes its reply — the source of CI flakiness on cold runners.
+    ``server_args`` replaces ``-m mcp_server_python_docs serve``.
     """
     proc = subprocess.Popen(
-        [sys.executable, "-m", "mcp_server_python_docs", "serve"],
+        [sys.executable, *(server_args or ["-m", "mcp_server_python_docs", "serve"])],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -447,3 +474,23 @@ class TestStdioSmoke:
 
         assert proc.returncode == 0, stderr.decode()[-2000:]
         assert b"Traceback" not in stderr
+
+    def test_stray_stdout_never_reaches_the_client(self):
+        """HYGN-01: output a tool leaves in sys.stdout's buffer goes to stderr at exit."""
+        stdin_data = (
+            _make_request("initialize", {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "0.1"},
+            }, req_id=1)
+            + _make_notification("notifications/initialized")
+            + _make_request("tools/call", {"name": "stray_print", "arguments": {}}, req_id=2)
+        )
+        result = _run_server_until_responses(
+            stdin_data, self.env, server_args=["-c", _STRAY_PRINT_DRIVER],
+        )
+
+        assert b"STRAY-STDOUT" not in result.stdout
+        assert b"STRAY-STDOUT" in result.stderr
+        responses = _assert_protocol_on_stdout_only(result)
+        assert _find_response(responses, 2)["result"].get("isError") is not True
