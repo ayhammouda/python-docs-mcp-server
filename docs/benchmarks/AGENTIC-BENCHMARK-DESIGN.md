@@ -116,7 +116,9 @@ Follow the checklist in section 5 of
 
 - Pin `mcp>=2.3.0,<3` and `pydantic>=2.12`; refresh `uv.lock`.
 - `server.py`: import from `mcp.server.mcpserver` instead of
-  `mcp.server.fastmcp`; pass `version=__version__`.
+  `mcp.server.fastmcp`; pass `version=__version__`. Type the tool context as
+  `Context[AppContext]` and pass `ToolAnnotations` fields in snake_case:
+  Pyright rejects the v1 spellings under v2 (checked 2026-10-29).
 - Tests: snake_case attribute access (`read_only_hint`, `input_schema`, …).
 - **Call:** turn the six sync tools (`search_docs`, `get_docs`,
   `list_versions`, `detect_python_version`, `compare_versions`,
@@ -126,10 +128,17 @@ Follow the checklist in section 5 of
   SQLite build, including the optional `pysqlite3-binary` extra nobody has
   checked. `lookup_package_docs` stays as is.
 - `benchmarks/adapters/`: apply the minimal v2 fixes (snake_case result
-  attributes, two-value `streamable_http_client` unpacking, explicit `httpx`
-  dev dependency) so `main` stays correct until section 11 deletes these
-  adapters. Their unit tests use camelCase fakes and would otherwise stay green
-  while the live path is broken; update the fakes too.
+  attributes, two-value `streamable_http_client` unpacking, and an
+  `httpx2.AsyncClient` for `http_client=`) so `main` stays correct until
+  section 11 deletes these adapters. v2 no longer installs `httpx` and expects
+  an `httpx2` client, which `mcp` already installs, so no dependency is added.
+  Their unit tests use camelCase fakes and would otherwise stay green while
+  the live path is broken; update the fakes too.
+- Fix the exit on client disconnect. This bug also exists on v1 and was found
+  while planning. The SDK raises `BrokenPipeError` inside an `ExceptionGroup`,
+  so `serve()`'s `except BrokenPipeError` never fires and the process exits
+  with a traceback (exit code 120 on v1, 1 on v2). `except* BrokenPipeError`
+  exits 0 on v2.
 - Reword ADR-008's "fd 1 carries only protocol frames" statement.
 
 Done means: the canonical gate in `AGENTS.md` passes fresh, the stdio smoke
