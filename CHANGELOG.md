@@ -15,6 +15,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `serverInfo.version` instead of the SDK's. Tool names, parameters and
   results are unchanged.
 
+### Fixed
+
+- The server now exits cleanly, with exit code 0 and no traceback, when a
+  client closes the connection mid-session.
+
 ## [0.4.0] — Unreleased
 
 ### Added

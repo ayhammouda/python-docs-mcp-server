@@ -427,3 +427,23 @@ class TestStdioSmoke:
         call = _find_response(responses, 2)["result"]
         assert call.get("isError") is not True
         assert call["structuredContent"]["versions"]
+
+    def test_client_disconnect_exits_cleanly(self):
+        """HYGN-03: a client that drops its end of the pipe gets exit 0, no traceback."""
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "mcp_server_python_docs", "serve"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=self.env,
+        )
+        assert proc.stdin is not None and proc.stdout is not None
+        proc.stdout.close()  # the server's first reply hits a closed pipe
+        proc.stdin.write(_make_request("initialize", {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "test", "version": "0.1"},
+        }, req_id=1))
+        proc.stdin.flush()
+        _, stderr = proc.communicate(timeout=20)
+
+        assert proc.returncode == 0, stderr.decode()[-2000:]
+        assert b"Traceback" not in stderr

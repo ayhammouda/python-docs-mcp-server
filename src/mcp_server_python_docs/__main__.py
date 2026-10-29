@@ -108,8 +108,8 @@ def serve() -> None:
 
     try:
         mcp_server.run(transport="stdio")
-    except BrokenPipeError:
-        pass  # Client disconnected (HYGN-03)
+    except* BrokenPipeError:
+        pass  # Client disconnected (HYGN-03); the SDK raises it inside an ExceptionGroup
 
 
 def _verify_cpython_source_sha(
