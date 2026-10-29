@@ -457,6 +457,20 @@ class TestToolRegistration:
             "detect_python_version", "compare_versions", "whatsnew_for_version",
         }
 
+    def test_docs_tools_are_async(self):
+        """MCP SDK v2 runs sync tools on worker threads. These six share one
+        sqlite3.Connection, so they stay async and run on the event loop."""
+        import inspect
+
+        from mcp_server_python_docs.server import create_server
+
+        tools = create_server()._tool_manager._tools
+        for name in (
+            "search_docs", "get_docs", "list_versions",
+            "detect_python_version", "compare_versions", "whatsnew_for_version",
+        ):
+            assert inspect.iscoroutinefunction(tools[name].fn), name
+
     def test_runtime_tool_schemas_include_input_constraints(self):
         import anyio
 

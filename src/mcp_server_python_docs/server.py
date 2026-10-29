@@ -301,7 +301,7 @@ def create_server() -> MCPServer:
     )
 
     @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-    def search_docs(
+    async def search_docs(
         query: SearchQueryParam,
         version: VersionParam = None,
         kind: SearchKindParam = "auto",
@@ -322,7 +322,7 @@ def create_server() -> MCPServer:
             raise ToolError(f"Internal error: {type(e).__name__}")
 
     @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-    def get_docs(
+    async def get_docs(
         slug: SlugParam,
         version: VersionParam = None,
         anchor: AnchorParam = None,
@@ -362,7 +362,7 @@ def create_server() -> MCPServer:
             raise ToolError(f"Internal error: {type(e).__name__}")
 
     @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-    def list_versions(
+    async def list_versions(
         ctx: Context[AppContext] = None,  # type: ignore[assignment]
     ) -> ListVersionsResult:
         """List Python documentation versions available in this index."""
@@ -376,7 +376,7 @@ def create_server() -> MCPServer:
             raise ToolError(f"Internal error: {type(e).__name__}")
 
     @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-    def detect_python_version(
+    async def detect_python_version(
         ctx: Context[AppContext] = None,  # type: ignore[assignment]
     ) -> DetectPythonVersionResult:
         """Detect the Python version in the user's environment.
@@ -398,7 +398,7 @@ def create_server() -> MCPServer:
         )
 
     @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-    def compare_versions(
+    async def compare_versions(
         symbol: SymbolParam,
         v1: CompareVersionParam,
         v2: CompareVersionParam,
@@ -419,7 +419,7 @@ def create_server() -> MCPServer:
             raise ToolError(f"Internal error: {type(e).__name__}")
 
     @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-    def whatsnew_for_version(
+    async def whatsnew_for_version(
         version: CompareVersionParam,
         kind: WhatsNewKind | None = None,
         start_index: StartIndexParam = 0,

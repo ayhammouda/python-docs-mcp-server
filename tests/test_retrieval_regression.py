@@ -1,6 +1,7 @@
 """Curated retrieval regression coverage for search/get_docs behavior."""
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -215,7 +216,7 @@ def test_retrieval_regression_cases(case, regression_db):
             detected_python_version=case["detected_python_version"],
         )
         ctx = _make_ctx(app_context)
-        result = tool.fn(ctx=ctx, **case["input"])
+        result = asyncio.run(tool.fn(ctx=ctx, **case["input"]))
         _assert_docs_expectations(result, case["expect"])
         return
 
