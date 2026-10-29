@@ -143,7 +143,7 @@ def _make_app_context(db, detected_python_version: str | None) -> AppContext:
 
 
 def _make_ctx(app_context: AppContext):
-    """Build a minimal FastMCP tool context shim."""
+    """Build a minimal MCPServer tool context shim."""
     return SimpleNamespace(
         request_context=SimpleNamespace(lifespan_context=app_context)
     )

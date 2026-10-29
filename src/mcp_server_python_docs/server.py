@@ -1,4 +1,4 @@
-"""FastMCP server with lifespan DI and tool registration.
+"""MCPServer with lifespan DI and tool registration.
 
 Thin server layer — delegates all tool logic to services.
 Dependency rule: server -> services -> retrieval/storage.
@@ -293,7 +293,7 @@ CompareVersionParam = Annotated[
 
 
 def create_server() -> MCPServer:
-    """Create and configure the FastMCP server."""
+    """Create and configure the MCPServer."""
     mcp = MCPServer(
         "python-docs-mcp-server",
         version=__version__,
@@ -441,10 +441,7 @@ def create_server() -> MCPServer:
             logger.exception("Unexpected error in whatsnew_for_version")
             raise ToolError(f"Internal error: {type(e).__name__}")
 
-    # SRVR-07: _meta hint for get_docs tool.
-    # FastMCP 1.27 does not expose a public API for setting _meta on tool
-    # definitions. Deferred until the mcp SDK adds _meta support to the
-    # decorator API or tool manager. The hint is advisory — clients work
-    # correctly without it.
+    # SRVR-07: a _meta hint for get_docs could be set with @mcp.tool(meta=...).
+    # It is not set; the hint is advisory and clients work correctly without it.
 
     return mcp
