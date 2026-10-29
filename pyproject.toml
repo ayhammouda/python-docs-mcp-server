@@ -23,9 +23,9 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "mcp>=1.30.0,<2.0.0",
+    "mcp>=2.3.0,<3",
     "sphobjinv>=2.4,<3.0",
-    "pydantic>=2.0.0,<3.0",
+    "pydantic>=2.12,<3.0",
     "click>=8.1.7,<9.0",
     "platformdirs>=4.0",
     "pyyaml>=6.0,<7.0",

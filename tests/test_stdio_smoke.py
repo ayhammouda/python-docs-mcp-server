@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from mcp_server_python_docs import __version__
 from mcp_server_python_docs.storage.db import bootstrap_schema, get_readwrite_connection
 
 
@@ -384,3 +385,45 @@ class TestStdioSmoke:
                 pytest.fail(f"Non-JSON stdout line: {line!r}")
             assert "jsonrpc" in parsed, f"Missing jsonrpc field: {parsed}"
             assert parsed["jsonrpc"] == "2.0", f"Wrong jsonrpc version: {parsed}"
+
+    def test_handshake_2025_11_25_reports_package_version(self):
+        """A 2025-era host gets its handshake version and our package version."""
+        stdin_data = (
+            _make_request("initialize", {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "0.1"},
+            }, req_id=1)
+            + _make_notification("notifications/initialized")
+            + _make_request("tools/call", {"name": "list_versions", "arguments": {}}, req_id=2)
+        )
+        responses = _assert_protocol_on_stdout_only(self._run_server_with_input(stdin_data))
+
+        init = _find_response(responses, 1)["result"]
+        assert init["protocolVersion"] == "2025-11-25"
+        assert init["serverInfo"]["name"] == "python-docs-mcp-server"
+        assert init["serverInfo"]["version"] == __version__
+        call = _find_response(responses, 2)["result"]
+        assert call.get("isError") is not True
+        assert call["structuredContent"]["versions"]
+
+    def test_server_discover_serves_2026_07_28_clients(self):
+        """A 2026-07-28 client skips initialize: server/discover, then tools/call."""
+        meta = {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+        }
+        stdin_data = (
+            _make_request("server/discover", {"_meta": meta}, req_id=1)
+            + _make_request("tools/call", {
+                "name": "list_versions", "arguments": {}, "_meta": meta,
+            }, req_id=2)
+        )
+        responses = _assert_protocol_on_stdout_only(self._run_server_with_input(stdin_data))
+
+        discover = _find_response(responses, 1)["result"]
+        assert "2026-07-28" in discover["supportedVersions"]
+        assert discover["_meta"]["io.modelcontextprotocol/serverInfo"]["version"] == __version__
+        call = _find_response(responses, 2)["result"]
+        assert call.get("isError") is not True
+        assert call["structuredContent"]["versions"]

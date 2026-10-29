@@ -438,13 +438,13 @@ class TestToolRegistration:
             annotations = tool.annotations
             assert annotations is not None, f"{name} missing annotations"
             assert (
-                annotations.readOnlyHint is True
+                annotations.read_only_hint is True
             ), f"{name} readOnlyHint should be True"
             assert (
-                annotations.destructiveHint is False
+                annotations.destructive_hint is False
             ), f"{name} destructiveHint should be False"
             assert (
-                annotations.openWorldHint is False
+                annotations.open_world_hint is False
             ), f"{name} openWorldHint should be False"
 
     def test_seven_tools_registered(self):
@@ -467,7 +467,7 @@ class TestToolRegistration:
         async def _list_tools():
             return await server.list_tools()
 
-        schemas = {tool.name: tool.inputSchema for tool in anyio.run(_list_tools)}
+        schemas = {tool.name: tool.input_schema for tool in anyio.run(_list_tools)}
 
         search_docs = schemas["search_docs"]["properties"]
         assert search_docs["query"]["maxLength"] == 500
@@ -489,7 +489,7 @@ class TestToolRegistration:
 
     def test_app_lifespan_closes_db_on_pre_yield_error(self, tmp_path):
         import anyio
-        from mcp.server.fastmcp import FastMCP
+        from mcp.server.mcpserver import MCPServer
 
         from mcp_server_python_docs.server import app_lifespan
 
@@ -499,7 +499,7 @@ class TestToolRegistration:
         fake_db = Mock()
 
         async def _enter_lifespan():
-            async with app_lifespan(FastMCP("test")):
+            async with app_lifespan(MCPServer("test")):
                 pytest.fail("lifespan should not reach yield")
 
         with patch(
