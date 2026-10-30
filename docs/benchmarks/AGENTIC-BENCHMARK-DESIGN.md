@@ -315,9 +315,21 @@ This amends the methodology's "Token Measurement" for multi-turn loops.
 - **CI:** paired bootstrap over question IDs (resample questions, keep all
   repeats of each), 10,000 resamples, 95% interval on the ratio
   python-docs ÷ peer.
-- **Provider-reported usage (secondary, cost).** Stored verbatim per call;
-  summed into input, cached input, output and reasoning tokens; multiplied by
-  a price snapshot stored with the run. Reported as cost per correct answer
+- **Provider-reported usage (secondary, cost).** Stored verbatim per call,
+  then summed into three disjoint buckets, uncached input, cached input and
+  output, and multiplied by a price snapshot stored with the run. Providers
+  nest some fields inside others, so the buckets are named per provider:
+  - Anthropic: `input_tokens` plus `cache_creation_input_tokens`;
+    `cache_read_input_tokens`; `output_tokens`, which includes thinking.
+  - OpenAI: `input_tokens` minus `input_tokens_details.cached_tokens`;
+    `cached_tokens`; `output_tokens`, which includes reasoning.
+  - Gemini: `promptTokenCount` minus `cachedContentTokenCount`, plus
+    `toolUsePromptTokenCount`; `cachedContentTokenCount`;
+    `candidatesTokenCount` plus
+    `thoughtsTokenCount`.
+
+  Reasoning and thinking tokens are reported separately for information,
+  never added again. Reported as cost per correct answer
   per model. Never mixed with normalized tokens, never compared across models.
 - **Docs payload tokens (diagnostic):** normalized count of tool results only.
 - **Prompt caching:** no explicit caching requests; record whatever cached
@@ -603,7 +615,8 @@ by pilot measurements.
 **Budget per provider (Decided, 2026-10-30).** The maintainer's total budget
 for everything in this design (G1, pilot, full run, grading, reruns) is
 Anthropic $200, OpenAI $75 and Google $200. **Call:** the harness enforces
-lower hard caps, leaving a margin for reruns: Anthropic $180, OpenAI $65,
+lower hard caps, leaving a margin of $20, $10 and $20 below the budget:
+Anthropic $180, OpenAI $65,
 Google $180. Each provider's cap covers that provider's answering, judging,
 reference grading and token counting.
 
@@ -625,12 +638,11 @@ The caps are enforced before money is spent, never after:
   token per UTF-8 byte of the whole request (system prompt, tool
   definitions, user message), plus the framing allowance for each of its
   messages. For later calls: the previous call's total billed input, plus
-  every reported output field of that call (thinking and reasoning tokens
-  included), plus one token per UTF-8 byte of every message added since,
-  plus the framing allowance for each added message. Total billed input is
-  Anthropic's `input_tokens` plus both cache fields, OpenAI's
-  `input_tokens`, and Gemini's `promptTokenCount` (the last two already
-  include cached tokens).
+  its total output, plus one token per UTF-8 byte of every message added
+  since, plus the framing allowance for each added message. The totals are
+  the sums of the section 8 buckets: total input is uncached plus cached
+  input, and total output is the output bucket, thinking and reasoning
+  included once.
 - **Framing allowance:** a fixed number of tokens per message for wrappers
   and provider-injected text (for example the tool-use system prompt).
   It is twice the largest framing overhead seen in the pilot, and at least
@@ -650,14 +662,24 @@ The caps are enforced before money is spent, never after:
   cost so far plus that call's input bound and output bound fits in the
   reservation. If it does not, the trajectory ends as a cap-hit failure in
   the denominator. The report lists those cap hits per (model, system).
+- **In-flight limit:** a provider's open reservations, meaning trajectories
+  in progress plus submitted batches that have not finished, never exceed
+  its margin ($20, $10, $20). Spend plus reservations stays at or under
+  the cap, so if no request costs more than twice its bound, actual spend
+  stays at or under cap plus margin, which is the budget. The pilot's
+  per-call check is the evidence for that factor. An error larger than 2×
+  is the accepted residual risk, and the report states it.
+- A batch job reserves its full worst case before submission. It is split
+  until it fits under both the remaining cap and the in-flight limit, or
+  it is not submitted. Batches cannot be stopped midway, so they are sized
+  up front.
 - If a bill exceeds its bound, that provider's run stops at once: no new
-  call, trajectory or batch starts. The margin between the enforced cap and
-  the budget covers only the requests already in flight. The run resumes
-  only after the bound is corrected and the overrun is recorded in the
-  report.
-- A batch job reserves its full worst case before submission, and is split
-  or not submitted if that does not fit. Batches cannot be stopped midway,
-  so they are sized up front.
+  call, trajectory or batch starts. The margin absorbs only the requests
+  already in flight. Trajectories cut off by the stop are discarded and
+  rerun later; they are not scored as failures. The run resumes only after
+  the bound is corrected and the overrun is recorded in the report. If the
+  stop pushes a model past its 24-hour window (section 6), that model's
+  cells are rerun in a new window, or the report discloses the split.
 - The full run starts only if the pilot's measured cost per trajectory and
   per graded answer, scaled to the full run and multiplied by 1.25, fits
   under each provider's remaining cap. If one provider does not fit, that
