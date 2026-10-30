@@ -1083,7 +1083,7 @@ def test_exclusions_block_passes_validation_and_survives_snapshot_byte_for_byte(
     manifest_bytes = (
         b"competitors:\n"
         b"  - id: no-mcp\n"
-        b"    adapter: no-mcp-baseline\n"
+        b"    adapter: fake\n"
         b"exclusions:\n"
         b"  - id: some-excluded-competitor\n"
         b'    reason: "vendor denied benchmarking permission"\n'
@@ -1229,4 +1229,4 @@ def test_competitor_adapter_is_dispatchable_via_manifest_adapter_id(
     assert transcript["adapter"] == adapter_id
     assert transcript["tool_calls"][0]["tool"] == tool_name
     assert transcript["tool_calls"][0]["is_error"] is False
-    assert transcript["external_provider_calls"] is False
+    assert "external_provider_calls" not in transcript

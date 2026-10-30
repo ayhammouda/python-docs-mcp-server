@@ -9,11 +9,13 @@ files) plus ``docs/benchmarks/model-matrix.yml`` (the model axis, see
 - A full raw report (``REPORT.md``): methodology link, corpus hash, repo
   commit, model/client matrix, competitor manifest, correctness by category,
   token counts after client rewrap (with honest ``None`` placeholders),
-  latency median/p95, failures/exclusions, and environment metadata. Token
-  records marked ``approximation: true`` (issue #89 -- the client could not
-  expose its exact client-wrapped message envelope; see
-  ``benchmarks.adapters.claude_tokens``) are counted and shown separately,
-  never folded into the headline-eligible median (see ``_basic_stats``).
+  success latency (median/p95/min/max over succeeded cells) beside a
+  failed-cell latency median and count, failures, manifest exclusions, and
+  environment metadata. Token records marked ``approximation: true`` (issue
+  #89 -- the client could not expose its exact client-wrapped message
+  envelope; see ``benchmarks.adapters.claude_tokens``) and exact counts
+  recorded for failed cells are counted and shown separately, never folded
+  into the headline-eligible median (see ``_basic_stats``).
 - A compact README-safe summary template: strict tool+model
   (``tool_model_key``) pairings only -- never tool-only rows -- with an
   error/timeout-rate column, plus links to the methodology and the raw
@@ -129,6 +131,7 @@ class RunBundle:
     corpus_hash: str
     manifest_hash: str
     competitors: dict[str, dict[str, Any]]
+    exclusions: list[dict[str, Any]]
     cells: list[CellRecord]
     failure_records: list[dict[str, Any]]
 
@@ -200,7 +203,7 @@ def _load_run_bundle(run_dir: Path) -> RunBundle:
     corpus_hash = _sha256_of(corpus_snapshot_path)
     manifest_hash = _sha256_of(manifest_snapshot_path)
     corpus_categories = _load_corpus_categories(corpus_snapshot_path)
-    competitors = _load_competitor_manifest(manifest_snapshot_path)
+    competitors, exclusions = _load_competitor_manifest(manifest_snapshot_path)
 
     scoring_entries = _load_cell_records(run_dir / "scoring")
     if not scoring_entries:
@@ -251,6 +254,7 @@ def _load_run_bundle(run_dir: Path) -> RunBundle:
         corpus_hash=corpus_hash,
         manifest_hash=manifest_hash,
         competitors=competitors,
+        exclusions=exclusions,
         cells=cells,
         failure_records=failure_records,
     )
@@ -315,7 +319,9 @@ def _load_corpus_categories(path: Path) -> dict[str, str]:
     return categories
 
 
-def _load_competitor_manifest(path: Path) -> dict[str, dict[str, Any]]:
+def _load_competitor_manifest(
+    path: Path,
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
     data = _load_yaml_mapping(path, "competitor manifest snapshot")
     items = data.get("competitors")
     if not isinstance(items, list):
@@ -326,7 +332,16 @@ def _load_competitor_manifest(path: Path) -> dict[str, dict[str, Any]]:
     for item in items:
         if isinstance(item, dict) and isinstance(item.get("id"), str):
             competitors[item["id"]] = item
-    return competitors
+    exclusions = data.get("exclusions")
+    if exclusions is None:
+        exclusions = []
+    if not isinstance(exclusions, list):
+        raise BenchmarkValidationError("competitor manifest snapshot 'exclusions' must be a list")
+    if not all(isinstance(entry, dict) for entry in exclusions):
+        raise BenchmarkValidationError(
+            "competitor manifest snapshot 'exclusions' entries must be mappings"
+        )
+    return competitors, exclusions
 
 
 def _load_cell_records(base_dir: Path) -> list[tuple[Path, dict[str, Any]]]:
@@ -375,16 +390,34 @@ def _basic_stats(cells: list[CellRecord]) -> dict[str, Any]:
     timeouts = sum(1 for cell in cells if cell.error_category == "timeout")
     scored = [cell.score for cell in cells if cell.score is not None]
     pending = sum(1 for cell in cells if cell.requires_manual_scoring)
-    latencies = [cell.latency_ms for cell in cells if cell.latency_ms is not None]
+    # A failed cell has no latency to a final answer, so success latency covers
+    # succeeded cells only; failed cells get their own median and count, so a
+    # tool can neither look fast by failing fast nor hide a slow failure.
+    success_latencies = [
+        cell.latency_ms for cell in cells if cell.status != "failed" and cell.latency_ms is not None
+    ]
+    failed_latencies = [
+        cell.latency_ms for cell in cells if cell.status == "failed" and cell.latency_ms is not None
+    ]
     # Headline-eligible token counts exclude approximations (issue #89 /
     # methodology "Token Measurement": approximate counts must never be used
-    # for headline claims). `tokens_approximated` surfaces how many were
-    # excluded so a reader can see the gap isn't silently dropped.
+    # for headline claims) and exact counts recorded for failed cells. Each
+    # excluded bucket is counted so a reader can see the gap isn't silently
+    # dropped. The buckets partition the cells; the rest are placeholders.
     tokens = [
         cell.client_wrapped_tokens
         for cell in cells
-        if cell.client_wrapped_tokens is not None and not cell.token_approximation
+        if cell.client_wrapped_tokens is not None
+        and not cell.token_approximation
+        and cell.status != "failed"
     ]
+    tokens_failed_cell = sum(
+        1
+        for cell in cells
+        if cell.client_wrapped_tokens is not None
+        and not cell.token_approximation
+        and cell.status == "failed"
+    )
     tokens_approximated = sum(
         1
         for cell in cells
@@ -400,11 +433,22 @@ def _basic_stats(cells: list[CellRecord]) -> dict[str, Any]:
         "scored_cells": len(scored),
         "pending_manual_scoring": pending,
         "mean_correctness": (sum(scored) / len(scored)) if scored else None,
-        "latency_median_ms": statistics.median(latencies) if latencies else None,
-        "latency_p95_ms": _percentile(latencies, 0.95) if latencies else None,
+        "success_latency_median_ms": (
+            statistics.median(success_latencies) if success_latencies else None
+        ),
+        "success_latency_p95_ms": (
+            _percentile(success_latencies, 0.95) if success_latencies else None
+        ),
+        "success_latency_min_ms": min(success_latencies) if success_latencies else None,
+        "success_latency_max_ms": max(success_latencies) if success_latencies else None,
+        "failed_latency_median_ms": (
+            statistics.median(failed_latencies) if failed_latencies else None
+        ),
+        "failed_latency_cells": len(failed_latencies),
         "tokens_present": len(tokens),
         "tokens_approximated": tokens_approximated,
-        "tokens_placeholder": total - len(tokens) - tokens_approximated,
+        "tokens_failed_cell": tokens_failed_cell,
+        "tokens_placeholder": total - len(tokens) - tokens_approximated - tokens_failed_cell,
         "median_client_wrapped_tokens": statistics.median(tokens) if tokens else None,
     }
 
@@ -423,21 +467,36 @@ def _fmt_score(scored: int, total: int, mean: float | None) -> str:
     return f"{mean:.2f} ({scored}/{total} scored)"
 
 
-def _fmt_tokens(present: int, placeholder: int, median: float | None, approximated: int = 0) -> str:
-    if present == 0:
+def _fmt_tokens(stats: dict[str, Any]) -> str:
+    placeholder = stats["tokens_placeholder"]
+    approximated = stats["tokens_approximated"]
+    failed_cell = stats["tokens_failed_cell"]
+    if stats["tokens_present"] == 0:
+        excluded = []
         if approximated:
-            return (
-                f"None headline-eligible (approximation:true excludes {approximated} cell(s); "
-                f"{placeholder} placeholder)"
-            )
-        return f"None (placeholder -- {placeholder} cell(s) pending token-count integration)"
+            excluded.append(f"approximation:true excludes {approximated} cell(s)")
+        if failed_cell:
+            excluded.append(f"{failed_cell} failed-cell count(s) excluded")
+        if not excluded:
+            return f"None (placeholder -- {placeholder} cell(s) pending token-count integration)"
+        return f"None headline-eligible ({'; '.join(excluded)}; {placeholder} placeholder)"
     suffixes = []
     if placeholder:
         suffixes.append(f"{placeholder} placeholder")
     if approximated:
         suffixes.append(f"{approximated} approximation:true excluded")
+    if failed_cell:
+        suffixes.append(f"{failed_cell} failed-cell count(s) excluded")
     suffix = f", {', '.join(suffixes)}" if suffixes else ""
-    return f"{median:.0f}{suffix}"
+    return f"{stats['median_client_wrapped_tokens']:.0f}{suffix}"
+
+
+def _fmt_failed_latency(stats: dict[str, Any]) -> str:
+    return f"{_fmt_ms(stats['failed_latency_median_ms'])} (n={stats['failed_latency_cells']})"
+
+
+def _fmt_field(value: object) -> str:
+    return "" if value is None else str(value)
 
 
 def _relative_link(target: Path, from_dir: Path) -> str:
@@ -601,22 +660,16 @@ def _render_report(
         "Measurement' section). `None` placeholders are surfaced honestly below, never "
         "reported as zero. Records marked `approximation: true` (issue #89 -- the client "
         "could not expose its exact wrapped message envelope) are excluded from this "
-        "headline-eligible median; the excluded count is shown alongside it."
+        "headline-eligible median; the excluded count is shown alongside it. The median "
+        "covers succeeded cells only; exact counts recorded for failed cells are excluded "
+        "and counted alongside it."
     )
     lines.append("")
     lines.extend(
         _table(
             ["Tool + Model", "Client-Wrapped Tokens (median)"],
             [
-                [
-                    tool_model_key,
-                    _fmt_tokens(
-                        (stats := _basic_stats(by_tool_model[tool_model_key]))["tokens_present"],
-                        stats["tokens_placeholder"],
-                        stats["median_client_wrapped_tokens"],
-                        stats["tokens_approximated"],
-                    ),
-                ]
+                [tool_model_key, _fmt_tokens(_basic_stats(by_tool_model[tool_model_key]))]
                 for tool_model_key in sorted(by_tool_model)
             ],
         )
@@ -626,17 +679,22 @@ def _render_report(
     lines.append("## Latency (Median / p95)")
     lines.append("")
     lines.append(
-        "Computed over every recorded cell for that `tool_model_key`, including failed "
-        "cells (the runner records `latency_ms` regardless of outcome), so an unstable tool "
-        "cannot improve its latency number by excluding its own failures."
+        "Success latency (median, p95, min, max) covers succeeded cells only: the "
+        "methodology measures latency from dispatch to the final answer, and a failed cell "
+        "has none. Failed cells are shown separately, as a median with their count, next to "
+        "the error rate, so a tool cannot look fast by failing fast, and a tool that fails "
+        "slowly stays visible."
     )
     lines.append("")
     lines.extend(
         _table(
             [
                 "Tool + Model",
-                "Latency Median (ms)",
-                "Latency p95 (ms)",
+                "Success Median (ms)",
+                "Success p95 (ms)",
+                "Success Min (ms)",
+                "Success Max (ms)",
+                "Failed-Cell Median (ms)",
                 "Error Rate",
                 "Timeout Rate",
             ],
@@ -644,9 +702,14 @@ def _render_report(
                 [
                     tool_model_key,
                     _fmt_ms(
-                        (stats := _basic_stats(by_tool_model[tool_model_key]))["latency_median_ms"]
+                        (stats := _basic_stats(by_tool_model[tool_model_key]))[
+                            "success_latency_median_ms"
+                        ]
                     ),
-                    _fmt_ms(stats["latency_p95_ms"]),
+                    _fmt_ms(stats["success_latency_p95_ms"]),
+                    _fmt_ms(stats["success_latency_min_ms"]),
+                    _fmt_ms(stats["success_latency_max_ms"]),
+                    _fmt_failed_latency(stats),
                     _fmt_pct(stats["error_rate"]),
                     _fmt_pct(stats["timeout_rate"]),
                 ]
@@ -741,10 +804,33 @@ def _render_report(
         lines.append("No recorded failures in this run.")
     lines.append("")
 
+    lines.append("### Excluded Competitors")
+    lines.append("")
+    if bundle.exclusions:
+        rows = []
+        for entry in bundle.exclusions:
+            terms = entry.get("terms_check")
+            terms = terms if isinstance(terms, dict) else {}
+            rows.append(
+                [
+                    _fmt_field(entry.get("id")),
+                    _fmt_field(entry.get("reason")),
+                    _fmt_field(terms.get("verdict")),
+                    _fmt_field(entry.get("decided_on")),
+                    _fmt_field(terms.get("source_url")),
+                ]
+            )
+        lines.extend(
+            _table(["Competitor", "Reason", "Terms Verdict", "Decided On", "Terms Source"], rows)
+        )
+    else:
+        lines.append("No competitors were excluded from this run.")
+    lines.append("")
+
     excluded = [cell for cell in bundle.cells if not cell.included_in_correctness_denominator]
+    lines.append("### Excluded From Correctness Denominator")
+    lines.append("")
     if excluded:
-        lines.append("### Excluded From Correctness Denominator")
-        lines.append("")
         lines.extend(
             _table(
                 ["Tool + Model", "Corpus ID"],
@@ -773,6 +859,15 @@ def _render_readme_summary(bundle: RunBundle, methodology_path: Path, summary_pa
         "results only; see the full report for category breakdowns and any explicitly labeled "
         "cross-model aggregate."
     )
+    excluded_line = (
+        "; ".join(
+            f"{_fmt_field(entry.get('id'))} ({entry['reason']})"
+            if entry.get("reason")
+            else _fmt_field(entry.get("id"))
+            for entry in bundle.exclusions
+        )
+        or "none"
+    )
 
     lines: list[str] = [
         f"# Benchmark Summary (README-Safe Template) -- {run_summary.get('run_id', 'unknown-run')}",
@@ -783,6 +878,7 @@ def _render_readme_summary(bundle: RunBundle, methodology_path: Path, summary_pa
         raw_bundle_line,
         f"- **Corpus hash (SHA-256):** `{bundle.corpus_hash}`",
         f"- **Repo commit:** `{run_summary.get('repo_commit', 'unknown')}`",
+        f"- **Excluded competitors:** {excluded_line}",
         "",
         "## Results (Strict Tool + Model Pairings)",
         "",
@@ -796,8 +892,9 @@ def _render_readme_summary(bundle: RunBundle, methodology_path: Path, summary_pa
                 "Correctness",
                 "Error Rate",
                 "Timeout Rate",
-                "Latency Median (ms)",
-                "Latency p95 (ms)",
+                "Success Median (ms)",
+                "Success p95 (ms)",
+                "Failed-Cell Median (ms)",
                 f"Tokens ({METHODOLOGY_TOKEN_LABEL})",
             ],
             [
@@ -810,14 +907,10 @@ def _render_readme_summary(bundle: RunBundle, methodology_path: Path, summary_pa
                     ),
                     _fmt_pct(stats["error_rate"]),
                     _fmt_pct(stats["timeout_rate"]),
-                    _fmt_ms(stats["latency_median_ms"]),
-                    _fmt_ms(stats["latency_p95_ms"]),
-                    _fmt_tokens(
-                        stats["tokens_present"],
-                        stats["tokens_placeholder"],
-                        stats["median_client_wrapped_tokens"],
-                        stats["tokens_approximated"],
-                    ),
+                    _fmt_ms(stats["success_latency_median_ms"]),
+                    _fmt_ms(stats["success_latency_p95_ms"]),
+                    _fmt_failed_latency(stats),
+                    _fmt_tokens(stats),
                 ]
                 for tool_model_key in sorted(by_tool_model)
             ],

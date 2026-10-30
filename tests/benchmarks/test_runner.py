@@ -49,7 +49,7 @@ def _manifest(tmp_path: Path, competitors: list[dict] | None = None) -> Path:
                 {
                     "id": "no-mcp",
                     "name": "No MCP baseline",
-                    "adapter": "no-mcp-baseline",
+                    "adapter": "fake",
                 }
             ]
         },
@@ -96,7 +96,7 @@ def test_snapshots_are_byte_identical_to_input_files(tmp_path: Path) -> None:
         b"# a corpus comment that yaml.safe_dump would strip\n" + corpus_path.read_bytes()
     )
     manifest_path.write_bytes(
-        b"competitors:\n  - id: no-mcp\n    name: No MCP baseline\n    adapter: no-mcp-baseline\n"
+        b"competitors:\n  - id: no-mcp\n    name: No MCP baseline\n    adapter: fake\n"
     )
     original_corpus_bytes = corpus_path.read_bytes()
     original_manifest_bytes = manifest_path.read_bytes()
@@ -176,7 +176,7 @@ def test_environment_metadata_captures_repo_commit_and_python(
     assert metadata["repo_commit"] == fake_sha
     assert metadata["repo_commit"] != "unknown"
     assert metadata["python_version"].startswith(f"{sys.version_info.major}.")
-    assert metadata["external_provider_calls"] is False
+    assert "external_provider_calls" not in metadata
 
 
 def test_dry_run_writes_plan_without_cell_execution(tmp_path: Path) -> None:
@@ -270,7 +270,7 @@ def test_competitor_cell_failure_is_recorded(tmp_path: Path) -> None:
                 [
                     {
                         "id": "failing-baseline",
-                        "adapter": "no-mcp-baseline",
+                        "adapter": "fake",
                         "force_failure": True,
                     }
                 ],
@@ -298,13 +298,36 @@ def test_competitor_cell_failure_is_recorded(tmp_path: Path) -> None:
     assert failure["correctness_score"] == 0.0
     assert failure["included_in_correctness_denominator"] is True
     assert transcript["status"] == "failed"
-    assert transcript["external_provider_calls"] is False
+    assert "external_provider_calls" not in transcript
     assert scoring["status"] == "failed"
     assert scoring["score"] == 0.0
     assert scoring["requires_manual_scoring"] is False
     assert scoring["included_in_correctness_denominator"] is True
     assert scoring["error_category"] == "tool_failure"
     assert latency["error_category"] == "tool_failure"
+
+
+@pytest.mark.parametrize("alias", ["no-mcp-baseline", "no_mcp_baseline"])
+def test_removed_baseline_alias_is_an_unknown_adapter(tmp_path: Path, alias: str) -> None:
+    # The fixed flow has no real no-MCP baseline: these aliases only ran the
+    # fake adapter, so a manifest naming them must fail, not pass as a baseline.
+    out_dir = tmp_path / "results" / "removed-alias"
+
+    summary = run_benchmark(
+        BenchmarkConfig(
+            corpus_path=_corpus(tmp_path),
+            manifest_path=_manifest(tmp_path, [{"id": "baseline", "adapter": alias}]),
+            out_dir=out_dir,
+            run_id="removed-alias",
+        )
+    )
+
+    assert summary["failed_cells"] == 1
+    failure = json.loads(
+        (out_dir / "failures" / "baseline" / "q001.json").read_text(encoding="utf-8")
+    )
+    assert failure["error"]["category"] == "tool_failure"
+    assert "not implemented in this runner" in failure["error"]["message"]
 
 
 def test_timeout_and_mcp_protocol_crash_failures_are_classified(tmp_path: Path) -> None:
@@ -318,13 +341,13 @@ def test_timeout_and_mcp_protocol_crash_failures_are_classified(tmp_path: Path) 
                 [
                     {
                         "id": "timeout-baseline",
-                        "adapter": "no-mcp-baseline",
+                        "adapter": "fake",
                         "model": "fake-model",
                         "force_failure": "timeout",
                     },
                     {
                         "id": "crash-baseline",
-                        "adapter": "no-mcp-baseline",
+                        "adapter": "fake",
                         "provider": "fake-provider",
                         "model": "fake-model",
                         "force_failure": "mcp_protocol_crash",
@@ -454,7 +477,7 @@ def test_python_docs_mcp_stdio_adapter_is_dispatchable_and_records_tool_calls(
     assert transcript["answer"].startswith("fake-retrieved-content")
     assert transcript["tool_calls"][0]["tool"] == "search_docs"
     assert transcript["tool_calls"][1]["tool"] == "get_docs"
-    assert transcript["external_provider_calls"] is False
+    assert "external_provider_calls" not in transcript
 
 
 def test_dry_run_validates_python_docs_mcp_stdio_manifest_without_an_index(

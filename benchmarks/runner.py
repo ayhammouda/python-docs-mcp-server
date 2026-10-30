@@ -2,7 +2,7 @@
 
 Dispatches each competitor/question cell to an adapter looked up by the
 competitor manifest's ``adapter`` id (see ``_ADAPTER_DISPATCH``): the local
-fake/baseline adapter (issue #72), or the offline stdio adapter that runs
+fake adapter (issue #72; tests only), or the offline stdio adapter that runs
 python-docs-mcp-server itself as a system under test (issue #86, see
 ``benchmarks.adapters.python_docs_mcp_adapter``). Live LLM provider
 adapters (``benchmarks.adapters.openai_adapter`` / ``google_adapter``,
@@ -193,7 +193,6 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
         "manifest_path": str(config.manifest_path),
         "artifact_root": str(run_dir),
         "repo_commit": environment["repo_commit"],
-        "external_provider_calls": False,
         "planned_cells": len(cells),
         "correctness_denominator_cells": len(cells),
         "scored_cells": scored_cells,
@@ -334,7 +333,6 @@ def _execute_cell(cell: BenchmarkCell) -> dict[str, Any]:
         # None for adapters that do not record raw payloads.
         "tool_calls": tool_calls,
         "error": error,
-        "external_provider_calls": False,
     }
     token_record = _build_token_record(cell, tool_model_key, answer, tool_calls)
     latency_record = {
@@ -455,7 +453,7 @@ class _CellDispatchResult:
     ``tool_calls`` is optional raw tool call/response metadata (e.g. the
     python-docs-mcp-stdio adapter's ``search_docs``/``get_docs`` payloads,
     issue #86) merged into the cell's transcript record. Adapters with
-    nothing extra to record (the fake/baseline adapter) leave it ``None``.
+    nothing extra to record (the fake adapter) leave it ``None``.
     """
 
     answer: str
@@ -463,7 +461,7 @@ class _CellDispatchResult:
 
 
 def _fake_adapter_answer(cell: BenchmarkCell) -> _CellDispatchResult:
-    """The mocked-plumbing fake/no-mcp-baseline adapter (issue #72)."""
+    """The mocked-plumbing fake adapter (issue #72), for tests only."""
     forced_failure = cell.competitor.raw.get("force_failure")
     if forced_failure:
         category = _forced_failure_category(forced_failure)
@@ -649,8 +647,6 @@ def _ref_tools_answer(cell: BenchmarkCell) -> _CellDispatchResult:
 #: (and therefore any of these dispatch functions) ever runs.
 _ADAPTER_DISPATCH: dict[str, Callable[[BenchmarkCell], _CellDispatchResult]] = {
     "fake": _fake_adapter_answer,
-    "no-mcp-baseline": _fake_adapter_answer,
-    "no_mcp_baseline": _fake_adapter_answer,
     "python-docs-mcp-stdio": _python_docs_mcp_stdio_answer,
     "context7": _context7_answer,
     "gitmcp": _gitmcp_answer,
@@ -757,7 +753,6 @@ def _environment_metadata(*, run_id: str, dry_run: bool) -> dict[str, Any]:
         "system": platform.system(),
         "machine": platform.machine(),
         "benchmark_runner": "benchmarks",
-        "external_provider_calls": False,
     }
 
 
