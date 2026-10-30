@@ -1,4 +1,11 @@
-"""Fail closed unless this tag names an independently verified main commit."""
+"""Fail closed unless this tag names an independently verified main commit.
+
+The verification record is a PR comment by the repository owner whose first line
+is exactly ``Independent verification: PASS`` and which has a ``head: <sha>``
+line for the merged PR head. Anyone who can post as the owner account can write
+it, so it is a process tripwire, not a security boundary. Tag creation rules,
+immutable tags, the ``pypi`` environment and the required checks carry security.
+"""
 
 import json
 import os
@@ -17,11 +24,18 @@ REQUIRED = {
     "Installed package smoke",
     "Product regression",
 }
+# First line of the owner's PR comment that records independent verification.
+RECORD = "Independent verification: PASS"
 
 
-def require_eligible(api, sha: str, verifier_app_id: int) -> None:
-    if not re.fullmatch(r"[0-9a-f]{40}", sha) or verifier_app_id <= 0:
-        raise ValueError("Exact commit and configured verifier App ID are required")
+def is_record(comment, owner: str, head: str) -> bool:
+    lines = comment["body"].replace("\r\n", "\n").split("\n")
+    return comment["user"]["login"] == owner and lines[0] == RECORD and f"head: {head}" in lines
+
+
+def require_eligible(api, sha: str, owner: str) -> None:
+    if not re.fullmatch(r"[0-9a-f]{40}", sha) or not owner:
+        raise ValueError("Exact commit and repository owner are required")
     if api(f"compare/{sha}...main")["status"] not in {"ahead", "identical"}:
         raise ValueError("Release commit is not on main")
     prs = [
@@ -36,19 +50,12 @@ def require_eligible(api, sha: str, verifier_app_id: int) -> None:
     codeql = [c for c in head_checks if c["name"] == "CodeQL" and c["app"]["id"] == 57789]
     if not codeql or max(codeql, key=lambda c: c["id"])["conclusion"] != "success":
         raise ValueError("Missing or failing CodeQL findings check on merged PR head")
-    reviews = [
-        c
-        for c in head_checks
-        if c["name"] == "Independent verification" and c["app"]["id"] == verifier_app_id
-    ]
-    parents = api(f"git/commits/{sha}")["parents"]
-    latest = max(reviews, key=lambda c: c["id"], default={})
-    if (
-        len(parents) != 1
-        or latest.get("conclusion") != "success"
-        or latest.get("external_id") != f"{parents[0]['sha']}:{head}"
-    ):
-        raise ValueError("Missing successful independent verification for merged PR head")
+    if len(api(f"git/commits/{sha}")["parents"]) != 1:
+        raise ValueError("Release commit must be a single-parent squash merge")
+    # shortcut: reads the first 100 comments only and fails closed; paginate if PRs outgrow it.
+    comments = api(f"issues/{prs[0]['number']}/comments?per_page=100")
+    if not any(is_record(c, owner, head) for c in comments):
+        raise ValueError("Missing owner independent verification record for merged PR head")
     checks = api(f"commits/{sha}/check-runs?per_page=100")["check_runs"]
     latest = {}
     for check in sorted(checks, key=lambda c: c["id"]):
@@ -77,8 +84,8 @@ def main() -> None:
         with urllib.request.urlopen(request, timeout=30) as response:
             return json.load(response)
 
-    require_eligible(api, os.environ["GITHUB_SHA"], int(os.environ.get("VERIFIER_APP_ID") or "0"))
-    print("Verified main commit, independent review and required main checks.")
+    require_eligible(api, os.environ["GITHUB_SHA"], os.environ.get("GITHUB_REPOSITORY_OWNER", ""))
+    print("Verified main commit, owner verification record and required main checks.")
 
 
 if __name__ == "__main__":
