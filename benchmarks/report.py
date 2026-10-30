@@ -527,11 +527,13 @@ def _relative_link(target: Path, from_dir: Path) -> str:
 
 #: A URL run first (GFM extended autolinks are built from the raw text, before
 #: backslash escapes resolve), then the characters that change rendering inside an
-#: inline table cell. "_" counts only at a word edge: between letters or digits it
-#: cannot open or close emphasis. "#", "+", "-", "." and the like matter only at the
-#: start of a block, which a cell never is.
+#: inline table cell. The run stops at link, image and code-span syntax and at "\",
+#: so those stay escaped even for a renderer that linkifies after inline parsing.
+#: "_" counts only at a word edge: between letters or digits it cannot open or close
+#: emphasis. "#", "+", "-", "." and the like matter only at the start of a block,
+#: which a cell never is.
 _CELL_MARKDOWN = re.compile(
-    r"(?P<url>(?:https?://|www\.)[^\s<]+)|[\\`*\[\]<|~&]|(?<![^\W_])_|_(?![^\W_])"
+    r"(?P<url>(?:https?://|www\.)[^\s<>\[\]`\\]+)|[\\`*\[\]<|~&]|(?<![^\W_])_|_(?![^\W_])"
 )
 
 

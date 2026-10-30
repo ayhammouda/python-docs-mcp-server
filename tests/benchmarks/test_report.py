@@ -1058,6 +1058,13 @@ def test_table_escapes_a_pipe_inside_a_url_so_the_cell_boundary_holds() -> None:
     assert _table(["Value"], [["https://x.y/a|b c"]])[2] == r"| https://x.y/a\|b c |"
 
 
+def test_table_escapes_link_and_code_syntax_that_follows_a_url() -> None:
+    # A renderer that linkifies after inline parsing would otherwise publish these.
+    cell = _table(["Value"], [["https://x.y/![a](https://evil.example/p.png)`c`"]])[2]
+
+    assert cell == r"| https://x.y/!\[a\](https://evil.example/p.png)\`c\` |"
+
+
 def test_token_paragraph_gives_the_real_reason_for_approximate_counts(tmp_path: Path) -> None:
     report_text = _generate_report(_minimal_valid_run_dir(tmp_path)).read_text(encoding="utf-8")
     token_paragraph = report_text.split("## Token Counts (After Client Rewrap)", 1)[1]
