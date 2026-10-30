@@ -4,6 +4,24 @@ All notable changes to `python-docs-mcp-server` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Vision operations: `pdctl publish` lists changes with git plumbing from any
+  directory and sends the committed tree SHA. Before the independent review,
+  the broker refuses a tree that differs, or a branch that already points
+  elsewhere. Branch names now follow git's ref rules. `pdctl status` shows the
+  PR and SHAs of each blocked verification.
+
+### Security
+
+- Vision operations: the review gate accepts exactly one strictly typed
+  verdict object, and that verdict must echo a one-time review ID from the
+  broker's prompt, so a verdict quoted from PR text or the owner rationale is
+  refused. A JSON `false` or `0.0` exit code no longer counts as a passing
+  command.
+
 ## [0.4.0] — Unreleased
 
 ### Added

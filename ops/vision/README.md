@@ -96,12 +96,18 @@ including workflow changes. A later PR verification reuses that trusted result
 only for the identical head/base and installed policy. Different code or main
 requires new review. Two failed reviews of identical content open the repair
 circuit. A global lock serializes publication, verification and merging.
+`pdctl publish` lists the commit's changes with git plumbing, so it works from
+any directory and keeps renames, deletions and mode changes. It also sends the
+committed tree SHA. Before the review, the broker refuses a publication whose
+rebuilt tree differs from that SHA, or whose branch already exists at a commit
+other than the base.
 
 Independent reviews have a 25-minute deadline so a clean three-version index can
 finish. The broker waits one further minute for the CLI response. Start review
 only with 27 minutes left in the 30-minute owner cycle, or checkpoint the prepared
 commit for the next cycle. Use a 1620-second exec timeout with short yields and
-process polling. `pdctl status` exposes classified, bounded review diagnostics and retry timing.
+process polling. `pdctl status` exposes classified, bounded review diagnostics and retry timing,
+plus the PR number, head and base SHAs of each blocked verification.
 Subprocess output and credentials are never included. `pdctl rerun` retries only
 unsuccessful allowlisted CI push runs on current main, with a three-attempt cap
 and 15-minute cooldown. Release workflows and arbitrary API mutations are excluded.
@@ -113,6 +119,8 @@ check from GitHub Advanced Security (not merely the analysis job), and resolved 
 records a rationale; it handles the first 100 threads per PR and fails closed
 beyond that ceiling. Neither agent can alter branch protection, write an
 arbitrary status/check, delete the repository or use an admin merge bypass.
+Each review prompt carries a one-time review ID, and the broker accepts only a
+reply that holds exactly one strictly typed verdict echoing it.
 
 `decision.json` uses one of:
 
