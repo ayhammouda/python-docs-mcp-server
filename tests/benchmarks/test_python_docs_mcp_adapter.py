@@ -1,21 +1,26 @@
 """Tests for the offline stdio python-docs-mcp-server adapter (issue #86).
 
 All tests here drive the adapter against a fake/stubbed MCP transport (a
-scripted session double) -- no real server subprocess is spawned. The one
-exception is the optional integration test at the bottom, which spawns the
-real server only when a local index already exists at the default cache
-path, and is skipped otherwise (per the issue's acceptance criteria).
+scripted session double) -- no real server subprocess is spawned. Two
+exceptions: ``test_run_maps_a_failure_inside_a_real_stdio_session`` spawns
+a silent child (``python -c "import sys; sys.stdin.read()"``) that only
+holds the stdio pipe open, with no network and no server; and the optional
+integration test at the bottom spawns the real server only when a local
+index already exists at the default cache path, and is skipped otherwise
+(per the issue's acceptance criteria).
 """
 
 from __future__ import annotations
 
 import asyncio
 import socket
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import pytest
+from mcp import ClientSession
 
 from benchmarks.adapters.python_docs_mcp_adapter import (
     PythonDocsMcpAdapter,
@@ -284,6 +289,30 @@ def test_run_propagates_benchmark_cell_failure_from_run_async_unchanged(
     assert "boom" in str(exc_info.value)
 
 
+def test_run_maps_a_failure_inside_a_real_stdio_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    index_path = tmp_path / "index.db"
+    index_path.write_text("existence is all `run()` checks before spawning")
+
+    async def _failing_initialize(self: ClientSession) -> Any:
+        raise BenchmarkCellFailure("tool_failure", "boom inside the session")
+
+    monkeypatch.setattr(ClientSession, "initialize", _failing_initialize)
+    adapter = PythonDocsMcpAdapter(
+        command=[sys.executable, "-c", "import sys; sys.stdin.read()"],
+        index_path=index_path,
+        timeout_seconds=20,
+    )
+
+    with pytest.raises(BenchmarkCellFailure) as exc_info:
+        adapter.run("anything")
+
+    assert exc_info.value.category == "tool_failure"
+    assert str(exc_info.value) == "boom inside the session"
+    assert isinstance(exc_info.value.__cause__, ExceptionGroup)
+
+
 # --- Optional integration test: real server spawn, skipped without an index
 
 
@@ -298,11 +327,11 @@ def test_real_server_round_trip_when_a_local_index_exists() -> None:
         result = adapter.run("os.path.join")
     except BenchmarkCellFailure as exc:
         # A locally built but symbol-only index (no content ingestion) is a
-        # legitimate dev state; get_docs then fails with a recorded
-        # tool_failure rather than a crash. Any of the three documented
-        # categories is an acceptable outcome for this environment-specific
-        # smoke test -- an unhandled exception is not.
-        assert exc.category in {"tool_failure", "timeout", "mcp_protocol_crash"}
+        # legitimate dev state; get_docs then fails, and that failure must
+        # surface as a recorded tool_failure, not as an mcp_protocol_crash.
+        # A timeout is the only other acceptable outcome for this
+        # environment-specific smoke test.
+        assert exc.category in {"tool_failure", "timeout"}, str(exc)
         return
 
     assert isinstance(result.answer, str)

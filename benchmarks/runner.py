@@ -50,6 +50,49 @@ class BenchmarkCellFailure(RuntimeError):
         self.category = category
 
 
+def cell_failure_from(
+    exc: BaseException, *, timeout_seconds: float, label: str
+) -> BenchmarkCellFailure:
+    """Map an adapter's failure to one recorded cell failure with its real reason.
+
+    mcp 2.3.0 nests a failure raised inside a session two task groups deep
+    (``ExceptionGroup > ExceptionGroup > leaf``), and the group's own text
+    ("unhandled errors in a TaskGroup") hides the reason, so this walks the
+    leaves depth first. Category: the first leaf ``BenchmarkCellFailure``'s
+    category, else ``timeout`` if any leaf is a ``TimeoutError``, else
+    ``mcp_protocol_crash``. A leaf with empty text is named by its type.
+    """
+
+    def leaves(error: BaseException) -> list[BaseException]:
+        if isinstance(error, BaseExceptionGroup):
+            return [leaf for sub in error.exceptions for leaf in leaves(sub)]
+        return [error]
+
+    def text(leaf: BaseException) -> str:
+        if isinstance(leaf, TimeoutError) and not str(leaf):
+            return f"{label} did not complete within {timeout_seconds}s"
+        return str(leaf)
+
+    found = leaves(exc)
+    failures = [leaf for leaf in found if isinstance(leaf, BenchmarkCellFailure)]
+    if failures:
+        category = failures[0].category
+    elif any(isinstance(leaf, TimeoutError) for leaf in found):
+        category = "timeout"
+    else:
+        category = "mcp_protocol_crash"
+
+    if len(found) == 1:
+        message = text(found[0]) or type(found[0]).__name__
+    else:
+        parts = []
+        for leaf in found:
+            name, leaf_text = type(leaf).__name__, text(leaf)
+            parts.append(f"{name}: {leaf_text}" if leaf_text else name)
+        message = "; ".join(parts)
+    return BenchmarkCellFailure(category, message)
+
+
 @dataclass(frozen=True)
 class BenchmarkConfig:
     """Benchmark runner configuration."""

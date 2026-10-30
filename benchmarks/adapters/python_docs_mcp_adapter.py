@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from benchmarks.runner import BenchmarkCellFailure
+from benchmarks.runner import BenchmarkCellFailure, cell_failure_from
 
 #: Environment variable the server checks to skip its own auto-index-build
 #: fallback (see ``mcp_server_python_docs.server._auto_build_symbol_index``).
@@ -232,16 +232,12 @@ class PythonDocsMcpAdapter:
             )
         try:
             return asyncio.run(asyncio.wait_for(self._run_async(prompt), self._timeout_seconds))
-        except BenchmarkCellFailure:
-            raise
-        except TimeoutError as exc:
-            raise BenchmarkCellFailure(
-                "timeout",
-                f"python-docs-mcp-server did not complete search_docs -> get_docs within "
-                f"{self._timeout_seconds}s",
-            ) from exc
         except Exception as exc:  # noqa: BLE001 - failures are benchmark artifacts
-            raise BenchmarkCellFailure("mcp_protocol_crash", str(exc)) from exc
+            raise cell_failure_from(
+                exc,
+                timeout_seconds=self._timeout_seconds,
+                label="python-docs-mcp-server search_docs -> get_docs",
+            ) from exc
 
     async def _run_async(self, prompt: str) -> PythonDocsMcpResult:
         # Imported lazily so importing this module never requires the `mcp`

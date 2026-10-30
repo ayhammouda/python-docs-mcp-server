@@ -41,6 +41,7 @@ import yaml
 import benchmarks.adapters.context7_adapter as context7_adapter
 import benchmarks.adapters.deepwiki_adapter as deepwiki_adapter
 import benchmarks.adapters.gitmcp_adapter as gitmcp_adapter
+import benchmarks.adapters.python_docs_mcp_adapter as python_docs_mcp_adapter
 import benchmarks.adapters.ref_tools_adapter as ref_tools_adapter
 from benchmarks.adapters.eligibility import (
     COMPETITOR_ADAPTER_IDS,
@@ -484,10 +485,15 @@ async def test_ref_tools_flow_raises_tool_failure_when_read_errors() -> None:
 
 # --- run()-level failure-category mapping: timeout / mcp_protocol_crash -----
 #
-# Table-driven across all four adapters: each entry pairs the adapter class
+# Table-driven across all five adapters: each entry pairs the adapter class
 # with its Result dataclass and an env-setup function that satisfies that
 # adapter's own guard (so the mapping logic inside the try/except in run()
 # -- which runs only after the guard passes -- is what's actually exercised).
+
+
+def _enable_python_docs(monkeypatch: pytest.MonkeyPatch) -> None:
+    # run() only checks that the index file exists before spawning.
+    monkeypatch.setattr(python_docs_mcp_adapter, "_default_index_path", lambda: Path(__file__))
 
 
 def _enable_context7_keyless(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -511,6 +517,12 @@ def _enable_ref_tools(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 _ADAPTER_MAPPING_CASES = [
+    pytest.param(
+        python_docs_mcp_adapter.PythonDocsMcpAdapter,
+        python_docs_mcp_adapter.PythonDocsMcpResult,
+        _enable_python_docs,
+        id="python-docs",
+    ),
     pytest.param(
         context7_adapter.Context7Adapter,
         context7_adapter.Context7Result,
@@ -590,6 +602,52 @@ def test_adapter_propagates_benchmark_cell_failure_from_run_async_unchanged(
 
     assert exc_info.value.category == "tool_failure"
     assert "boom" in str(exc_info.value)
+
+
+# mcp 2.3.0 nests a failure raised inside a session two task groups deep.
+_NESTED = ExceptionGroup(
+    "tg",
+    [
+        ExceptionGroup(
+            "tg", [BenchmarkCellFailure("tool_failure", "search_docs returned an error: boom")]
+        )
+    ],
+)
+_TWO_LEAVES = ExceptionGroup(
+    "tg", [BenchmarkCellFailure("tool_failure", "boom"), OSError("pipe closed")]
+)
+
+
+@pytest.mark.parametrize(
+    "raised,message",
+    [
+        pytest.param(_NESTED, "search_docs returned an error: boom", id="nested"),
+        pytest.param(
+            _TWO_LEAVES, "BenchmarkCellFailure: boom; OSError: pipe closed", id="two-leaves"
+        ),
+    ],
+)
+@pytest.mark.parametrize("adapter_cls,result_cls,enable_guard", _ADAPTER_MAPPING_CASES)
+def test_adapter_maps_a_failure_group_to_its_real_reason(
+    adapter_cls: type,
+    result_cls: type,
+    enable_guard: Any,
+    raised: BaseExceptionGroup,
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    enable_guard(monkeypatch)
+
+    async def _group_failure(self: Any, prompt: str) -> Any:
+        raise raised
+
+    monkeypatch.setattr(adapter_cls, "_run_async", _group_failure)
+
+    with pytest.raises(BenchmarkCellFailure) as exc_info:
+        adapter_cls().run("anything")
+    assert exc_info.value.category == "tool_failure"
+    assert str(exc_info.value) == message
+    assert exc_info.value.__cause__ is raised
 
 
 # =============================================================================

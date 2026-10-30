@@ -47,7 +47,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from benchmarks.adapters.guard import require_live_environment
-from benchmarks.runner import BenchmarkCellFailure
+from benchmarks.runner import BenchmarkCellFailure, cell_failure_from
 
 DEFAULT_ENDPOINT = "https://api.ref.tools/mcp"
 
@@ -257,16 +257,12 @@ class RefToolsAdapter:
         require_live_environment("ref")
         try:
             return asyncio.run(asyncio.wait_for(self._run_async(prompt), self._timeout_seconds))
-        except BenchmarkCellFailure:
-            raise
-        except TimeoutError as exc:
-            raise BenchmarkCellFailure(
-                "timeout",
-                "Ref.tools did not complete ref_search_documentation -> ref_read_url within "
-                f"{self._timeout_seconds}s",
-            ) from exc
         except Exception as exc:  # noqa: BLE001 - failures are benchmark artifacts
-            raise BenchmarkCellFailure("mcp_protocol_crash", str(exc)) from exc
+            raise cell_failure_from(
+                exc,
+                timeout_seconds=self._timeout_seconds,
+                label="Ref.tools ref_search_documentation -> ref_read_url",
+            ) from exc
 
     async def _run_async(self, prompt: str) -> RefToolsResult:
         # Imported lazily so importing this module never requires the `mcp`

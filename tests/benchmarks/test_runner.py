@@ -9,7 +9,13 @@ from typing import Any
 import pytest
 import yaml
 
-from benchmarks.runner import BenchmarkConfig, BenchmarkValidationError, run_benchmark
+from benchmarks.runner import (
+    BenchmarkCellFailure,
+    BenchmarkConfig,
+    BenchmarkValidationError,
+    cell_failure_from,
+    run_benchmark,
+)
 
 
 def _write_yaml(path: Path, data: dict) -> Path:
@@ -574,3 +580,62 @@ def test_token_record_is_filled_when_live_guard_passes_with_a_fake_counter(
     assert token_record["approximation"] is False
     assert token_record["token_label"] == METHODOLOGY_TOKEN_LABEL
     assert token_record["serialization_latency_ms"] >= 0
+
+
+# --- cell_failure_from: the real reason behind an MCP task-group failure ----
+
+
+@pytest.mark.parametrize(
+    "exc,category,message",
+    [
+        (BenchmarkCellFailure("tool_failure", "boom"), "tool_failure", "boom"),
+        (TimeoutError(), "timeout", "flow did not complete within 2.5s"),
+        (RuntimeError("stdio pipe closed"), "mcp_protocol_crash", "stdio pipe closed"),
+        (
+            ExceptionGroup(
+                "tg",
+                [ExceptionGroup("tg", [BenchmarkCellFailure("tool_failure", "get_docs: boom")])],
+            ),
+            "tool_failure",
+            "get_docs: boom",
+        ),
+        (
+            ExceptionGroup(
+                "tg",
+                [
+                    OSError("pipe closed"),
+                    ExceptionGroup("tg", [BenchmarkCellFailure("timeout", "slow")]),
+                ],
+            ),
+            "timeout",
+            "OSError: pipe closed; BenchmarkCellFailure: slow",
+        ),
+        (
+            ExceptionGroup("tg", [OSError("pipe closed"), TimeoutError()]),
+            "timeout",
+            "OSError: pipe closed; TimeoutError: flow did not complete within 2.5s",
+        ),
+    ],
+)
+def test_cell_failure_from_walks_nested_groups_to_their_leaves(
+    exc: BaseException, category: str, message: str
+) -> None:
+    failure = cell_failure_from(exc, timeout_seconds=2.5, label="flow")
+
+    assert (failure.category, str(failure)) == (category, message)
+
+
+def test_cell_failure_from_names_a_leaf_that_has_no_text() -> None:
+    # An MCP server dying mid-session surfaces as an anyio error with empty
+    # text (e.g. BrokenResourceError()); the message must still name it.
+    lone = cell_failure_from(
+        ExceptionGroup("tg", [ConnectionResetError()]), timeout_seconds=2.5, label="flow"
+    )
+    assert (lone.category, str(lone)) == ("mcp_protocol_crash", "ConnectionResetError")
+
+    pair = cell_failure_from(
+        ExceptionGroup("tg", [ValueError("bad"), ConnectionResetError()]),
+        timeout_seconds=2.5,
+        label="flow",
+    )
+    assert str(pair) == "ValueError: bad; ConnectionResetError"
