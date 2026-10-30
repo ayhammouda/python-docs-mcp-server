@@ -501,7 +501,7 @@ with its reason. The record is a PR comment by the owner. Its first line is
 exactly `Independent verification: PASS`. It contains a line
 `head: <40-hex head SHA>` and states the three verdicts and the gate result.
 A new head invalidates it. Post a new comment for a new record; the release
-gate ignores edited comments.
+gate ignores edited comments and comments posted after the merge.
 
 The record is a process tripwire, not a security boundary. The owner account
 writes it and also merges, so anyone who can act as that account can forge it.

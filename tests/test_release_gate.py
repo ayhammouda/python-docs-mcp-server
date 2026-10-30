@@ -13,14 +13,19 @@ RECORD = (
     "Fable reviewer: PASS. Codex peer review: PASS. ponytail-review: PASS.\n"
     "Gate: green."
 )
-CREATED = "2026-10-30T10:00:00Z"
+CREATED, MERGED = "2026-10-30T10:00:00Z", "2026-10-30T12:00:00Z"
 
 
-def note(body, login=OWNER, updated_at=CREATED):
-    return {"user": {"login": login}, "body": body, "created_at": CREATED, "updated_at": updated_at}
+def note(body, login=OWNER, created_at=CREATED, updated_at=None):
+    return {
+        "user": {"login": login},
+        "body": body,
+        "created_at": created_at,
+        "updated_at": updated_at or created_at,
+    }
 
 
-def make_state(comments):
+def make_state(*pages):
     checks = [
         {"id": n, "name": name, "app": {"id": 15368}, "conclusion": "success"}
         for n, name in enumerate(GATE["REQUIRED"])
@@ -32,7 +37,7 @@ def make_state(comments):
         f"commits/{SHA}/pulls?per_page=100": [
             {
                 "number": 7,
-                "merged_at": "2026-10-30",
+                "merged_at": MERGED,
                 "base": {"ref": "main"},
                 "merge_commit_sha": SHA,
                 "head": {"sha": HEAD},
@@ -40,7 +45,10 @@ def make_state(comments):
         ],
         f"commits/{HEAD}/check-runs?per_page=100": {"check_runs": [codeql]},
         f"commits/{SHA}/check-runs?per_page=100": {"check_runs": checks},
-        "issues/7/comments?per_page=100": comments,
+        **{
+            f"issues/7/comments?per_page=100&page={n}": page
+            for n, page in enumerate([*pages, []], start=1)
+        },
     }
 
 
@@ -85,6 +93,7 @@ def test_release_eligibility_rejects_incomplete_or_wrong_identity_evidence():
         pytest.param(note(RECORD.replace("head: ", "verified head: ")), id="head-not-own-line"),
         pytest.param(note(RECORD.replace(f"head: {HEAD}\n", "")), id="head-missing"),
         pytest.param(note(RECORD, updated_at="2026-10-30T11:00:00Z"), id="edited"),
+        pytest.param(note(RECORD, created_at="2026-10-30T13:00:00Z"), id="after-merge"),
     ],
 )
 def test_release_eligibility_requires_exact_owner_verification_record(comment):
@@ -94,7 +103,7 @@ def test_release_eligibility_requires_exact_owner_verification_record(comment):
 
 
 def test_release_eligibility_ignores_retired_verifier_check_without_record():
-    state = make_state([])
+    state = make_state()
     retired = {
         "id": 99,
         "name": "Independent verification",
@@ -119,4 +128,9 @@ def test_release_eligibility_accepts_record_among_other_comments_with_crlf():
             note(RECORD.replace("\n", "\r\n")),
         ]
     )
+    GATE["require_eligible"](state.__getitem__, SHA, OWNER)
+
+
+def test_release_eligibility_finds_record_after_the_first_page_of_comments():
+    state = make_state([note("Looks good.")] * 100, [note(RECORD, created_at=MERGED)])
     GATE["require_eligible"](state.__getitem__, SHA, OWNER)

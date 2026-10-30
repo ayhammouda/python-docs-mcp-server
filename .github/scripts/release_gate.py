@@ -1,8 +1,9 @@
 """Fail closed unless this tag names an independently verified main commit.
 
-The verification record is an unedited PR comment by the repository owner whose
-first line is exactly ``Independent verification: PASS`` and which has a
-``head: <sha>`` line for the merged PR head. Anyone who can post as the owner
+The verification record is an unedited PR comment, posted no later than the
+merge, by the repository owner. Its first line is exactly
+``Independent verification: PASS`` and it has a ``head: <sha>`` line for the
+merged PR head. Anyone who can post as the owner
 account can write it, and the owner account also merges, so it is a process
 tripwire, not a security boundary. Tag creation rules, immutable tags, the
 ``pypi`` environment and the required checks carry security.
@@ -33,12 +34,14 @@ REQUIRED = {
 RECORD = "Independent verification: PASS"
 
 
-def is_record(comment, owner: str, head: str) -> bool:
+def is_record(comment, owner: str, head: str, merged_at: str) -> bool:
     lines = comment["body"].replace("\r\n", "\n").split("\n")
     return (
         (comment["user"] or {}).get("login") == owner
         # An edited record could name a head nobody verified, so only unedited ones count.
         and comment["updated_at"] == comment["created_at"]
+        # Verification gates the merge; a record written afterwards does not count.
+        and comment["created_at"] <= merged_at
         and lines[0] == RECORD
         and f"head: {head}" in lines
     )
@@ -63,9 +66,13 @@ def require_eligible(api, sha: str, owner: str) -> None:
         raise ValueError("Missing or failing CodeQL findings check on merged PR head")
     if len(api(f"git/commits/{sha}")["parents"]) != 1:
         raise ValueError("Release commit must be a single-parent squash merge")
-    # shortcut: reads the first 100 comments only and fails closed; paginate if PRs outgrow it.
-    comments = api(f"issues/{prs[0]['number']}/comments?per_page=100")
-    if not any(is_record(c, owner, head) for c in comments):
+    page, found = 1, False
+    while not found and (
+        comments := api(f"issues/{prs[0]['number']}/comments?per_page=100&page={page}")
+    ):
+        found = any(is_record(c, owner, head, prs[0]["merged_at"]) for c in comments)
+        page += 1
+    if not found:
         raise ValueError("Missing owner independent verification record for merged PR head")
     checks = api(f"commits/{sha}/check-runs?per_page=100")["check_runs"]
     latest = {}

@@ -19,9 +19,9 @@ or disable checks.
    cannot be moved or deleted, so a failed release still spends the tag. The
    eligibility job confirms main ancestry, a single-parent squash merge of one
    merged PR, CodeQL on its head, the owner's verification record for that head
-   and the required main checks. The record is an unedited PR comment by the
-   repository owner whose first line is exactly `Independent verification: PASS`
-   and which has a `head: <sha>` line. It is a process tripwire, not a security
+   and the required main checks. The record is an unedited PR comment, posted
+   no later than the merge, by the repository owner. Its first line is exactly
+   `Independent verification: PASS` and it has a `head: <sha>` line. It is a process tripwire, not a security
    boundary: the owner account writes it and also merges, so anyone who can act
    as that account can forge it. A credential-bound check needs a verifier
    identity separate from the merger, such as a dedicated GitHub App with
