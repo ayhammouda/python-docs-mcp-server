@@ -606,6 +606,29 @@ class TestAtomicSwap:
         assert prev is not None and prev.read_bytes() == b"old"
         assert sorted(p.name for p in tmp_path.iterdir()) == ["index.db", "index.db.previous"]
 
+    def test_failed_backup_copy_leaves_no_partial_backup(self, tmp_path, monkeypatch):
+        target = tmp_path / "index.db"
+        target.write_bytes(b"old")
+        new_db = tmp_path / "build-123.db"
+        new_db.write_bytes(b"new")
+
+        def no_links(src, dst, *args, **kwargs):
+            raise OSError(errno.EPERM, "hard links not supported here")
+
+        def disk_fills_up(src, dst, *args, **kwargs):
+            Path(dst).write_bytes(b"ol")  # a partial copy, then the disk is full
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr("mcp_server_python_docs.ingestion.publish.os.link", no_links)
+        monkeypatch.setattr("mcp_server_python_docs.ingestion.publish.shutil.copy2", disk_fills_up)
+        with pytest.raises(OSError) as failed:
+            atomic_swap(new_db, target)
+
+        assert failed.value.errno == errno.ENOSPC
+        assert target.read_bytes() == b"old"
+        assert new_db.exists()
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["build-123.db", "index.db"]
+
     def test_swap_after_a_refused_replace_leaves_no_temp_link(self, tmp_path):
         target = tmp_path / "index.db"
         target.write_bytes(b"old")

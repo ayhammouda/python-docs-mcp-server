@@ -402,6 +402,8 @@ def atomic_swap(
             with the kept build's path, and the build is left in place. The
             temporary link is removed when possible; otherwise a WARNING
             names it.
+        OSError: The backup could not be made, as on a full disk. The
+            partial backup is removed; ``index.db`` is untouched.
     """
     if target_path is None:
         target_path = get_index_path()
@@ -438,9 +440,18 @@ def atomic_swap(
         tmp = previous.with_name(f"{previous.name}.{os.getpid()}.tmp")
         tmp.unlink(missing_ok=True)
         try:
-            os.link(target_path, tmp)
-        except OSError:
-            shutil.copy2(target_path, tmp)
+            try:
+                os.link(target_path, tmp)
+            except OSError:
+                shutil.copy2(target_path, tmp)
+        except BaseException:  # incl. KeyboardInterrupt: a partial copy must not outlive this run
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError as cleanup_error:  # keep the original error, not this one
+                logger.warning(
+                    "Could not remove %s (%s). Delete it by hand.", tmp, cleanup_error
+                )
+            raise
         replace(tmp, previous)
         # rename is a no-op when tmp and .previous already name the same file
         tmp.unlink(missing_ok=True)
