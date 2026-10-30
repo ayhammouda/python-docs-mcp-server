@@ -136,10 +136,11 @@ def require_live_environment(provider: str) -> None:
 
 def redact_api_keys(text: str) -> str:
     """Replace every set :data:`PROVIDER_API_KEY_ENV` key in ``text`` with ``[redacted]``."""
-    for key_env in PROVIDER_API_KEY_ENV.values():
-        api_key = os.environ.get(key_env, "").strip()
-        if api_key:  # str.replace("", ...) would insert the marker between every character
-            text = text.replace(api_key, "[redacted]")
+    # Skip empty values: str.replace("", ...) would insert the marker between every
+    # character. Longest first, so a key that contains another key leaves no fragment.
+    api_keys = {os.environ.get(key_env, "").strip() for key_env in PROVIDER_API_KEY_ENV.values()}
+    for api_key in sorted(filter(None, api_keys), key=len, reverse=True):
+        text = text.replace(api_key, "[redacted]")
     return text
 
 

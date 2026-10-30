@@ -15,6 +15,7 @@ from benchmarks.adapters import (
 from benchmarks.adapters.guard import (
     LIVE_PROVIDERS_ENABLED_ENV,
     PROVIDER_API_KEY_ENV,
+    redact_api_keys,
     require_live_environment,
 )
 
@@ -167,6 +168,18 @@ def test_require_live_environment_refuses_a_malformed_key_without_leaking_it(
 
     assert "fake-not-a-real" not in str(exc_info.value)
     assert "日" not in str(exc_info.value)
+
+
+def test_redact_api_keys_removes_a_key_that_contains_another_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for key_env in PROVIDER_API_KEY_ENV.values():
+        monkeypatch.delenv(key_env, raising=False)
+    # OPENAI_API_KEY comes first in the map; replacing it first would leave "y2".
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV["openai"], "fake-x1")
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV["anthropic"], "fake-x1y2")
+
+    assert redact_api_keys("echo fake-x1y2 and fake-x1") == "echo [redacted] and [redacted]"
 
 
 # --- Live adapter stubs: guard enforced, no network ever possible -----------
