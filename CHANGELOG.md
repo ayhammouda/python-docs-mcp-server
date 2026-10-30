@@ -6,6 +6,26 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-10-30
+
+- **Rebuild the index after upgrading.** New indexes record format version 1
+  (`PRAGMA user_version`). `doctor` reports `FAIL: Index format` for an index
+  built by another release and prints the `build-index` command for the
+  versions that index holds; for an index from a newer release it suggests
+  upgrading instead. Run it, then restart your MCP client. An index you
+  do not rebuild keeps working, but its code examples stay filed under each
+  page's first section.
+
+### Added
+
+- Opt-in Python 3.15 documentation. `build-index --versions 3.15` (alone or
+  with other versions) builds it from the source-pinned CPython `v3.15.0`
+  tag. Nothing builds 3.15 unless you ask for it: the server's automatic
+  first-run build stays on 3.13, and the README's first-run commands are
+  unchanged. As with any version, when 3.15 is the highest one in a build it
+  becomes that index's default version.
+  ([#158](https://github.com/ayhammouda/python-docs-mcp-server/pull/158))
+
 ### Changed
 
 - Updated locked Click (8.5.0), Platformdirs (4.12.2), Pydantic (2.13.5,
@@ -20,14 +40,6 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `doctor` now runs the same FTS5 check as the server and, when FTS5 is
   missing, prints that check's message.
 
-- **Rebuild the index after upgrading.** New indexes record format version 1
-  (`PRAGMA user_version`). `doctor` reports `FAIL: Index format` for an index
-  built by another release and prints the `build-index` command for the
-  versions that index holds; for an index from a newer release it suggests
-  upgrading instead. Run it, then restart your MCP client. An index you
-  do not rebuild keeps working, but its code examples stay filed under each
-  page's first section.
-
 ### Removed
 
 - Removed the `pysqlite3` optional extra. Nothing imported `pysqlite3`, so
@@ -35,9 +47,6 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `doctor` now give one hint: install a Python whose SQLite includes FTS5
   (`uv python install` or python.org). Install commands that still name the
   extra keep working: pip and uv print a warning that the extra does not exist.
-
-### Removed
-
 - New indexes no longer contain the unused `synonyms` and `redirects` tables.
   Search still expands synonyms from the packaged `synonyms.yaml`. Existing
   indexes keep working; no rebuild is needed.
@@ -78,7 +87,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   symbol-only build logs the same hint.
 - Code examples are now filed under the section or API entry that contains
   them, not under the page's first section, so `kind="example"` hits point at
-  the right anchor. Rebuild the index to get this fix (see Changed).
+  the right anchor. Rebuild the index to get this fix (see the note at the
+  top of this release).
 
 ### Security
 
@@ -87,8 +97,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   upload or attach anything if the SHA-256 listing differs from the build's.
   The release build job builds the project only with `hatchling` and its
   dependencies pinned by hash, and runs its tests against the wheel it ships.
+- Locked `certifi` 2026.10.23 to address
+  [PYSEC-2026-4320](https://github.com/certifi/python-certifi/security/advisories/GHSA-6q48-6c7w-9gw2).
 
-## [0.4.0] — Unreleased
+## [0.4.0] — 2026-10-19
 
 ### Added
 
