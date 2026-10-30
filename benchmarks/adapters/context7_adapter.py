@@ -88,8 +88,8 @@ class _CallToolResult(Protocol):
     """Structural subset of ``mcp.types.CallToolResult`` this module needs."""
 
     content: list[Any]
-    structuredContent: dict[str, Any] | None
-    isError: bool
+    structured_content: dict[str, Any] | None
+    is_error: bool
 
 
 class _CallToolSession(Protocol):
@@ -115,8 +115,8 @@ def _first_text(result: _CallToolResult) -> str | None:
 
 
 def _tool_result_payload(result: _CallToolResult) -> dict[str, Any] | None:
-    if result.structuredContent is not None:
-        return result.structuredContent
+    if result.structured_content is not None:
+        return result.structured_content
     text = _first_text(result)
     return {"text": text} if text is not None else None
 
@@ -175,10 +175,10 @@ async def _run_context7_flow(
             tool="resolve-library-id",
             arguments=resolve_args,
             result=resolve_payload,
-            is_error=bool(resolve_result.isError),
+            is_error=bool(resolve_result.is_error),
         )
     )
-    if resolve_result.isError:
+    if resolve_result.is_error:
         raise BenchmarkCellFailure(
             "tool_failure",
             f"resolve-library-id returned an error: {_first_text(resolve_result)}",
@@ -196,10 +196,10 @@ async def _run_context7_flow(
             tool="query-docs",
             arguments=query_args,
             result=query_payload,
-            is_error=bool(query_result.isError),
+            is_error=bool(query_result.is_error),
         )
     )
-    if query_result.isError:
+    if query_result.is_error:
         raise BenchmarkCellFailure(
             "tool_failure", f"query-docs returned an error: {_first_text(query_result)}"
         )
@@ -237,17 +237,16 @@ def _transport_factory(
         params = StdioServerParameters(command=command[0], args=list(command[1:]), env=env)
         return stdio_client(params)
 
-    import httpx
+    import httpx2
     from mcp.client.streamable_http import streamable_http_client
 
-    # Built directly (rather than via the SDK's internal
-    # ``create_mcp_http_client`` helper, which pyright flags as a private
-    # re-export) with the same defaults that helper applies: redirects
-    # followed, a fixed 30s connection timeout. ``timeout_seconds`` on the
+    # Built directly, with the timeouts the MCP SDK v2 migration guide
+    # suggests for keeping v1 behavior (30s, 300s read). The v2 transport
+    # follows same-origin redirects itself. ``timeout_seconds`` on the
     # adapter is not wired into this client; it is enforced only by the
     # outer ``asyncio.wait_for`` in ``_run_async``.
     http_client = (
-        httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=30.0)
+        httpx2.AsyncClient(headers=headers, timeout=httpx2.Timeout(30, read=300))
         if headers
         else None
     )
