@@ -88,10 +88,7 @@ def test_yaml_loaded_only_via_safe_load():
     expected_yaml_input = (
         "src/mcp_server_python_docs/data/synonyms.yaml"
     )
-    expected_safe_load_sites = {
-        "src/mcp_server_python_docs/server.py",
-        "src/mcp_server_python_docs/ingestion/sphinx_json.py",
-    }
+    expected_safe_load_sites = {"src/mcp_server_python_docs/server.py"}
 
     unsafe_load_call = re.compile(r"\byaml[.]load\s*[(]")
     unsafe_loader_name = re.compile(r"\byaml[.]unsafe_load\b")

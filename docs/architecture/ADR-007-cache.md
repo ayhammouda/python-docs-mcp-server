@@ -99,11 +99,11 @@ forward-compat." The default codec is `zstd`
 (`DEFAULT_RETRIEVED_DOCS_CACHE_CODEC`), applied unconditionally with no
 configuration flag to disable it. The codec registry (`cache/codec.py`) also
 defines `none`, a plain passthrough used by rows written before compression
-existed, and `zstd-dict-v1`, a dictionary-based codec kept as test-only
-forward-compatibility scaffolding: encoding or decoding with it raises unless
-an explicit dictionary object is supplied, and no trained dictionary ships
-with the project today. Per decision 5.16, this codec detail is an
-implementation footnote of the cache layer, not the reason the layer exists.
+existed. A row whose `compression` value names a codec this build does not
+know is read as a cache miss, and the next `get_docs` call for that key
+rewrites it with the current codec. Per decision 5.16, this codec detail
+is an implementation footnote of the cache layer, not the reason the layer
+exists.
 
 The second mechanism is a pair of in-memory LRU caches (`services/cache.py`)
 used while building a fresh result: a section cache (`create_section_cache`,
@@ -128,13 +128,13 @@ entirely, including across MCP server restarts, because the value cache
 persists on disk and is keyed by exact request identity. The persistent
 cache degrades safely: any failure to open, read, or write it falls back to
 recomputing the answer rather than failing the tool call. The versioned codec
-column means a future default codec (or a dictionary-based one, once a
-dictionary ships) can be introduced without a schema migration or without
-invalidating rows already written under the current codec, since decode always
-reads the codec recorded on the row. The in-memory LRU caches remove repeated
-round trips to SQLite for section and symbol lookups within one running
-process, and their process-lifetime, no-invalidation design matches how the
-project already expects operators to pick up a rebuilt index — by restarting.
+column means a future default codec can be introduced without a schema
+migration or without invalidating rows already written under the current
+codec, since decode always reads the codec recorded on the row. The in-memory
+LRU caches remove repeated round trips to SQLite for section and symbol
+lookups within one running process, and their process-lifetime,
+no-invalidation design matches how the project already expects operators to
+pick up a rebuilt index — by restarting.
 
 **Negative / risks:** The persistent cache's best-effort posture is
 deliberately silent: a disk that is read-only, full, or corrupted degrades to
@@ -146,9 +146,6 @@ index rebuilds under heavy, varied query traffic. The in-memory LRU caches
 have no invalidation path other than process restart, so any content change
 that does not go through a full index rebuild-and-restart cycle would not be
 reflected in cached section or symbol lookups until the process restarts.
-`zstd-dict-v1` exists in the codec registry without a shipped dictionary, so
-it is unusable in production today; it must not be described as an available
-feature outside of tests.
 
 ## Layer Contract (principle 2.7)
 

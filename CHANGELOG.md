@@ -25,6 +25,22 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   (`uv python install` or python.org). Install commands that still name the
   extra keep working: pip and uv print a warning that the extra does not exist.
 
+### Removed
+
+- New indexes no longer contain the unused `synonyms` and `redirects` tables.
+  Search still expands synonyms from the packaged `synonyms.yaml`. Existing
+  indexes keep working; no rebuild is needed.
+- New indexes no longer contain `symbols.document_id` and `symbols.section_id`.
+  Nothing wrote them; symbol hits still resolve through their URI and anchor.
+  Versions up to 0.4.0 still read these columns, so after a downgrade, rebuild
+  the index.
+- Removed `ingestion_runs.artifact_hash` and the "Build artifact SHA256" log
+  line. The hash was taken before the last writes to the build, so it never
+  matched the published `index.db`.
+- Removed the test-only `zstd-dict-v1` cache codec. A cached `get_docs` result
+  stored under a codec this version does not know is treated as a miss and
+  recomputed.
+
 ### Fixed
 
 - The server now exits cleanly, with exit code 0 and no traceback, when a

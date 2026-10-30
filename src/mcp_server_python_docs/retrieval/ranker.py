@@ -49,42 +49,19 @@ def _resolve_symbol_location(
     fallback_slug = _page_uri(uri)
     fallback_anchor = str(row["anchor"] or "")
 
-    section_id = row["section_id"]
-    if section_id is not None:
-        section_row = conn.execute(
+    doc_row = None
+    for candidate in _document_candidates(uri):
+        doc_row = conn.execute(
             """
-            SELECT d.slug, s.anchor
-            FROM sections s
-            JOIN documents d ON s.document_id = d.id
-            WHERE s.id = ?
+            SELECT id, slug
+            FROM documents
+            WHERE doc_set_id = ? AND (slug = ? OR uri = ?)
             LIMIT 1
             """,
-            (section_id,),
+            (row["doc_set_id"], candidate, candidate),
         ).fetchone()
-        if section_row is not None:
-            return section_row["slug"], (section_row["anchor"] or None)
-
-    doc_row = None
-    document_id = row["document_id"]
-    if document_id is not None:
-        doc_row = conn.execute(
-            "SELECT id, slug FROM documents WHERE id = ? LIMIT 1",
-            (document_id,),
-        ).fetchone()
-
-    if doc_row is None:
-        for candidate in _document_candidates(uri):
-            doc_row = conn.execute(
-                """
-                SELECT id, slug
-                FROM documents
-                WHERE doc_set_id = ? AND (slug = ? OR uri = ?)
-                LIMIT 1
-                """,
-                (row["doc_set_id"], candidate, candidate),
-            ).fetchone()
-            if doc_row is not None:
-                break
+        if doc_row is not None:
+            break
 
     if doc_row is None:
         return fallback_slug, (fallback_anchor or None)
@@ -266,7 +243,7 @@ def search_symbols(
     try:
         cursor = conn.execute(
             """
-            SELECT sym.id, sym.doc_set_id, sym.document_id, sym.section_id,
+            SELECT sym.id, sym.doc_set_id,
                    sym.qualified_name, sym.symbol_type, sym.uri,
                    sym.anchor, sym.module, d.version,
                    bm25(symbols_fts, 10.0, 1.0) as score,
@@ -389,7 +366,7 @@ def lookup_symbols_exact(
 
     cursor = conn.execute(
         """
-        SELECT s.doc_set_id, s.document_id, s.section_id,
+        SELECT s.doc_set_id,
                s.qualified_name, s.symbol_type, s.uri, s.anchor,
                s.module, d.version
         FROM symbols s

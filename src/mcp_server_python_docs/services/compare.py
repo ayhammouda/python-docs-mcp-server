@@ -132,7 +132,7 @@ class CompareService:
         """Fetch the section text for a symbol via ContentService.
 
         Derives the slug from the symbol URI (everything before '#') and uses the
-        symbol anchor — never joins symbols.section_id directly (RESEARCH Pitfall 2).
+        symbol anchor.
 
         CR-01: symbol URIs carry ".html" (``library/json.html#...``) but real
         Sphinx ingestion stores ``documents.slug`` EXTENSIONLESS

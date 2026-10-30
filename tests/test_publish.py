@@ -1,6 +1,6 @@
 """Tests for atomic-swap publishing module.
 
-Covers build path generation (PUBL-01), SHA256 hashing (PUBL-02),
+Covers build path generation (PUBL-01),
 smoke tests (PUBL-03), atomic swap with rollback (PUBL-04),
 restart message (PUBL-05), and ingestion-while-serving regression (PUBL-06).
 """
@@ -21,7 +21,6 @@ from mcp_server_python_docs.ingestion.publish import (
     SMOKE_SENTINEL_SYMBOL,
     _version_sort_key,
     atomic_swap,
-    compute_sha256,
     generate_build_path,
     print_restart_message,
     publish_index,
@@ -54,35 +53,6 @@ class TestBuildPath:
         # They should at least have the same prefix pattern
         assert "build-" in p1.name
         assert "build-" in p2.name
-
-
-# ── SHA256 tests (PUBL-02) ──
-
-
-class TestSHA256:
-    def test_hex_digest(self, tmp_path):
-        """compute_sha256 returns a valid hex digest."""
-        test_file = tmp_path / "test.db"
-        test_file.write_bytes(b"test content")
-        sha = compute_sha256(test_file)
-        assert len(sha) == 64
-        assert all(c in "0123456789abcdef" for c in sha)
-
-    def test_deterministic(self, tmp_path):
-        """Same content produces same hash."""
-        f1 = tmp_path / "a.db"
-        f2 = tmp_path / "b.db"
-        f1.write_bytes(b"identical")
-        f2.write_bytes(b"identical")
-        assert compute_sha256(f1) == compute_sha256(f2)
-
-    def test_different_content(self, tmp_path):
-        """Different content produces different hash."""
-        f1 = tmp_path / "a.db"
-        f2 = tmp_path / "b.db"
-        f1.write_bytes(b"content A")
-        f2.write_bytes(b"content B")
-        assert compute_sha256(f1) != compute_sha256(f2)
 
 
 # ── Smoke test tests (PUBL-03) ──
