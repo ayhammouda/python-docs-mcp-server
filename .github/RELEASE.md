@@ -12,9 +12,10 @@ or disable checks.
    under the amendment's rule: a conflict-free update, green required checks,
    a new record for the new head, and either (a) a rebase whose
    `git range-diff` shows no patch changes or (b) a merge of `main` whose
-   `git show --remerge-diff <merge-commit>` prints no diff. Otherwise re-verify the changed part with all three parts (Fable reviewer,
-   Codex `gpt-6-astra` at `xhigh` in a read-only sandbox, `ponytail-review`),
-   none run by the implementer. The partial record adds a
+   `git show --remerge-diff <merge-commit>` prints no diff. Otherwise
+   re-verify the changed part with all three parts (Fable reviewer, Codex
+   `gpt-6-astra` at `xhigh` in a read-only sandbox, `ponytail-review`), none
+   run by the implementer. The partial record adds a
    `scope: delta <old-head>..<new-head>` line and a link to the full record it
    extends, and states the three delta verdicts and the new head's check result.
 2. Wait for the required checks on the resulting **main commit** to pass.
