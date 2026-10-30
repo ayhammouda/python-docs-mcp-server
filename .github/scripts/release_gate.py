@@ -30,21 +30,25 @@ REQUIRED = {
     "Installed package smoke",
     "Product regression",
 }
-# First line of the owner's PR comment that records independent verification.
-RECORD = "Independent verification: PASS"
+# First line of the owner's PR comment that records an independent verification.
+RECORD = re.compile(r"Independent verification: (PASS|FAIL)")
 
 
-def is_record(comment, owner: str, head: str, merged_at: str) -> bool:
+def verdict(comment, owner: str, head: str, merged_at: str) -> str | None:
+    """Return PASS or FAIL for an owner record of ``head``, else None."""
     lines = comment["body"].replace("\r\n", "\n").split("\n")
-    return (
-        (comment["user"] or {}).get("login") == owner
+    match = RECORD.fullmatch(lines[0])
+    if (
+        match
+        and (comment["user"] or {}).get("login") == owner
         # An edited record could name a head nobody verified, so only unedited ones count.
         and comment["updated_at"] == comment["created_at"]
         # Verification gates the merge; a record written afterwards does not count.
         and comment["created_at"] <= merged_at
-        and lines[0] == RECORD
         and f"head: {head}" in lines
-    )
+    ):
+        return match[1]
+    return None
 
 
 def require_eligible(api, sha: str, owner: str) -> None:
@@ -66,14 +70,18 @@ def require_eligible(api, sha: str, owner: str) -> None:
         raise ValueError("Missing or failing CodeQL findings check on merged PR head")
     if len(api(f"git/commits/{sha}")["parents"]) != 1:
         raise ValueError("Release commit must be a single-parent squash merge")
-    page, found = 1, False
-    while not found and (
-        comments := api(f"issues/{prs[0]['number']}/comments?per_page=100&page={page}")
-    ):
-        found = any(is_record(c, owner, head, prs[0]["merged_at"]) for c in comments)
+    comments, page = [], 1
+    while batch := api(f"issues/{prs[0]['number']}/comments?per_page=100&page={page}"):
+        comments += batch
         page += 1
-    if not found:
-        raise ValueError("Missing owner independent verification record for merged PR head")
+    # The newest owner decision for this head wins, so a later FAIL revokes an earlier PASS.
+    records = [
+        (c["created_at"], c["id"], v)
+        for c in comments
+        if (v := verdict(c, owner, head, prs[0]["merged_at"]))
+    ]
+    if max(records, default=(None, None, None))[2] != "PASS":
+        raise ValueError("Newest owner verification record for merged PR head is missing or FAIL")
     checks = api(f"commits/{sha}/check-runs?per_page=100")["check_runs"]
     latest = {}
     for check in sorted(checks, key=lambda c: c["id"]):

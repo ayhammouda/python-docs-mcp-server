@@ -1,5 +1,6 @@
 """Publishing must reject off-main, unverified, spoofed and failing revisions."""
 
+import itertools
 import runpy
 from pathlib import Path
 
@@ -13,11 +14,14 @@ RECORD = (
     "Fable reviewer: PASS. Codex peer review: PASS. ponytail-review: PASS.\n"
     "Gate: green."
 )
-CREATED, MERGED = "2026-10-30T10:00:00Z", "2026-10-30T12:00:00Z"
+FAILED = RECORD.replace(": PASS\n", ": FAIL\n", 1)
+CREATED, LATER, MERGED = "2026-10-30T10:00:00Z", "2026-10-30T11:00:00Z", "2026-10-30T12:00:00Z"
+IDS = itertools.count(1)
 
 
 def note(body, login=OWNER, created_at=CREATED, updated_at=None):
     return {
+        "id": next(IDS),
         "user": {"login": login},
         "body": body,
         "created_at": created_at,
@@ -134,4 +138,23 @@ def test_release_eligibility_accepts_record_among_other_comments_with_crlf():
 
 def test_release_eligibility_finds_record_after_the_first_page_of_comments():
     state = make_state([note("Looks good.")] * 100, [note(RECORD, created_at=MERGED)])
+    GATE["require_eligible"](state.__getitem__, SHA, OWNER)
+
+
+@pytest.mark.parametrize(
+    "pages",
+    [
+        pytest.param([[note(RECORD), note(FAILED, created_at=LATER)]], id="newer-fail"),
+        pytest.param([[note(RECORD)], [note(FAILED, created_at=LATER)]], id="fail-on-page-2"),
+        pytest.param([[note(RECORD), note(FAILED)]], id="same-time-higher-id-fail"),
+    ],
+)
+def test_release_eligibility_rejects_when_the_newest_record_is_fail(pages):
+    state = make_state(*pages)
+    with pytest.raises(ValueError, match="verification record"):
+        GATE["require_eligible"](state.__getitem__, SHA, OWNER)
+
+
+def test_release_eligibility_accepts_when_a_newer_pass_follows_a_fail():
+    state = make_state([note(FAILED), note(RECORD, created_at=LATER)])
     GATE["require_eligible"](state.__getitem__, SHA, OWNER)
