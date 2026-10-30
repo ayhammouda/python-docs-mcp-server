@@ -94,6 +94,7 @@ def test_release_eligibility_rejects_incomplete_or_wrong_identity_evidence():
         pytest.param(note(RECORD.replace(f"head: {HEAD}\n", "")), id="head-missing"),
         pytest.param(note(RECORD, updated_at="2026-10-30T11:00:00Z"), id="edited"),
         pytest.param(note(RECORD, created_at="2026-10-30T13:00:00Z"), id="after-merge"),
+        pytest.param({**note(RECORD), "user": None}, id="deleted-author"),
     ],
 )
 def test_release_eligibility_requires_exact_owner_verification_record(comment):

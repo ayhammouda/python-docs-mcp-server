@@ -21,11 +21,12 @@ or disable checks.
    merged PR, CodeQL on its head, the owner's verification record for that head
    and the required main checks. The record is an unedited PR comment, posted
    no later than the merge, by the repository owner. Its first line is exactly
-   `Independent verification: PASS` and it has a `head: <sha>` line. It is a process tripwire, not a security
-   boundary: the owner account writes it and also merges, so anyone who can act
-   as that account can forge it. A credential-bound check needs a verifier
-   identity separate from the merger, such as a dedicated GitHub App with
-   `checks: write` or a machine account. Restoring one is escalated to Aymen.
+   `Independent verification: PASS` and it has a `head: <sha>` line. It is a
+   process tripwire, not a security boundary: the owner account writes it and
+   also merges, so anyone who can act as that account can forge it. A
+   credential-bound check needs a verifier identity separate from the merger,
+   such as a dedicated GitHub App with `checks: write` or a machine account.
+   Restoring one is escalated to Aymen.
 4. The release workflow runs eligibility → build/test/manifest validation →
    installed-wheel integration on Python 3.13 and 3.14 → PyPI → MCP Registry →
    GitHub release. Integration builds documentation 3.10–3.14 before publishing.
