@@ -986,6 +986,19 @@ def test_report_escapes_a_backslash_before_a_pipe_inside_a_table_cell(tmp_path: 
     assert row in report_text
 
 
+def test_report_keeps_a_backticked_windows_path_unchanged(tmp_path: Path) -> None:
+    run_dir = _minimal_valid_run_dir(tmp_path)
+    environment_path = run_dir / "environment.json"
+    environment = json.loads(environment_path.read_text(encoding="utf-8"))
+    environment["python_executable"] = r"C:\py\python.exe"
+    environment_path.write_text(json.dumps(environment), encoding="utf-8")
+
+    report_text = _generate_report(run_dir).read_text(encoding="utf-8")
+
+    # GFM does not process backslash escapes inside a code span.
+    assert r"| python_executable | `C:\py\python.exe` |" in report_text
+
+
 def test_token_paragraph_gives_the_real_reason_for_approximate_counts(tmp_path: Path) -> None:
     report_text = _generate_report(_minimal_valid_run_dir(tmp_path)).read_text(encoding="utf-8")
     token_paragraph = report_text.split("## Token Counts (After Client Rewrap)", 1)[1]

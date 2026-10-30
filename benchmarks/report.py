@@ -50,6 +50,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import statistics
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -526,10 +527,13 @@ def _relative_link(target: Path, from_dir: Path) -> str:
 
 def _table(headers: list[str], rows: list[list[str]]) -> list[str]:
     lines = ["| " + " | ".join(headers) + " |", "| " + " | ".join(["---"] * len(headers)) + " |"]
-    # An unescaped "|" in a cell (e.g. a proxy error body) would add a column; escape
-    # backslashes first so a literal "\|" cannot turn back into a column delimiter.
+    # An unescaped "|" in a cell (e.g. a proxy error body) would add a column. Escape
+    # it, doubling only the backslashes right before it, so a literal "\|" stays text
+    # and other backslashes (e.g. Windows paths in code spans) are left alone.
     lines.extend(
-        "| " + " | ".join(cell.replace("\\", "\\\\").replace("|", "\\|") for cell in row) + " |"
+        "| "
+        + " | ".join(re.sub(r"(\\*)\|", lambda m: m.group(1) * 2 + "\\|", cell) for cell in row)
+        + " |"
         for row in rows
     )
     return lines
