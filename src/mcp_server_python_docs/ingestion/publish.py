@@ -402,14 +402,14 @@ def atomic_swap(
             with the kept build's path, and the build is left in place. The
             temporary link is removed when possible; otherwise a WARNING
             names it.
-        OSError: The backup could not be made, as on a full disk. The
-            partial backup is removed; ``index.db`` is untouched.
+        OSError: The backup could not be made or renamed, as on a full disk.
+            The temporary backup is removed (a WARNING names it when that
+            fails); ``index.db`` is untouched.
     """
     if target_path is None:
         target_path = get_index_path()
 
     previous_path: Path | None = None
-    tmp: Path | None = None
 
     def replace(src: Path, dst: Path) -> None:
         try:
@@ -424,15 +424,6 @@ def atomic_swap(
                 new_db_path,
                 target_path,
             )
-            if tmp is not None:
-                try:
-                    tmp.unlink(missing_ok=True)
-                except OSError as cleanup_error:  # Windows refuses it while a client holds index.db
-                    logger.warning(
-                        "Could not remove %s (%s). Delete it once every MCP client is stopped.",
-                        tmp,
-                        cleanup_error,
-                    )
             raise
 
     if target_path.exists():
@@ -444,15 +435,17 @@ def atomic_swap(
                 os.link(target_path, tmp)
             except OSError:
                 shutil.copy2(target_path, tmp)
-        except BaseException:  # incl. KeyboardInterrupt: a partial copy must not outlive this run
+            replace(tmp, previous)
+        except BaseException:  # incl. KeyboardInterrupt: no temp backup may outlive this run
             try:
                 tmp.unlink(missing_ok=True)
             except OSError as cleanup_error:  # keep the original error, not this one
                 logger.warning(
-                    "Could not remove %s (%s). Delete it by hand.", tmp, cleanup_error
+                    "Could not remove %s (%s). Delete it once every MCP client is stopped.",
+                    tmp,
+                    cleanup_error,
                 )
             raise
-        replace(tmp, previous)
         # rename is a no-op when tmp and .previous already name the same file
         tmp.unlink(missing_ok=True)
         logger.info("Previous index backed up to %s", previous)

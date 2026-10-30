@@ -719,6 +719,26 @@ class TestAtomicSwap:
         assert any(str(tmp_link) in message for message in warnings)
         assert target.read_bytes() == b"old"
 
+    def test_failed_previous_replace_leaves_no_temp_link(self, tmp_path, monkeypatch):
+        target = tmp_path / "index.db"
+        target.write_bytes(b"old")
+        new_db = tmp_path / "build-123.db"
+        new_db.write_bytes(b"new")
+        real_replace = os.replace
+
+        def failing_previous(src, dst):
+            if Path(dst).name == "index.db.previous":
+                raise OSError(errno.EIO, "I/O error")
+            real_replace(src, dst)
+
+        monkeypatch.setattr("mcp_server_python_docs.ingestion.publish.os.replace", failing_previous)
+        with pytest.raises(OSError) as failed:
+            atomic_swap(new_db, target)
+
+        assert failed.value.errno == errno.EIO
+        assert target.read_bytes() == b"old"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["build-123.db", "index.db"]
+
 
 # ── Rollback tests ──
 
