@@ -161,8 +161,9 @@ These apply to every plan.
 - **Gate (`AGENTS.md`):** run it fresh before opening the PR.
   - `uv run --locked ruff check src/ tests/ benchmarks/ ops/ .github/scripts/`
   - `uv run --locked pyright src/ benchmarks/`
-  - `ISO=$(mktemp -d "${TMPDIR:-/tmp}/pdmcp-test.XXXXXX"); XDG_CACHE_HOME="${ISO:?}" uv run --locked pytest --tb=short -q`.
-    This isolates the cache on macOS and Linux. On Windows, platformdirs
+  - `ISO=$(mktemp -d "${TMPDIR:-/tmp}/pdmcp-test.XXXXXX"); uv run --locked env XDG_CACHE_HOME="${ISO:?}" pytest --tb=short -q`.
+    This isolates the cache on macOS and Linux. `env` sets the variable for
+    pytest only, so uv keeps its own cache and works offline. On Windows, platformdirs
     ignores `XDG_CACHE_HOME`, so these plans do not run the suite on Windows.
 - **Existing tests:** never delete one or weaken an assertion, except where a
   plan says so explicitly (PRs 3, 6 and 9; PR 6 is deferred). Those PRs list

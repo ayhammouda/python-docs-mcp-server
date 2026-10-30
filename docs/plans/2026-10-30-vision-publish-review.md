@@ -40,7 +40,7 @@ scripts (the existing test pattern).
 - **Gate (`AGENTS.md`), run fresh before the PR:**
   - `uv run --locked ruff check src/ tests/ benchmarks/ ops/ .github/scripts/`
   - `uv run --locked pyright src/ benchmarks/`
-  - `uv run --locked pytest --tb=short -q`
+  - `ISO=$(mktemp -d "${TMPDIR:-/tmp}/pdmcp-test.XXXXXX"); uv run --locked env XDG_CACHE_HOME="${ISO:?}" pytest --tb=short -q` (the roadmap's cache-isolated Gate command)
 - **Existing tests:** never delete one or weaken an assertion. This plan
   changes two existing tests (Tasks 2 and 3), and the PR body lists both.
   Task 2 only adds a fixture field. Task 3 relaxes one assertion (next
@@ -890,8 +890,12 @@ Expected: a few thousand characters.
   > - Have the reviewer return the verdict through a structured-output JSON
   >   schema. If the reviewer cannot do that, the verdict must be the
   >   whole reply.
-  > - Parse it strictly: strip whitespace, then at most one fence, then
-  >   whitespace again. Call `raw_decode` with an `object_pairs_hook` that
+  > - Parse it strictly. Strip surrounding whitespace. If the reply then
+  >   starts with ```, its first line must be exactly ```json or ```,
+  >   and its last line exactly ```. Remove those two lines and strip
+  >   whitespace again. Any other fence form is `malformed`, so the opening
+  >   line can carry nothing that the parse would discard. Call `raw_decode`
+  >   with an `object_pairs_hook` that
   >   rejects repeated names at any depth. Require `end == len(body)` and a
   >   `dict` with every verdict key. Then apply the strict type rules below.
   > - Change Step 1's `REPLY_SHAPES`, so that prose-wrapped and label-prefixed
@@ -900,7 +904,9 @@ Expected: a few thousand characters.
   > - Add the four inputs above as regression tests that must raise
   >   `malformed`, plus a repeated `exit_code` in a command entry and the
   >   decoy `'{"a": 1, "a": 2}\n' + json.dumps(GOOD_VERDICT)`. Use raw
-  >   strings where an escape must stay literal.
+  >   strings where an escape must stay literal. Also add a rejection hidden
+  >   on the opening fence line, ````json` followed on the same line by a
+  >   rejection object, then the good verdict, then the closing fence.
   >
   > Draft #168 implements the tolerant scan, so it must adopt this design
   > before it resumes.
@@ -1097,7 +1103,7 @@ git commit -m "fix: show the PR and SHAs of blocked Vision verifications" -m "Co
 |---|---|
 | `uv run --locked ruff check src/ tests/ benchmarks/ ops/ .github/scripts/` | `All checks passed!` |
 | `uv run --locked pyright src/ benchmarks/` | `0 errors` |
-| `uv run --locked pytest --tb=short -q` | all passed |
+| `ISO=$(mktemp -d "${TMPDIR:-/tmp}/pdmcp-test.XXXXXX"); uv run --locked env XDG_CACHE_HOME="${ISO:?}" pytest --tb=short -q` (the roadmap's cache-isolated Gate command) | all passed |
 
 - [ ] **Step 4: Measure the diff**
 
