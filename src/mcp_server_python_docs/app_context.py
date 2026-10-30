@@ -35,3 +35,4 @@ class AppContext:
     synonyms: dict[str, list[str]] = field(default_factory=dict)
     detected_python_version: str | None = None
     detected_python_source: str | None = None
+    detected_python_raw: str = ""

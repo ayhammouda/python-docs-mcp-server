@@ -102,6 +102,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   section.
 - `get_docs` pagination no longer starts a page with a combining accent cut off
   from its letter.
+- `detect_python_version` no longer runs `python3 --version` on every call,
+  which could stall other tool calls for up to 5 seconds. It returns what the
+  server detected at startup, the same value `get_docs` already uses.
 
 ### Security
 
