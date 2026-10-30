@@ -62,10 +62,16 @@ def test_release_build_exports_the_dist_id_and_checksums() -> None:
     upload = ids.index(step_id(build["outputs"]["dist-id"], "artifact-id"))
     sums = ids.index(step_id(build["outputs"]["dist-sha256"], "dist-sha256"))
     assert build["steps"][upload]["uses"].startswith("actions/upload-artifact@")
-    assert build["steps"][upload]["with"]["if-no-files-found"] == "error"
+    assert build["steps"][upload]["with"] == {
+        "name": "dist",
+        "path": "dist/",
+        "if-no-files-found": "error",
+    }
     assert build["steps"][sums]["run"].startswith("set -o pipefail\n")
     assert "sha256sum dist/* | LC_ALL=C sort" in build["steps"][sums]["run"]
-    assert sums == upload - 1  # nothing can touch dist/ between checksum and upload
+    assert sums == upload - 1  # no step runs between checksum and upload
+    for i in (sums, upload):
+        assert not {"if", "continue-on-error", "shell"} & build["steps"][i].keys()
 
 
 @pytest.mark.parametrize("job_name", ["publish", "github-release"])
@@ -84,6 +90,11 @@ def test_release_ships_only_the_bytes_the_build_checksummed(job_name: str) -> No
     shipping = [i for i, s in enumerate(steps) if s.get("uses", "").startswith(SHIPPING)]
     assert shipping
     assert max(downloads) < verify[0] < min(shipping)
+    assert verify[0] == max(downloads) + 1
+    assert list(range(verify[0] + 1, len(steps))) == shipping
+    assert not any({"if", "continue-on-error"} & s.keys() for s in steps[max(downloads):])
+    assert "shell" not in steps[verify[0]]
+    assert steps[verify[0]]["run"].startswith("set -o pipefail\n")
 
 
 def test_release_keeps_trusted_publishing_and_the_named_e2e_input() -> None:
@@ -138,6 +149,7 @@ def test_release_verify_step_refuses_any_change_to_dist(tmp_path: Path, tamper: 
         (dist / "pkg-1.0.tar.gz").unlink()
     result = run_step(verify, tmp_path, EXPECTED=expected)
     assert result.returncode == (0 if tamper == "none" else 1), result.stdout
+    assert ("build exported no checksums" in result.stdout) == (tamper == "no_checksums")
 
 
 @needs_sha256sum
