@@ -44,6 +44,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   place by hand.
 - `build-index` now deletes `build-*.db*` files older than one day. Killed
   auto-builds used to leave them in the cache folder for good.
+- Code examples are now filed under the section or API entry that contains
+  them, not under the page's first section, so `kind="example"` hits point at
+  the right anchor. Rebuild the index to get this fix (see Changed).
 
 ### Security
 

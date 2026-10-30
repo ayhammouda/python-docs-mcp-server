@@ -374,6 +374,32 @@ def extract_sections(body_html: str, doc_uri: str) -> list[dict]:
     return sections
 
 
+def _code_block_anchor(div: Tag) -> str:
+    """Return the anchor of the section or API entry that contains a code block.
+
+    Sphinx (docutils >= 0.17) puts ids on ``<section>`` and ``<dt>``, not on
+    headings. Walking out from the block, the first match wins: a ``dd`` gives
+    the id from the ``dt`` group that heads it (the ``dt`` lines after the
+    previous ``dd``), then a ``section`` (or legacy ``div.section``) gives its
+    own id. Older markup with ids on headings falls back to the previous
+    heading with an id.
+    """
+    for parent in div.parents:
+        if parent.name == "dd":
+            for sibling in parent.find_previous_siblings(["dt", "dd"]):
+                if sibling.name == "dd":
+                    break
+                if isinstance(sibling, Tag) and sibling.get("id"):
+                    return str(sibling["id"])
+        is_section = parent.name == "section" or (
+            parent.name == "div" and "section" in (parent.get("class") or [])
+        )
+        if is_section and parent.get("id"):
+            return str(parent["id"])
+    heading = div.find_previous(re.compile(r"^h[1-6]$"), id=True)
+    return str(heading["id"]) if isinstance(heading, Tag) else ""
+
+
 def extract_code_blocks(body_html: str) -> list[dict]:
     """Extract code blocks from HTML body, classifying doctests vs examples (INGR-C-07).
 
@@ -416,14 +442,7 @@ def extract_code_blocks(body_html: str) -> list[dict]:
         if not code.strip():
             continue
 
-        # Find nearest preceding heading to determine section
-        section_anchor = ""
-        element = div
-        while element:
-            element = element.find_previous(re.compile(r"^h[1-6]$"), id=True)
-            if element:
-                section_anchor = element.get("id", "")
-                break
+        section_anchor = _code_block_anchor(div)
 
         blocks.append(
             {

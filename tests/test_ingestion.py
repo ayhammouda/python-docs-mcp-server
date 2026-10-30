@@ -446,6 +446,57 @@ class TestExtractCodeBlocks:
         anchored = [b for b in blocks if b["section_anchor"]]
         assert len(anchored) >= 1
 
+    def test_anchor_comes_from_enclosing_section_or_api_entry(self):
+        body = (
+            '<section id="task-groups"><h2>Task Groups</h2>'
+            '<div class="highlight-python3"><pre>a = 1</pre></div>'
+            '<dl class="py class"><dt id="asyncio.TaskGroup">class TaskGroup</dt>'
+            '<dd><div class="highlight-python3"><pre>b = 2</pre></div></dd></dl></section>'
+        )
+        anchors = [block["section_anchor"] for block in extract_code_blocks(body)]
+        assert anchors == ["task-groups", "asyncio.TaskGroup"]
+
+    def test_code_block_in_multi_signature_entry_uses_first_id(self):
+        body = (
+            '<section id="ranges"><h2>Ranges</h2><dl class="py class">'
+            '<dt id="range">range(stop)</dt><dt>range(start, stop, step=1)</dt>'
+            '<dd><div class="highlight-python3"><pre>r = range(3)</pre></div></dd>'
+            "</dl></section>"
+        )
+        assert [block["section_anchor"] for block in extract_code_blocks(body)] == ["range"]
+
+    def test_code_block_in_field_list_attaches_to_enclosing_entry(self):
+        body = (
+            '<section id="json"><h1>json</h1><dl class="py function">'
+            '<dt id="json.dumps">dumps(obj)</dt><dd><dl class="field-list">'
+            '<dt>Parameters</dt><dd><div class="highlight-python3"><pre>dumps(1)</pre>'
+            "</div></dd></dl></dd></dl></section>"
+        )
+        assert [block["section_anchor"] for block in extract_code_blocks(body)] == ["json.dumps"]
+
+    def test_code_block_in_later_entry_ignores_earlier_entry_id(self):
+        body = (
+            '<section id="defs"><h2>Defs</h2><dl><dt id="a">a</dt><dd><p>A.</p></dd>'
+            '<dt>b</dt><dd><div class="highlight-python3"><pre>b = 2</pre></div></dd>'
+            "</dl></section>"
+        )
+        assert [block["section_anchor"] for block in extract_code_blocks(body)] == ["defs"]
+
+    def test_anchor_falls_back_to_legacy_heading_id(self):
+        body = '<h2 id="x">X</h2><div class="highlight-python3"><pre>x = 1</pre></div>'
+        assert [block["section_anchor"] for block in extract_code_blocks(body)] == ["x"]
+
+    def test_anchor_is_empty_without_any_id(self):
+        body = '<div class="highlight-python3"><pre>x = 1</pre></div>'
+        assert [block["section_anchor"] for block in extract_code_blocks(body)] == [""]
+
+    def test_anchor_comes_from_legacy_div_section(self):
+        body = (
+            '<div class="section" id="json"><h1>json</h1>'
+            '<div class="highlight-python3"><pre>x = 1</pre></div></div>'
+        )
+        assert [block["section_anchor"] for block in extract_code_blocks(body)] == ["json"]
+
 
 # ── Per-document failure isolation tests (INGR-C-06) ──
 
@@ -566,3 +617,17 @@ class TestDocumentContent:
         examples = [r for r in rows if r[1] == 0]
         assert len(doctests) >= 1
         assert len(examples) >= 1
+
+    def test_examples_join_their_own_section(self, populated_db, fixtures_dir):
+        """Real Sphinx markup: ids on <section> and <dt>, none on headings."""
+        fixture = fixtures_dir / "sample_modern_sections.fjson"
+        assert ingest_fjson_file(populated_db, fixture, doc_set_id=1)
+        rows = populated_db.execute(
+            "SELECT s.anchor FROM examples e JOIN sections s ON s.id = e.section_id "
+            "ORDER BY e.ordinal"
+        ).fetchall()
+        assert [row[0] for row in rows] == [
+            "task-groups",
+            "terminating-a-task-group",
+            "asyncio.timeout",
+        ]

@@ -165,7 +165,9 @@ only during `build-index`, never during `serve`.
   directly onto the `sections` table columns (§4).
 - `extract_code_blocks` (line 352) extracts code blocks from the same HTML
   body, classifies each as a doctest or plain example, and assigns each an
-  ordinal within the section it is attached to via `section_anchor`.
+  ordinal within the section it is attached to via `section_anchor`. That
+  anchor is, in order: the id of the `dt` that heads the enclosing `dd`, then
+  the id of the enclosing `<section>`, then the previous heading with an id.
 - `populate_synonyms` (line 583) reads the packaged `data/synonyms.yaml` via
   `importlib.resources` and inserts each concept/expansion pair into the
   `synonyms` table with `INSERT OR REPLACE`, returning the count inserted.
