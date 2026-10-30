@@ -417,6 +417,7 @@ def public_evidence(verdict, status, head, base):
     output["passed_check_families"] = sorted({
         family for family in families for command in commands
         if isinstance(command, dict) and command.get("exit_code") == 0
+        and type(command.get("exit_code")) is int
         and isinstance(command.get("command"), str) and family in command["command"]
     })
     return output
@@ -492,6 +493,40 @@ def rerun(run_id):
     return receipt
 
 
+def extract_verdict(text: str) -> dict:
+    """Return the one strictly typed verdict object in a verifier reply, or fail as malformed."""
+    malformed = ReviewFailure("infrastructure", {"reason": "malformed_verdict"})
+    if not isinstance(text, str) or len(text) > 64 * 1024:
+        raise malformed
+    keys = {"head_sha", "base_sha", "approved", "commands", "blockers"}
+    key_token = re.compile(r'"(?:head_sha|base_sha|approved|commands|blockers)"\s*:')
+    decoder, found, index = json.JSONDecoder(), [], text.find("{")
+    while index != -1:
+        try:
+            value, end = decoder.raw_decode(text[index:])
+        except (ValueError, RecursionError):
+            index = text.find("{", index + 1)
+            continue
+        if keys <= value.keys():
+            found.append((value, index, index + end))
+        index = text.find("{", index + end)  # skip everything inside this object
+    if len(found) != 1:
+        raise malformed
+    verdict, start, end = found[0]
+    if key_token.search(text[:start]) or key_token.search(text[end:]):
+        raise malformed  # verdict-like text that did not decode may be the real verdict
+    if (type(verdict["approved"]) is not bool
+            or not all(isinstance(verdict[k], str) and SHA.match(verdict[k])
+                       for k in ("head_sha", "base_sha"))
+            or not isinstance(verdict["commands"], list)
+            or not all(isinstance(c, dict) and type(c.get("command")) is str
+                       and type(c.get("exit_code")) is int for c in verdict["commands"])
+            or not isinstance(verdict["blockers"], list)
+            or not all(isinstance(b, str) for b in verdict["blockers"])):
+        raise malformed
+    return verdict
+
+
 def review(head: str, base: str, decision: dict):
     policy = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
     rationale = hashlib.sha256(json.dumps(decision, sort_keys=True).encode()).hexdigest()[:16]
@@ -557,11 +592,7 @@ def review(head: str, base: str, decision: dict):
         response = json.loads(run.stdout[run.stdout.index("{") :])
         payloads = response.get("result", response).get("payloads", [])
         text = "\n".join(p.get("text", "") for p in payloads).strip()
-        verdict = json.loads(text.removeprefix("```json").removesuffix("```").strip())
-        if (not isinstance(verdict, dict) or not isinstance(verdict.get("commands"), list)
-                or not isinstance(verdict.get("blockers"), list)
-                or any(not isinstance(c, dict) for c in verdict["commands"])):
-            raise ReviewFailure("infrastructure", {"reason": "malformed_verdict"})
+        verdict = extract_verdict(text)
         commands = verdict["commands"]
         mandatory = ["uv sync --locked --dev", "ruff check", "pyright", "pytest"]
         recorded = [str(c.get("command", "")) for c in commands]
