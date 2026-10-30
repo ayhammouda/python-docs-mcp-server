@@ -91,9 +91,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # `score` and `adjudicate` (issue #88): the correctness scorer and its
-    # manual-adjudication ingest hook. Both read the answer-key corpus via
-    # the same `benchmarks.corpus.validate_corpus` gate as `validate-corpus`
-    # above, so a run can only be scored against a schema-valid corpus.
+    # manual-adjudication ingest hook. Both read the run's own corpus
+    # snapshot (refusing a --corpus whose sha256 differs) through the same
+    # `benchmarks.corpus.validate_corpus` gate as `validate-corpus` above.
     score_parser = subparsers.add_parser(
         "score",
         help=(
@@ -106,9 +106,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     score_parser.add_argument(
         "--corpus",
-        required=True,
+        default=None,
         type=Path,
-        help="Path to the answer-key corpus file (validated against --schema).",
+        help=(
+            "Answer-key corpus; defaults to the run's snapshots/corpus.yml. A different "
+            "file is refused unless its sha256 matches that snapshot."
+        ),
     )
     score_parser.add_argument(
         "--schema",
@@ -136,9 +139,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     adjudicate_parser.add_argument(
         "--corpus",
-        required=True,
+        default=None,
         type=Path,
-        help="Path to the answer-key corpus file (validated against --schema).",
+        help=(
+            "Answer-key corpus; defaults to the run's snapshots/corpus.yml. A different "
+            "file is refused unless its sha256 matches that snapshot."
+        ),
     )
     adjudicate_parser.add_argument(
         "--schema",

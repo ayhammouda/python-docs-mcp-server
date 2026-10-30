@@ -31,19 +31,21 @@ limit; keyless use is real but more rate-limited. A manifest entry that
 declares key mode (``key_mode=True``) is gated by
 ``require_live_environment("context7")`` (same shape as every keyed
 provider); a keyless entry is gated by
-``require_live_competitor("context7")`` (PLAN-87 section 2.2).
+``require_live_competitor("context7")`` (PLAN-87 section 2.2). The key is
+read only in key mode. Neither mode forwards proxy or ``npm_config_*``
+variables to ``npx`` any more; pass them explicitly if a run needs them.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
-import re
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from benchmarks.adapters.guard import require_live_competitor, require_live_environment
-from benchmarks.runner import BenchmarkCellFailure
+from benchmarks.runner import BenchmarkCellFailure, cell_failure_from
+from benchmarks.urls import labeled_value
 
 #: Pinned npm package + version (PLAN-87 section 1.1). Never reference the
 #: unrelated/stale ``mcp/context7`` Docker image -- 13 months stale per the
@@ -59,11 +61,6 @@ DEFAULT_ENDPOINT = "https://mcp.context7.com/mcp"
 API_KEY_ENV = "CONTEXT7_API_KEY"
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
-
-#: Library-id-shaped token (e.g. "/python/cpython") used as a fallback when
-#: a scripted/live response has no structured candidate list -- see
-#: :func:`_extract_library_id`.
-_LIBRARY_ID_RE = re.compile(r"/[\w.\-]+/[\w.\-]+")
 
 
 @dataclass(frozen=True)
@@ -124,14 +121,18 @@ def _tool_result_payload(result: _CallToolResult) -> dict[str, Any] | None:
 def _extract_library_id(result: _CallToolResult) -> str | None:
     """Pick the top library id out of a ``resolve-library-id`` result.
 
-    Context7's exact structured-response shape is not publicly pinned (the
-    dossier verifies the tool *flow*, not a byte-exact schema), so this
-    prefers a structured candidate list under any of a few plausible keys
-    and falls back to scanning the first text block for a
-    ``/org/project``-shaped token -- the documented Context7 library id
-    format. Returns ``None`` (never raises) when neither yields a
-    candidate, matching the "no hits" honest-empty-answer behavior of
-    ``benchmarks.adapters.python_docs_mcp_adapter``.
+    Prefers a structured candidate list under any of a few plausible keys.
+    Otherwise it reads only the labeled ``- Context7-compatible library ID:
+    <id>`` line of the first text block. That line is the pinned 3.2.3
+    format (``utils.ts#L24-L30``):
+    https://github.com/upstash/context7/blob/98baa58d3625e2529e000f1c9f658fff25081bbb/packages/mcp/src/lib/utils.ts#L24-L30
+    There is no ``/org/project`` fallback: it matched
+    ``/context7.com/dashboard`` in the team-filter note printed before the
+    list. HTTP mode's hosted output is not pinned to 3.2.3. If the format
+    drifts, this returns ``None``, the answer is empty and ``score``
+    auto-scores the cell 0.0. Returns ``None`` (never raises) when nothing
+    yields a candidate, matching the "no hits" honest-empty-answer behavior
+    of ``benchmarks.adapters.python_docs_mcp_adapter``.
     """
     payload = _tool_result_payload(result)
     if isinstance(payload, dict):
@@ -145,11 +146,7 @@ def _extract_library_id(result: _CallToolResult) -> str | None:
                 if isinstance(library_id, str) and library_id:
                     return library_id
     text = _first_text(result)
-    if text:
-        match = _LIBRARY_ID_RE.search(text)
-        if match:
-            return match.group(0)
-    return None
+    return labeled_value(text, "- Context7-compatible library ID") if text else None
 
 
 async def _run_context7_flow(
@@ -279,7 +276,9 @@ class Context7Adapter:
         self._command = command if command is not None else _default_command()
         self._endpoint = endpoint if endpoint is not None else DEFAULT_ENDPOINT
         self._key_mode = key_mode
-        self._api_key = api_key if api_key is not None else os.environ.get(API_KEY_ENV)
+        self._api_key = (
+            (api_key if api_key is not None else os.environ.get(API_KEY_ENV)) if key_mode else None
+        )
         self._library_name = library_name
         self._timeout_seconds = timeout_seconds
 
@@ -302,16 +301,12 @@ class Context7Adapter:
             require_live_competitor("context7")
         try:
             return asyncio.run(asyncio.wait_for(self._run_async(prompt), self._timeout_seconds))
-        except BenchmarkCellFailure:
-            raise
-        except TimeoutError as exc:
-            raise BenchmarkCellFailure(
-                "timeout",
-                "Context7 did not complete resolve-library-id -> query-docs within "
-                f"{self._timeout_seconds}s",
-            ) from exc
         except Exception as exc:  # noqa: BLE001 - failures are benchmark artifacts
-            raise BenchmarkCellFailure("mcp_protocol_crash", str(exc)) from exc
+            raise cell_failure_from(
+                exc,
+                timeout_seconds=self._timeout_seconds,
+                label="Context7 resolve-library-id -> query-docs",
+            ) from exc
 
     async def _run_async(self, prompt: str) -> Context7Result:
         # Imported lazily so importing this module never requires the `mcp`
@@ -322,8 +317,10 @@ class Context7Adapter:
             # The pinned npm client also accepts CONTEXT7_API_KEY via
             # environment (in addition to the remote HTTP mode's header
             # below), so the key -- when present -- is passed through the
-            # subprocess environment rather than dropped for this mode.
-            env = {**os.environ, API_KEY_ENV: self._api_key} if self._api_key else None
+            # subprocess environment rather than dropped for this mode. The
+            # SDK merges this dict over its safe defaults (PATH, HOME, ...),
+            # which npx needs; nothing else from this process is forwarded.
+            env = {API_KEY_ENV: self._api_key} if self._api_key else None
             transport = _transport_factory(mode="stdio", command=self._command, env=env)
         else:
             headers = {API_KEY_ENV: self._api_key} if self._api_key else None

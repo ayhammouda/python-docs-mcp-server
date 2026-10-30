@@ -6,6 +6,32 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+
+- The benchmark harness (development tooling, not part of the package) now
+  reports success latency and failed-cell latency separately, lists manifest
+  exclusions, keeps the real reason when a cell fails inside MCP task groups,
+  counts tokens with `claude-sonnet-5-5` in a valid tool envelope marked as an
+  approximation, and scores runs against their own corpus snapshot. Its offline
+  regression gate fails on any network or process attempt. Earlier benchmark
+  numbers are not comparable.
+
+### Removed
+
+- Benchmark harness: the `no-mcp-baseline` adapter alias, which only echoed the
+  prompt, and the `external_provider_calls` field, a constant rather than a
+  measurement.
+
+### Security
+
+- The MCP servers that the benchmark harness starts now get the MCP SDK's
+  default variables plus only: `CONTEXT7_API_KEY` for the Context7 server (npm
+  code), and only in key mode; `PYTHON_DOCS_MCP_DISABLE_AUTO_INDEX` and, when
+  set, `XDG_CACHE_HOME` for the first-party server. Proxy and `npm_config_*`
+  variables are no longer forwarded. The token counter refuses an
+  `ANTHROPIC_API_KEY` that contains whitespace or control characters before
+  sending any request, and count-failure notes never include the key.
+
 ## [0.4.1] — 2026-10-30
 
 - **Rebuild the index after upgrading.** New indexes record format version 1

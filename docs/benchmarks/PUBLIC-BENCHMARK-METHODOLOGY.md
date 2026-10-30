@@ -218,3 +218,30 @@ agent-ready issues:
 
 Each work package should reference this methodology and use `Refs #63`, not
 `Closes #63`, until the full benchmark has produced public data.
+
+## Amendment 2026-10-30: How Fixed-Flow Results Are Computed
+
+Applies to fixed-flow runs from this date
+(`docs/plans/2026-10-30-benchmark-integrity.md`). Numbers made before it are
+not comparable with numbers made after it.
+
+- **Latency.** Median, p95, minimum and maximum cover succeeded cells only:
+  latency runs from dispatch to the final answer, and a failed cell has none.
+  Failed cells are reported separately, as a median with their count, next to
+  the error rate.
+- **Token medians.** A median covers succeeded cells with an exact count.
+  Every fixed-flow count is an approximation, because its envelope has
+  name-only tool stubs and no system prompt, so none enters a headline median.
+  Counts use `claude-sonnet-5-5`, and each token record names its count model
+  and API version.
+- **Count failures.** A failed count is reported as failed, never as pending,
+  and listed with its error under "Failures And Exclusions".
+- **Failure reasons.** Inside nested task groups, the first recorded cell
+  failure sets the category, and every reason is kept.
+- **Corpus.** Scoring uses the run's corpus snapshot, refuses any other file
+  unless its sha256 matches, and writes that hash to `scoring-rollups.json`.
+- **Baseline.** The fixed flow has no no-MCP baseline. The removed alias only
+  echoed the prompt, so earlier rows under that name were not model answers.
+  The agentic harness adds `no-docs` (design §5).
+- **Provider-call flag.** Result files no longer carry
+  `external_provider_calls`; it was a constant, not a measurement.

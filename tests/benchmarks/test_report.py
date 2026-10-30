@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 import yaml
 
-from benchmarks.report import generate_readme_summary, generate_report
+from benchmarks.report import _fmt_tokens, _table, generate_readme_summary, generate_report
 from benchmarks.runner import BenchmarkConfig, BenchmarkValidationError, run_benchmark
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -59,13 +61,13 @@ def _manifest(tmp_path: Path, competitors: list[dict] | None = None) -> Path:
                 {
                     "id": "no-mcp-baseline",
                     "name": "No MCP baseline",
-                    "adapter": "no-mcp-baseline",
+                    "adapter": "fake",
                     "model": "gpt-4o-mini",
                 },
                 {
                     "id": "python-docs-mcp-server",
                     "name": "python-docs-mcp-server",
-                    "adapter": "no-mcp-baseline",
+                    "adapter": "fake",
                     "provider": "openai",
                     "model": "gpt-4o-mini",
                 },
@@ -108,18 +110,18 @@ def test_generate_report_includes_all_required_sections(tmp_path: Path) -> None:
         competitors=[
             {
                 "id": "no-mcp-baseline",
-                "adapter": "no-mcp-baseline",
+                "adapter": "fake",
                 "model": "gpt-4o-mini",
             },
             {
                 "id": "python-docs-mcp-server",
-                "adapter": "no-mcp-baseline",
+                "adapter": "fake",
                 "provider": "openai",
                 "model": "gpt-4o-mini",
             },
             {
                 "id": "flaky-competitor",
-                "adapter": "no-mcp-baseline",
+                "adapter": "fake",
                 "provider": "openai",
                 "model": "gpt-4o",
                 "force_failure": "timeout",
@@ -160,7 +162,7 @@ def test_generate_report_includes_all_required_sections(tmp_path: Path) -> None:
 
     # Token counts: placeholders surfaced honestly, never as zero.
     assert "Token Counts" in text
-    assert "None (placeholder" in text
+    assert "None \\(placeholder" in text
 
     # Latency median/p95.
     assert "Latency (Median / p95)" in text
@@ -189,8 +191,8 @@ def test_generate_readme_summary_uses_strict_tool_model_pairings(tmp_path: Path)
     assert "Raw result bundle" in text
     # Every row is a strict tool_model_key pairing (contains ':'), never a
     # tool-only row.
-    assert "no-mcp-baseline:gpt-4o-mini" in text
-    assert "python-docs-mcp-server:openai/gpt-4o-mini" in text
+    assert "no-mcp-baseline\\:gpt-4o-mini" in text
+    assert "python-docs-mcp-server\\:openai/gpt-4o-mini" in text
     assert "Error Rate" in text
     assert "Timeout Rate" in text
 
@@ -398,7 +400,7 @@ def test_failed_competitor_is_disclosed_not_dropped(tmp_path: Path) -> None:
         competitors=[
             {
                 "id": "crashy",
-                "adapter": "no-mcp-baseline",
+                "adapter": "fake",
                 "provider": "openai",
                 "model": "gpt-4o",
                 "force_failure": "mcp_protocol_crash",
@@ -419,7 +421,7 @@ def test_failed_competitor_is_disclosed_not_dropped(tmp_path: Path) -> None:
     # Error/timeout rate columns exist so a fully-failing tool cannot hide
     # behind an empty correctness table.
     assert "100.0%" in report_text  # error rate for the all-failing tool_model_key
-    assert "crashy:openai/gpt-4o" in summary_text
+    assert "crashy\\:openai/gpt-4o" in summary_text
     assert "100.0%" in summary_text
 
 
@@ -654,7 +656,7 @@ def test_report_excludes_approximated_tokens_from_headline_median(tmp_path: Path
 
     # Only the exact count (100) drives the headline-eligible median -- the
     # approximation (999999) must never move it.
-    assert "| tool-a | 100, 1 approximation:true excluded |" in text
+    assert "| tool-a | 100, 1 approximation\\:true excluded |" in text
     assert "999999" not in text
 
 
@@ -665,5 +667,469 @@ def test_readme_summary_excludes_approximated_tokens_from_headline_row(tmp_path:
         run_dir, methodology_path=METHODOLOGY_PATH
     ).read_text(encoding="utf-8")
 
-    assert "100, 1 approximation:true excluded" in text
+    assert "100, 1 approximation\\:true excluded" in text
     assert "999999" not in text
+
+
+# --- Success vs failed-cell latency, token buckets, exclusions -------------
+
+
+def _write_cell(
+    run_dir: Path,
+    corpus_id: str,
+    *,
+    failed: bool,
+    latency_ms: float,
+    tokens: int | None = None,
+) -> None:
+    """Write one ``tool-a`` cell: its scoring and latency records, plus an exact
+    token record when ``tokens`` is given."""
+    status = "failed" if failed else "placeholder"
+    _write_json(
+        run_dir / "scoring" / "tool-a" / f"{corpus_id}.json",
+        {
+            "competitor_id": "tool-a",
+            "corpus_id": corpus_id,
+            "tool_model_key": "tool-a",
+            "status": status,
+            "score": 0.0 if failed else None,
+            "requires_manual_scoring": not failed,
+            "included_in_correctness_denominator": True,
+            "error_category": "tool_failure" if failed else None,
+        },
+    )
+    _write_json(
+        run_dir / "latency" / "tool-a" / f"{corpus_id}.json",
+        {
+            "competitor_id": "tool-a",
+            "corpus_id": corpus_id,
+            "latency_ms": latency_ms,
+            "status": status,
+        },
+    )
+    if tokens is not None:
+        _write_json(
+            run_dir / "tokens" / "tool-a" / f"{corpus_id}.json",
+            {
+                "competitor_id": "tool-a",
+                "corpus_id": corpus_id,
+                "status": "counted",
+                "client_wrapped_tokens": tokens,
+                "raw_payload_tokens": tokens,
+                "approximation": False,
+            },
+        )
+
+
+def _with_exclusions(tmp_path: Path, exclusions: object) -> tuple[str, str]:
+    run_dir = _minimal_valid_run_dir(tmp_path)
+    _write_yaml(
+        run_dir / "snapshots" / "competitor-manifest.yml",
+        {"competitors": [{"id": "tool-a", "adapter": "fake"}], "exclusions": exclusions},
+    )
+    report_text = _generate_report(run_dir).read_text(encoding="utf-8")
+    summary_text = generate_readme_summary(run_dir, methodology_path=METHODOLOGY_PATH).read_text(
+        encoding="utf-8"
+    )
+    return report_text, summary_text
+
+
+def _token_stats(
+    present: int = 0,
+    median: float | None = None,
+    placeholder: int = 0,
+    approximated: int = 0,
+    failed_cell: int = 0,
+    count_failed: int = 0,
+) -> dict:
+    return {
+        "tokens_present": present,
+        "median_client_wrapped_tokens": median,
+        "tokens_placeholder": placeholder,
+        "tokens_approximated": approximated,
+        "tokens_failed_cell": failed_cell,
+        "tokens_count_failed": count_failed,
+    }
+
+
+def test_latency_is_split_into_success_and_failed_cells(tmp_path: Path) -> None:
+    run_dir = _minimal_valid_run_dir(tmp_path)
+    # 26 fast failures and 24 slow successes: blended, the median would be
+    # 5.0 ms, so the tool would look fast by failing fast.
+    for index in range(1, 51):
+        failed = index <= 26
+        _write_cell(run_dir, f"q{index:03d}", failed=failed, latency_ms=5.0 if failed else 1000.0)
+
+    report_text = _generate_report(run_dir).read_text(encoding="utf-8")
+    summary_text = generate_readme_summary(run_dir, methodology_path=METHODOLOGY_PATH).read_text(
+        encoding="utf-8"
+    )
+
+    assert "| tool-a | 1000.0 | 1000.0 | 1000.0 | 1000.0 | 5.0 \\(n=26\\) | 52.0% | 0.0% |" in (
+        report_text
+    )
+    assert "| 52.0% | 0.0% | 1000.0 | 1000.0 | 5.0 \\(n=26\\) |" in summary_text
+
+
+def test_token_median_excludes_counts_from_failed_cells(tmp_path: Path) -> None:
+    run_dir = _minimal_valid_run_dir(tmp_path)
+    _write_cell(run_dir, "q001", failed=False, latency_ms=10.0, tokens=100)
+    _write_cell(run_dir, "q002", failed=True, latency_ms=10.0, tokens=999999)
+
+    text = _generate_report(run_dir).read_text(encoding="utf-8")
+
+    assert "| tool-a | 100, 1 failed-cell count\\(s\\) excluded |" in text
+    assert "999999" not in text
+
+
+def test_report_renders_manifest_exclusions(tmp_path: Path) -> None:
+    report_text, summary_text = _with_exclusions(
+        tmp_path,
+        [
+            {
+                "id": "some-excluded-competitor",
+                "reason": "vendor denied benchmarking permission",
+                "terms_check": {
+                    "verdict": "forbidden-without-permission",
+                    "source_url": "https://example.test/terms",
+                },
+                "decided_on": "2026-07-09",
+            }
+        ],
+    )
+
+    assert "### Excluded Competitors" in report_text
+    assert (
+        "| some-excluded-competitor | vendor denied benchmarking permission | "
+        "forbidden-without-permission | 2026-07-09 | https\\:\\//example\\.test/terms |"
+    ) in report_text
+    assert (
+        "- **Excluded competitors:** some-excluded-competitor "
+        "(vendor denied benchmarking permission)"
+    ) in summary_text
+
+
+@pytest.mark.parametrize(
+    ("exclusions", "report_line", "summary_line"),
+    [
+        (
+            None,
+            "No competitors were excluded from this run.",
+            "- **Excluded competitors:** none",
+        ),
+        (
+            [{"id": "x", "reason": "r"}],
+            "| x | r |  |  |  |",
+            "- **Excluded competitors:** x (r)",
+        ),
+        (
+            [{}],
+            "| \\(unnamed\\) |  |  |  |  |",
+            "- **Excluded competitors:** (unnamed)",
+        ),
+    ],
+)
+def test_report_tolerates_sparse_exclusions(
+    tmp_path: Path, exclusions: object, report_line: str, summary_line: str
+) -> None:
+    report_text, summary_text = _with_exclusions(tmp_path, exclusions)
+
+    assert report_line in report_text
+    assert summary_line in summary_text
+    # The denominator sentence keeps its own heading, not the one above it.
+    assert (
+        "### Excluded From Correctness Denominator\n\n"
+        "No cells were excluded from the correctness denominator."
+    ) in report_text
+
+
+@pytest.mark.parametrize(
+    ("exclusions", "message"),
+    [("x", "must be a list"), (["x"], "entries must be mappings")],
+)
+def test_report_refuses_malformed_exclusions(
+    tmp_path: Path, exclusions: object, message: str
+) -> None:
+    with pytest.raises(BenchmarkValidationError, match=message):
+        _with_exclusions(tmp_path, exclusions)
+
+
+@pytest.mark.parametrize(
+    ("stats", "expected"),
+    [
+        (
+            _token_stats(present=1, median=100, approximated=1),
+            "100, 1 approximation:true excluded",
+        ),
+        (
+            _token_stats(placeholder=2),
+            "None (placeholder -- 2 cell(s) pending token-count integration)",
+        ),
+        # The form a live fixed-flow run shows: every count is an approximation.
+        (
+            _token_stats(placeholder=1, approximated=2),
+            "None headline-eligible (approximation:true excludes 2 cell(s); 1 placeholder)",
+        ),
+        (
+            _token_stats(present=1, median=100, failed_cell=1),
+            "100, 1 failed-cell count(s) excluded",
+        ),
+        (
+            _token_stats(placeholder=3, failed_cell=1),
+            "None headline-eligible (1 failed-cell count(s) excluded; 3 placeholder)",
+        ),
+        (
+            _token_stats(present=1, median=100, placeholder=2, approximated=1, failed_cell=1),
+            "100, 2 placeholder, 1 approximation:true excluded, 1 failed-cell count(s) excluded",
+        ),
+        (
+            _token_stats(approximated=1, failed_cell=1),
+            "None headline-eligible (approximation:true excludes 1 cell(s); "
+            "1 failed-cell count(s) excluded; 0 placeholder)",
+        ),
+        (
+            _token_stats(count_failed=1),
+            "None headline-eligible (1 count(s) failed; 0 placeholder)",
+        ),
+        (
+            _token_stats(present=1, median=100, count_failed=1),
+            "100, 1 count(s) failed",
+        ),
+    ],
+)
+def test_fmt_tokens_renders_every_bucket_combination(stats: dict, expected: str) -> None:
+    assert _fmt_tokens(stats) == expected
+
+
+def test_failed_token_count_renders_as_failed_and_is_listed(tmp_path: Path) -> None:
+    run_dir = _minimal_valid_run_dir(tmp_path)
+    note = "Claude count-tokens call failed: BenchmarkCellFailure: HTTP 400: bad tool_use_id"
+    _write_json(
+        run_dir / "tokens" / "tool-a" / "q001.json",
+        {
+            "competitor_id": "tool-a",
+            "corpus_id": "q001",
+            "tool_model_key": "tool-a",
+            "status": "failed",
+            "client_wrapped_tokens": None,
+            "raw_payload_tokens": None,
+            "approximation": False,
+            "notes": note,
+        },
+    )
+
+    report_text = _generate_report(run_dir).read_text(encoding="utf-8")
+    summary_text = generate_readme_summary(run_dir, methodology_path=METHODOLOGY_PATH).read_text(
+        encoding="utf-8"
+    )
+
+    escaped_note = note.replace(":", "\\:")
+    assert r"| tool-a | None headline-eligible \(1 count\(s\) failed; 0 placeholder\) |" in (
+        report_text
+    )
+    assert "### Token-Count Failures" in report_text
+    assert f"| tool-a | tool-a | q001 | {escaped_note} |" in report_text
+    assert "pending token-count integration" not in report_text
+    assert r"1 count\(s\) failed" in summary_text
+
+
+def test_report_escapes_pipes_inside_table_cells(tmp_path: Path) -> None:
+    run_dir = _minimal_valid_run_dir(tmp_path)
+    _write_json(
+        run_dir / "tokens" / "tool-a" / "q001.json",
+        {
+            "competitor_id": "tool-a",
+            "corpus_id": "q001",
+            "tool_model_key": "tool-a",
+            "status": "failed",
+            "client_wrapped_tokens": None,
+            "raw_payload_tokens": None,
+            "approximation": False,
+            "notes": "Claude count-tokens call failed: HTTP 502: Error | Gateway",
+        },
+    )
+    _write_json(
+        run_dir / "failures" / "tool-a" / "q001.json",
+        {
+            "competitor_id": "tool-a",
+            "tool_model_key": "tool-a",
+            "corpus_id": "q001",
+            "error": {"category": "tool_failure", "message": "proxy said Error | Gateway"},
+            "included_in_correctness_denominator": True,
+        },
+    )
+
+    report_text = _generate_report(run_dir).read_text(encoding="utf-8")
+
+    assert (
+        "| tool-a | tool-a | q001 | "
+        "Claude count-tokens call failed\\: HTTP 502\\: Error \\| Gateway |" in report_text
+    )
+    assert (
+        "| tool-a | tool-a | q001 | tool_failure | proxy said Error \\| Gateway | True |"
+        in report_text
+    )
+
+
+def test_report_escapes_a_backslash_before_a_pipe_inside_a_table_cell(tmp_path: Path) -> None:
+    run_dir = _minimal_valid_run_dir(tmp_path)
+    _write_json(
+        run_dir / "failures" / "tool-a" / "q001.json",
+        {
+            "competitor_id": "tool-a",
+            "tool_model_key": "tool-a",
+            "corpus_id": "q001",
+            "error": {"category": "tool_failure", "message": r"regex (a\|b) failed"},
+            "included_in_correctness_denominator": True,
+        },
+    )
+
+    report_text = _generate_report(run_dir).read_text(encoding="utf-8")
+
+    # GFM reads "\\" as a literal backslash and "\|" as a literal pipe.
+    row = r"| tool-a | tool-a | q001 | tool_failure | regex \(a\\\|b\) failed | True |"
+    assert row in report_text
+
+
+@pytest.mark.parametrize(
+    ("path", "rendered"),
+    [
+        pytest.param(r"C:\py\python.exe", r"C\:\\py\\python\.exe", id="windows-path"),
+        pytest.param(
+            r"\\server\share\python.exe", r"\\\\server\\share\\python\.exe", id="unc-path"
+        ),
+    ],
+)
+def test_report_renders_windows_paths_literally(tmp_path: Path, path: str, rendered: str) -> None:
+    run_dir = _minimal_valid_run_dir(tmp_path)
+    environment_path = run_dir / "environment.json"
+    environment = json.loads(environment_path.read_text(encoding="utf-8"))
+    environment["python_executable"] = path
+    environment_path.write_text(json.dumps(environment), encoding="utf-8")
+
+    report_text = _generate_report(run_dir).read_text(encoding="utf-8")
+
+    # Table cells are plain text, where GFM reads "\\" as one literal backslash.
+    assert f"| python_executable | {rendered} |" in report_text
+
+
+def test_table_escapes_a_long_backslash_run_in_linear_time() -> None:
+    started = time.perf_counter()
+    lines = _table(["Value"], [["\\" * 40_000]])
+    elapsed = time.perf_counter() - started
+
+    assert lines[2] == "| " + "\\" * 80_000 + " |"
+    assert elapsed < 1.0
+
+
+# GFM's backslash-escape rule: a backslash before ASCII punctuation is a literal.
+_GFM_BACKSLASH_ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
+
+
+@pytest.mark.parametrize(
+    ("text", "escaped"),
+    [
+        pytest.param("__init__", r"\_\_init\_\_", id="dunder"),
+        pytest.param("a*b*c", r"a\*b\*c", id="asterisks"),
+        pytest.param("https://x.y/__init__", r"https\:\//x\.y/\_\_init\_\_", id="url-dunder"),
+        pytest.param(
+            "www.example.com/__main__.html?a=1&b=2",
+            r"www\.example\.com/\_\_main\_\_\.html?a=1\&b=2",
+            id="www",
+        ),
+        pytest.param(r"C:\_scratch_\python.exe", r"C\:\\\_scratch\_\\python\.exe", id="path"),
+        pytest.param(r"\\server\share", r"\\\\server\\share", id="unc"),
+        pytest.param("a|b", r"a\|b", id="pipe"),
+        pytest.param(r"a\|b", r"a\\\|b", id="backslash-pipe"),
+        pytest.param(
+            "https://example.test/?a=1&copy;x", r"https\:\//example\.test/?a=1\&copy;x", id="entity"
+        ),
+        pytest.param("a <b> (c) !#~", r"a \<b\> \(c\) \!\#\~", id="html-and-punctuation"),
+        pytest.param("example.com/path", r"example\.com/path", id="bare-domain"),
+        pytest.param("Www.example.com", r"Www\.example\.com", id="capitalised-www"),
+        pytest.param("1000.0 and 52.0%", "1000.0 and 52.0%", id="decimals-untouched"),
+        # A dot before a non-ASCII TLD: markdown-it's linkify would decode "%0A" in
+        # the label, so the visible text would differ from the target.
+        pytest.param("example.рф/a%0Ab", r"example\.рф/a%0Ab", id="cyrillic-tld"),
+        pytest.param("a.Ωmega.gr", r"a\.Ωmega\.gr", id="greek-label"),
+        pytest.param("例え.テスト/x", r"例え\.テスト/x", id="japanese-tld"),
+        # Protocol-relative: markdown-it's linkify would decode "%41" in the label.
+        pytest.param("//127.0.0.1/a%41b", r"\//127.0.0.1/a%41b", id="protocol-relative-ip"),
+        pytest.param("//a.123рф/a%41b", r"\//a.123рф/a%41b", id="protocol-relative-idn"),
+        pytest.param("path/to/file.py", r"path/to/file\.py", id="single-slashes-untouched"),
+    ],
+)
+def test_table_cells_render_markdown_punctuation_literally(text: str, escaped: str) -> None:
+    # Owner ruling (round 7): nothing is linked; every cell is literal plain text.
+    cell = _table(["Value"], [[text]])[2][2:-2]
+
+    assert cell == escaped
+    assert _GFM_BACKSLASH_ESCAPE.sub(r"\1", cell) == text
+
+
+@pytest.mark.parametrize(
+    ("text", "escaped"),
+    [
+        pytest.param(
+            "https://x.y/\x01![p](https://evil.example/p.png)",
+            "https\\:\\//x\\.y/\ufffd\\!\\[p\\]\\(https\\:\\//evil\\.example/p\\.png\\)",
+            id="image",
+        ),
+        pytest.param(
+            "https://x.y/\x01[trusted](https://evil.example)",
+            "https\\:\\//x\\.y/\ufffd\\[trusted\\]\\(https\\:\\//evil\\.example\\)",
+            id="disguised-link",
+        ),
+        pytest.param(
+            "https://x.y/\x01`code`", "https\\:\\//x\\.y/\ufffd\\`code\\`", id="code-span"
+        ),
+    ],
+)
+def test_table_cells_publish_no_markdown_from_a_control_character_payload(
+    text: str, escaped: str
+) -> None:
+    cell = _table(["Value"], [[text]])[2][2:-2]
+
+    assert cell == escaped
+    assert "![" not in cell
+    assert "](" not in cell
+    assert re.search(r"(?<!\\)`", cell) is None
+
+
+def test_table_pins_the_escaped_form_of_an_email_address() -> None:
+    """Pin how an email address is escaped; this cannot stop every link.
+
+    cmark-gfm (GitHub's renderer) autolinks an email address in cell text after
+    escapes resolve, so ``a@b.c`` still renders as a mailto link. Its text equals its
+    target, so it deceives nobody; the owner accepted this on 2026-10-30.
+    """
+    assert _table(["Value"], [["a@b.c"]])[2] == r"| a@b\.c |"
+
+
+def test_table_replaces_control_characters_and_keeps_one_row() -> None:
+    lines = _table(["Value"], [["a\tb\x00c\x7fd\x1fe\r\nf"]])
+
+    assert lines[2:] == ["| a b\ufffdc\ufffdd\ufffde f |"]
+
+
+def test_table_escapes_a_one_megabyte_cell_in_linear_time() -> None:
+    unit = "ab|:(www.x"
+    started = time.perf_counter()
+    lines = _table(["Value"], [[unit * 100_000]])
+    elapsed = time.perf_counter() - started
+
+    assert lines[2] == "| " + r"ab\|\:\(www\.x" * 100_000 + " |"
+    assert elapsed < 1.0
+
+
+def test_table_keeps_a_multi_line_cell_on_one_row() -> None:
+    assert _table(["Value"], [["a\nb\r\nc\rd"]])[2:] == ["| a b c d |"]
+
+
+def test_token_paragraph_gives_the_real_reason_for_approximate_counts(tmp_path: Path) -> None:
+    report_text = _generate_report(_minimal_valid_run_dir(tmp_path)).read_text(encoding="utf-8")
+    token_paragraph = report_text.split("## Token Counts (After Client Rewrap)", 1)[1]
+    token_paragraph = token_paragraph.split("\n\n", 2)[1]
+
+    assert "name-only tool stubs and no system prompt" in token_paragraph
+    assert "could not expose its exact wrapped message envelope" not in token_paragraph

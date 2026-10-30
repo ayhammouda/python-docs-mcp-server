@@ -42,12 +42,12 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from benchmarks.adapters.guard import require_live_environment
-from benchmarks.runner import BenchmarkCellFailure
+from benchmarks.runner import BenchmarkCellFailure, cell_failure_from
+from benchmarks.urls import first_web_url, labeled_value
 
 DEFAULT_ENDPOINT = "https://api.ref.tools/mcp"
 
@@ -61,8 +61,6 @@ API_KEY_HEADER = "x-ref-api-key"
 API_KEY_ENV = "REF_API_KEY"
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
-
-_URL_RE = re.compile(r"https?://[^\s\"']+")
 
 
 @dataclass(frozen=True)
@@ -120,9 +118,11 @@ def _extract_first_url(result: _CallToolResult) -> str | None:
     """Pick the top hit's URL out of a ``ref_search_documentation`` result.
 
     Prefers a structured hit list (``results``/``hits``) with a ``url``
-    field, falling back to scanning the first text block for an
-    ``http(s)://`` URL. Returns ``None`` (never raises) when neither
-    yields a candidate.
+    field. Otherwise it reads the first text block: each hit there has
+    ``overview:``, ``url:`` and ``moduleId:`` lines, so the first ``url:``
+    line wins over any link inside an overview, and the first
+    ``http(s)://`` URL is the last resort. Returns ``None`` (never raises)
+    when nothing yields a candidate.
     """
     payload = _tool_result_payload(result)
     if isinstance(payload, dict):
@@ -134,11 +134,9 @@ def _extract_first_url(result: _CallToolResult) -> str | None:
                 if isinstance(url, str) and url:
                     return url
     text = _first_text(result)
-    if text:
-        match = _URL_RE.search(text)
-        if match:
-            return match.group(0)
-    return None
+    if not text:
+        return None
+    return labeled_value(text, "url") or first_web_url(text)
 
 
 async def _run_ref_tools_flow(session: _CallToolSession, prompt: str) -> RefToolsResult:
@@ -257,16 +255,12 @@ class RefToolsAdapter:
         require_live_environment("ref")
         try:
             return asyncio.run(asyncio.wait_for(self._run_async(prompt), self._timeout_seconds))
-        except BenchmarkCellFailure:
-            raise
-        except TimeoutError as exc:
-            raise BenchmarkCellFailure(
-                "timeout",
-                "Ref.tools did not complete ref_search_documentation -> ref_read_url within "
-                f"{self._timeout_seconds}s",
-            ) from exc
         except Exception as exc:  # noqa: BLE001 - failures are benchmark artifacts
-            raise BenchmarkCellFailure("mcp_protocol_crash", str(exc)) from exc
+            raise cell_failure_from(
+                exc,
+                timeout_seconds=self._timeout_seconds,
+                label="Ref.tools ref_search_documentation -> ref_read_url",
+            ) from exc
 
     async def _run_async(self, prompt: str) -> RefToolsResult:
         # Imported lazily so importing this module never requires the `mcp`

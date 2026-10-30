@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import subprocess
 import sys
@@ -9,7 +10,13 @@ from typing import Any
 import pytest
 import yaml
 
-from benchmarks.runner import BenchmarkConfig, BenchmarkValidationError, run_benchmark
+from benchmarks.runner import (
+    BenchmarkCellFailure,
+    BenchmarkConfig,
+    BenchmarkValidationError,
+    cell_failure_from,
+    run_benchmark,
+)
 
 
 def _write_yaml(path: Path, data: dict) -> Path:
@@ -43,7 +50,7 @@ def _manifest(tmp_path: Path, competitors: list[dict] | None = None) -> Path:
                 {
                     "id": "no-mcp",
                     "name": "No MCP baseline",
-                    "adapter": "no-mcp-baseline",
+                    "adapter": "fake",
                 }
             ]
         },
@@ -90,7 +97,7 @@ def test_snapshots_are_byte_identical_to_input_files(tmp_path: Path) -> None:
         b"# a corpus comment that yaml.safe_dump would strip\n" + corpus_path.read_bytes()
     )
     manifest_path.write_bytes(
-        b"competitors:\n  - id: no-mcp\n    name: No MCP baseline\n    adapter: no-mcp-baseline\n"
+        b"competitors:\n  - id: no-mcp\n    name: No MCP baseline\n    adapter: fake\n"
     )
     original_corpus_bytes = corpus_path.read_bytes()
     original_manifest_bytes = manifest_path.read_bytes()
@@ -170,7 +177,7 @@ def test_environment_metadata_captures_repo_commit_and_python(
     assert metadata["repo_commit"] == fake_sha
     assert metadata["repo_commit"] != "unknown"
     assert metadata["python_version"].startswith(f"{sys.version_info.major}.")
-    assert metadata["external_provider_calls"] is False
+    assert "external_provider_calls" not in metadata
 
 
 def test_dry_run_writes_plan_without_cell_execution(tmp_path: Path) -> None:
@@ -264,7 +271,7 @@ def test_competitor_cell_failure_is_recorded(tmp_path: Path) -> None:
                 [
                     {
                         "id": "failing-baseline",
-                        "adapter": "no-mcp-baseline",
+                        "adapter": "fake",
                         "force_failure": True,
                     }
                 ],
@@ -292,13 +299,36 @@ def test_competitor_cell_failure_is_recorded(tmp_path: Path) -> None:
     assert failure["correctness_score"] == 0.0
     assert failure["included_in_correctness_denominator"] is True
     assert transcript["status"] == "failed"
-    assert transcript["external_provider_calls"] is False
+    assert "external_provider_calls" not in transcript
     assert scoring["status"] == "failed"
     assert scoring["score"] == 0.0
     assert scoring["requires_manual_scoring"] is False
     assert scoring["included_in_correctness_denominator"] is True
     assert scoring["error_category"] == "tool_failure"
     assert latency["error_category"] == "tool_failure"
+
+
+@pytest.mark.parametrize("alias", ["no-mcp-baseline", "no_mcp_baseline"])
+def test_removed_baseline_alias_is_an_unknown_adapter(tmp_path: Path, alias: str) -> None:
+    # The fixed flow has no real no-MCP baseline: these aliases only ran the
+    # fake adapter, so a manifest naming them must fail, not pass as a baseline.
+    out_dir = tmp_path / "results" / "removed-alias"
+
+    summary = run_benchmark(
+        BenchmarkConfig(
+            corpus_path=_corpus(tmp_path),
+            manifest_path=_manifest(tmp_path, [{"id": "baseline", "adapter": alias}]),
+            out_dir=out_dir,
+            run_id="removed-alias",
+        )
+    )
+
+    assert summary["failed_cells"] == 1
+    failure = json.loads(
+        (out_dir / "failures" / "baseline" / "q001.json").read_text(encoding="utf-8")
+    )
+    assert failure["error"]["category"] == "tool_failure"
+    assert "not implemented in this runner" in failure["error"]["message"]
 
 
 def test_timeout_and_mcp_protocol_crash_failures_are_classified(tmp_path: Path) -> None:
@@ -312,13 +342,13 @@ def test_timeout_and_mcp_protocol_crash_failures_are_classified(tmp_path: Path) 
                 [
                     {
                         "id": "timeout-baseline",
-                        "adapter": "no-mcp-baseline",
+                        "adapter": "fake",
                         "model": "fake-model",
                         "force_failure": "timeout",
                     },
                     {
                         "id": "crash-baseline",
-                        "adapter": "no-mcp-baseline",
+                        "adapter": "fake",
                         "provider": "fake-provider",
                         "model": "fake-model",
                         "force_failure": "mcp_protocol_crash",
@@ -448,7 +478,7 @@ def test_python_docs_mcp_stdio_adapter_is_dispatchable_and_records_tool_calls(
     assert transcript["answer"].startswith("fake-retrieved-content")
     assert transcript["tool_calls"][0]["tool"] == "search_docs"
     assert transcript["tool_calls"][1]["tool"] == "get_docs"
-    assert transcript["external_provider_calls"] is False
+    assert "external_provider_calls" not in transcript
 
 
 def test_dry_run_validates_python_docs_mcp_stdio_manifest_without_an_index(
@@ -536,6 +566,10 @@ def test_token_record_is_the_honest_placeholder_when_live_guard_is_disabled(
     assert token_record["raw_payload_tokens"] is None
     assert token_record["approximation"] is False
     assert token_record["token_label"] == METHODOLOGY_TOKEN_LABEL
+    assert (token_record["count_model"], token_record["anthropic_version"]) == (
+        "claude-sonnet-5-5",
+        "2023-06-01",
+    )
 
 
 def test_token_record_is_filled_when_live_guard_passes_with_a_fake_counter(
@@ -571,6 +605,220 @@ def test_token_record_is_filled_when_live_guard_passes_with_a_fake_counter(
     assert token_record["status"] == "counted"
     assert token_record["client_wrapped_tokens"] == 55
     assert token_record["raw_payload_tokens"] == 55
-    assert token_record["approximation"] is False
+    assert token_record["approximation"] is True
     assert token_record["token_label"] == METHODOLOGY_TOKEN_LABEL
     assert token_record["serialization_latency_ms"] >= 0
+    assert (token_record["count_model"], token_record["anthropic_version"]) == (
+        "claude-sonnet-5-5",
+        "2023-06-01",
+    )
+
+
+@pytest.mark.parametrize(
+    "raised",
+    [
+        BenchmarkCellFailure("tool_failure", "HTTP 400: bad envelope"),
+        # Not a BenchmarkCellFailure: today this aborts run_benchmark.
+        http.client.IncompleteRead(b"partial"),
+    ],
+)
+def test_token_record_is_failed_and_names_its_count_model_when_the_call_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raised: Exception
+) -> None:
+    from benchmarks.adapters.guard import LIVE_PROVIDERS_ENABLED_ENV, PROVIDER_API_KEY_ENV
+
+    class _FailingCounter:
+        def count(self, messages: Any, tools: Any = None) -> int:
+            raise raised
+
+    monkeypatch.setenv(LIVE_PROVIDERS_ENABLED_ENV, "1")
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV["anthropic"], "fake-not-a-real-key")
+    monkeypatch.setattr("benchmarks.adapters.claude_tokens.LiveClaudeTokenCounter", _FailingCounter)
+    out_dir = tmp_path / "results" / "token-count-fails"
+
+    run_benchmark(
+        BenchmarkConfig(
+            corpus_path=_corpus(tmp_path),
+            manifest_path=_manifest(tmp_path),
+            out_dir=out_dir,
+            run_id="token-count-fails",
+        )
+    )
+
+    token_record = json.loads(
+        (out_dir / "tokens" / "no-mcp" / "q001.json").read_text(encoding="utf-8")
+    )
+    assert token_record["status"] == "failed"
+    assert f"{type(raised).__name__}: " in token_record["notes"]
+    assert (token_record["count_model"], token_record["anthropic_version"]) == (
+        "claude-sonnet-5-5",
+        "2023-06-01",
+    )
+
+
+def test_token_record_redacts_the_api_key_from_a_failed_count_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from benchmarks.adapters.guard import LIVE_PROVIDERS_ENABLED_ENV, PROVIDER_API_KEY_ENV
+
+    class _EchoingCounter:
+        def count(self, messages: Any, tools: Any = None) -> int:
+            raise RuntimeError("echo fake-not-a-real-key")
+
+    monkeypatch.setenv(LIVE_PROVIDERS_ENABLED_ENV, "1")
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV["anthropic"], "fake-not-a-real-key")
+    monkeypatch.setattr("benchmarks.adapters.claude_tokens.LiveClaudeTokenCounter", _EchoingCounter)
+    out_dir = tmp_path / "results" / "token-count-echoes-key"
+
+    run_benchmark(
+        BenchmarkConfig(
+            corpus_path=_corpus(tmp_path),
+            manifest_path=_manifest(tmp_path),
+            out_dir=out_dir,
+            run_id="token-count-echoes-key",
+        )
+    )
+
+    token_record = json.loads(
+        (out_dir / "tokens" / "no-mcp" / "q001.json").read_text(encoding="utf-8")
+    )
+    assert "[redacted]" in token_record["notes"]
+    assert "fake-not-a-real-key" not in token_record["notes"]
+
+
+@pytest.mark.parametrize(
+    "api_key", ["fake-not-a-real-key\n", "fake-not-a-real key", "fake-not-a-real-日key"]
+)
+def test_token_record_is_failed_not_pending_for_a_malformed_anthropic_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, api_key: str
+) -> None:
+    # A failed count is shown as failed, never as pending.
+    from benchmarks.adapters.guard import LIVE_PROVIDERS_ENABLED_ENV, PROVIDER_API_KEY_ENV
+
+    def _counter_must_not_be_built(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("LiveClaudeTokenCounter must never be built with a malformed key")
+
+    def _token_record(run_id: str) -> dict[str, Any]:
+        out_dir = tmp_path / "results" / run_id
+        run_benchmark(
+            BenchmarkConfig(
+                corpus_path=_corpus(tmp_path),
+                manifest_path=_manifest(tmp_path),
+                out_dir=out_dir,
+                run_id=run_id,
+            )
+        )
+        return json.loads((out_dir / "tokens" / "no-mcp" / "q001.json").read_text(encoding="utf-8"))
+
+    monkeypatch.setattr(
+        "benchmarks.adapters.claude_tokens.LiveClaudeTokenCounter", _counter_must_not_be_built
+    )
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV["anthropic"], api_key)
+    monkeypatch.setenv(LIVE_PROVIDERS_ENABLED_ENV, "1")
+
+    token_record = _token_record("malformed-key")
+
+    assert token_record["status"] == "failed"
+    assert "MalformedApiKeyError" in token_record["notes"]
+    assert "fake-not-a-real" not in token_record["notes"]
+    assert "日" not in token_record["notes"]
+    assert "count_model" in token_record
+    assert "anthropic_version" in token_record
+
+    monkeypatch.delenv(LIVE_PROVIDERS_ENABLED_ENV)
+    assert _token_record("malformed-key-live-flag-off")["status"] == "placeholder"
+
+
+def test_cell_failure_records_redact_an_api_key_from_a_nested_adapter_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An MCP header error quotes the key two task groups deep; no record may keep it.
+    from benchmarks import runner
+    from benchmarks.adapters.guard import LIVE_PROVIDERS_ENABLED_ENV, PROVIDER_API_KEY_ENV
+
+    def _raises_nested_header_error(cell: Any) -> Any:
+        nested = ExceptionGroup(
+            "tg",
+            [ExceptionGroup("tg", [ValueError("Invalid header value b'fake-not-a-real-key\\n'")])],
+        )
+        raise cell_failure_from(nested, timeout_seconds=1, label="x") from None
+
+    monkeypatch.delenv(LIVE_PROVIDERS_ENABLED_ENV, raising=False)
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV["ref"], "fake-not-a-real-key")
+    monkeypatch.setitem(runner._ADAPTER_DISPATCH, "fake", _raises_nested_header_error)
+    out_dir = tmp_path / "results" / "nested-key-error"
+
+    summary = run_benchmark(
+        BenchmarkConfig(
+            corpus_path=_corpus(tmp_path),
+            manifest_path=_manifest(tmp_path),
+            out_dir=out_dir,
+            run_id="nested-key-error",
+        )
+    )
+
+    assert summary["failed_cells"] == 1
+    for kind in ("failures", "transcripts", "scoring"):
+        record = json.loads((out_dir / kind / "no-mcp" / "q001.json").read_text(encoding="utf-8"))
+        assert record["error"]["category"] == "mcp_protocol_crash"
+        assert "[redacted]" in record["error"]["message"]
+        assert "fake-not-a-real-key" not in record["error"]["message"]
+
+
+# --- cell_failure_from: the real reason behind an MCP task-group failure ----
+
+
+@pytest.mark.parametrize(
+    "exc,category,message",
+    [
+        (BenchmarkCellFailure("tool_failure", "boom"), "tool_failure", "boom"),
+        (TimeoutError(), "timeout", "flow did not complete within 2.5s"),
+        (RuntimeError("stdio pipe closed"), "mcp_protocol_crash", "stdio pipe closed"),
+        (
+            ExceptionGroup(
+                "tg",
+                [ExceptionGroup("tg", [BenchmarkCellFailure("tool_failure", "get_docs: boom")])],
+            ),
+            "tool_failure",
+            "get_docs: boom",
+        ),
+        (
+            ExceptionGroup(
+                "tg",
+                [
+                    OSError("pipe closed"),
+                    ExceptionGroup("tg", [BenchmarkCellFailure("timeout", "slow")]),
+                ],
+            ),
+            "timeout",
+            "OSError: pipe closed; BenchmarkCellFailure: slow",
+        ),
+        (
+            ExceptionGroup("tg", [OSError("pipe closed"), TimeoutError()]),
+            "timeout",
+            "OSError: pipe closed; TimeoutError: flow did not complete within 2.5s",
+        ),
+    ],
+)
+def test_cell_failure_from_walks_nested_groups_to_their_leaves(
+    exc: BaseException, category: str, message: str
+) -> None:
+    failure = cell_failure_from(exc, timeout_seconds=2.5, label="flow")
+
+    assert (failure.category, str(failure)) == (category, message)
+
+
+def test_cell_failure_from_names_a_leaf_that_has_no_text() -> None:
+    # An MCP server dying mid-session surfaces as an anyio error with empty
+    # text (e.g. BrokenResourceError()); the message must still name it.
+    lone = cell_failure_from(
+        ExceptionGroup("tg", [ConnectionResetError()]), timeout_seconds=2.5, label="flow"
+    )
+    assert (lone.category, str(lone)) == ("mcp_protocol_crash", "ConnectionResetError")
+
+    pair = cell_failure_from(
+        ExceptionGroup("tg", [ValueError("bad"), ConnectionResetError()]),
+        timeout_seconds=2.5,
+        label="flow",
+    )
+    assert str(pair) == "ValueError: bad; ConnectionResetError"
