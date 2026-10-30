@@ -446,7 +446,8 @@ def publish_index(
         require_content: Whether publish validation should require content tables.
 
     Returns:
-        True if publishing succeeded, False if smoke tests failed.
+        True if publishing succeeded; False if the smoke tests failed (the build is
+        deleted) or the build could not leave WAL mode (the build is kept).
     """
     # Compute SHA256 (PUBL-02)
     artifact_hash = compute_sha256(build_db_path)
@@ -493,8 +494,22 @@ def publish_index(
             ("published", build_notes, run_id),
         )
         conn.commit()
+        # Last read-write step: every read-write open turns WAL back on.
+        try:
+            journal_mode = conn.execute("PRAGMA journal_mode = DELETE").fetchone()[0]
+        except sqlite3.OperationalError as e:
+            journal_mode = e
     finally:
         conn.close()
+
+    if journal_mode != "delete":
+        logger.error(
+            "Could not switch build %s to journal_mode=DELETE (%s); not publishing it. "
+            "Close the program holding it and run build-index again.",
+            build_db_path,
+            journal_mode,
+        )
+        return False
 
     # Atomic swap (PUBL-04)
     atomic_swap(build_db_path)

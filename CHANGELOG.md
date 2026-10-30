@@ -24,6 +24,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   test suite no longer runs `build-index` against the real cache folder.
 - When smoke tests reject a new index, `build-index` logs every smoke message
   and the build path at ERROR and deletes the build.
+- The published `index.db` now uses SQLite's rollback journal
+  (`journal_mode=DELETE`), so servers that open it read-only no longer create
+  `index.db-wal` and `index.db-shm` files beside it.
 
 ## [0.4.0] — Unreleased
 

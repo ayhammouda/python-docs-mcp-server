@@ -414,7 +414,7 @@ def build_index(versions: str, skip_content: bool) -> None:
     versions_str = ",".join(version_list)
     success = publish_index(build_db_path, versions_str, require_content=not skip_content)
     if not success:
-        logger.error("Publishing failed — smoke tests did not pass")
+        logger.error("Publishing failed; see the errors above")
         raise SystemExit(1)
 
 

@@ -211,6 +211,10 @@ sits between ingestion and the storage layer becoming visible to `serve`:
   new database, and only call `atomic_swap` (plus print a restart-required
   message to stderr) if the smoke tests pass; on failure it logs every smoke
   message and the build path at ERROR, deletes the build and returns `False`.
+  Before the `atomic_swap` call, its last read-write step switches the build
+  to `journal_mode = DELETE`, so read-only servers never create `-wal` or
+  `-shm` files; if the switch fails it keeps the build, logs its path and
+  returns `False`.
 
 ---
 

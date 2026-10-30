@@ -427,6 +427,56 @@ class TestSmokeTests:
         assert any(str(build) in message for message in errors)
         assert list(isolated_cache.iterdir()) == []
 
+    def test_published_index_uses_rollback_journal(self, isolated_cache):
+        build = isolated_cache / "build-1.db"
+        self._create_symbols_only_db(build)
+
+        assert publish_index(build, "3.13", require_content=False) is True
+
+        index = isolated_cache / "index.db"
+        with open(index, "rb") as f:
+            assert f.read(20)[18:20] == b"\x01\x01"  # b"\x02\x02" means WAL
+        conn = get_readonly_connection(index)
+        assert conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0] == 2100
+        conn.close()
+        assert sorted(p.name for p in isolated_cache.iterdir()) == ["index.db"]
+
+    def test_new_readers_ignore_stale_sidecars_of_a_wal_index(self, isolated_cache):
+        if sys.platform == "win32":
+            pytest.skip("Windows cannot replace an index.db that a reader holds open")
+        index = isolated_cache / "index.db"
+        conn = get_readwrite_connection(index)  # an index published before this fix: WAL mode
+        bootstrap_schema(conn)
+        conn.close()
+        old = get_readonly_connection(index)  # a running server; leaves index.db-wal and -shm
+        assert old.execute("SELECT COUNT(*) FROM symbols").fetchone()[0] == 0
+        build = isolated_cache / "build-1.db"
+        self._create_symbols_only_db(build)
+
+        assert publish_index(build, "3.13", require_content=False) is True
+
+        new = get_readonly_connection(index)
+        assert new.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        assert new.execute("SELECT COUNT(*) FROM symbols").fetchone()[0] == 2100
+        new.close()
+        assert old.execute("SELECT COUNT(*) FROM symbols").fetchone()[0] == 0
+        old.close()
+
+    def test_publish_aborts_when_build_cannot_leave_wal(self, isolated_cache, caplog):
+        build = isolated_cache / "build-1.db"
+        self._create_symbols_only_db(build)
+        holder = get_readonly_connection(build)  # e.g. a sqlite3 shell left open on the build
+        holder.execute("SELECT COUNT(*) FROM symbols").fetchone()
+        try:
+            with caplog.at_level(logging.ERROR):
+                assert publish_index(build, "3.13", require_content=False) is False
+        finally:
+            holder.close()
+        assert not (isolated_cache / "index.db").exists()
+        assert build.exists()
+        assert "journal_mode" in caplog.text
+        assert str(build) in caplog.text
+
 
 class TestReadOnlyConnection:
     def test_can_query_existing_db(self, tmp_path):
