@@ -4,11 +4,11 @@
 
 **Companion to:** [`STRATEGIC-ROADMAP-2026-05-29.md`](STRATEGIC-ROADMAP-2026-05-29.md) (the *what*; this is the *how, with what guardrails*).
 
-**OpenClaw operating layer:** [`OPENCLAW-FORGE-PROTOCOL.md`](OPENCLAW-FORGE-PROTOCOL.md) defines how Vision, Gilfoyle, and Heimdall apply this policy. This project has no UI, so Saga is not part of the default loop.
+**OpenClaw operating layer:** [`OPENCLAW-FORGE-PROTOCOL.md`](OPENCLAW-FORGE-PROTOCOL.md) was retired on 2026-10-30 and is kept as history; it has no authority.
 
 **Adopted:** 2026-05-29
-**Current authority:** Read [Amendment 2026-10-01](#amendment-2026-10-01--vision-project-ownership)
-first. It supersedes conflicting historical restrictions below.
+**Current authority:** Read [Amendment 2026-10-30](#amendment-2026-10-30--ownership-transferred-to-the-claude-code-owner)
+first. It supersedes conflicting historical restrictions and earlier amendments below.
 
 ---
 
@@ -440,3 +440,175 @@ blockers go in the existing nightly digest; ready patches target shipment within
 48 hours without waiting for unrelated work. These rules supersede older per-run
 notification instructions. One implementation at a time, one existing two-hour
 owner loop, and no routine human self-approval.
+
+## Amendment 2026-10-30 — Ownership transferred to the Claude Code owner
+
+Aymen cancelled Vision's (`pd-owner`) owner authority on 2026-10-30 and
+transferred project ownership to the Claude Code owner. This amendment
+supersedes the 2026-10-01 and 2026-10-10 amendments where they conflict; those
+amendments stay as history. It also supersedes conflicting language in
+`OPENCLAW-FORGE-PROTOCOL.md`, the templates, old issue specs and
+`STRATEGIC-ROADMAP-2026-05-29.md`. Where earlier text names Vision as the
+approver, reviewer or merger, read it as the owner.
+
+### Who owns the project
+
+The owner is a Claude Code orchestrator session working for Aymen under his
+GitHub account. None of these has authority any more:
+
+- Vision, Gilfoyle and Heimdall;
+- the broker and `pdctl`;
+- the OpenClaw schedule;
+- the Vision GitHub Apps.
+
+`ops/vision/` stays in the repository as reference until a later decision.
+
+### Owner authority
+
+The owner has the same scope Vision had: roadmap and architecture, issue triage
+and replies, CI repair, dependency upgrades, merges and releases. Public comments
+name the role as "Claude Code — project owner, acting for Aymen".
+
+Escalate to Aymen only for:
+
+- GitHub settings that need an admin: rulesets, environments, Apps, secrets;
+- account or credential access;
+- spending beyond the budget below;
+- an external blocker;
+- restoring a verifier identity separate from the merger (see below).
+
+Until Aymen changes them, the `main` ruleset still requires the retired
+verifier App's "Independent verification" check and tag creation is limited
+to that App. The owner can neither merge nor tag until then.
+
+### Implementers
+
+Implementers are Claude Code sessions or subagents working on branches in
+isolated worktrees. Several may run in parallel when their files don't overlap.
+An implementer never verifies its own change.
+
+### Independent verification
+
+Independent verification covers the exact PR head and has three parts:
+
+1. a Fable-model reviewer that did not write the change;
+2. a Codex CLI peer review with model `gpt-6-astra` at `xhigh` reasoning, in a
+   read-only sandbox;
+3. a `ponytail-review` pass.
+
+Each of the three parts, `ponytail-review` included, is run by an agent that
+is independent of the change. An agent is independent of a change when it wrote
+no part of it and reviews from a fresh context. A fresh-context subagent
+dispatched by the implementing session qualifies; a pass run inside the
+implementing agent's own context does not. At least one of the three parts is
+dispatched by the owner, not by the implementing session.
+
+Fix Critical and Important findings test-first. Record each declined finding
+with its reason. The record is a PR comment by the owner. Its first line is
+exactly `Independent verification: PASS`. It contains a line
+`head: <40-hex head SHA>` and states the three verdicts and the gate result.
+A new head invalidates it. Never edit a record; post a new comment instead.
+The release gate ignores comments posted after the merge. It counts an edited
+owner comment that names the merged head on a `head:` line as FAIL, whatever
+its first line says, so an edit cannot revive an older PASS.
+
+A failed or revoked verification is recorded the same way, with the first line
+exactly `Independent verification: FAIL` and the same `head:` line. Among the
+owner's records for the merged head created at or before the merge, the newest
+(by creation time, then comment id) decides, and it must be PASS. A later FAIL
+therefore revokes an earlier PASS for the same head.
+
+The record is a process tripwire, not a security boundary. The owner account
+writes it and also merges, so anyone who can act as that account can forge it.
+A credential-bound check needs a verifier identity separate from the merger: a
+dedicated GitHub App with `checks: write`, or a machine account. Restoring one
+is the path back to that control, and the owner escalates it to Aymen.
+
+#### Carrying verification forward after an update from `main`
+
+The `main` ruleset requires branches to be up to date before merging, so every
+merge forces open PRs to update, which changes their head SHAs.
+
+Carry verification forward only when the head changed solely because the
+branch was updated from current `main` with no conflicts, and one of these
+holds:
+
+- (a) the branch was rebased onto `main` and
+  `git range-diff <old-base>..<old-head> <new-base>..<new-head>` shows no patch
+  changes;
+- (b) `main` was merged into the branch and
+  `git show --remerge-diff <merge-commit>` prints no diff. A conflict-free merge
+  commit can still carry a change that `range-diff` does not show, so (a)'s
+  check is not enough for a merge.
+
+Before carrying it forward, the owner:
+
+1. runs the check for (a) or (b) and keeps its output as evidence;
+2. confirms that the required checks pass on the new head;
+3. posts a new record comment. Its first line is
+   `Independent verification: PASS`, it names the new head on a `head:` line,
+   and it includes that evidence and a link to the original full verification.
+
+#### Re-verification
+
+Any other change of head needs all three delta reviews. That includes new
+commits of the PR's own, an update that needed conflict resolution, a changed
+patch in `git range-diff`, and a merge whose `--remerge-diff` is not empty.
+Re-verification covers the changed part with all three parts:
+
+1. a Fable reviewer;
+2. Codex `gpt-6-astra` at `xhigh`, in a read-only sandbox;
+3. `ponytail-review`.
+
+No part may be run by the implementer of the change.
+
+The partial record is the same record comment as a full one, with two added
+lines:
+
+- `scope: delta <old-head>..<new-head>`;
+- a link to the full verification record it extends.
+
+It also states the three delta verdicts and the required-check result on the
+new head.
+
+### Merge gate
+
+The owner merges only when all of these hold:
+
+- required GitHub checks are green on the current head;
+- a verification record exists for that head;
+- review conversations are resolved;
+- the merge is a squash merge bound to the head:
+  `gh pr merge --squash --match-head-commit <sha>`.
+
+Never use an admin bypass, weaken a test, silence a security finding, or disable
+a check.
+
+### Release
+
+1. Merge the version PR.
+2. Wait for the required checks to pass on the resulting `main` commit.
+3. The owner creates the `vX.Y.Z` tag on that exact commit, and `release.yml`
+   verifies it.
+
+Tags stay immutable. Never overwrite a published version. `.github/RELEASE.md`
+has the commands.
+
+### Paid benchmark budget
+
+Aymen set this budget on 2026-10-30. Provider credit is Anthropic $200, OpenAI
+$75 and Google Gemini $200.
+
+- Keys live only in the gitignored local `.env.local`, and enter benchmark
+  containers at run time.
+- Keys are never committed or logged.
+- The owner records estimated and actual spend per run in the PR or issue.
+- The owner stops any run that would exceed the remaining credit.
+
+### What stays
+
+- the product promise in the 2026-10-01 ownership amendment;
+- §2 forbidden territory;
+- the §5 gate;
+- the §7 triggers. `supervisor-review` now means owner review plus the
+  independent verification above.
