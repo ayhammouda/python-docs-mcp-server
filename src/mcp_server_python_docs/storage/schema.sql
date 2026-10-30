@@ -61,8 +61,6 @@ CREATE TABLE IF NOT EXISTS symbols (
     normalized_name  TEXT NOT NULL,
     module           TEXT,
     symbol_type      TEXT,
-    document_id      INTEGER REFERENCES documents(id) ON DELETE SET NULL,
-    section_id       INTEGER REFERENCES sections(id) ON DELETE SET NULL,
     uri              TEXT NOT NULL,
     anchor           TEXT,
     UNIQUE(doc_set_id, qualified_name, symbol_type)
@@ -77,21 +75,6 @@ CREATE TABLE IF NOT EXISTS examples (
     ordinal          INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS synonyms (
-    id               INTEGER PRIMARY KEY,
-    concept          TEXT NOT NULL,
-    expansion        TEXT NOT NULL,
-    UNIQUE(concept)
-);
-
-CREATE TABLE IF NOT EXISTS redirects (
-    id               INTEGER PRIMARY KEY,
-    doc_set_id       INTEGER NOT NULL REFERENCES doc_sets(id) ON DELETE CASCADE,
-    old_uri          TEXT NOT NULL,
-    new_uri          TEXT NOT NULL,
-    UNIQUE(doc_set_id, old_uri)
-);
-
 CREATE TABLE IF NOT EXISTS ingestion_runs (
     id               INTEGER PRIMARY KEY,
     source           TEXT NOT NULL,
@@ -99,7 +82,6 @@ CREATE TABLE IF NOT EXISTS ingestion_runs (
     status           TEXT NOT NULL,
     started_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     finished_at      TEXT,
-    artifact_hash    TEXT,
     notes            TEXT
 );
 

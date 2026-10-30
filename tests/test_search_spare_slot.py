@@ -139,14 +139,13 @@ def test_full_compact_utf8_budget_exact_fit_one_byte_short_and_oversized(
 def test_inventory_alias_resolves_to_existing_section(search_service):
     db = search_service._db
     section = db.execute(
-        "SELECT id, document_id FROM sections WHERE anchor = 'json.dumps'",
+        "SELECT uri, anchor FROM sections WHERE anchor = 'json.dumps'",
     ).fetchone()
     db.execute(
         "INSERT INTO symbols (doc_set_id, qualified_name, normalized_name, symbol_type, "
-        "uri, anchor, module, document_id, section_id) "
-        "VALUES (1, 'json.encode_alias', 'json_encode_alias', 'function', "
-        "'library/alias.html#alias', 'alias', 'json', ?, ?)",
-        (section['document_id'], section['id']),
+        "uri, anchor, module) "
+        "VALUES (1, 'json.encode_alias', 'json_encode_alias', 'function', ?, ?, 'json')",
+        (section['uri'], section['anchor']),
     )
     db.commit()
     existing = lookup_symbols_exact(db, "json.dumps", "3.13", 1)[0]
@@ -156,6 +155,25 @@ def test_inventory_alias_resolves_to_existing_section(search_service):
     ) is original
     alias = lookup_symbols_exact(db, "json.encode_alias", "3.13", 1)[0]
     assert (alias.slug, alias.anchor) == (existing.slug, existing.anchor)
+
+
+def test_symbol_lookup_ignores_legacy_location_columns(search_service):
+    """Indexes built before this change still carry symbols.document_id/section_id."""
+    db = search_service._db
+    columns = {row[1] for row in db.execute("PRAGMA table_info(symbols)")}
+    for column in ("document_id", "section_id"):
+        if column not in columns:  # indexes built after this change lack them
+            db.execute(f"ALTER TABLE symbols ADD COLUMN {column} INTEGER")
+    other = db.execute(
+        "SELECT id, document_id FROM sections WHERE anchor != 'json.dumps' LIMIT 1"
+    ).fetchone()
+    db.execute(
+        "UPDATE symbols SET document_id = ?, section_id = ? WHERE qualified_name = 'json.dumps'",
+        (other["document_id"], other["id"]),
+    )
+    db.commit()
+    hit = lookup_symbols_exact(db, "json.dumps", "3.13", 1)[0]
+    assert (hit.slug, hit.anchor) == ("library/json.html", "json.dumps")
 
 
 def test_oversized_candidate_does_not_replace_original(search_service):

@@ -162,6 +162,7 @@ def build_index(versions: str, skip_content: bool) -> None:
     import venv
     from pathlib import Path
 
+    from mcp_server_python_docs.errors import FTS5UnavailableError
     from mcp_server_python_docs.ingestion.cpython_versions import (
         CPYTHON_DOCS_BUILD_CONFIG,
     )
@@ -179,7 +180,6 @@ def build_index(versions: str, skip_content: bool) -> None:
         build_sphinx_json_command,
         ingest_sphinx_json_dir,
         make_sphinx_json_env,
-        populate_synonyms,
         rebuild_fts_indexes,
         write_json_build_requirements,
         write_sphinx_json_sitecustomize,
@@ -218,8 +218,14 @@ def build_index(versions: str, skip_content: bool) -> None:
     conn = get_readwrite_connection(build_db_path)
     built = False
     try:
+        # Before bootstrap_schema: its FTS5 tables would fail first, with a bare
+        # "no such module: fts5" instead of the check's hint (STOR-08).
+        try:
+            assert_fts5_available(conn)
+        except FTS5UnavailableError as e:
+            logger.error("%s", e)
+            raise SystemExit(1)
         bootstrap_schema(conn)
-        assert_fts5_available(conn)
 
         any_version_succeeded = False
 
@@ -398,10 +404,6 @@ def build_index(versions: str, skip_content: bool) -> None:
         if not any_version_succeeded:
             logger.error("No versions were successfully ingested")
             raise SystemExit(1)
-
-        # Populate synonyms from synonyms.yaml (INGR-C-09)
-        synonym_count = populate_synonyms(conn)
-        logger.info("Populated %d synonyms", synonym_count)
 
         # Rebuild FTS indexes (INGR-C-08)
         rebuild_fts_indexes(conn)
