@@ -215,6 +215,17 @@ def test_redact_api_keys_redacts_every_occurrence_of_a_repeated_key(
     )
 
 
+def test_redact_api_keys_merges_overlapping_occurrences_of_one_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for key_env in PROVIDER_API_KEY_ENV.values():
+        monkeypatch.delenv(key_env, raising=False)
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV["ref"], "ababa")
+
+    # str.replace finds only "ababa" at 0 and would leave "ba" behind.
+    assert redact_api_keys("abababa") == "[redacted]"
+
+
 def test_redact_api_keys_stays_linear_on_a_large_body_with_many_matches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
