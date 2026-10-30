@@ -31,7 +31,9 @@ limit; keyless use is real but more rate-limited. A manifest entry that
 declares key mode (``key_mode=True``) is gated by
 ``require_live_environment("context7")`` (same shape as every keyed
 provider); a keyless entry is gated by
-``require_live_competitor("context7")`` (PLAN-87 section 2.2).
+``require_live_competitor("context7")`` (PLAN-87 section 2.2). The key is
+read only in key mode. Neither mode forwards proxy or ``npm_config_*``
+variables to ``npx`` any more; pass them explicitly if a run needs them.
 """
 
 from __future__ import annotations
@@ -279,7 +281,9 @@ class Context7Adapter:
         self._command = command if command is not None else _default_command()
         self._endpoint = endpoint if endpoint is not None else DEFAULT_ENDPOINT
         self._key_mode = key_mode
-        self._api_key = api_key if api_key is not None else os.environ.get(API_KEY_ENV)
+        self._api_key = (
+            (api_key if api_key is not None else os.environ.get(API_KEY_ENV)) if key_mode else None
+        )
         self._library_name = library_name
         self._timeout_seconds = timeout_seconds
 
@@ -318,8 +322,10 @@ class Context7Adapter:
             # The pinned npm client also accepts CONTEXT7_API_KEY via
             # environment (in addition to the remote HTTP mode's header
             # below), so the key -- when present -- is passed through the
-            # subprocess environment rather than dropped for this mode.
-            env = {**os.environ, API_KEY_ENV: self._api_key} if self._api_key else None
+            # subprocess environment rather than dropped for this mode. The
+            # SDK merges this dict over its safe defaults (PATH, HOME, ...),
+            # which npx needs; nothing else from this process is forwarded.
+            env = {API_KEY_ENV: self._api_key} if self._api_key else None
             transport = _transport_factory(mode="stdio", command=self._command, env=env)
         else:
             headers = {API_KEY_ENV: self._api_key} if self._api_key else None

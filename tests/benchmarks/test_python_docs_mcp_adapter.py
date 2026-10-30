@@ -313,6 +313,46 @@ def test_run_maps_a_failure_inside_a_real_stdio_session(
     assert isinstance(exc_info.value.__cause__, ExceptionGroup)
 
 
+# --- The spawned server gets only the environment it needs
+
+
+class _TransportReached(Exception):
+    """Raised by the patched stdio client once it has seen its parameters."""
+
+
+@pytest.mark.parametrize(
+    "xdg_cache_home,expected",
+    [
+        pytest.param(
+            "/tmp/bench-cache",
+            {"PYTHON_DOCS_MCP_DISABLE_AUTO_INDEX": "1", "XDG_CACHE_HOME": "/tmp/bench-cache"},
+            id="cache-location-set",
+        ),
+        pytest.param(None, {"PYTHON_DOCS_MCP_DISABLE_AUTO_INDEX": "1"}, id="cache-location-unset"),
+    ],
+)
+def test_server_env_holds_only_the_auto_index_switch_and_cache_location(
+    xdg_cache_home: str | None, expected: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("UNRELATED_SECRET", "s")
+    if xdg_cache_home is None:
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    else:
+        monkeypatch.setenv("XDG_CACHE_HOME", xdg_cache_home)
+    recorded: dict[str, Any] = {}
+
+    def _record(params: Any) -> Any:
+        recorded["env"] = params.env
+        raise _TransportReached
+
+    monkeypatch.setattr("mcp.client.stdio.stdio_client", _record)
+
+    with pytest.raises(_TransportReached):
+        asyncio.run(PythonDocsMcpAdapter()._run_async("q"))
+
+    assert recorded["env"] == expected
+
+
 # --- Optional integration test: real server spawn, skipped without an index
 
 

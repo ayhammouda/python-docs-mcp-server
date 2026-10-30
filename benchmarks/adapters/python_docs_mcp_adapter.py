@@ -245,7 +245,11 @@ class PythonDocsMcpAdapter:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
 
-        env = {**os.environ, DISABLE_AUTO_INDEX_ENV: "1"}
+        # The SDK defaults carry HOME and LOCALAPPDATA; platformdirs also reads
+        # XDG_CACHE_HOME, so the child opens the index this process checked.
+        env = {DISABLE_AUTO_INDEX_ENV: "1"}
+        if os.environ.get("XDG_CACHE_HOME"):
+            env["XDG_CACHE_HOME"] = os.environ["XDG_CACHE_HOME"]
         params = StdioServerParameters(
             command=self._command[0], args=list(self._command[1:]), env=env
         )

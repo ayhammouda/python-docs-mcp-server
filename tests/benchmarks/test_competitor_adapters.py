@@ -759,6 +759,48 @@ def test_keyed_competitor_adapters_refuse_and_never_build_transport(
         make_adapter().run("anything")
 
 
+# --- Context7 hands the spawned or remote server only the key, only in key mode
+
+
+class _TransportReached(Exception):
+    """Raised by the patched transport seam once it has seen its arguments."""
+
+
+@pytest.mark.parametrize(
+    "mode,key_mode,api_key,field_name,expected",
+    [
+        pytest.param("stdio", True, None, "env", {"CONTEXT7_API_KEY": "k"}, id="key-stdio"),
+        pytest.param("stdio", False, None, "env", None, id="keyless-stdio"),
+        pytest.param("http", True, None, "headers", {"CONTEXT7_API_KEY": "k"}, id="key-http"),
+        pytest.param("http", False, None, "headers", None, id="keyless-http"),
+        pytest.param("stdio", False, "explicit", "env", None, id="keyless-ignores-explicit-key"),
+    ],
+)
+def test_context7_passes_only_the_key_and_only_in_key_mode(
+    mode: str,
+    key_mode: bool,
+    api_key: str | None,
+    field_name: str,
+    expected: dict[str, str] | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CONTEXT7_API_KEY", "k")
+    monkeypatch.setenv("UNRELATED_SECRET", "s")
+    recorded: dict[str, Any] = {}
+
+    def _record(**kwargs: Any) -> Any:
+        recorded.update(kwargs)
+        raise _TransportReached
+
+    monkeypatch.setattr(context7_adapter, "_transport_factory", _record)
+
+    adapter = context7_adapter.Context7Adapter(mode=mode, key_mode=key_mode, api_key=api_key)
+    with pytest.raises(_TransportReached):
+        asyncio.run(adapter._run_async("q"))
+
+    assert recorded[field_name] == expected
+
+
 # =============================================================================
 # 4. require_live_competitor latch semantics in isolation
 # =============================================================================
