@@ -551,8 +551,9 @@ def _cell(text: str) -> str:
     text = re.sub(r"\r\n|[\r\n\t]", " ", text).translate(_CELL_CONTROLS)
     # shortcut: cmark-gfm (GitHub's renderer) still links an email address in cell text,
     # because its autolink pass runs after escapes resolve; the link text equals the
-    # address, so it is not deceptive (owner accepted, 2026-10-30). Upgrade only if
-    # reports move to a renderer with autolink disabled.
+    # address, so it is not deceptive (owner accepted, 2026-10-30). Upgrade if a renderer
+    # used for reports links an email with text that differs from its target, or if the
+    # cell contract is tightened to forbid every link.
     return _CELL_MARKDOWN.sub(r"\\\g<0>", text)
 
 
