@@ -20,7 +20,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **Rebuild the index after upgrading.** New indexes record format version 1
   (`PRAGMA user_version`). `doctor` reports `FAIL: Index format` for an index
   built by another release and prints the `build-index` command for the
-  versions that index holds. Run it, then restart your MCP client. An index you
+  versions that index holds; for an index from a newer release it suggests
+  upgrading instead. Run it, then restart your MCP client. An index you
   do not rebuild keeps working, but its code examples stay filed under each
   page's first section.
 

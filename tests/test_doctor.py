@@ -317,8 +317,12 @@ class TestIndexFormatProbe:
 
     def test_doctor_fails_on_newer_index_format(self, tmp_path, monkeypatch):
         result = _doctor_with_index(tmp_path, monkeypatch, user_version=2)
-        assert "FAIL: Index format -- version 2, expected 1" in result.stderr
-        assert REBUILD in result.stderr
+        assert (
+            "FAIL: Index format -- version 2, newer than this release (expected 1) "
+            "-- upgrade python-docs-mcp-server, or to rebuild it for this release, "
+            f"run: {REBUILD}\n"
+        ) in result.stderr
+        assert result.returncode == 1
 
     def test_doctor_rebuild_command_keeps_indexed_versions(self, tmp_path, monkeypatch):
         result = _doctor_with_index(

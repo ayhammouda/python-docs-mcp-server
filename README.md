@@ -328,7 +328,8 @@ This checks the runtime Python version, SQLite FTS5, cache/index paths, the
 index format, disk space, and the `venv`/`ensurepip` support needed by
 `build-index`. If it reports `FAIL: Index format`, run the `build-index`
 command it prints; it lists the versions your index already holds (or every
-supported version, if it cannot read them).
+supported version, if it cannot read them). If it says your index is newer
+than this release, upgrade python-docs-mcp-server instead.
 
 Validate an existing index:
 
