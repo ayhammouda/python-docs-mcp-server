@@ -36,8 +36,10 @@ behavioral test and appear in the schema snapshot.
 
 Cross-cutting coverage:
 
-- **Schema contract**: `test_schema.py`, `test_schema_snapshot.py` — input/output
-  JSON schemas for each tool are frozen as fixtures; a wire-shape change fails CI.
+- **Schema contract**: `test_schema.py`, `test_schema_snapshot.py` — the served
+  `tools/list` (every tool's description, input and output schema, and
+  annotations) is frozen in `tests/fixtures/tools-list.json`; a wire-shape
+  change fails CI.
 - **Multi-version routing**: `test_multi_version.py` — version param resolution and
   default fallback across indexed doc sets.
 - **Regression**: `test_retrieval_regression.py` (curated query→expected cases) and

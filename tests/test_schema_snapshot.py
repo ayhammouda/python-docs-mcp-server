@@ -1,53 +1,44 @@
-"""Schema snapshot drift-guard tests (SRVR-06).
+"""Schema snapshot drift guard (SRVR-06).
 
-Compares Pydantic model JSON schemas against committed fixtures.
-When schemas change intentionally, run with UPDATE_SCHEMAS=1 to update fixtures:
-    UPDATE_SCHEMAS=1 pytest tests/test_schema_snapshot.py
+Pins the served ``tools/list`` (names, descriptions, input and output schemas,
+annotations) against ``tests/fixtures/tools-list.json``. The fixture pins
+normalized description text: each passes through ``inspect.cleandoc``,
+because Python 3.12 serves docstring indentation and 3.13+ serves a trailing
+newline on lookup_package_docs and whatsnew_for_version. When the tool surface
+changes on purpose, regenerate the fixture:
+    UPDATE_SCHEMAS=1 uv run --locked pytest tests/test_schema_snapshot.py
 """
+import inspect
 import json
 import os
 from pathlib import Path
 
+import anyio
 import pytest
 
-from mcp_server_python_docs.models import (
-    GetDocsInput,
-    GetDocsResult,
-    ListVersionsResult,
-    SearchDocsInput,
-    SearchDocsResult,
-)
+from mcp_server_python_docs.server import create_server
 
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
+FIXTURE = Path(__file__).parent / "fixtures" / "tools-list.json"
 UPDATE = os.environ.get("UPDATE_SCHEMAS", "") == "1"
 
-SCHEMA_PAIRS = [
-    ("schema-search_docs-input.json", SearchDocsInput),
-    ("schema-search_docs-output.json", SearchDocsResult),
-    ("schema-get_docs-input.json", GetDocsInput),
-    ("schema-get_docs-output.json", GetDocsResult),
-    ("schema-list_versions-output.json", ListVersionsResult),
-]
+
+def _served_tools() -> list[dict]:
+    """Dump what tools/list sends; list_tools() skips the lifespan and its index."""
+    tools = []
+    for tool in anyio.run(create_server().list_tools):
+        dumped = tool.model_dump(by_alias=True, mode="json", exclude_none=True)
+        # Python 3.12 keeps docstring indentation that 3.13+ strips at compile time.
+        dumped["description"] = inspect.cleandoc(dumped["description"])
+        tools.append(dumped)
+    return tools
 
 
-@pytest.fixture(autouse=True)
-def ensure_fixtures_dir():
-    """Create fixtures directory if it doesn't exist."""
-    FIXTURES_DIR.mkdir(parents=True, exist_ok=True)
-
-
-@pytest.mark.parametrize("fixture_name,model_class", SCHEMA_PAIRS)
-def test_schema_snapshot(fixture_name: str, model_class: type) -> None:
-    """Verify model schema matches committed fixture."""
-    fixture_path = FIXTURES_DIR / fixture_name
-    current_schema = model_class.model_json_schema()
-
-    if UPDATE or not fixture_path.exists():
-        fixture_path.write_text(json.dumps(current_schema, indent=2) + "\n")
-        pytest.skip(f"Fixture {fixture_name} written/updated")
-
-    committed_schema = json.loads(fixture_path.read_text())
-    assert current_schema == committed_schema, (
-        f"Schema drift detected for {model_class.__name__}. "
-        f"Run UPDATE_SCHEMAS=1 pytest tests/test_schema_snapshot.py to update."
+def test_tools_list_snapshot() -> None:
+    served = _served_tools()
+    if UPDATE:
+        FIXTURE.write_text(json.dumps(served, indent=2) + "\n")
+        pytest.skip("tools-list.json regenerated")
+    assert served == json.loads(FIXTURE.read_text()), (
+        "tools/list drift; if intended, regenerate with "
+        "UPDATE_SCHEMAS=1 uv run --locked pytest tests/test_schema_snapshot.py"
     )
