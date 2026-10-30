@@ -197,11 +197,11 @@ consumes indirectly — the tag/SHA/Sphinx-pin triple determines which
 ([`ingestion/publish.py`](../../src/mcp_server_python_docs/ingestion/publish.py))
 sits between ingestion and the storage layer becoming visible to `serve`:
 
-- `record_ingestion_run` (line 76) inserts a row into `ingestion_runs`
+- `record_ingestion_run` (line 109) inserts a row into `ingestion_runs`
   (`source`, `version`, `status`, `artifact_hash`, `notes`), used to record
   each build that reaches publishing; a rejected build is deleted with its
   row.
-- `atomic_swap` (line 355) keeps `index.db` present throughout. It
+- `atomic_swap` (line 377) keeps `index.db` present throughout. It
   hard-links an existing `index.db` to `index.db.previous.<pid>.tmp`
   (copying it where the filesystem has no hard links), `os.replace()`s that
   onto `index.db.previous` and removes the temporary name, then
@@ -209,7 +209,7 @@ sits between ingestion and the storage layer becoming visible to `serve`:
   holds `index.db` open, so a replace fails; it then logs that clients must
   be stopped, names the kept build, and re-raises. `rollback()` restores
   `index.db.previous`.
-- `publish_index` (line 419) orchestrates the sequence: compute the build
+- `publish_index` (line 503) orchestrates the sequence: compute the build
   artifact's SHA256, record the ingestion run, run smoke tests against the
   new database, and only call `atomic_swap` (plus print a restart-required
   message to stderr) if the smoke tests pass; on failure it logs every smoke
