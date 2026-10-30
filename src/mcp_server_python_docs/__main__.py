@@ -101,15 +101,20 @@ def serve() -> None:
     # print to stdout during MCP communication.
     os.dup2(saved_stdout_fd, 1)
     os.close(saved_stdout_fd)
-    # FastMCP writes JSON-RPC frames through Python's stdout object.
-    # Restore it as well as fd 1, otherwise protocol frames are emitted
-    # on stderr because module import redirected sys.stdout there.
+    # The SDK serves the wire on fd 1 only when sys.stdout is backed by fd 1;
+    # otherwise it writes through sys.stdout itself. Restore it as well as
+    # fd 1, otherwise protocol frames go to stderr because module import
+    # redirected sys.stdout there.
     sys.stdout = sys.__stdout__
 
     try:
         mcp_server.run(transport="stdio")
-    except BrokenPipeError:
-        pass  # Client disconnected (HYGN-03)
+    except* BrokenPipeError:
+        pass  # Client disconnected (HYGN-03); the SDK raises it inside an ExceptionGroup
+    finally:
+        # The SDK hands fd 1 back to the client pipe when run() returns; point it
+        # at stderr so output still buffered in sys.stdout is flushed there at exit.
+        os.dup2(2, 1)
 
 
 def _verify_cpython_source_sha(

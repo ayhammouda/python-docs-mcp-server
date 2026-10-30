@@ -4,6 +4,22 @@ All notable changes to `python-docs-mcp-server` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Moved to version 2 of the MCP Python SDK (`mcp>=2.3.0,<3`), which needs
+  `pydantic>=2.12`. The server still answers 2025-era clients through the
+  `initialize` handshake. It now also serves 2026-07-28 clients through
+  `server/discover`. It reports its own package version as
+  `serverInfo.version` instead of the SDK's. Tool names, parameters and
+  results are unchanged.
+
+### Fixed
+
+- The server now exits cleanly, with exit code 0 and no traceback, when a
+  client closes the connection mid-session.
+
 ## [0.4.0] — Unreleased
 
 ### Added

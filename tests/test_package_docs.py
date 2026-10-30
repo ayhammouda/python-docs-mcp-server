@@ -74,8 +74,8 @@ def test_package_docs_not_found_and_tool_annotation():
 
     from mcp_server_python_docs.server import create_server
     tool = create_server()._tool_manager._tools["lookup_package_docs"]
-    assert tool.annotations.readOnlyHint is True
-    assert tool.annotations.openWorldHint is True
+    assert tool.annotations.read_only_hint is True
+    assert tool.annotations.open_world_hint is True
 
 
 def test_package_docs_reports_non_404_pypi_http_errors():

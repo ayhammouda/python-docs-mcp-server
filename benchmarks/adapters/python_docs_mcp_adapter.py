@@ -84,8 +84,8 @@ class _CallToolResult(Protocol):
     """
 
     content: list[Any]
-    structuredContent: dict[str, Any] | None
-    isError: bool
+    structured_content: dict[str, Any] | None
+    is_error: bool
 
 
 class _CallToolSession(Protocol):
@@ -119,13 +119,13 @@ def _first_text(result: _CallToolResult) -> str | None:
 def _tool_result_payload(result: _CallToolResult) -> dict[str, Any] | None:
     """Extract a JSON-safe raw payload from a tool call result for the transcript.
 
-    Prefers ``structuredContent`` (FastMCP auto-generates this from the
+    Prefers ``structured_content`` (MCPServer auto-generates this from the
     tool's Pydantic return model). Falls back to the first text content
-    block (e.g. on an error result, where ``structuredContent`` is
+    block (e.g. on an error result, where ``structured_content`` is
     ``None``) so the transcript still records something useful for audit.
     """
-    if result.structuredContent is not None:
-        return result.structuredContent
+    if result.structured_content is not None:
+        return result.structured_content
     text = _first_text(result)
     return {"text": text} if text is not None else None
 
@@ -154,10 +154,10 @@ async def _run_retrieval_flow(
             tool="search_docs",
             arguments=search_args,
             result=search_payload,
-            is_error=bool(search_result.isError),
+            is_error=bool(search_result.is_error),
         )
     )
-    if search_result.isError:
+    if search_result.is_error:
         raise BenchmarkCellFailure(
             "tool_failure",
             f"search_docs returned an error: {_first_text(search_result)}",
@@ -178,10 +178,10 @@ async def _run_retrieval_flow(
             tool="get_docs",
             arguments=get_args,
             result=get_payload,
-            is_error=bool(get_result.isError),
+            is_error=bool(get_result.is_error),
         )
     )
-    if get_result.isError:
+    if get_result.is_error:
         raise BenchmarkCellFailure(
             "tool_failure",
             f"get_docs returned an error: {_first_text(get_result)}",
