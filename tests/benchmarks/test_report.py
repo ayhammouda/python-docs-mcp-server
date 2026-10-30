@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import time
@@ -1014,6 +1015,29 @@ def test_table_escapes_a_long_backslash_run_in_linear_time() -> None:
 
     assert lines[2] == "| " + "\\" * 80_000 + " |"
     assert elapsed < 1.0
+
+
+# GFM's backslash-escape rule: a backslash before ASCII punctuation is a literal.
+_GFM_BACKSLASH_ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
+
+
+@pytest.mark.parametrize(
+    ("text", "escaped"),
+    [
+        pytest.param("__init__", r"\_\_init\_\_", id="dunder"),
+        pytest.param(r"C:\_scratch_\python.exe", r"C:\\\_scratch\_\\python.exe", id="path"),
+        pytest.param("a*b*c", r"a\*b\*c", id="asterisks"),
+    ],
+)
+def test_table_cells_render_markdown_punctuation_literally(text: str, escaped: str) -> None:
+    cell = _table(["Value"], [[text]])[2][2:-2]
+
+    assert cell == escaped
+    assert _GFM_BACKSLASH_ESCAPE.sub(r"\1", cell) == text
+
+
+def test_table_keeps_a_multi_line_cell_on_one_row() -> None:
+    assert _table(["Value"], [["a\nb\r\nc\rd"]])[2:] == ["| a b c d |"]
 
 
 def test_token_paragraph_gives_the_real_reason_for_approximate_counts(tmp_path: Path) -> None:

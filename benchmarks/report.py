@@ -50,6 +50,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import statistics
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -524,14 +525,25 @@ def _relative_link(target: Path, from_dir: Path) -> str:
     return os.path.relpath(target.resolve(), start=from_dir.resolve())
 
 
+#: Characters that change rendering inside an inline table cell. "_" counts only at a
+#: word edge: between letters or digits it cannot open or close emphasis. "#", "+",
+#: "-", "." and the like matter only at the start of a block, which a cell never is.
+_CELL_MARKDOWN = re.compile(r"[\\`*\[\]<|~&]|(?<![^\W_])_|_(?![^\W_])")
+
+
+def _cell(text: str) -> str:
+    """Render ``text`` as one literal plain-text table cell.
+
+    Line breaks become spaces (a newline would end the row), then every significant
+    character gets a backslash, in one linear pass, so a proxy error body such as
+    "Error | Gateway" cannot add a column and ``__init__`` stays ``__init__``.
+    """
+    return _CELL_MARKDOWN.sub(r"\\\g<0>", re.sub(r"\r\n|[\r\n]", " ", text))
+
+
 def _table(headers: list[str], rows: list[list[str]]) -> list[str]:
     lines = ["| " + " | ".join(headers) + " |", "| " + " | ".join(["---"] * len(headers)) + " |"]
-    # Cells are plain text: escape backslashes, then pipes, so a proxy error body such
-    # as "Error | Gateway" cannot add a column and paths keep their backslashes.
-    lines.extend(
-        "| " + " | ".join(cell.replace("\\", "\\\\").replace("|", "\\|") for cell in row) + " |"
-        for row in rows
-    )
+    lines.extend("| " + " | ".join(_cell(cell) for cell in row) + " |" for row in rows)
     return lines
 
 
