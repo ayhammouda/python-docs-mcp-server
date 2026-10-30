@@ -7,8 +7,8 @@
 **OpenClaw operating layer:** [`OPENCLAW-FORGE-PROTOCOL.md`](OPENCLAW-FORGE-PROTOCOL.md) defines how Vision, Gilfoyle, and Heimdall apply this policy. This project has no UI, so Saga is not part of the default loop.
 
 **Adopted:** 2026-05-29
-**Current authority:** Read [Amendment 2026-10-01](#amendment-2026-10-01--vision-project-ownership)
-first. It supersedes conflicting historical restrictions below.
+**Current authority:** Read [Amendment 2026-10-30](#amendment-2026-10-30--ownership-transferred-to-the-claude-code-owner)
+first. It supersedes conflicting historical restrictions and earlier amendments below.
 
 ---
 
@@ -440,3 +440,101 @@ blockers go in the existing nightly digest; ready patches target shipment within
 48 hours without waiting for unrelated work. These rules supersede older per-run
 notification instructions. One implementation at a time, one existing two-hour
 owner loop, and no routine human self-approval.
+
+## Amendment 2026-10-30 — Ownership transferred to the Claude Code owner
+
+Aymen cancelled Vision's (`pd-owner`) owner authority on 2026-10-30 and
+transferred project ownership to the Claude Code owner. This amendment
+supersedes the 2026-10-01 and 2026-10-10 amendments where they conflict; those
+amendments stay as history. It also supersedes conflicting language in
+`OPENCLAW-FORGE-PROTOCOL.md`, the templates, old issue specs and
+`STRATEGIC-ROADMAP-2026-05-29.md`. Where earlier text names Vision as the
+approver, reviewer or merger, read it as the owner.
+
+### Who owns the project
+
+The owner is a Claude Code orchestrator session working for Aymen under his
+GitHub account. None of these has authority any more:
+
+- Vision, Gilfoyle and Heimdall;
+- the broker and `pdctl`;
+- the OpenClaw schedule;
+- the Vision GitHub Apps.
+
+`ops/vision/` stays in the repository as reference until a later decision.
+
+### Owner authority
+
+The owner has the same scope Vision had: roadmap and architecture, issue triage
+and replies, CI repair, dependency upgrades, merges and releases. Public comments
+name the role as "Claude Code — project owner, acting for Aymen".
+
+Escalate to Aymen only for:
+
+- GitHub settings that need an admin: rulesets, environments, Apps, secrets;
+- account or credential access;
+- spending beyond the budget below;
+- an external blocker.
+
+### Implementers
+
+Implementers are Claude Code sessions or subagents working on branches in
+isolated worktrees. Several may run in parallel when their files don't overlap.
+An implementer never verifies its own change.
+
+### Independent verification
+
+Independent verification covers the exact PR head and has three parts:
+
+1. a Fable-model reviewer that did not write the change;
+2. a Codex CLI peer review with model `gpt-6-astra` at `xhigh` reasoning, in a
+   read-only sandbox;
+3. a `ponytail-review` pass.
+
+Fix Critical and Important findings test-first. Record each declined finding
+with its reason. The record is a PR comment by the owner. Its first line is
+exactly `Independent verification: PASS`. It contains a line
+`head: <40-hex head SHA>` and states the three verdicts and the gate result.
+A new head invalidates it.
+
+### Merge gate
+
+The owner merges only when all of these hold:
+
+- required GitHub checks are green on the current head;
+- a verification record exists for that head;
+- review conversations are resolved;
+- the merge is a squash merge bound to the head:
+  `gh pr merge --squash --match-head-commit <sha>`.
+
+Never use an admin bypass, weaken a test, silence a security finding, or disable
+a check.
+
+### Release
+
+1. Merge the version PR.
+2. Wait for the required checks to pass on the resulting `main` commit.
+3. The owner creates the `vX.Y.Z` tag on that exact commit, and `release.yml`
+   verifies it.
+
+Tags stay immutable. Never overwrite a published version. `.github/RELEASE.md`
+has the commands.
+
+### Paid benchmark budget
+
+Aymen set this budget on 2026-10-30. Provider credit is Anthropic $200, OpenAI
+$75 and Google Gemini $200.
+
+- Keys live only in the gitignored local `.env.local`, and enter benchmark
+  containers at run time.
+- Keys are never committed or logged.
+- The owner records estimated and actual spend per run in the PR or issue.
+- The owner stops any run that would exceed the remaining credit.
+
+### What stays
+
+- the product promise in the 2026-10-01 ownership amendment;
+- §2 forbidden territory;
+- the §5 gate;
+- the §7 triggers. `supervisor-review` now means owner review plus the
+  independent verification above.
