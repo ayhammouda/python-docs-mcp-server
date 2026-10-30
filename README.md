@@ -337,23 +337,16 @@ uvx python-docs-mcp-server validate-corpus
 
 ### FTS5 unavailable
 
-If your Python build does not include SQLite FTS5:
-
-**Linux x86-64**
-
-Linux x86-64 users can install the optional bundled SQLite package:
-
-```bash
-pip install 'python-docs-mcp-server[pysqlite3]'
-```
-
-**macOS / Windows / Linux ARM**
-
-Install Python from [python.org](https://www.python.org/) or use:
+The index needs SQLite's FTS5 extension. The python.org installers,
+`uv python install`, and the Pythons from Linux distributions, Homebrew and
+conda all include it. If `doctor` reports `FAIL: SQLite FTS5`, your Python was
+built against a SQLite without FTS5. Install one that has it:
 
 ```bash
 uv python install
 ```
+
+Or install Python from [python.org](https://www.python.org/).
 
 ### Missing `pythonX.Y-venv` on Debian/Ubuntu
 

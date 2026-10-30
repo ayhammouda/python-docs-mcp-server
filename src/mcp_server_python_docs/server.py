@@ -63,7 +63,7 @@ def _load_synonyms() -> dict[str, list[str]]:
 
 
 def _assert_fts5(conn: sqlite3.Connection) -> None:
-    """Check FTS5 availability with platform-aware error (STOR-08)."""
+    """Check FTS5 availability; the error says how to get a Python with FTS5 (STOR-08)."""
     from mcp_server_python_docs.storage.db import assert_fts5_available
 
     assert_fts5_available(conn)

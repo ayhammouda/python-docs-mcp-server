@@ -517,16 +517,6 @@ wheels = [
 ]
 
 [[package]]
-name = "pysqlite3-binary"
-version = "0.5.4.post2"
-source = { registry = "https://pypi.org/simple" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/35/e8/292e14aa4ed1ef3d4a70703c0103823fcd4b7d9701d9462e52ef88c2cc10/pysqlite3_binary-0.5.4.post2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:b6162cd966fa563fe85b5372c3e61d11dd7903bd0f09cc185cb0a4c9125f4a0f", size = 4951088, upload-time = "2025-12-03T18:36:39.786Z" },
-    { url = "https://files.pythonhosted.org/packages/5d/89/338819970e306cae579aa570091a35d01df01d95fe159f2e5002b58b7481/pysqlite3_binary-0.5.4.post2-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:930c7597a0863ef3da721e538756c2768cee14cb9b8d2c037263d061b24f66a5", size = 4943344, upload-time = "2025-12-03T18:36:54.992Z" },
-    { url = "https://files.pythonhosted.org/packages/cf/00/9dc79fa319ee2f2fb8dc35bd5393b9fa79936899523c9640d2ca7206c742/pysqlite3_binary-0.5.4.post2-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:da62981abfbfb4b3d0a9e339932fe44f8d7f3fc62037851f89ea224409ed1767", size = 4943501, upload-time = "2025-12-03T18:37:07.853Z" },
-]
-
-[[package]]
 name = "pytest"
 version = "9.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -571,11 +561,6 @@ dependencies = [
     { name = "zstandard" },
 ]
 
-[package.optional-dependencies]
-pysqlite3 = [
-    { name = "pysqlite3-binary" },
-]
-
 [package.dev-dependencies]
 dev = [
     { name = "pyright" },
@@ -592,12 +577,10 @@ requires-dist = [
     { name = "mcp", specifier = ">=2.3.0,<3" },
     { name = "platformdirs", specifier = ">=4.0" },
     { name = "pydantic", specifier = ">=2.12,<3.0" },
-    { name = "pysqlite3-binary", marker = "extra == 'pysqlite3'", specifier = ">=0.5.4" },
     { name = "pyyaml", specifier = ">=6.0,<7.0" },
     { name = "sphobjinv", specifier = ">=2.4,<3.0" },
     { name = "zstandard", specifier = ">=0.23.0" },
 ]
-provides-extras = ["pysqlite3"]
 
 [package.metadata.requires-dev]
 dev = [

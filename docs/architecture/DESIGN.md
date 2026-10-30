@@ -247,24 +247,24 @@ exact Python identifier search.
 **Connection management**
 ([`storage/db.py`](../../src/mcp_server_python_docs/storage/db.py)):
 
-- `get_readonly_connection` (line 48) opens the database with SQLite URI mode
+- `get_readonly_connection` (line 47) opens the database with SQLite URI mode
   `?mode=ro` (preventing accidental writes at the connection level),
   `check_same_thread=False`, and `row_factory = sqlite3.Row`. This is the
   connection type `serve` uses.
-- `get_readwrite_connection` (line 60) creates parent directories as needed,
+- `get_readwrite_connection` (line 59) creates parent directories as needed,
   opens a normal read-write connection, and additionally sets
   `PRAGMA journal_mode = WAL`. This is the connection type `build-index`
   uses.
-- `assert_fts5_available` (line 74) checks FTS5 support with a
-  platform-aware error message: on a read-write connection it attempts to
+- `assert_fts5_available` (line 73) checks FTS5 support with one actionable
+  error message: on a read-write connection it attempts to
   `CREATE`/`DROP` a temporary FTS5 table as a definitive check; on a
   read-only connection, where that `CREATE` fails for the unrelated reason
   that the connection is read-only, it falls back to checking
   `PRAGMA compile_options` for `ENABLE_FTS5`. If FTS5 is genuinely
-  unavailable, it raises `FTS5UnavailableError` with a platform-specific
-  remediation hint (the `pysqlite3-binary` extra on Linux x86-64; a
-  `uv python install` or python.org build otherwise).
-- `bootstrap_schema` (line 116) drops and recreates the three FTS5 virtual
+  unavailable, it raises `FTS5UnavailableError` telling the user to install a
+  Python whose SQLite includes FTS5 (`uv python install` or python.org).
+  `doctor` runs the same check on an in-memory connection.
+- `bootstrap_schema` (line 104) drops and recreates the three FTS5 virtual
   tables unconditionally — because FTS5 has no `ALTER` for tokenizer
   configuration, `IF NOT EXISTS` alone cannot pick up a tokenizer change —
   then executes the full `schema.sql` DDL via `executescript()`. Every

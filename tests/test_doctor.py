@@ -4,13 +4,17 @@ All tests spawn a real subprocess to verify the doctor command's behavior,
 matching the pattern from test_stdio_hygiene.py.
 """
 import os
+import platform
 import sqlite3
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from mcp_server_python_docs.errors import FTS5UnavailableError
+from mcp_server_python_docs.storage.db import assert_fts5_available
 
 
 def _isolated_cache_env(tmpdir: str) -> dict[str, str]:
@@ -181,6 +185,19 @@ class TestBuildVenvSupportProbe:
         assert "build-index" in result.detail
 
 
+class _StubConnection:
+    """A sqlite3 connection stand-in whose CREATE VIRTUAL TABLE fails."""
+
+    def __init__(self, create_error: str, compile_options: tuple[str, ...] = ()):
+        self.create_error = create_error
+        self.compile_options = compile_options
+
+    def execute(self, sql: str, *params):
+        if sql.startswith("CREATE VIRTUAL TABLE"):
+            raise sqlite3.OperationalError(self.create_error)
+        return [(option,) for option in self.compile_options]  # PRAGMA compile_options
+
+
 class TestFts5Probe:
     """One FTS5 check, storage.db.assert_fts5_available, serves the server and doctor."""
 
@@ -214,3 +231,28 @@ class TestFts5Probe:
         result = CliRunner().invoke(main, ["doctor"])
 
         assert f"+ PASS: SQLite FTS5 -- SQLite {sqlite3.sqlite_version}" in result.output
+
+    def test_fts5_hint_never_suggests_pysqlite3(self, monkeypatch):
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+        with pytest.raises(FTS5UnavailableError) as excinfo:
+            assert_fts5_available(_StubConnection("no such module: fts5"))
+        message = str(excinfo.value)
+        assert "pysqlite3" not in message
+        assert "uv python install" in message
+        assert "python.org" in message
+
+    def test_readonly_probe_without_fts5_gets_the_one_hint(self, monkeypatch):
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+        conn = _StubConnection("attempt to write a readonly database", ("THREADSAFE=1",))
+        with pytest.raises(FTS5UnavailableError) as excinfo:
+            assert_fts5_available(conn)
+        assert "pysqlite3" not in str(excinfo.value)
+        assert "uv python install" in str(excinfo.value)
+
+    def test_readonly_probe_with_fts5_compiled_in_passes(self):
+        conn = _StubConnection(
+            "attempt to write a readonly database", ("ENABLE_FTS5", "THREADSAFE=1")
+        )
+        assert assert_fts5_available(conn) is None

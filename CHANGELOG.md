@@ -17,6 +17,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `doctor` now runs the same FTS5 check as the server and, when FTS5 is
   missing, prints that check's message.
 
+### Removed
+
+- Removed the `pysqlite3` optional extra. Nothing imported `pysqlite3`, so
+  installing the extra never enabled FTS5. When FTS5 is missing, the server and
+  `doctor` now give one hint: install a Python whose SQLite includes FTS5
+  (`uv python install` or python.org).
+
 ### Fixed
 
 - The server now exits cleanly, with exit code 0 and no traceback, when a
