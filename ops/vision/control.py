@@ -33,7 +33,6 @@ REPO = "ayhammouda/python-docs-mcp-server"
 CONFIG = Path("/etc/python-docs-vision")
 STATE = Path("/var/lib/python-docs-control")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
-BRANCH = re.compile(r"(?:codex|agent)/[A-Za-z0-9][A-Za-z0-9._/-]{0,150}\Z")
 MAX_BYTES = 8 * 1024 * 1024
 REVIEW_TIMEOUT = 1500
 ENV = {
@@ -122,6 +121,19 @@ def api(path: str, method="GET", data=None, role="owner"):
     return request(f"https://api.github.com/repos/{REPO}/{path}", token(role), method, data)
 
 
+def valid_branch(name) -> bool:
+    # Git ref rules: no empty, dot-leading or dot-trailing component, no "..", no ".lock" suffix.
+    return (
+        isinstance(name, str)
+        and len(name) <= 157
+        and re.fullmatch(
+            r"(?:codex|agent)(?:/[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*)+", name
+        )
+        is not None
+        and not any(part.endswith(".lock") for part in name.split("/"))
+    )
+
+
 def validate_api(method: str, path: str, body) -> None:
     if not isinstance(path, str) or len(path) > 400 or any(c in path for c in "%\\#\r\n"):
         raise ValueError("Invalid repository API path")
@@ -147,7 +159,7 @@ def validate_api(method: str, path: str, body) -> None:
                 method == "POST"
                 and clean == "pulls"
                 and body.get("base") == "main"
-                and BRANCH.fullmatch(body.get("head", ""))
+                and valid_branch(body.get("head"))
             ):
                 raise ValueError("PRs must target main from a project branch")
         return
@@ -155,7 +167,7 @@ def validate_api(method: str, path: str, body) -> None:
 
 
 def validate_publication(data: dict) -> None:
-    if not BRANCH.fullmatch(data.get("branch", "")) or ".." in data["branch"]:
+    if not valid_branch(data.get("branch")):
         raise ValueError("Only codex/ or agent/ branches may be published")
     if not SHA.fullmatch(data.get("base_sha", "")):
         raise ValueError("Exact base commit required")
@@ -193,6 +205,16 @@ def validate_publication(data: dict) -> None:
 def publish(data: dict):
     validate_publication(data)
     evidence(data.get("decision", {}))
+    branch = data["branch"]
+    # Check the branch before the 25-minute review; the final write below relies on this read.
+    try:
+        current = api(f"git/ref/heads/{branch}")["object"]["sha"]
+    except RuntimeError as exc:
+        if str(exc) != "GitHub HTTP 404":
+            raise
+        current = None
+    if current not in (None, data["base_sha"]):
+        raise ValueError("Branch must be new or point at base_sha")
     base = api(f"git/commits/{data['base_sha']}")
     entries = []
     for change in data["changes"]:
@@ -224,12 +246,7 @@ def publish(data: dict):
     review(commit["sha"], main, data["decision"])
     if api("branches/main")["commit"]["sha"] != main:
         raise ValueError("Main changed during prepublication review")
-    branch = data["branch"]
-    try:
-        api(f"git/ref/heads/{branch}")
-    except RuntimeError as exc:
-        if str(exc) != "GitHub HTTP 404":
-            raise
+    if current is None:
         return api("git/refs", "POST", {"ref": f"refs/heads/{branch}", "sha": commit["sha"]})
     return api(f"git/refs/heads/{branch}", "PATCH", {"sha": commit["sha"], "force": False})
 

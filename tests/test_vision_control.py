@@ -157,6 +157,8 @@ def test_unreviewed_publication_never_creates_an_executable_ref(monkeypatch):
 
     def api(path, method="GET", data=None, role="owner"):
         calls.append((path, method))
+        if path.startswith("git/ref/"):
+            raise RuntimeError("GitHub HTTP 404")
         if path.startswith("git/commits/"):
             return {"tree": {"sha": "t" * 40}}
         if path == "branches/main":
@@ -184,7 +186,9 @@ def test_unreviewed_publication_never_creates_an_executable_ref(monkeypatch):
                 "changes": [{"path": ".github/workflows/ci.yml", "content": "eA=="}],
             }
         )
-    assert not any(path.startswith("git/ref") for path, _ in calls)
+    assert [c for c in calls if c[0].startswith("git/ref")] == [
+        ("git/ref/heads/codex/change", "GET")
+    ]
 
 
 def test_activation_missing_and_stale_or_forged_review_fail_closed(tmp_path, monkeypatch):
@@ -870,3 +874,53 @@ def test_publish_refuses_a_tree_that_differs_from_the_commit(monkeypatch):
 def test_publication_requires_an_exact_tree_sha(change):
     with pytest.raises(ValueError):
         CONTROL["validate_publication"]({**PUBLICATION, **change})
+
+
+@pytest.mark.parametrize(
+    "branch",
+    ["codex/x.lock", "codex/a//b", "codex/a/.b", "codex/a.", "codex/a/", "codex/" + "a" * 152],
+)
+def test_branch_names_follow_git_ref_rules(branch):
+    with pytest.raises(ValueError):
+        CONTROL["validate_publication"]({**PUBLICATION, "branch": branch})
+    with pytest.raises(ValueError):
+        CONTROL["validate_api"]("POST", "pulls", {"base": "main", "head": branch, "title": "T"})
+
+
+def test_valid_project_branches_still_pass():
+    for branch in ["codex/fix", "agent/x-y_z.1", "agent/Fix-123/part.two", "codex/" + "a" * 151]:
+        CONTROL["validate_publication"]({**PUBLICATION, "branch": branch})
+        CONTROL["validate_api"]("POST", "pulls", {"base": "main", "head": branch, "title": "T"})
+
+
+def test_publish_refuses_a_branch_that_does_not_point_at_base(monkeypatch):
+    calls, reviews = fake_github(monkeypatch, ref="c" * 40)
+    with pytest.raises(ValueError, match="Branch must be new"):
+        CONTROL["publish"](PUBLICATION)
+    assert calls == [("git/ref/heads/codex/change", "GET", None)]
+    assert reviews == []
+
+
+def test_publish_stops_when_the_branch_read_fails(monkeypatch):
+    calls, reviews = fake_github(monkeypatch, ref=RuntimeError("GitHub HTTP 403"))
+    with pytest.raises(RuntimeError, match="403"):
+        CONTROL["publish"](PUBLICATION)
+    assert calls == [("git/ref/heads/codex/change", "GET", None)]
+    assert reviews == []
+
+
+@pytest.mark.parametrize(
+    "ref,write",
+    [
+        (None, ("git/refs", "POST", {"ref": "refs/heads/codex/change", "sha": "9" * 40})),
+        ("a" * 40, ("git/refs/heads/codex/change", "PATCH", {"sha": "9" * 40, "force": False})),
+    ],
+)
+def test_publish_writes_the_branch_it_checked_after_review(monkeypatch, ref, write):
+    calls, reviews = fake_github(monkeypatch, ref=ref)
+    CONTROL["publish"](PUBLICATION)
+    assert len(reviews) == 1
+    assert calls[-1] == write
+    assert [c for c in calls if c[0].startswith("git/ref/")] == [
+        ("git/ref/heads/codex/change", "GET", None)
+    ]
