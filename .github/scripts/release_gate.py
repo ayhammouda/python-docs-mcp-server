@@ -28,18 +28,18 @@ RECORD = re.compile(r"Independent verification: (PASS|FAIL)")
 def verdict(comment, owner: str, head: str, merged_at: str) -> str | None:
     """Return PASS or FAIL for an owner record of ``head``, else None."""
     lines = comment["body"].replace("\r\n", "\n").split("\n")
-    match = RECORD.fullmatch(lines[0])
     if (
-        match
-        and (comment["user"] or {}).get("login") == owner
-        # An edited record could name a head nobody verified, so only unedited ones count.
-        and comment["updated_at"] == comment["created_at"]
+        (comment["user"] or {}).get("login") != owner
         # Verification gates the merge; a record written afterwards does not count.
-        and comment["created_at"] <= merged_at
-        and f"head: {head}" in lines
+        or comment["created_at"] > merged_at
+        or f"head: {head}" not in lines
     ):
-        return match[1]
-    return None
+        return None
+    # An edit could revive or retarget a decision, so any edited owner record fails closed.
+    if comment["updated_at"] != comment["created_at"]:
+        return "FAIL"
+    match = RECORD.fullmatch(lines[0])
+    return match[1] if match else None
 
 
 def require_eligible(api, sha: str, owner: str) -> None:

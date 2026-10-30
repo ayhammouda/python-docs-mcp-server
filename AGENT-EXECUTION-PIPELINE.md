@@ -507,14 +507,16 @@ Fix Critical and Important findings test-first. Record each declined finding
 with its reason. The record is a PR comment by the owner. Its first line is
 exactly `Independent verification: PASS`. It contains a line
 `head: <40-hex head SHA>` and states the three verdicts and the gate result.
-A new head invalidates it. Post a new comment for a new record; the release
-gate ignores edited comments and comments posted after the merge.
+A new head invalidates it. Never edit a record; post a new comment instead.
+The release gate ignores comments posted after the merge. It counts an edited
+owner comment that names the merged head on a `head:` line as FAIL, whatever
+its first line says, so an edit cannot revive an older PASS.
 
 A failed or revoked verification is recorded the same way, with the first line
 exactly `Independent verification: FAIL` and the same `head:` line. Among the
-owner's unedited records for the merged head created at or before the merge,
-the newest (by creation time, then comment id) decides, and it must be PASS. A
-later FAIL therefore revokes an earlier PASS for the same head.
+owner's records for the merged head created at or before the merge, the newest
+(by creation time, then comment id) decides, and it must be PASS. A later FAIL
+therefore revokes an earlier PASS for the same head.
 
 The record is a process tripwire, not a security boundary. The owner account
 writes it and also merges, so anyone who can act as that account can forge it.

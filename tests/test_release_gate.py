@@ -96,7 +96,7 @@ def test_release_eligibility_rejects_incomplete_or_wrong_identity_evidence():
         pytest.param(note(RECORD.replace(HEAD, "d" * 40)), id="other-head"),
         pytest.param(note(RECORD.replace("head: ", "verified head: ")), id="head-not-own-line"),
         pytest.param(note(RECORD.replace(f"head: {HEAD}\n", "")), id="head-missing"),
-        pytest.param(note(RECORD, updated_at="2026-10-30T11:00:00Z"), id="edited"),
+        pytest.param(note(RECORD, updated_at=LATER), id="edited-pass-alone"),
         pytest.param(note(RECORD, created_at="2026-10-30T13:00:00Z"), id="after-merge"),
         pytest.param({**note(RECORD), "user": None}, id="deleted-author"),
     ],
@@ -147,6 +147,10 @@ def test_release_eligibility_finds_record_after_the_first_page_of_comments():
         pytest.param([[note(RECORD), note(FAILED, created_at=LATER)]], id="newer-fail"),
         pytest.param([[note(RECORD)], [note(FAILED, created_at=LATER)]], id="fail-on-page-2"),
         pytest.param([[note(RECORD), note(FAILED)]], id="same-time-higher-id-fail"),
+        pytest.param(
+            [[note(RECORD), note(FAILED, created_at=LATER, updated_at=MERGED)]],
+            id="edited-fail-after-pass",
+        ),
     ],
 )
 def test_release_eligibility_rejects_when_the_newest_record_is_fail(pages):
@@ -164,6 +168,12 @@ def test_release_eligibility_requires_exact_sha_and_unique_merged_pr():
     state[f"commits/{SHA}/pulls?per_page=100"] = []
     with pytest.raises(ValueError, match="uniquely"):
         gate(state.__getitem__, SHA, OWNER)
+
+
+def test_release_eligibility_ignores_an_edited_record_for_another_head():
+    other = FAILED.replace(HEAD, "d" * 40)
+    state = make_state([note(RECORD), note(other, created_at=LATER, updated_at=MERGED)])
+    GATE["require_eligible"](state.__getitem__, SHA, OWNER)
 
 
 def test_release_eligibility_accepts_when_a_newer_pass_follows_a_fail():
