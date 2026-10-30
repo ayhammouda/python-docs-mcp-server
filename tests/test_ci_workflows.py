@@ -194,17 +194,17 @@ def test_release_build_job_never_builds_the_project_with_an_unpinned_backend() -
     steps = release_jobs()["build"]["steps"]
     names = [s.get("name") for s in steps]
     commands = [line.strip() for s in steps for line in s.get("run", "").splitlines()]
-    assert [c for c in commands if c.startswith("uv sync")] == [
-        "uv sync --locked --dev --no-install-project --no-build"
+    builders = re.compile(
+        r"\buv (?:build|sync|add|pip install)\b|\buvx\b|python -m (?:build|pip|uv)\b"
+    )
+    assert [c for c in commands if builders.search(c)] == [
+        "uv sync --locked --dev --no-install-project --no-build",
+        "uv build --build-constraint .github/build-constraints.txt --require-hashes",
+        "uv pip install --no-deps dist/*.whl",
     ]
     uv_runs = [c for c in commands if "uv run" in c]
-    assert uv_runs and all("--no-sync" in c for c in uv_runs)  # a re-sync rebuilds editable
-    assert [c for c in commands if c.startswith("uv build")] == [
-        "uv build --build-constraint .github/build-constraints.txt --require-hashes"
-    ]
-    assert [c for c in commands if c.startswith("uv pip install")] == [
-        "uv pip install --no-deps dist/*.whl"
-    ]
+    # a syncing `uv run` rebuilds the project editable with an unpinned backend
+    assert uv_runs and all(c.count("uv run") == c.count("uv run --no-sync") for c in uv_runs)
     build = names.index("Build package")
     assert steps[build + 1]["run"] == "uv pip install --no-deps dist/*.whl"
     tests = names.index("Run tests")

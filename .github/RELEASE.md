@@ -37,12 +37,13 @@ manifest is validated **before** PyPI publication. Do not use an unverified
 The release build installs its build backend from `.github/build-constraints.txt`.
 That file pins `hatchling` and every dependency with SHA-256 hashes, and the build
 runs `uv build --build-constraint .github/build-constraints.txt --require-hashes`.
-No other step in the build job builds the project: it syncs dependencies with
-`uv sync --locked --dev --no-install-project --no-build`, installs the built
-wheel with `uv pip install --no-deps dist/*.whl`, and runs every check with
-`uv run --locked --no-sync` against that wheel. The test suite's own wheel build
-uses the same constraints file through `UV_BUILD_CONSTRAINT` and
-`UV_REQUIRE_HASHES`.
+Every project build in the build job uses that file. The job syncs dependencies with
+`uv sync --locked --dev --no-install-project --no-build`, which builds neither the
+project nor any source distribution. It installs the built wheel with
+`uv pip install --no-deps dist/*.whl` and runs every later command with
+`uv run --no-sync`, so nothing re-syncs and rebuilds the project. The tests run
+against that installed wheel, and the test suite's own wheel build gets the same
+constraints through `UV_BUILD_CONSTRAINT` and `UV_REQUIRE_HASHES`.
 To update it, run
 `echo hatchling | uv pip compile --generate-hashes --universal --python-version 3.12 --upgrade - -o .github/build-constraints.txt`,
 then
