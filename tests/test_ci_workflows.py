@@ -78,9 +78,10 @@ def test_release_build_exports_the_dist_id_and_checksums() -> None:
 def test_release_ships_only_the_bytes_the_build_checksummed(job_name: str) -> None:
     job = release_jobs()[job_name]
     steps = job["steps"]
+    assert not {"if", "continue-on-error", "defaults", "container"} & job.keys()
     assert "build" in job["needs"]
     downloads = [i for i, s in enumerate(steps) if "download-artifact@" in s.get("uses", "")]
-    assert downloads
+    assert downloads == [0]
     for index in downloads:
         assert steps[index]["with"] == {"artifact-ids": DIST_ID, "path": "dist/"}
     verify = [i for i, s in enumerate(steps) if s.get("env", {}).get("EXPECTED") == DIST_SHA256]
