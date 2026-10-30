@@ -19,6 +19,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - The server now exits cleanly, with exit code 0 and no traceback, when a
   client closes the connection mid-session.
+- A failed `build-index` run (no version ingested, an error, or Ctrl-C) no
+  longer leaves `build-*.db`, `-wal` or `-shm` files in the cache folder. The
+  test suite no longer runs `build-index` against the real cache folder.
 
 ## [0.4.0] — Unreleased
 

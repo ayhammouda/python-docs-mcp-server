@@ -52,6 +52,16 @@ def generate_build_path() -> Path:
     return cache_dir / f"build-{timestamp}.db"
 
 
+def delete_build(build_db_path: Path) -> None:
+    """Delete a build artifact and its WAL/SHM sidecars.
+
+    Close the build's connection first, or SQLite recreates the sidecars.
+    """
+    for suffix in ("", "-wal", "-shm"):
+        Path(f"{build_db_path}{suffix}").unlink(missing_ok=True)
+    logger.info("Deleted failed build %s", build_db_path.name)
+
+
 def compute_sha256(db_path: Path) -> str:
     """Compute the SHA256 hex digest of a file (PUBL-02).
 

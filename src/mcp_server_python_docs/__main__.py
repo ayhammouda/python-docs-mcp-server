@@ -168,6 +168,7 @@ def build_index(versions: str, skip_content: bool) -> None:
     from mcp_server_python_docs.ingestion.inventory import ingest_inventory
     from mcp_server_python_docs.ingestion.publish import (
         _version_sort_key,
+        delete_build,
         generate_build_path,
         parse_expected_versions,
         publish_index,
@@ -213,6 +214,7 @@ def build_index(versions: str, skip_content: bool) -> None:
     logger.info("Building index at %s", build_db_path)
 
     conn = get_readwrite_connection(build_db_path)
+    built = False
     try:
         bootstrap_schema(conn)
         assert_fts5_available(conn)
@@ -393,9 +395,6 @@ def build_index(versions: str, skip_content: bool) -> None:
 
         if not any_version_succeeded:
             logger.error("No versions were successfully ingested")
-            # Clean up the failed build artifact
-            if build_db_path.exists():
-                build_db_path.unlink()
             raise SystemExit(1)
 
         # Populate synonyms from synonyms.yaml (INGR-C-09)
@@ -404,8 +403,12 @@ def build_index(versions: str, skip_content: bool) -> None:
 
         # Rebuild FTS indexes (INGR-C-08)
         rebuild_fts_indexes(conn)
+        built = True
     finally:
+        # Close before deleting, or SQLite recreates the -wal/-shm sidecars.
         conn.close()
+        if not built:
+            delete_build(build_db_path)
 
     # Publish: smoke test + atomic swap (PUBL-01 through PUBL-05)
     versions_str = ",".join(version_list)

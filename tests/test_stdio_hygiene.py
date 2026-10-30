@@ -87,7 +87,7 @@ class TestStdioHygiene:
             # stderr should have the missing-index message
             assert "build-index" in result.stderr
 
-    def test_build_index_bad_version_stderr_only(self):
+    def test_build_index_bad_version_stderr_only(self, tmp_path):
         """build-index with unreachable version should log to stderr, not stdout."""
         result = subprocess.run(
             [
@@ -97,9 +97,11 @@ class TestStdioHygiene:
             capture_output=True,
             text=True,
             timeout=30,
+            env=_isolated_cache_env(str(tmp_path)),  # never the developer's real cache
         )
         # This will fail (invalid version), but any output should be on stderr
         # stdout should be empty because of fd redirection
         assert result.stdout == "", (
             f"build-index produced stdout: {result.stdout!r}"
         )
+        assert sorted(p.name for p in tmp_path.rglob("build-*")) == []

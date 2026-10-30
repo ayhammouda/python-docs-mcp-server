@@ -596,3 +596,62 @@ class TestIngestionWhileServing:
         # Cleanup
         conn_ro.close()
         conn_ro2.close()
+
+
+# ── Failed-build cleanup (build-index) ──
+
+
+def _offline(conn, version, *, is_default=False):
+    raise RuntimeError("objects.inv download failed")
+
+
+def _interrupted(conn, version, *, is_default=False):
+    raise KeyboardInterrupt
+
+
+def _no_symbols(conn, version, *, is_default=False):
+    return 0
+
+
+def _disk_error(conn):
+    raise sqlite3.OperationalError("disk I/O error")
+
+
+@pytest.fixture
+def isolated_cache(tmp_path, monkeypatch):
+    """Send index.db (storage.db's binding) and new builds (publish's binding) to tmp_path."""
+    monkeypatch.setattr("mcp_server_python_docs.storage.db.get_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr("mcp_server_python_docs.ingestion.publish.get_cache_dir", lambda: tmp_path)
+    return tmp_path
+
+
+class TestBuildCleanup:
+    @pytest.mark.parametrize(
+        ("ingest", "rebuild"),
+        [(_offline, None), (_interrupted, None), (_no_symbols, _disk_error)],
+        ids=["no-version-ingested", "ctrl-c", "error-after-ingestion"],
+    )
+    def test_failed_build_leaves_no_files(self, isolated_cache, monkeypatch, ingest, rebuild):
+        from click.testing import CliRunner
+
+        from mcp_server_python_docs.__main__ import main
+
+        build_dirs: list[Path] = []
+
+        def recording_ingest(conn, version, *, is_default=False):
+            build_dirs.append(Path(conn.execute("PRAGMA database_list").fetchone()[2]).parent)
+            return ingest(conn, version, is_default=is_default)
+
+        monkeypatch.setattr(
+            "mcp_server_python_docs.ingestion.inventory.ingest_inventory", recording_ingest
+        )
+        if rebuild is not None:
+            monkeypatch.setattr(
+                "mcp_server_python_docs.ingestion.sphinx_json.rebuild_fts_indexes", rebuild
+            )
+
+        result = CliRunner().invoke(main, ["build-index", "--versions", "3.13", "--skip-content"])
+
+        assert result.exit_code == 1
+        assert build_dirs == [isolated_cache]  # the build really ran in tmp_path
+        assert list(isolated_cache.glob("build-*")) == []
