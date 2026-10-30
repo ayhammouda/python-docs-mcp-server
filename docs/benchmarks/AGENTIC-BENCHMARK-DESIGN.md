@@ -184,7 +184,7 @@ the same MCP bridge as every other system.
   arguments, canonical result text and hash, `is_error`, wall time, cap hits.
 - **Repeats (Call):** k = 3 per (question, model, system). Execution order is
   randomized within each container, and all cells for one model run within the
-  same 24-hour window.
+  same 24-hour window (except after a budget stop, section 12).
 
 ## 7. Models and sandboxes
 
@@ -316,15 +316,19 @@ This amends the methodology's "Token Measurement" for multi-turn loops.
   repeats of each), 10,000 resamples, 95% interval on the ratio
   python-docs ÷ peer.
 - **Provider-reported usage (secondary, cost).** Stored verbatim per call,
-  then summed into three disjoint buckets, uncached input, cached input and
-  output, and multiplied by a price snapshot stored with the run. Providers
+  then summed into four disjoint buckets, uncached input, cache-write input,
+  cached input and output, each multiplied by its own rate from a price
+  snapshot stored with the run. Providers
   nest some fields inside others, so the buckets are named per provider:
-  - Anthropic: `input_tokens` plus `cache_creation_input_tokens`;
-    `cache_read_input_tokens`; `output_tokens`, which includes thinking.
-  - OpenAI: `input_tokens` minus `input_tokens_details.cached_tokens`;
-    `cached_tokens`; `output_tokens`, which includes reasoning.
+  - Anthropic: `input_tokens`; `cache_creation_input_tokens` (expected 0,
+    because no `cache_control` is sent); `cache_read_input_tokens`;
+    `output_tokens`, which includes thinking.
+  - OpenAI: `input_tokens` minus `input_tokens_details.cached_tokens` and
+    `input_tokens_details.cache_write_tokens`; `cache_write_tokens`
+    (caching is on by default, and writes cost 1.25× input for the default
+    lifetime); `cached_tokens`; `output_tokens`, which includes reasoning.
   - Gemini: `promptTokenCount` minus `cachedContentTokenCount`, plus
-    `toolUsePromptTokenCount`; `cachedContentTokenCount`;
+    `toolUsePromptTokenCount`; no cache-write bucket; `cachedContentTokenCount`;
     `candidatesTokenCount` plus
     `thoughtsTokenCount`.
 
@@ -560,7 +564,10 @@ tool-use metrics (tool-use rate, calls and turns per trajectory, invalid
 calls, cap hits); latency including cold vs warm; C1 dependency table (API key
 required, hosts contacted at query time from proxy logs, works offline); the
 air-gapped arm; every failure with its reason; price snapshot, model versions
-reported by providers, count model, index sha256, image digests.
+reported by providers, count model, index sha256, image digests; budget
+events (any bound overrun, trajectories discarded by a stop with their
+spend, any split of a model's 24-hour window) and the 2× residual-risk
+statement (section 12).
 
 Grading disclosure, next to the correctness numbers (**Call**):
 
@@ -616,8 +623,7 @@ by pilot measurements.
 for everything in this design (G1, pilot, full run, grading, reruns) is
 Anthropic $200, OpenAI $75 and Google $200. **Call:** the harness enforces
 lower hard caps, leaving a margin of $20, $10 and $20 below the budget:
-Anthropic $180, OpenAI $65,
-Google $180. Each provider's cap covers that provider's answering, judging,
+Anthropic $180, OpenAI $65, Google $180. Each provider's cap covers that provider's answering, judging,
 reference grading and token counting.
 
 The caps are enforced before money is spent, never after:
@@ -640,8 +646,9 @@ The caps are enforced before money is spent, never after:
   messages. For later calls: the previous call's total billed input, plus
   its total output, plus one token per UTF-8 byte of every message added
   since, plus the framing allowance for each added message. The totals are
-  the sums of the section 8 buckets: total input is uncached plus cached
-  input, and total output is the output bucket, thinking and reasoning
+  the sums of the section 8 buckets: total input is uncached plus
+  cache-write plus cached input, and total output is the output bucket,
+  thinking and reasoning
   included once.
 - **Framing allowance:** a fixed number of tokens per message for wrappers
   and provider-injected text (for example the tool-use system prompt).
@@ -662,11 +669,17 @@ The caps are enforced before money is spent, never after:
   cost so far plus that call's input bound and output bound fits in the
   reservation. If it does not, the trajectory ends as a cap-hit failure in
   the denominator. The report lists those cap hits per (model, system).
-- **In-flight limit:** a provider's open reservations, meaning trajectories
-  in progress plus submitted batches that have not finished, never exceed
-  its margin ($20, $10, $20). Spend plus reservations stays at or under
-  the cap, so if no request costs more than twice its bound, actual spend
-  stays at or under cap plus margin, which is the budget. The pilot's
+- **Pricing a bound:** an input bound is priced at the provider's highest
+  input rate (the cache-write rate where one exists), and an output bound
+  at the output rate.
+- **In-flight limit:** trajectory reservations count against the cap only.
+  What is limited in flight is billable work not yet billed: the bounds of
+  calls already dispatched, plus the reservations of submitted batches
+  that have not finished. Their sum never exceeds the provider's margin
+  ($20, $10, $20); a call or batch waits until it fits. Spend plus
+  reservations stays at or under the cap, so if no request costs more than
+  twice its bound, the excess is at most the in-flight bounds, and actual
+  spend stays at or under cap plus margin, which is the budget. The pilot's
   per-call check is the evidence for that factor. An error larger than 2×
   is the accepted residual risk, and the report states it.
 - A batch job reserves its full worst case before submission. It is split
