@@ -12,6 +12,9 @@ from mcp_server_python_docs.errors import FTS5UnavailableError
 
 logger = logging.getLogger(__name__)
 
+# Must equal the PRAGMA user_version that schema.sql stamps.
+INDEX_FORMAT_VERSION = 1
+
 
 def get_cache_dir() -> Path:
     """Resolve cache directory via platformdirs (STOR-10).
