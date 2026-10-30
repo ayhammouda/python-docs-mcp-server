@@ -526,7 +526,8 @@ def _relative_link(target: Path, from_dir: Path) -> str:
 
 def _table(headers: list[str], rows: list[list[str]]) -> list[str]:
     lines = ["| " + " | ".join(headers) + " |", "| " + " | ".join(["---"] * len(headers)) + " |"]
-    lines.extend("| " + " | ".join(row) + " |" for row in rows)
+    # An unescaped "|" in a cell (e.g. a proxy error body) would add a column.
+    lines.extend("| " + " | ".join(cell.replace("|", "\\|") for cell in row) + " |" for row in rows)
     return lines
 
 

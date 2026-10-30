@@ -928,6 +928,44 @@ def test_failed_token_count_renders_as_failed_and_is_listed(tmp_path: Path) -> N
     assert "1 count(s) failed" in summary_text
 
 
+def test_report_escapes_pipes_inside_table_cells(tmp_path: Path) -> None:
+    run_dir = _minimal_valid_run_dir(tmp_path)
+    _write_json(
+        run_dir / "tokens" / "tool-a" / "q001.json",
+        {
+            "competitor_id": "tool-a",
+            "corpus_id": "q001",
+            "tool_model_key": "tool-a",
+            "status": "failed",
+            "client_wrapped_tokens": None,
+            "raw_payload_tokens": None,
+            "approximation": False,
+            "notes": "Claude count-tokens call failed: HTTP 502: Error | Gateway",
+        },
+    )
+    _write_json(
+        run_dir / "failures" / "tool-a" / "q001.json",
+        {
+            "competitor_id": "tool-a",
+            "tool_model_key": "tool-a",
+            "corpus_id": "q001",
+            "error": {"category": "tool_failure", "message": "proxy said Error | Gateway"},
+            "included_in_correctness_denominator": True,
+        },
+    )
+
+    report_text = _generate_report(run_dir).read_text(encoding="utf-8")
+
+    assert (
+        "| tool-a | tool-a | q001 | Claude count-tokens call failed: HTTP 502: Error \\| Gateway |"
+        in report_text
+    )
+    assert (
+        "| tool-a | tool-a | q001 | tool_failure | proxy said Error \\| Gateway | True |"
+        in report_text
+    )
+
+
 def test_token_paragraph_gives_the_real_reason_for_approximate_counts(tmp_path: Path) -> None:
     report_text = _generate_report(_minimal_valid_run_dir(tmp_path)).read_text(encoding="utf-8")
     token_paragraph = report_text.split("## Token Counts (After Client Rewrap)", 1)[1]
