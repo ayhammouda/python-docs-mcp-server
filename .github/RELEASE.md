@@ -9,6 +9,10 @@ fails closed. Do not substitute personal tokens or bypass checks.
    entry must agree. CI covers Python 3.12–3.14 on Ubuntu and macOS, the real
    benchmark corpus, offline full-index regression, and installed-wheel stdio.
 2. Wait for the required checks on the resulting **main commit** to pass.
+   On that exact commit, run
+   `uv build --build-constraint .github/build-constraints.txt --require-hashes --out-dir "$(mktemp -d)"`.
+   It checks the hash-pinned build backend described below. Do not tag if it
+   fails.
 3. Run `pdctl release EXACT_MAIN_COMMIT vX.Y.Z`. The broker confirms main
    ancestry, the merged PR's verifier App check, main CI and manifest versions
    before creating the tag. Release tags cannot be moved or deleted.
@@ -18,6 +22,7 @@ fails closed. Do not substitute personal tokens or bypass checks.
    The build job records the SHA-256 of every file in `dist/` and the artifact ID
    as job outputs. The PyPI and GitHub-release jobs download that artifact ID and
    refuse to attest, publish or attach anything whose checksum listing differs.
+   PyPI receives the same wheel that passed integration, with provenance.
 5. Confirm every job succeeded, the exact version is visible on PyPI and in the
    MCP Registry, the GitHub release has both artifacts, and a clean
    `uvx --refresh python-docs-mcp-server@X.Y.Z --version` reports that version.
