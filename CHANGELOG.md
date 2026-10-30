@@ -19,6 +19,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - The server now exits cleanly, with exit code 0 and no traceback, when a
   client closes the connection mid-session.
+- On a Python whose SQLite lacks FTS5, `build-index` now prints the FTS5 hint
+  and exits with code 1. It used to stop with a raw
+  `sqlite3.OperationalError: no such module: fts5` traceback, because it created
+  the index's FTS5 tables before checking for FTS5. The server's automatic
+  symbol-only build logs the same hint.
 
 ## [0.4.0] — Unreleased
 
