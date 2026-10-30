@@ -155,6 +155,17 @@ def test_release_eligibility_rejects_when_the_newest_record_is_fail(pages):
         GATE["require_eligible"](state.__getitem__, SHA, OWNER)
 
 
+def test_release_eligibility_requires_exact_sha_and_unique_merged_pr():
+    state = make_state([note(RECORD)])
+    gate = GATE["require_eligible"]
+    for bad in ["a" * 39, "A" * 40, f"{SHA}\n", "refs/tags/v1.0.0"]:
+        with pytest.raises(ValueError, match="Exact commit"):
+            gate(state.__getitem__, bad, OWNER)
+    state[f"commits/{SHA}/pulls?per_page=100"] = []
+    with pytest.raises(ValueError, match="uniquely"):
+        gate(state.__getitem__, SHA, OWNER)
+
+
 def test_release_eligibility_accepts_when_a_newer_pass_follows_a_fail():
     state = make_state([note(FAILED), note(RECORD, created_at=LATER)])
     GATE["require_eligible"](state.__getitem__, SHA, OWNER)
