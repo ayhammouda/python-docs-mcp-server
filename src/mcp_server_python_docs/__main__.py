@@ -159,7 +159,6 @@ def build_index(versions: str, skip_content: bool) -> None:
     """Build the documentation index from objects.inv and Sphinx JSON."""
     import shutil
     import tempfile
-    import venv
     from pathlib import Path
 
     from mcp_server_python_docs.errors import FTS5UnavailableError
@@ -178,6 +177,7 @@ def build_index(versions: str, skip_content: bool) -> None:
     from mcp_server_python_docs.ingestion.sphinx_json import (
         build_sphinx_bootstrap_requirements,
         build_sphinx_json_command,
+        create_sphinx_venv,
         ingest_sphinx_json_dir,
         make_sphinx_json_env,
         rebuild_fts_indexes,
@@ -277,7 +277,7 @@ def build_index(versions: str, skip_content: bool) -> None:
                     # Create dedicated Sphinx venv (INGR-C-02)
                     venv_dir = os.path.join(clone_dir, "_sphinx_venv")
                     logger.info("Creating Sphinx venv at %s...", venv_dir)
-                    venv.create(venv_dir, with_pip=True)
+                    create_sphinx_venv(venv_dir, with_pip=True)
                     # Use Scripts/ on Windows, bin/ elsewhere
                     scripts_dir = os.path.join(
                         venv_dir,
