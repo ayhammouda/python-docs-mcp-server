@@ -639,6 +639,40 @@ class TestAtomicSwap:
         assert target.read_bytes() == b"old"
         assert "stop every MCP client" in caplog.text
 
+    def test_refused_temp_link_cleanup_still_logs_the_refusal(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        target = tmp_path / "index.db"
+        target.write_bytes(b"old")
+        new_db = tmp_path / "build-123.db"
+        new_db.write_bytes(b"new")
+        tmp_link = tmp_path / f"index.db.previous.{os.getpid()}.tmp"
+        real_replace = os.replace
+        real_unlink = Path.unlink
+
+        def locked_previous(src, dst):
+            if Path(dst).name == "index.db.previous":
+                raise PermissionError(errno.EACCES, "index.db.previous is held open")
+            real_replace(src, dst)
+
+        def locked_link(self, missing_ok=False):
+            if self.name.endswith(".tmp") and self.exists():  # Windows: a client holds index.db
+                raise PermissionError(errno.EACCES, "the temp link is held open")
+            real_unlink(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr("mcp_server_python_docs.ingestion.publish.os.replace", locked_previous)
+        monkeypatch.setattr(Path, "unlink", locked_link)
+        with caplog.at_level(logging.WARNING), pytest.raises(PermissionError) as refused:
+            atomic_swap(new_db, target)
+
+        assert refused.value.strerror == "index.db.previous is held open"  # the replace's error
+
+        errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("stop every MCP client" in message for message in errors)
+        assert any(str(tmp_link) in message for message in warnings)
+        assert target.read_bytes() == b"old"
+
 
 # ── Rollback tests ──
 

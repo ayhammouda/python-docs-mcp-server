@@ -376,9 +376,10 @@ def atomic_swap(
 
     Raises:
         PermissionError: A replace was refused, as on Windows while a running
-            MCP client holds ``index.db`` open. The temporary link is removed,
-            the error is logged at ERROR with the kept build's path, and the
-            build is left in place.
+            MCP client holds ``index.db`` open. The error is logged at ERROR
+            with the kept build's path, and the build is left in place. The
+            temporary link is removed when possible; otherwise a WARNING
+            names it.
     """
     if target_path is None:
         target_path = get_index_path()
@@ -390,8 +391,6 @@ def atomic_swap(
         try:
             os.replace(src, dst)
         except PermissionError as e:
-            if tmp is not None:
-                tmp.unlink(missing_ok=True)
             logger.error(
                 "Could not replace %s (%s). On Windows a running MCP client holds it open: "
                 "stop every MCP client, then move %s onto %s, or run build-index again. "
@@ -401,6 +400,15 @@ def atomic_swap(
                 new_db_path,
                 target_path,
             )
+            if tmp is not None:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError as cleanup_error:  # Windows refuses it while a client holds index.db
+                    logger.warning(
+                        "Could not remove %s (%s). Delete it once every MCP client is stopped.",
+                        tmp,
+                        cleanup_error,
+                    )
             raise
 
     if target_path.exists():
