@@ -1048,6 +1048,11 @@ _GFM_BACKSLASH_ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
         pytest.param("example.com/path", r"example\.com/path", id="bare-domain"),
         pytest.param("Www.example.com", r"Www\.example\.com", id="capitalised-www"),
         pytest.param("1000.0 and 52.0%", "1000.0 and 52.0%", id="decimals-untouched"),
+        # A dot before a non-ASCII TLD: markdown-it's linkify would decode "%0A" in
+        # the label, so the visible text would differ from the target.
+        pytest.param("example.рф/a%0Ab", r"example\.рф/a%0Ab", id="cyrillic-tld"),
+        pytest.param("a.Ωmega.gr", r"a\.Ωmega\.gr", id="greek-label"),
+        pytest.param("例え.テスト/x", r"例え\.テスト/x", id="japanese-tld"),
     ],
 )
 def test_table_cells_render_markdown_punctuation_literally(text: str, escaped: str) -> None:
