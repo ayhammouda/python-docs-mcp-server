@@ -72,7 +72,7 @@ Each decision states what it costs if it turns out wrong.
   - Releases up to 0.4.0 still read the two `symbols` columns. So PR 3 ships
     in the same release as PR 1, and its CHANGELOG entry says to rebuild after
     a downgrade.
-  - Vision may instead keep the two nullable columns and drop only their
+  - The owner may instead keep the two nullable columns and drop only their
     readers.
 - **D8 Build hygiene.**
   - Close the connection before deleting the build, on every failure path.
@@ -141,6 +141,7 @@ Each decision states what it costs if it turns out wrong.
     references in `DESIGN.md`.
 - **Wave 2:** PR 2, which then regenerates `tests/fixtures/tools-list.json` if
   PR 3 has landed. PR 7 follows PR 6, because both edit `ops/vision/control.py`.
+  PRs 6 and 7 are deferred; see "Governance Change".
 
 ## Global Constraints
 
@@ -196,7 +197,8 @@ These apply to every plan.
     `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
   - PR bodies follow `.github/PULL_REQUEST_TEMPLATE/agent.md` and end with
     `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
-  - Never self-merge. Vision merges after independent verification.
+  - Never self-merge. The owner merges after independent verification
+    (pipeline amendment of 2026-10-30; see "Governance Change").
 
 ## Carried Into The New Benchmark Harness
 
@@ -232,6 +234,31 @@ Since quality comes first, use superpowers:subagent-driven-development for
 every plan. Run each wave's plans in parallel sessions, one worktree per
 branch.
 
+## Governance Change (owner decision, 2026-10-30)
+
+Aymen cancelled Vision's owner authority on 2026-10-30 and transferred project
+ownership to the Claude Code owner session. The pipeline amendment of that date
+records the new rules. For this roadmap:
+
+- **Merges.** The owner merges each PR after independent verification of its
+  exact head:
+  - a Fable-model reviewer that did not write the change;
+  - a Codex CLI peer review (`gpt-6-astra`, `xhigh`, read-only);
+  - a `ponytail-review` pass.
+
+  The record is a PR comment that starts `Independent verification: PASS`.
+- **PR 6 is deferred** as draft #168, and **PR 7 is deferred**. `ops/vision/`
+  runs nothing now. Both wait until Vision is reactivated or `ops/vision/` is
+  removed. Wave 2 is PR 2 alone.
+- **Added PRs:**
+  - #167 fixes the FTS5 hint for `build-index`. PR 5's final review found the
+    bug, and #167 is stacked on #162.
+  - The governance PR records the ownership change and replaces the release
+    gate's verifier-App check.
+- **Releases.** The owner tags the exact `main` commit. Two GitHub rulesets
+  still name Vision's Apps: a required "Independent verification" check, and
+  tag creation limited to the App. Aymen changes both.
+
 ## Release Plan (owner decision, 2026-10-30)
 
 The order is **0.4.1 (pre-benchmark) → benchmark → v0.5.0 (launch)**.
@@ -257,8 +284,10 @@ The order is **0.4.1 (pre-benchmark) → benchmark → v0.5.0 (launch)**.
 - **PR 8 (release integrity):** it must be on `main` before tagging, because it
   changes how `publish` downloads and checks `dist`. 0.4.1 is its first real
   use, so watch that the artifact-ID download and the checksum comparison pass.
-- **PRs 6 and 7 (Vision) and PR #163 (plans):** they can land anytime, and are
-  independent of the release.
+- **PR #163 (plans) and the governance PR:** they can land anytime, and are
+  independent of the release. The governance PR must land before the tag,
+  because it replaces the release gate's verifier-App check. PRs 6 and 7
+  are deferred.
 - **Not before 0.4.1:** PR 9 and the benchmark harness. `benchmarks/` is not in
   the wheel.
 
@@ -277,9 +306,9 @@ The order is **0.4.1 (pre-benchmark) → benchmark → v0.5.0 (launch)**.
    - Keep PR 1's rebuild instruction (`doctor` prints the exact command).
    - Correct the stale header `## [0.4.0] — Unreleased` to the published date,
      `2026-10-19` (PyPI upload). This edits CHANGELOG history, which is
-     forbidden territory, so the PR needs `supervisor-review`, and Vision
+     forbidden territory, so the PR needs `supervisor-review`, and the owner
      decides.
-4. Vision runs `pdctl release <exact main commit> v0.4.1`.
+4. The owner tags the exact `main` commit `v0.4.1`, following `RELEASE.md`.
 5. Confirm step 5 of `RELEASE.md`:
    - every job passed;
    - PyPI and the MCP Registry show 0.4.1;
