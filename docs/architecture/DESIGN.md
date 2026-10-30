@@ -372,9 +372,10 @@ no storage imports." Given `(text, max_chars, start_index)`, it returns
 `(truncated_text, is_truncated, next_start_index)`. If the remaining text
 (from `start_index` onward) fits within `max_chars`, it is returned unchanged
 with `is_truncated=False` and `next_start_index=None`. Otherwise the text is
-cut at the `max_chars` boundary and then walked backward past any Unicode
-combining marks (category `M*`) so a base character is never separated from
-its diacritics; in the degenerate case where backing up would collapse the
+cut at the `max_chars` boundary, and the cut point moves back while the
+character at the cut is a Unicode combining mark (category `M*`), so no page
+starts with one and a base character stays with its diacritics; in the
+degenerate case where backing up would collapse the
 slice to zero length, it instead walks forward from the base character
 through its combining marks. `next_start_index` is set to the resulting cut
 point whenever the text was truncated, which is what callers use to

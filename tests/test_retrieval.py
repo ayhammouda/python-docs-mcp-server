@@ -604,6 +604,9 @@ def test_budget_combining_character():
         if unicodedata.category(ch).startswith("M"):
             # Combining mark must have a preceding non-mark character
             assert i > 0, "Combining mark at start of result"
+    # The next page must not start with an orphaned mark either.
+    assert next_idx is not None
+    assert not unicodedata.category(text[next_idx]).startswith("M")
 
 
 def test_budget_combining_at_boundary():
@@ -620,6 +623,9 @@ def test_budget_combining_at_boundary():
         assert not last_cat.startswith("M"), (
             f"Last char is orphaned combining mark (category {last_cat})"
         )
+    # The next page must not start with an orphaned mark either.
+    assert next_idx is not None
+    assert not unicodedata.category(text[next_idx]).startswith("M")
 
 
 def test_budget_empty_text():
@@ -671,6 +677,39 @@ def test_budget_flag_emoji_sequence():
     result, truncated, next_idx = apply_budget(text, 7)
     assert isinstance(result, str)
     assert len(result) <= 8  # might include flag chars
+
+
+def test_budget_keeps_combining_mark_with_its_base():
+    """Budget 1 cannot cut between 'e' and its accent; the cluster comes whole."""
+    assert apply_budget("éx", 1) == ("é", True, 2)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["éx", "caf́e", "näive", "ab́c", "ẹ́̂x́"],
+)
+def test_budget_pages_join_and_never_start_with_a_mark(text):
+    """Paging at every budget rebuilds the text, and no page starts with a mark."""
+    for budget in range(1, len(text) + 1):
+        pages, start = [], 0
+        while True:
+            page, truncated, next_idx = apply_budget(text, budget, start)
+            pages.append(page)
+            # A page may exceed the budget only when it is one base char plus its marks.
+            one_cluster = all(unicodedata.category(ch).startswith("M") for ch in page[1:])
+            assert len(page) <= budget or one_cluster
+            if not truncated:
+                assert next_idx is None
+                break
+            assert page and next_idx == start + len(page)
+            start = next_idx
+        assert "".join(pages) == text
+        assert not any(unicodedata.category(page[0]).startswith("M") for page in pages)
+
+
+def test_budget_progresses_from_a_stale_start_on_a_mark():
+    """Pages cached before this fix can hand out a start index that points at a mark."""
+    assert apply_budget("caf́e", 1, 3) == ("́", True, 4)
 
 
 # ---------------------------------------------------------------------------

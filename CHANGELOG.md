@@ -100,6 +100,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   as 3.5.1. `changed_in` is now the newest "Changed in version" note that v2
   adds over v1, and `new_in` the earliest "Added in version" note in the v2
   section.
+- `get_docs` pagination no longer starts a page with a combining accent cut off
+  from its letter.
 
 ### Security
 
