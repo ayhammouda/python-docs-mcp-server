@@ -694,3 +694,117 @@ def test_public_verification_never_publishes_freeform_findings(
     assert sentinel in (tmp_path / f"verify-1-{base}-{head}.json").read_text()
     assert "pytest" in json.dumps(posts)
     assert CONTROL["diagnostic_text"]("password is abc123") == "credential=[REDACTED]"
+
+
+GOOD_VERDICT = {
+    "head_sha": "a" * 40,
+    "base_sha": "b" * 40,
+    "approved": True,
+    "blockers": [],
+    "commands": [
+        {"command": command, "exit_code": 0}
+        for command in ["uv sync --locked --dev", "ruff check", "pyright", "pytest"]
+    ],
+}
+MANDATORY = [command["command"] for command in GOOD_VERDICT["commands"]]
+
+
+def review_with_reply(tmp_path, monkeypatch, text):
+    """Run review() on one verifier reply; return its verdict or raise its failure."""
+    from types import SimpleNamespace
+
+    module = CONTROL["review"].__globals__
+    monkeypatch.setitem(module, "STATE", tmp_path)
+    monkeypatch.setitem(module, "CONFIG", tmp_path)
+    monkeypatch.setitem(module, "api", lambda *_: {"tree": {"sha": "c" * 40}})
+    monkeypatch.setitem(module, "reset_verifier", lambda: None)
+    monkeypatch.setattr(
+        module["subprocess"],
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout=json.dumps({"payloads": [{"text": text}]})
+        ),
+    )
+    return CONTROL["review"]("a" * 40, "b" * 40, {})
+
+
+def test_review_approves_a_complete_verdict(tmp_path, monkeypatch):
+    assert review_with_reply(tmp_path, monkeypatch, json.dumps(GOOD_VERDICT)) == GOOD_VERDICT
+    assert len(list(tmp_path.glob("review-*.json"))) == 1
+
+
+@pytest.mark.parametrize(
+    "change,kind,reason",
+    [
+        ({"head_sha": "c" * 40}, "infrastructure", "sha_mismatch"),
+        ({"base_sha": "c" * 40}, "infrastructure", "sha_mismatch"),
+        ({"approved": False}, "rejection", "approved_false"),
+        ({"blockers": ["x"]}, "rejection", "blockers_present"),
+        ({"commands": []}, "rejection", "incomplete_commands"),
+        *[
+            (
+                {"commands": [c for c in GOOD_VERDICT["commands"] if c["command"] != missing]},
+                "rejection",
+                "incomplete_commands",
+            )
+            for missing in MANDATORY
+        ],
+        (
+            {"commands": [*GOOD_VERDICT["commands"][:3], {"command": "pytest", "exit_code": 1}]},
+            "rejection",
+            "failed_commands",
+        ),
+        (
+            {"commands": [*GOOD_VERDICT["commands"], {"command": "extra", "exit_code": 2}]},
+            "rejection",
+            "failed_commands",
+        ),
+    ],
+)
+def test_review_refuses_every_unsafe_approval(tmp_path, monkeypatch, change, kind, reason):
+    with pytest.raises(CONTROL["ReviewFailure"]) as error:
+        review_with_reply(tmp_path, monkeypatch, json.dumps({**GOOD_VERDICT, **change}))
+    assert error.value.kind == kind
+    diagnostics = error.value.diagnostics
+    assert reason in [diagnostics.get("reason"), *diagnostics.get("reasons", [])]
+    assert not list(tmp_path.glob("review-*.json"))
+
+
+def test_release_requires_semver_tag_matching_versions_and_gate(tmp_path, monkeypatch):
+    module = CONTROL["release"].__globals__
+    monkeypatch.setitem(module, "CONFIG", tmp_path)
+    (tmp_path / "verifier.json").write_text(json.dumps({"app_id": 42}))
+    gates, posts = [], []
+    monkeypatch.setattr(
+        module["runpy"],
+        "run_path",
+        lambda _: {"require_eligible": lambda *args: gates.append(args[1:])},
+    )
+    versions = {"project": "1.2.3", "server": "1.2.3", "package": "1.2.3"}
+
+    def api(path, method="GET", data=None, role="owner"):
+        if method == "POST":
+            posts.append((path, data))
+            return {"ref": data["ref"]}
+        if path.startswith("contents/pyproject.toml"):
+            text = f'[project]\nversion = "{versions["project"]}"\n'
+        else:
+            text = json.dumps(
+                {"version": versions["server"], "packages": [{"version": versions["package"]}]}
+            )
+        return {"content": base64.b64encode(text.encode()).decode()}
+
+    monkeypatch.setitem(module, "api", api)
+    sha = "a" * 40
+    for tag in ["1.2.3", "v1.2", "v1.2.3-rc1", "v1.2.3.post1", "latest"]:
+        with pytest.raises(ValueError, match="semantic version"):
+            CONTROL["release"](sha, tag)
+    for key in versions:
+        versions[key] = "9.9.9"
+        with pytest.raises(ValueError, match="must match"):
+            CONTROL["release"](sha, "v1.2.3")
+        versions[key] = "1.2.3"
+    assert posts == []
+    assert CONTROL["release"](sha, "v1.2.3") == {"ref": "refs/tags/v1.2.3"}
+    assert posts == [("git/refs", {"ref": "refs/tags/v1.2.3", "sha": sha})]
+    assert set(gates) == {(sha, 42)}
