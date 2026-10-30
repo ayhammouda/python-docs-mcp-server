@@ -20,7 +20,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - Opt-in Python 3.15 documentation. `build-index --versions 3.15` (alone or
   with other versions) builds it from the source-pinned CPython `v3.15.0`
-  tag. The default index versions do not change.
+  tag. Nothing builds 3.15 unless you ask for it: the server's automatic
+  first-run build stays on 3.13, and the README's first-run commands are
+  unchanged. As with any version, when 3.15 is the highest one in a build it
+  becomes that index's default version.
   ([#158](https://github.com/ayhammouda/python-docs-mcp-server/pull/158))
 
 ### Changed
@@ -84,7 +87,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   symbol-only build logs the same hint.
 - Code examples are now filed under the section or API entry that contains
   them, not under the page's first section, so `kind="example"` hits point at
-  the right anchor. Rebuild the index to get this fix (see Changed).
+  the right anchor. Rebuild the index to get this fix (see the note at the
+  top of this release).
 
 ### Security
 
