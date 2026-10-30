@@ -163,7 +163,7 @@ only during `build-index`, never during `serve`.
   heading-anchored sections, producing ordinal-ordered records (`uri`,
   `anchor`, `heading`, `level`, `content_text`, `char_count`) that map
   directly onto the `sections` table columns (§4).
-- `extract_code_blocks` (line 352) extracts code blocks from the same HTML
+- `extract_code_blocks` extracts code blocks from the same HTML
   body, classifies each as a doctest or plain example, and assigns each an
   ordinal within the section it is attached to via `section_anchor`. That
   anchor is, in order: the id of the `dt` that heads the enclosing `dd`, then
