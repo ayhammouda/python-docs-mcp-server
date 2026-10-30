@@ -525,10 +525,20 @@ def _relative_link(target: Path, from_dir: Path) -> str:
     return os.path.relpath(target.resolve(), start=from_dir.resolve())
 
 
-#: Characters that change rendering inside an inline table cell. "_" counts only at a
-#: word edge: between letters or digits it cannot open or close emphasis. "#", "+",
-#: "-", "." and the like matter only at the start of a block, which a cell never is.
-_CELL_MARKDOWN = re.compile(r"[\\`*\[\]<|~&]|(?<![^\W_])_|_(?![^\W_])")
+#: A URL run first (GFM extended autolinks are built from the raw text, before
+#: backslash escapes resolve), then the characters that change rendering inside an
+#: inline table cell. "_" counts only at a word edge: between letters or digits it
+#: cannot open or close emphasis. "#", "+", "-", "." and the like matter only at the
+#: start of a block, which a cell never is.
+_CELL_MARKDOWN = re.compile(
+    r"(?P<url>(?:https?://|www\.)[^\s<]+)|[\\`*\[\]<|~&]|(?<![^\W_])_|_(?![^\W_])"
+)
+
+
+def _escape_cell_match(match: re.Match[str]) -> str:
+    if match["url"] is not None:
+        return match["url"].replace("|", "\\|")  # the table splitter resolves "\|"
+    return "\\" + match[0]
 
 
 def _cell(text: str) -> str:
@@ -536,9 +546,10 @@ def _cell(text: str) -> str:
 
     Line breaks become spaces (a newline would end the row), then every significant
     character gets a backslash, in one linear pass, so a proxy error body such as
-    "Error | Gateway" cannot add a column and ``__init__`` stays ``__init__``.
+    "Error | Gateway" cannot add a column and ``__init__`` stays ``__init__``. URLs
+    keep their raw text, with only "|" escaped.
     """
-    return _CELL_MARKDOWN.sub(r"\\\g<0>", re.sub(r"\r\n|[\r\n]", " ", text))
+    return _CELL_MARKDOWN.sub(_escape_cell_match, re.sub(r"\r\n|[\r\n]", " ", text))
 
 
 def _table(headers: list[str], rows: list[list[str]]) -> list[str]:

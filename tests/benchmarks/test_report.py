@@ -1040,6 +1040,24 @@ def test_table_keeps_a_multi_line_cell_on_one_row() -> None:
     assert _table(["Value"], [["a\nb\r\nc\rd"]])[2:] == ["| a b c d |"]
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("see https://x.y/__init__ now", id="dunder-in-url"),
+        pytest.param("fetch of https://x.y/a?b=1&c=~d*e failed", id="amp-tilde-star"),
+        pytest.param("see www.x.y/__main__.html?a=1&b=2", id="www"),
+    ],
+)
+def test_table_leaves_autolinked_urls_unescaped(text: str) -> None:
+    # GFM builds extended autolinks from the raw text, before backslash escapes
+    # resolve, so an escape inside a URL would show up in its text and its href.
+    assert _table(["Value"], [[text]])[2] == f"| {text} |"
+
+
+def test_table_escapes_a_pipe_inside_a_url_so_the_cell_boundary_holds() -> None:
+    assert _table(["Value"], [["https://x.y/a|b c"]])[2] == r"| https://x.y/a\|b c |"
+
+
 def test_token_paragraph_gives_the_real_reason_for_approximate_counts(tmp_path: Path) -> None:
     report_text = _generate_report(_minimal_valid_run_dir(tmp_path)).read_text(encoding="utf-8")
     token_paragraph = report_text.split("## Token Counts (After Client Rewrap)", 1)[1]
