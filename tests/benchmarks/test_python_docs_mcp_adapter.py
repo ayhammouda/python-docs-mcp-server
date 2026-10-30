@@ -35,8 +35,8 @@ class _FakeContentBlock:
 @dataclass
 class _FakeCallToolResult:
     content: list[Any] = field(default_factory=list)
-    structuredContent: dict[str, Any] | None = None
-    isError: bool = False
+    structured_content: dict[str, Any] | None = None
+    is_error: bool = False
 
 
 class _ScriptedSession:
@@ -61,8 +61,8 @@ class _ScriptedSession:
 def _search_result(hits: list[dict[str, Any]]) -> _FakeCallToolResult:
     return _FakeCallToolResult(
         content=[_FakeContentBlock(text="ignored")],
-        structuredContent={"hits": hits, "note": None},
-        isError=False,
+        structured_content={"hits": hits, "note": None},
+        is_error=False,
     )
 
 
@@ -76,16 +76,16 @@ def _get_result(content: str, **extra: Any) -> _FakeCallToolResult:
     }
     return _FakeCallToolResult(
         content=[_FakeContentBlock(text="ignored")],
-        structuredContent=payload,
-        isError=False,
+        structured_content=payload,
+        is_error=False,
     )
 
 
 def _error_result(message: str) -> _FakeCallToolResult:
     return _FakeCallToolResult(
         content=[_FakeContentBlock(text=message)],
-        structuredContent=None,
-        isError=True,
+        structured_content=None,
+        is_error=True,
     )
 
 
@@ -168,7 +168,7 @@ async def test_retrieval_flow_raises_tool_failure_when_get_docs_errors() -> None
 def test_tool_result_payload_prefers_structured_content() -> None:
     result = _get_result("x")
 
-    assert _tool_result_payload(result) == result.structuredContent
+    assert _tool_result_payload(result) == result.structured_content
 
 
 def test_tool_result_payload_falls_back_to_first_text_block_on_error() -> None:

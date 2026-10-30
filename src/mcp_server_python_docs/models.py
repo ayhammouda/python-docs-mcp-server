@@ -1,6 +1,6 @@
 """Pydantic input/output models for all MCP tools.
 
-These models define the tool contracts. FastMCP auto-generates outputSchema
+These models define the tool contracts. MCPServer auto-generates outputSchema
 from BaseModel return types, providing structuredContent for free (SRVR-05).
 """
 from __future__ import annotations
@@ -224,7 +224,7 @@ ChangeKind = Literal["added", "removed", "changed", "unchanged"]
 class CompareVersionsResult(BaseModel):
     """Output from compare_versions tool (CMPR-01, CMPR-03).
 
-    Typed contract returned by CompareService.compare and the source FastMCP
+    Typed contract returned by CompareService.compare and the source MCPServer
     auto-derives the compare_versions outputSchema from. The four ``change``
     cases (added / removed / changed / unchanged) all share this shape;
     optional delta fields are ``None`` when they do not apply to the case,

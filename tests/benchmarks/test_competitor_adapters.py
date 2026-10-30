@@ -82,8 +82,8 @@ class _FakeContentBlock:
 @dataclass
 class _FakeCallToolResult:
     content: list[Any] = field(default_factory=list)
-    structuredContent: dict[str, Any] | None = None
-    isError: bool = False
+    structured_content: dict[str, Any] | None = None
+    is_error: bool = False
 
 
 class _ScriptedSession:
@@ -113,7 +113,7 @@ def _result(
     is_error: bool = False,
 ) -> _FakeCallToolResult:
     content = [_FakeContentBlock(text=text)] if text is not None else []
-    return _FakeCallToolResult(content=content, structuredContent=structured, isError=is_error)
+    return _FakeCallToolResult(content=content, structured_content=structured, is_error=is_error)
 
 
 def _patch_no_transport(monkeypatch: pytest.MonkeyPatch, module: Any) -> None:
@@ -190,10 +190,10 @@ async def test_context7_flow_falls_back_to_structured_content_when_no_text_block
     session = _ScriptedSession(
         {
             "resolve-library-id": _FakeCallToolResult(
-                content=[], structuredContent={"results": [{"id": "/python/cpython"}]}
+                content=[], structured_content={"results": [{"id": "/python/cpython"}]}
             ),
             "query-docs": _FakeCallToolResult(
-                content=[], structuredContent={"content": "structured docs"}
+                content=[], structured_content={"content": "structured docs"}
             ),
         }
     )
@@ -313,10 +313,10 @@ async def test_gitmcp_flow_falls_back_to_structured_content_when_no_text_block()
         {
             "search_cpython_documentation": _FakeCallToolResult(
                 content=[],
-                structuredContent={"hits": [{"url": _PATHLIB_DOC_URL}]},
+                structured_content={"hits": [{"url": _PATHLIB_DOC_URL}]},
             ),
             "fetch_generic_url_content": _FakeCallToolResult(
-                content=[], structuredContent={"text": "structured fetch text"}
+                content=[], structured_content={"text": "structured fetch text"}
             ),
         }
     )
@@ -390,7 +390,7 @@ async def test_deepwiki_flow_falls_back_to_structured_answer_when_no_text_block(
     session = _ScriptedSession(
         {
             "ask_question": _FakeCallToolResult(
-                content=[], structuredContent={"answer": "structured answer"}
+                content=[], structured_content={"answer": "structured answer"}
             )
         }
     )
@@ -435,10 +435,10 @@ async def test_ref_tools_flow_falls_back_to_structured_content_when_no_text_bloc
         {
             "ref_search_documentation": _FakeCallToolResult(
                 content=[],
-                structuredContent={"results": [{"url": _PATHLIB_DOC_URL}]},
+                structured_content={"results": [{"url": _PATHLIB_DOC_URL}]},
             ),
             "ref_read_url": _FakeCallToolResult(
-                content=[], structuredContent={"content": "structured content"}
+                content=[], structured_content={"content": "structured content"}
             ),
         }
     )

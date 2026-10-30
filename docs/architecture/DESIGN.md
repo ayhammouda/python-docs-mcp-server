@@ -412,7 +412,7 @@ As shipped today, verified against
 [`src/mcp_server_python_docs/server.py`](../../src/mcp_server_python_docs/server.py)
 (tool definitions at lines 297–410), none of the six MCP tools — including
 the three the ADR names — currently accept a `format` parameter; each
-returns its structured Pydantic result model directly, which FastMCP
+returns its structured Pydantic result model directly, which MCPServer
 serializes to JSON. This is consistent with the ADR's own framing: the
 `format` parameter is described there as something the v0.3.x implementation
 "may expose... only after the study in decision 5.8 confirms" a real win
@@ -468,7 +468,7 @@ risks recorded in its Consequences section.
 **Status:** Ratified.
 
 ADR-008's Decision Outcome (lines 63–100): the shipped transport is
-stdio-only via FastMCP —
+stdio-only via the MCP Python SDK —
 `mcp_server.run(transport="stdio")` in the `serve` command of
 [`src/mcp_server_python_docs/__main__.py`](../../src/mcp_server_python_docs/__main__.py)
 (verified live at line 110). Nothing else in `src/` implements an HTTP, SSE,

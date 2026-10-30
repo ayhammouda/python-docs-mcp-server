@@ -1,4 +1,8 @@
-"""Fail closed unless this tag names an independently verified main commit."""
+"""Fail closed unless this tag names an independently verified main commit.
+
+The owner's verification record is a process tripwire, not a security boundary;
+see the 2026-10-30 amendment in ``AGENT-EXECUTION-PIPELINE.md``.
+"""
 
 import json
 import os
@@ -17,11 +21,30 @@ REQUIRED = {
     "Installed package smoke",
     "Product regression",
 }
+# First line of the owner's PR comment that records an independent verification.
+RECORD = re.compile(r"Independent verification: (PASS|FAIL)")
 
 
-def require_eligible(api, sha: str, verifier_app_id: int) -> None:
-    if not re.fullmatch(r"[0-9a-f]{40}", sha) or verifier_app_id <= 0:
-        raise ValueError("Exact commit and configured verifier App ID are required")
+def verdict(comment, owner: str, head: str, merged_at: str) -> str | None:
+    """Return PASS or FAIL for an owner record of ``head``, else None."""
+    lines = comment["body"].replace("\r\n", "\n").split("\n")
+    if (
+        (comment["user"] or {}).get("login") != owner
+        # Verification gates the merge; a record written afterwards does not count.
+        or comment["created_at"] > merged_at
+        or f"head: {head}" not in lines
+    ):
+        return None
+    # An edit could revive or retarget a decision, so any edited owner record fails closed.
+    if comment["updated_at"] != comment["created_at"]:
+        return "FAIL"
+    match = RECORD.fullmatch(lines[0])
+    return match[1] if match else None
+
+
+def require_eligible(api, sha: str, owner: str) -> None:
+    if not re.fullmatch(r"[0-9a-f]{40}", sha) or not owner:
+        raise ValueError("Exact commit and repository owner are required")
     if api(f"compare/{sha}...main")["status"] not in {"ahead", "identical"}:
         raise ValueError("Release commit is not on main")
     prs = [
@@ -36,19 +59,21 @@ def require_eligible(api, sha: str, verifier_app_id: int) -> None:
     codeql = [c for c in head_checks if c["name"] == "CodeQL" and c["app"]["id"] == 57789]
     if not codeql or max(codeql, key=lambda c: c["id"])["conclusion"] != "success":
         raise ValueError("Missing or failing CodeQL findings check on merged PR head")
-    reviews = [
-        c
-        for c in head_checks
-        if c["name"] == "Independent verification" and c["app"]["id"] == verifier_app_id
+    # The main ruleset allows only squash merges (allowed_merge_methods: ["squash"]).
+    if len(api(f"git/commits/{sha}")["parents"]) != 1:
+        raise ValueError("Release commit must be a single-parent commit")
+    comments, page = [], 1
+    while batch := api(f"issues/{prs[0]['number']}/comments?per_page=100&page={page}"):
+        comments += batch
+        page += 1
+    # The newest owner decision for this head wins, so a later FAIL revokes an earlier PASS.
+    records = [
+        (c["created_at"], c["id"], v)
+        for c in comments
+        if (v := verdict(c, owner, head, prs[0]["merged_at"]))
     ]
-    parents = api(f"git/commits/{sha}")["parents"]
-    latest = max(reviews, key=lambda c: c["id"], default={})
-    if (
-        len(parents) != 1
-        or latest.get("conclusion") != "success"
-        or latest.get("external_id") != f"{parents[0]['sha']}:{head}"
-    ):
-        raise ValueError("Missing successful independent verification for merged PR head")
+    if max(records, default=(None, None, None))[2] != "PASS":
+        raise ValueError("Newest owner verification record for merged PR head is missing or FAIL")
     checks = api(f"commits/{sha}/check-runs?per_page=100")["check_runs"]
     latest = {}
     for check in sorted(checks, key=lambda c: c["id"]):
@@ -77,8 +102,8 @@ def main() -> None:
         with urllib.request.urlopen(request, timeout=30) as response:
             return json.load(response)
 
-    require_eligible(api, os.environ["GITHUB_SHA"], int(os.environ.get("VERIFIER_APP_ID") or "0"))
-    print("Verified main commit, independent review and required main checks.")
+    require_eligible(api, os.environ["GITHUB_SHA"], os.environ.get("GITHUB_REPOSITORY_OWNER", ""))
+    print("Verified main commit, owner verification record and required main checks.")
 
 
 if __name__ == "__main__":

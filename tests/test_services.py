@@ -419,13 +419,13 @@ class TestToolRegistration:
         assert "list_versions" in tool_names
 
     def test_create_server_identifies_as_dist_name(self):
-        """FastMCP server name must match the public distribution name."""
+        """MCPServer name must match the public distribution name."""
         from mcp_server_python_docs.server import create_server
 
         server = create_server()
-        # FastMCP exposes the constructor name via .name (mcp >= 1.27)
+        # MCPServer exposes the constructor name via .name
         assert server.name == "python-docs-mcp-server", (
-            f"Expected FastMCP name 'python-docs-mcp-server', got {server.name!r}"
+            f"Expected MCPServer name 'python-docs-mcp-server', got {server.name!r}"
         )
 
     def test_all_tools_have_annotations(self):
@@ -438,13 +438,13 @@ class TestToolRegistration:
             annotations = tool.annotations
             assert annotations is not None, f"{name} missing annotations"
             assert (
-                annotations.readOnlyHint is True
+                annotations.read_only_hint is True
             ), f"{name} readOnlyHint should be True"
             assert (
-                annotations.destructiveHint is False
+                annotations.destructive_hint is False
             ), f"{name} destructiveHint should be False"
             assert (
-                annotations.openWorldHint is False
+                annotations.open_world_hint is False
             ), f"{name} openWorldHint should be False"
 
     def test_seven_tools_registered(self):
@@ -457,6 +457,20 @@ class TestToolRegistration:
             "detect_python_version", "compare_versions", "whatsnew_for_version",
         }
 
+    def test_docs_tools_are_async(self):
+        """MCP SDK v2 runs sync tools on worker threads. These six share one
+        sqlite3.Connection, so they stay async and run on the event loop."""
+        import inspect
+
+        from mcp_server_python_docs.server import create_server
+
+        tools = create_server()._tool_manager._tools
+        for name in (
+            "search_docs", "get_docs", "list_versions",
+            "detect_python_version", "compare_versions", "whatsnew_for_version",
+        ):
+            assert inspect.iscoroutinefunction(tools[name].fn), name
+
     def test_runtime_tool_schemas_include_input_constraints(self):
         import anyio
 
@@ -467,7 +481,7 @@ class TestToolRegistration:
         async def _list_tools():
             return await server.list_tools()
 
-        schemas = {tool.name: tool.inputSchema for tool in anyio.run(_list_tools)}
+        schemas = {tool.name: tool.input_schema for tool in anyio.run(_list_tools)}
 
         search_docs = schemas["search_docs"]["properties"]
         assert search_docs["query"]["maxLength"] == 500
@@ -489,7 +503,7 @@ class TestToolRegistration:
 
     def test_app_lifespan_closes_db_on_pre_yield_error(self, tmp_path):
         import anyio
-        from mcp.server.fastmcp import FastMCP
+        from mcp.server.mcpserver import MCPServer
 
         from mcp_server_python_docs.server import app_lifespan
 
@@ -499,7 +513,7 @@ class TestToolRegistration:
         fake_db = Mock()
 
         async def _enter_lifespan():
-            async with app_lifespan(FastMCP("test")):
+            async with app_lifespan(MCPServer("test")):
                 pytest.fail("lifespan should not reach yield")
 
         with patch(
