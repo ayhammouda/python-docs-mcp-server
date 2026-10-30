@@ -36,6 +36,9 @@ jobs:
     runs-on: ubuntu-latest
     name: Build & Test
     timeout-minutes: 15
+    outputs:
+      dist-id: ${{ steps.upload-dist.outputs.artifact-id }}
+      dist-sha256: ${{ steps.dist-sha256.outputs.dist-sha256 }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -89,7 +92,7 @@ jobs:
           "${RUNNER_TEMP}/mcp-publisher" validate server.json
 
       - name: Build package
-        run: uv build
+        run: uv build --build-constraint .github/build-constraints.txt --require-hashes
 
       - name: Verify wheel contents
         run: |
@@ -107,11 +110,23 @@ jobs:
               print('Wheel contents OK')
           "
 
+      - name: Record dist checksums
+        id: dist-sha256
+        run: |
+          set -o pipefail
+          {
+            echo "dist-sha256<<DIST_SHA256_EOF"
+            sha256sum dist/* | LC_ALL=C sort
+            echo "DIST_SHA256_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Upload dist artifacts
+        id: upload-dist
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: dist
           path: dist/
+          if-no-files-found: error
 
   integration:
     needs: build
@@ -134,8 +149,21 @@ jobs:
       - name: Download dist artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: dist
+          artifact-ids: ${{ needs.build.outputs.dist-id }}
           path: dist/
+
+      - name: Verify dist matches the build job
+        env:
+          EXPECTED: ${{ needs.build.outputs.dist-sha256 }}
+        run: |
+          set -o pipefail
+          [ -n "$EXPECTED" ] || { echo "::error::build exported no checksums"; exit 1; }
+          ACTUAL="$(sha256sum dist/* | LC_ALL=C sort)"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::dist differs from the files the build job checksummed"
+            printf 'expected:\n%s\nactual:\n%s\n' "$EXPECTED" "$ACTUAL"
+            exit 1
+          fi
 
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
@@ -170,6 +198,7 @@ jobs:
 
   github-release:
     needs:
+      - build
       - publish
       - publish-mcp-registry
     runs-on: ubuntu-latest
@@ -182,8 +211,21 @@ jobs:
       - name: Download dist artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: dist
+          artifact-ids: ${{ needs.build.outputs.dist-id }}
           path: dist/
+
+      - name: Verify dist matches the build job
+        env:
+          EXPECTED: ${{ needs.build.outputs.dist-sha256 }}
+        run: |
+          set -o pipefail
+          [ -n "$EXPECTED" ] || { echo "::error::build exported no checksums"; exit 1; }
+          ACTUAL="$(sha256sum dist/* | LC_ALL=C sort)"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::dist differs from the files the build job checksummed"
+            printf 'expected:\n%s\nactual:\n%s\n' "$EXPECTED" "$ACTUAL"
+            exit 1
+          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
