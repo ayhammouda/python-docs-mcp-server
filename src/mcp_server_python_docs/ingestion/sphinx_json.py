@@ -389,7 +389,7 @@ def _code_block_anchor(div: Tag) -> str:
             for sibling in parent.find_previous_siblings(["dt", "dd"]):
                 if sibling.name == "dd":
                     break
-                if isinstance(sibling, Tag) and sibling.get("id"):
+                if sibling.get("id"):
                     return str(sibling["id"])
         is_section = parent.name == "section" or (
             parent.name == "div" and "section" in (parent.get("class") or [])
