@@ -1,5 +1,8 @@
 # OpenClaw Forge Protocol — python-docs-mcp-server
 
+> **Retired 2026-10-30, kept as history; no authority.**
+> See the 2026-10-30 amendment in `AGENT-EXECUTION-PIPELINE.md`.
+
 **Adopted:** 2026-05-29
 **Status:** Active; Vision ownership authorized by Aymen on 2026-10-01
 **Scope:** OpenClaw orchestration for autonomous work on `ayhammouda/python-docs-mcp-server`

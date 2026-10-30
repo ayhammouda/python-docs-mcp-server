@@ -4,7 +4,7 @@
 
 **Companion to:** [`STRATEGIC-ROADMAP-2026-05-29.md`](STRATEGIC-ROADMAP-2026-05-29.md) (the *what*; this is the *how, with what guardrails*).
 
-**OpenClaw operating layer:** [`OPENCLAW-FORGE-PROTOCOL.md`](OPENCLAW-FORGE-PROTOCOL.md) defines how Vision, Gilfoyle, and Heimdall apply this policy. This project has no UI, so Saga is not part of the default loop.
+**OpenClaw operating layer:** [`OPENCLAW-FORGE-PROTOCOL.md`](OPENCLAW-FORGE-PROTOCOL.md) was retired on 2026-10-30 and is kept as history; it has no authority.
 
 **Adopted:** 2026-05-29
 **Current authority:** Read [Amendment 2026-10-30](#amendment-2026-10-30--ownership-transferred-to-the-claude-code-owner)
