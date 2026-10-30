@@ -43,7 +43,11 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV, require_live_environment
+from benchmarks.adapters.guard import (
+    PROVIDER_API_KEY_ENV,
+    redact_api_keys,
+    require_live_environment,
+)
 from benchmarks.runner import BenchmarkCellFailure
 
 #: Anthropic Messages API count-tokens endpoint. Counts a message envelope
@@ -171,7 +175,7 @@ class LiveClaudeTokenCounter:
             raise BenchmarkCellFailure(
                 "tool_failure",
                 "Anthropic count-tokens call failed: "
-                f"HTTP {exc.code}: {_error_body(error_raw, api_key)}",
+                f"HTTP {exc.code}: {_error_body(error_raw)}",
             ) from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise BenchmarkCellFailure(
@@ -182,7 +186,7 @@ class LiveClaudeTokenCounter:
         except ValueError as exc:
             raise BenchmarkCellFailure(
                 "tool_failure",
-                f"Anthropic count-tokens response is not JSON: {_error_body(raw, api_key)}",
+                f"Anthropic count-tokens response is not JSON: {_error_body(raw)}",
             ) from exc
         input_tokens = payload.get("input_tokens") if isinstance(payload, dict) else None
         if not isinstance(input_tokens, int):
@@ -193,17 +197,10 @@ class LiveClaudeTokenCounter:
         return input_tokens
 
 
-def _redact(text: str, api_key: str) -> str:
-    """Replace ``api_key`` in ``text`` with ``[redacted]``."""
-    if api_key:  # str.replace("", ...) would insert the marker between every character
-        text = text.replace(api_key, "[redacted]")
-    return text
-
-
-def _error_body(raw: bytes, api_key: str) -> str:
-    """Make a response body safe to record: decoded, key redacted, whitespace
+def _error_body(raw: bytes) -> str:
+    """Make a response body safe to record: decoded, API keys redacted, whitespace
     collapsed, cut to 300 characters."""
-    text = _redact(raw.decode("utf-8", "replace"), api_key)
+    text = redact_api_keys(raw.decode("utf-8", "replace"))
     return " ".join(text.split())[:300]
 
 
