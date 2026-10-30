@@ -99,7 +99,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   Sphinx 7.3 or later use (Python 3.12 onwards), and keeps patch versions such
   as 3.5.1. `changed_in` is now the newest "Changed in version" note that v2
   adds over v1, and `new_in` the earliest "Added in version" note in the v2
-  section.
+  section. It now reads the whole section, not only its first 8,000
+  characters, so a note or change late in a long section is no longer missed.
 - `get_docs` pagination no longer starts a page with a combining accent cut off
   from its letter.
 - `detect_python_version` no longer runs `python3 --version` on every call,

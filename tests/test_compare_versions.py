@@ -431,3 +431,20 @@ def test_compare_ignores_soft_deprecation(compare_db, monkeypatch):
     texts = {"3.10": "Old API.", "3.11": "Old API.\n\nSoft deprecated since version 3.11."}
     svc = _service_with_texts(compare_db, monkeypatch, texts)
     assert svc.compare("json.dumps", "3.10", "3.11").deprecated_in is None
+
+
+def test_compare_reads_a_long_section_past_the_default_page(compare_db):
+    """Unmocked: a note after get_docs' default 8,000 characters still counts."""
+    prefix = "Serialize obj.\n\nChanged in version 3.3: x.\n\n" + "More prose here.\n" * 700
+    texts = {"3.10": prefix, "3.11": prefix + "\nChanged in version 3.11: New behavior."}
+    for version, text in texts.items():
+        compare_db.execute(
+            "UPDATE sections SET content_text = ?, char_count = ? WHERE anchor = 'json.dumps' "
+            "AND document_id IN (SELECT d.id FROM documents d JOIN doc_sets ds "
+            "ON d.doc_set_id = ds.id WHERE ds.version = ?)",
+            (text, len(text), version),
+        )
+    compare_db.commit()
+    assert len(prefix) > 8000
+    result = _service(compare_db).compare("json.dumps", "3.10", "3.11")
+    assert (result.change, result.changed_in) == ("changed", "3.11")

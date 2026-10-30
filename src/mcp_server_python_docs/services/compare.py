@@ -143,13 +143,25 @@ class CompareService:
 
         CR-01: symbol URIs carry ".html" (``library/json.html#...``) but real
         Sphinx ingestion stores ``documents.slug`` EXTENSIONLESS
-        (``library/json``). ``get_docs`` now resolves the ".html" form itself,
-        so one call suffices; it raises PageNotFoundError when the page or
-        section is missing.
+        (``library/json``). ``get_docs`` now resolves the ".html" form itself;
+        it raises PageNotFoundError when the page or section is missing.
+
+        Reads the WHOLE section: a note past ``get_docs``' default page would
+        otherwise be missed. A truncated first page costs one more call.
         """
-        return self._content.get_docs(
-            slug=uri.split("#", 1)[0], version=version, anchor=anchor
-        ).content
+        slug = uri.split("#", 1)[0]
+        result = self._content.get_docs(slug=slug, version=version, anchor=anchor)
+        text = result.content
+        while result.next_start_index is not None:
+            result = self._content.get_docs(
+                slug=slug,
+                version=version,
+                anchor=anchor,
+                max_chars=result.char_count,
+                start_index=result.next_start_index,
+            )
+            text += result.content
+        return text
 
     @log_tool_call("compare_versions")
     def compare(self, symbol: str, v1: str, v2: str) -> CompareVersionsResult:
