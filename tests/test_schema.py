@@ -332,6 +332,14 @@ def test_bootstrap_idempotent():
     conn.close()
 
 
+def test_bootstrap_schema_stamps_index_format_version():
+    """D2: every new index records the format this release reads."""
+    from mcp_server_python_docs.storage.db import INDEX_FORMAT_VERSION
+
+    conn = _make_db()
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == INDEX_FORMAT_VERSION == 1
+
+
 # ── Test 5: No hardcoded cache path (Success Criterion 5) ────────────
 
 

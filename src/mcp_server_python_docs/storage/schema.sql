@@ -1,5 +1,5 @@
 -- schema.sql — python-docs-mcp-server storage schema
--- Version: Phase 2 (2026-04-16)
+-- Index format: 1 (PRAGMA user_version, end of file)
 --
 -- Design decisions:
 --   - FTS5 tokenizer: unicode61 remove_diacritics 2 tokenchars '._'
@@ -134,3 +134,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS examples_fts USING fts5(
     content='examples', content_rowid='id',
     tokenize="unicode61 remove_diacritics 2 tokenchars '._'"
 );
+
+-- ────────────────────────────────────────────────────
+-- Index format stamp
+--
+-- Must equal storage.db.INDEX_FORMAT_VERSION. Bump both when a change
+-- needs every user to rebuild. Kept last so the stamp lands only after
+-- every CREATE has succeeded.
+-- ────────────────────────────────────────────────────
+
+PRAGMA user_version = 1;

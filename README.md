@@ -324,8 +324,11 @@ Check the local environment:
 uvx python-docs-mcp-server doctor
 ```
 
-This checks the runtime Python version, SQLite FTS5, cache/index paths, disk
-space, and the `venv`/`ensurepip` support needed by `build-index`.
+This checks the runtime Python version, SQLite FTS5, cache/index paths, the
+index format, disk space, and the `venv`/`ensurepip` support needed by
+`build-index`. If it reports `FAIL: Index format`, run the `build-index`
+command it prints; it lists the versions your index already holds (or every
+supported version, if it cannot read them).
 
 Validate an existing index:
 

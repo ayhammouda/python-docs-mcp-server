@@ -508,9 +508,11 @@ def doctor() -> None:
     from mcp_server_python_docs.diagnostics import check_build_venv_support
     from mcp_server_python_docs.errors import FTS5UnavailableError
     from mcp_server_python_docs.storage.db import (
+        INDEX_FORMAT_VERSION,
         assert_fts5_available,
         get_cache_dir,
         get_index_path,
+        get_readonly_connection,
     )
 
     results: list[tuple[str, bool, str]] = []  # (probe_name, passed, detail)
@@ -580,7 +582,42 @@ def doctor() -> None:
         index_detail += f" ({size_mb:.1f} MB)"
     results.append(("Index database", index_exists, index_detail))
 
-    # 6. Free disk space
+    # 6. Index format (PRAGMA user_version); a missing index is probe 5's job
+    if index_exists:
+        format_conn: sqlite3.Connection | None = None
+        format_error: sqlite3.Error | None = None
+        found_format = None
+        indexed_versions: list[str] = []
+        try:
+            format_conn = get_readonly_connection(index_path)
+            found_format = format_conn.execute("PRAGMA user_version").fetchone()[0]
+            indexed_versions = [
+                row[0]
+                for row in format_conn.execute(
+                    "SELECT version FROM doc_sets ORDER BY version"
+                )
+            ]
+        except sqlite3.Error as e:
+            format_error = e
+        finally:
+            if format_conn is not None:
+                format_conn.close()
+        rebuild = (
+            "run: python-docs-mcp-server build-index --versions "
+            f"{','.join(indexed_versions) or SUPPORTED_DOC_VERSIONS_CSV}"
+        )
+        if format_error is not None:
+            results.append(("Index format", False, f"unreadable ({format_error}) -- {rebuild}"))
+        elif found_format == INDEX_FORMAT_VERSION:
+            results.append(("Index format", True, f"version {found_format}"))
+        else:
+            results.append((
+                "Index format",
+                False,
+                f"version {found_format}, expected {INDEX_FORMAT_VERSION} -- {rebuild}",
+            ))
+
+    # 7. Free disk space
     check_path = cache_dir if cache_exists else cache_dir.parent
     # Ensure path exists for disk_usage
     if not check_path.exists():

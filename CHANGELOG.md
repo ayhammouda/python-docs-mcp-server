@@ -17,6 +17,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `doctor` now runs the same FTS5 check as the server and, when FTS5 is
   missing, prints that check's message.
 
+- **Rebuild the index after upgrading.** New indexes record format version 1
+  (`PRAGMA user_version`). `doctor` reports `FAIL: Index format` for an index
+  built by another release and prints the `build-index` command for the
+  versions that index holds. Run it, then restart your MCP client. An index you
+  do not rebuild keeps working, but its code examples stay filed under each
+  page's first section.
+
 ### Removed
 
 - Removed the `pysqlite3` optional extra. Nothing imported `pysqlite3`, so
