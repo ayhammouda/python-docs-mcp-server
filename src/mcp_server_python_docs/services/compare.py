@@ -58,16 +58,6 @@ _SECTION_DIFF_MAX_CHARS = 600
 _SIGNATURE_LINE_MAX = 80
 
 
-def _extract_version(pattern: re.Pattern[str], text: str) -> str | None:
-    """Return the captured version from the first match of ``pattern``, or None.
-
-    Serves ``deprecated_in`` (``_DEPRECATED_IN_RE``) only; ``new_in`` and
-    ``changed_in`` read every note in the section.
-    """
-    match = pattern.search(text)
-    return match.group(1) if match else None
-
-
 def _vt(version: str) -> tuple[int, ...]:
     """Turn a version into an integer tuple, so that 3.10 sorts after 3.9."""
     return tuple(int(part) for part in version.split("."))
@@ -239,7 +229,8 @@ class CompareService:
             key=_vt,
             default=None,
         )
-        deprecated_in = _extract_version(_DEPRECATED_IN_RE, text_v2)
+        m = _DEPRECATED_IN_RE.search(text_v2)
+        deprecated_in = m.group(1) if m else None
 
         # signature_delta (M1, advisory): first non-empty line comparison.
         first_v1 = _first_nonempty_line(text_v1)
