@@ -801,7 +801,7 @@ def test_report_renders_manifest_exclusions(tmp_path: Path) -> None:
     assert "### Excluded Competitors" in report_text
     assert (
         "| some-excluded-competitor | vendor denied benchmarking permission | "
-        "forbidden-without-permission | 2026-07-09 | https\\://example.test/terms |"
+        "forbidden-without-permission | 2026-07-09 | https\\://example\\.test/terms |"
     ) in report_text
     assert (
         "- **Excluded competitors:** some-excluded-competitor "
@@ -994,8 +994,8 @@ def test_report_escapes_a_backslash_before_a_pipe_inside_a_table_cell(tmp_path: 
 @pytest.mark.parametrize(
     ("path", "rendered"),
     [
-        pytest.param(r"C:\py\python.exe", r"C\:\\py\\python.exe", id="windows-path"),
-        pytest.param(r"\\server\share\python.exe", r"\\\\server\\share\\python.exe", id="unc-path"),
+        pytest.param(r"C:\py\python.exe", r"C\:\\py\\python\.exe", id="windows-path"),
+        pytest.param(r"\\server\share\python.exe", r"\\\\server\\share\\python\.exe", id="unc-path"),
     ],
 )
 def test_report_renders_windows_paths_literally(tmp_path: Path, path: str, rendered: str) -> None:
@@ -1029,20 +1029,23 @@ _GFM_BACKSLASH_ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
     [
         pytest.param("__init__", r"\_\_init\_\_", id="dunder"),
         pytest.param("a*b*c", r"a\*b\*c", id="asterisks"),
-        pytest.param("https://x.y/__init__", r"https\://x.y/\_\_init\_\_", id="url-dunder"),
+        pytest.param("https://x.y/__init__", r"https\://x\.y/\_\_init\_\_", id="url-dunder"),
         pytest.param(
             "www.example.com/__main__.html?a=1&b=2",
-            r"www\.example.com/\_\_main\_\_.html?a=1\&b=2",
+            r"www\.example\.com/\_\_main\_\_\.html?a=1\&b=2",
             id="www",
         ),
-        pytest.param(r"C:\_scratch_\python.exe", r"C\:\\\_scratch\_\\python.exe", id="path"),
+        pytest.param(r"C:\_scratch_\python.exe", r"C\:\\\_scratch\_\\python\.exe", id="path"),
         pytest.param(r"\\server\share", r"\\\\server\\share", id="unc"),
         pytest.param("a|b", r"a\|b", id="pipe"),
         pytest.param(r"a\|b", r"a\\\|b", id="backslash-pipe"),
         pytest.param(
-            "https://example.test/?a=1&copy;x", r"https\://example.test/?a=1\&copy;x", id="entity"
+            "https://example.test/?a=1&copy;x", r"https\://example\.test/?a=1\&copy;x", id="entity"
         ),
         pytest.param("a <b> (c) !#~", r"a \<b\> \(c\) \!\#\~", id="html-and-punctuation"),
+        pytest.param("example.com/path", r"example\.com/path", id="bare-domain"),
+        pytest.param("Www.example.com", r"Www\.example\.com", id="capitalised-www"),
+        pytest.param("1000.0 and 52.0%", "1000.0 and 52.0%", id="decimals-untouched"),
     ],
 )
 def test_table_cells_render_markdown_punctuation_literally(text: str, escaped: str) -> None:
@@ -1058,16 +1061,16 @@ def test_table_cells_render_markdown_punctuation_literally(text: str, escaped: s
     [
         pytest.param(
             "https://x.y/\x01![p](https://evil.example/p.png)",
-            "https\\://x.y/\ufffd\\!\\[p\\]\\(https\\://evil.example/p.png\\)",
+            "https\\://x\\.y/\ufffd\\!\\[p\\]\\(https\\://evil\\.example/p\\.png\\)",
             id="image",
         ),
         pytest.param(
             "https://x.y/\x01[trusted](https://evil.example)",
-            "https\\://x.y/\ufffd\\[trusted\\]\\(https\\://evil.example\\)",
+            "https\\://x\\.y/\ufffd\\[trusted\\]\\(https\\://evil\\.example\\)",
             id="disguised-link",
         ),
         pytest.param(
-            "https://x.y/\x01`code`", "https\\://x.y/\ufffd\\`code\\`", id="code-span"
+            "https://x.y/\x01`code`", "https\\://x\\.y/\ufffd\\`code\\`", id="code-span"
         ),
     ],
 )
@@ -1080,6 +1083,16 @@ def test_table_cells_publish_no_markdown_from_a_control_character_payload(
     assert "![" not in cell
     assert "](" not in cell
     assert re.search(r"(?<!\\)`", cell) is None
+
+
+def test_table_pins_the_escaped_form_of_an_email_address() -> None:
+    """Pin how an email address is escaped; this cannot stop every link.
+
+    cmark-gfm (GitHub's renderer) autolinks an email address in cell text after
+    escapes resolve, so ``a@b.c`` still renders as a mailto link. Its text equals its
+    target, so it deceives nobody; the owner accepted this on 2026-10-30.
+    """
+    assert _table(["Value"], [["a@b.c"]])[2] == r"| a@b\.c |"
 
 
 def test_table_replaces_control_characters_and_keeps_one_row() -> None:

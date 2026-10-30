@@ -525,11 +525,15 @@ def _relative_link(target: Path, from_dir: Path) -> str:
     return os.path.relpath(target.resolve(), start=from_dir.resolve())
 
 
-#: Every Markdown-significant ASCII punctuation character, plus the dot of "www.".
-#: Nothing is linked: an escaped ":" breaks "scheme://" and "www\." breaks the www
-#: form, so no renderer's extended autolink fires. "_" counts only at a word edge:
+#: Every Markdown-significant ASCII punctuation character, a dot before a letter, and
+#: the dot of "www.". Escaping keeps raw HTML, images, code spans and extra columns out
+#: of a cell, and it stops "scheme://", "www." and bare-domain autolinks (an escaped
+#: ":" or "."), so no link's visible text differs from its target. It cannot stop
+#: every link: see the email shortcut in _cell. "_" counts only at a word edge:
 #: between letters or digits it cannot open or close emphasis.
-_CELL_MARKDOWN = re.compile(r"www\.|[\\`*\[\]<>()!|&#~:]|(?<![^\W_])_|_(?![^\W_])")
+_CELL_MARKDOWN = re.compile(
+    r"[\\`*\[\]<>()!|&#~:]|\.(?=[A-Za-z])|(?<=www)\.|(?<![^\W_])_|_(?![^\W_])"
+)
 #: C0 controls and DEL: one of them inside text can change how a renderer parses it.
 _CELL_CONTROLS = dict.fromkeys([*range(0x20), 0x7F], "�")
 
@@ -543,7 +547,11 @@ def _cell(text: str) -> str:
     cannot add a column and ``__init__`` stays ``__init__``.
     """
     text = re.sub(r"\r\n|[\r\n\t]", " ", text).translate(_CELL_CONTROLS)
-    return _CELL_MARKDOWN.sub(lambda m: "www\\." if m[0] == "www." else "\\" + m[0], text)
+    # shortcut: cmark-gfm (GitHub's renderer) still links an email address in cell text,
+    # because its autolink pass runs after escapes resolve; the link text equals the
+    # address, so it is not deceptive (owner accepted, 2026-10-30). Upgrade only if
+    # reports move to a renderer with autolink disabled.
+    return _CELL_MARKDOWN.sub(r"\\\g<0>", text)
 
 
 def _table(headers: list[str], rows: list[list[str]]) -> list[str]:
