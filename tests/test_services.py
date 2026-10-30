@@ -176,6 +176,31 @@ class TestSearchService:
         svc.search("http", kind="section")
         assert svc._last_synonym_expanded is True
 
+    def test_search_expands_synonyms_once_with_prebuilt_patterns(
+        self, populated_with_content, monkeypatch
+    ):
+        from mcp_server_python_docs.retrieval import query
+        from mcp_server_python_docs.services import search
+
+        svc = SearchService(populated_with_content, {"parse json": ["json", "json.loads"]})
+        calls = []
+        real_expand = query.expand_synonyms
+
+        def counting_expand(text, synonyms, **kwargs):
+            calls.append(text)
+            return real_expand(text, synonyms, **kwargs)
+
+        monkeypatch.setattr(query, "expand_synonyms", counting_expand)
+        monkeypatch.setattr(search, "expand_synonyms", counting_expand)
+        monkeypatch.setattr(
+            query,
+            "_build_concept_patterns",
+            lambda synonyms: pytest.fail("concept patterns rebuilt during search"),
+        )
+        svc.search("parse json", kind="section")
+        assert calls == ["parse json"]
+        assert svc._last_synonym_expanded is True
+
 
 # === ContentService Tests ===
 
