@@ -864,22 +864,40 @@ Expected: a few thousand characters.
 
 - [ ] **Step 4: Implement `extract_verdict(text: str) -> dict` above `review()`.**
 
-  > **Revision (2026-10-30, Codex peer review of #163): the scan below can be
-  > bypassed. Do not implement it as written.**
+  > **Revision (2026-10-30, peer review of #163): the scan below has two
+  > bypasses. Keep the scan and close both as described here.**
   >
-  > Take `GOOD_VERDICT` and append `{"approved": false,}`. The scan
-  > skips the malformed rejection because it does not decode, and
-  > `key_token` misses the escaped key, so the scan returns `approved=True`.
+  > 1. **Escaped keys outside the verdict.** `key_token` matches literal keys
+  >    only, but JSON can spell a key with `\u` escapes. Take
+  >    `GOOD_VERDICT` and append `{"\u0061pproved": false,}`. The
+  >    malformed fragment does not decode, so the scan skips it. `key_token`
+  >    does not see the escaped key, so the scan returns `approved=True`. The
+  >    same fragment with a literal `"approved"` key is already rejected.
+  >    Fix: extend `key_token` so it also matches any `\uXXXX` escape
+  >    outside the found verdict:
+  >    `re.compile(r'"(?:head_sha|base_sha|approved|commands|blockers)"\s*:|\\u[0-9a-fA-F]{4}')`.
+  >    Add `review_id` to the key list if the verdict carries it. A `\u`
+  >    escape is the only way JSON can spell a key's letters differently, so
+  >    a reply with one outside the verdict fails closed as `malformed`.
+  > 2. **Duplicate keys inside the verdict.** Python's `json` keeps the last
+  >    value of a repeated name
+  >    (https://docs.python.org/3/library/json.html#repeated-names-within-an-object).
+  >    So `"approved": false, "\u0061pproved": true` decodes as
+  >    `approved=True`, and a repeated `exit_code` can hide a failed command.
+  >    Fix: build the decoder with an `object_pairs_hook` that raises
+  >    `malformed` when any object, at any depth (command entries too),
+  >    repeats a name.
   >
-  > Use a strict single-verdict parse instead:
-  > 1. Strip surrounding whitespace and at most one ```` ```json ```` fence.
-  > 2. Call `value, end = decoder.raw_decode(body)`.
-  > 3. Raise `malformed` unless `end == len(body)`, `value` is a `dict` and
-  >    `keys <= value.keys()`.
+  > The `REPLY_SHAPES` cases in Step 1 still pass. Add three regression tests,
+  > each of which must raise `malformed`. Use raw strings, or Python decodes
+  > the escapes:
+  > - `GOOD_VERDICT` followed by `r'{"\u0061pproved": false,}'`;
+  > - a verdict whose `"approved": true` is replaced by
+  >   `r'"approved": false, "\u0061pproved": true'`;
+  > - a command entry with a repeated `exit_code`.
   >
-  > Keep the strict type rules below. Add the regression test: `GOOD_VERDICT`
-  > followed by `{"approved": false,}` must raise `malformed`. Draft #168
-  > implements the scan, so it must switch to this parse before it resumes.
+  > Draft #168 implements the scan without either check, so it must add both
+  > before it resumes.
 
   The scan below sets the security behaviour:
   - It reads top-level objects only, needs exactly one verdict-shaped object,

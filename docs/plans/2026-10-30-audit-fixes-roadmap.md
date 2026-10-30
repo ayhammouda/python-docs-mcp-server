@@ -108,8 +108,8 @@ Each decision states what it costs if it turns out wrong.
   §8 says. This replaces the audit's suggestion of `claude-opus-5-5`.
 - **D16 Mutation testing.** It waits for a spike: the tests load
   `control.py` by path, a CI job is forbidden territory, and it would add a dev
-  dependency. The tests that kill the 10 surviving hand-made mutants ship now,
-  in PR 6.
+  dependency. The tests that kill the 10 surviving hand-made mutants ship with
+  PR 6 when it resumes (PR 6 is deferred).
 
 ## PR Map
 
@@ -139,7 +139,7 @@ Each decision states what it costs if it turns out wrong.
     developer's real cache (N11).
   - Until a branch contains PR 4's isolation commit, every `pytest` run on
     it isolates the cache:
-    `ISO=$(mktemp -d /private/tmp/pdmcp-test.XXXXXX); XDG_CACHE_HOME="${ISO:?}" uv run --locked pytest --tb=short -q`.
+    `ISO=$(mktemp -d "${TMPDIR:-/tmp}/pdmcp-test.XXXXXX"); XDG_CACHE_HOME="${ISO:?}" uv run --locked pytest --tb=short -q`.
     Without that, `tests/test_stdio_hygiene.py` runs `build-index --versions
     99.99` against the real cache and leaves `build-*.db-wal`/`-shm` files
     there.
