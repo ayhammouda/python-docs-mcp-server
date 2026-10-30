@@ -836,7 +836,7 @@ def _render_report(
             terms = terms if isinstance(terms, dict) else {}
             rows.append(
                 [
-                    _fmt_field(entry.get("id")),
+                    _fmt_field(entry.get("id")) or "(unnamed)",
                     _fmt_field(entry.get("reason")),
                     _fmt_field(terms.get("verdict")),
                     _fmt_field(entry.get("decided_on")),
@@ -905,12 +905,13 @@ def _render_readme_summary(bundle: RunBundle, methodology_path: Path, summary_pa
     )
     excluded_line = (
         "; ".join(
-            f"{_fmt_field(entry.get('id'))} ({entry['reason']})"
+            f"{_fmt_field(entry.get('id')) or '(unnamed)'} ({entry['reason']})"
             if entry.get("reason")
-            else _fmt_field(entry.get("id"))
+            else _fmt_field(entry.get("id")) or "(unnamed)"
             for entry in bundle.exclusions
         )
-        or "none"
+        if bundle.exclusions
+        else "none"
     )
 
     lines: list[str] = [

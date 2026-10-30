@@ -820,6 +820,11 @@ def test_report_renders_manifest_exclusions(tmp_path: Path) -> None:
             "| x | r |  |  |  |",
             "- **Excluded competitors:** x (r)",
         ),
+        (
+            [{}],
+            "| (unnamed) |  |  |  |  |",
+            "- **Excluded competitors:** (unnamed)",
+        ),
     ],
 )
 def test_report_tolerates_sparse_exclusions(
