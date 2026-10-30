@@ -526,11 +526,13 @@ def _relative_link(target: Path, from_dir: Path) -> str:
 
 
 #: An http(s) URL run first, then "www." (never linked), then the characters that
-#: change rendering inside an inline table cell. "_" counts only at a word edge:
-#: between letters or digits it cannot open or close emphasis. "#", "+", "-", "." and
-#: the like matter only at the start of a block, which a cell never is.
+#: change rendering inside an inline table cell. The URL run ends at "\" (never valid
+#: in a URL): inside the autolink "\|" would become "\\|", which the table splitter
+#: reads as an escaped backslash and then a live column delimiter. "_" counts only at
+#: a word edge: between letters or digits it cannot open or close emphasis. "#", "+",
+#: "-", "." and the like matter only at the start of a block, which a cell never is.
 _CELL_MARKDOWN = re.compile(
-    r"(?P<url>(?<![A-Za-z0-9])https?://[^\s<>]+)|www\.|[\\`*\[\]|~&<>]|(?<![^\W_])_|_(?![^\W_])"
+    r"(?P<url>(?<![A-Za-z0-9])https?://[^\s<>\\]+)|www\.|[\\`*\[\]|~&<>]|(?<![^\W_])_|_(?![^\W_])"
 )
 _CELL_ENTITIES = {"<": "&lt;", ">": "&gt;", "www.": "www\\."}
 _URL_TRAILING = ".,;:!?'\""

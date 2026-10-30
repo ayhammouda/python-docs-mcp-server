@@ -1088,6 +1088,14 @@ def test_table_escapes_a_pipe_inside_a_url_so_the_cell_boundary_holds() -> None:
     assert cell == r"| <https://x.y/a?b=1&b=2\|c> d |"
 
 
+def test_table_ends_a_url_at_a_backslash_so_a_pipe_after_it_cannot_split_the_cell() -> None:
+    # Inside the autolink "\|" would become "\\|": an escaped backslash, then a live
+    # column delimiter that publishes the rest of the URL as raw Markdown.
+    cell = _table(["Value"], [[r"https://x.y/a\|[click](https://evil.example)"]])[2]
+
+    assert cell == r"| <https://x.y/a>\\\|\[click\](<https://evil.example>) |"
+
+
 def test_token_paragraph_gives_the_real_reason_for_approximate_counts(tmp_path: Path) -> None:
     report_text = _generate_report(_minimal_valid_run_dir(tmp_path)).read_text(encoding="utf-8")
     token_paragraph = report_text.split("## Token Counts (After Client Rewrap)", 1)[1]
