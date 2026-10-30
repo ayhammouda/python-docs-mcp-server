@@ -526,15 +526,17 @@ def _relative_link(target: Path, from_dir: Path) -> str:
 
 
 #: Every Markdown-significant ASCII punctuation character, a dot not followed by a
-#: digit, and the dot of "www.". Digits are exempt so numbers such as 1000.0 and 52.0%
-#: stay unescaped; a dot before any letter, ASCII or not, is escaped, so a non-ASCII
-#: TLD cannot form a domain either. Escaping keeps raw HTML, images, code spans and
-#: extra columns out of a cell, and it stops "scheme://", "www." and bare-domain
-#: autolinks (an escaped ":" or "."), so no link's visible text differs from its
-#: target. It cannot stop every link: see the email shortcut in _cell. "_" counts only
-#: at a word edge: between letters or digits it cannot open or close emphasis.
+#: digit, the dot of "www.", and the first slash of "//". Digits are exempt so numbers
+#: such as 1000.0 and 52.0% stay unescaped; a dot before any letter, ASCII or not, is
+#: escaped, so a non-ASCII TLD cannot form a domain either. The escaped slash stops
+#: protocol-relative links ("//host"), which a dot before a digit does not. Escaping
+#: keeps raw HTML, images, code spans and extra columns out of a cell, and it stops
+#: "scheme://", "www.", "//host" and bare-domain autolinks (an escaped ":", "." or
+#: "/"), so no link's visible text differs from its target. It cannot stop every link:
+#: see the email shortcut in _cell. "_" counts only at a word edge: between letters or
+#: digits it cannot open or close emphasis.
 _CELL_MARKDOWN = re.compile(
-    r"[\\`*\[\]<>()!|&#~:]|\.(?![0-9])|(?<=www)\.|(?<![^\W_])_|_(?![^\W_])"
+    r"[\\`*\[\]<>()!|&#~:]|\.(?![0-9])|(?<=www)\.|/(?=/)|(?<![^\W_])_|_(?![^\W_])"
 )
 #: C0 controls and DEL: one of them inside text can change how a renderer parses it.
 _CELL_CONTROLS = dict.fromkeys([*range(0x20), 0x7F], "�")

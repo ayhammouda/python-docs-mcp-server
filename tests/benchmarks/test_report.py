@@ -801,7 +801,7 @@ def test_report_renders_manifest_exclusions(tmp_path: Path) -> None:
     assert "### Excluded Competitors" in report_text
     assert (
         "| some-excluded-competitor | vendor denied benchmarking permission | "
-        "forbidden-without-permission | 2026-07-09 | https\\://example\\.test/terms |"
+        "forbidden-without-permission | 2026-07-09 | https\\:\\//example\\.test/terms |"
     ) in report_text
     assert (
         "- **Excluded competitors:** some-excluded-competitor "
@@ -1031,7 +1031,7 @@ _GFM_BACKSLASH_ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
     [
         pytest.param("__init__", r"\_\_init\_\_", id="dunder"),
         pytest.param("a*b*c", r"a\*b\*c", id="asterisks"),
-        pytest.param("https://x.y/__init__", r"https\://x\.y/\_\_init\_\_", id="url-dunder"),
+        pytest.param("https://x.y/__init__", r"https\:\//x\.y/\_\_init\_\_", id="url-dunder"),
         pytest.param(
             "www.example.com/__main__.html?a=1&b=2",
             r"www\.example\.com/\_\_main\_\_\.html?a=1\&b=2",
@@ -1042,7 +1042,7 @@ _GFM_BACKSLASH_ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
         pytest.param("a|b", r"a\|b", id="pipe"),
         pytest.param(r"a\|b", r"a\\\|b", id="backslash-pipe"),
         pytest.param(
-            "https://example.test/?a=1&copy;x", r"https\://example\.test/?a=1\&copy;x", id="entity"
+            "https://example.test/?a=1&copy;x", r"https\:\//example\.test/?a=1\&copy;x", id="entity"
         ),
         pytest.param("a <b> (c) !#~", r"a \<b\> \(c\) \!\#\~", id="html-and-punctuation"),
         pytest.param("example.com/path", r"example\.com/path", id="bare-domain"),
@@ -1053,6 +1053,10 @@ _GFM_BACKSLASH_ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
         pytest.param("example.рф/a%0Ab", r"example\.рф/a%0Ab", id="cyrillic-tld"),
         pytest.param("a.Ωmega.gr", r"a\.Ωmega\.gr", id="greek-label"),
         pytest.param("例え.テスト/x", r"例え\.テスト/x", id="japanese-tld"),
+        # Protocol-relative: markdown-it's linkify would decode "%41" in the label.
+        pytest.param("//127.0.0.1/a%41b", r"\//127.0.0.1/a%41b", id="protocol-relative-ip"),
+        pytest.param("//a.123рф/a%41b", r"\//a.123рф/a%41b", id="protocol-relative-idn"),
+        pytest.param("path/to/file.py", r"path/to/file\.py", id="single-slashes-untouched"),
     ],
 )
 def test_table_cells_render_markdown_punctuation_literally(text: str, escaped: str) -> None:
@@ -1068,16 +1072,16 @@ def test_table_cells_render_markdown_punctuation_literally(text: str, escaped: s
     [
         pytest.param(
             "https://x.y/\x01![p](https://evil.example/p.png)",
-            "https\\://x\\.y/\ufffd\\!\\[p\\]\\(https\\://evil\\.example/p\\.png\\)",
+            "https\\:\\//x\\.y/\ufffd\\!\\[p\\]\\(https\\:\\//evil\\.example/p\\.png\\)",
             id="image",
         ),
         pytest.param(
             "https://x.y/\x01[trusted](https://evil.example)",
-            "https\\://x\\.y/\ufffd\\[trusted\\]\\(https\\://evil\\.example\\)",
+            "https\\:\\//x\\.y/\ufffd\\[trusted\\]\\(https\\:\\//evil\\.example\\)",
             id="disguised-link",
         ),
         pytest.param(
-            "https://x.y/\x01`code`", "https\\://x\\.y/\ufffd\\`code\\`", id="code-span"
+            "https://x.y/\x01`code`", "https\\:\\//x\\.y/\ufffd\\`code\\`", id="code-span"
         ),
     ],
 )
