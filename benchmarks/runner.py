@@ -22,6 +22,7 @@ a maintainer-run live phase is active, and otherwise stays the honest
 from __future__ import annotations
 
 import json
+import os
 import platform
 import re
 import subprocess
@@ -379,8 +380,9 @@ def _build_token_record(
     ``tests/benchmarks/test_runner.py``, which only asserts the tokens file
     exists, not its content).
 
-    A count-tokens call failure (e.g. a live-phase network error) is
-    recorded as this cell's own ``failed`` token status rather than
+    A count-tokens call failure of any kind (e.g. a live-phase network error,
+    or a truncated response read) is recorded as this cell's own ``failed``
+    token status, named by its exception type, rather than
     propagated -- a token-counting problem must never crash the whole
     benchmark run or mask a competitor's actual answer/latency/scoring
     results for the same cell.
@@ -391,8 +393,18 @@ def _build_token_record(
     module scope, so this module cannot import from them at module scope
     without a circular import.
     """
-    from benchmarks.adapters.claude_tokens import LiveClaudeTokenCounter, count_cell_tokens
-    from benchmarks.adapters.guard import LiveProviderDisabledError, require_live_environment
+    from benchmarks.adapters.claude_tokens import (
+        ANTHROPIC_API_VERSION,
+        DEFAULT_COUNT_MODEL,
+        LiveClaudeTokenCounter,
+        _redact,
+        count_cell_tokens,
+    )
+    from benchmarks.adapters.guard import (
+        PROVIDER_API_KEY_ENV,
+        LiveProviderDisabledError,
+        require_live_environment,
+    )
     from benchmarks.model_matrix import METHODOLOGY_TOKEN_LABEL
 
     base_fields = {
@@ -402,6 +414,8 @@ def _build_token_record(
         "token_label": METHODOLOGY_TOKEN_LABEL,
         "input_characters": len(cell.question.prompt),
         "output_characters": len(answer),
+        "count_model": DEFAULT_COUNT_MODEL,
+        "anthropic_version": ANTHROPIC_API_VERSION,
     }
     try:
         require_live_environment("anthropic")
@@ -425,14 +439,18 @@ def _build_token_record(
             tool_calls=tool_calls,
             counter=LiveClaudeTokenCounter(),
         )
-    except BenchmarkCellFailure as exc:
+    except Exception as exc:
+        # Defense in depth: no exception text may carry the key into a record.
+        api_key = os.environ.get(PROVIDER_API_KEY_ENV["anthropic"], "").strip()
         return {
             **base_fields,
             "status": "failed",
             "client_wrapped_tokens": None,
             "raw_payload_tokens": None,
             "approximation": False,
-            "notes": f"Claude count-tokens call failed: {exc}",
+            "notes": _redact(
+                f"Claude count-tokens call failed: {type(exc).__name__}: {exc}", api_key
+            ),
         }
 
     return {

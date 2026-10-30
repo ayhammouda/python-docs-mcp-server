@@ -738,6 +738,7 @@ def _token_stats(
     placeholder: int = 0,
     approximated: int = 0,
     failed_cell: int = 0,
+    count_failed: int = 0,
 ) -> dict:
     return {
         "tokens_present": present,
@@ -745,6 +746,7 @@ def _token_stats(
         "tokens_placeholder": placeholder,
         "tokens_approximated": approximated,
         "tokens_failed_cell": failed_cell,
+        "tokens_count_failed": count_failed,
     }
 
 
@@ -878,7 +880,44 @@ def test_report_refuses_malformed_exclusions(
             "None headline-eligible (approximation:true excludes 1 cell(s); "
             "1 failed-cell count(s) excluded; 0 placeholder)",
         ),
+        (
+            _token_stats(count_failed=1),
+            "None headline-eligible (1 count(s) failed; 0 placeholder)",
+        ),
+        (
+            _token_stats(present=1, median=100, count_failed=1),
+            "100, 1 count(s) failed",
+        ),
     ],
 )
 def test_fmt_tokens_renders_every_bucket_combination(stats: dict, expected: str) -> None:
     assert _fmt_tokens(stats) == expected
+
+
+def test_failed_token_count_renders_as_failed_and_is_listed(tmp_path: Path) -> None:
+    run_dir = _minimal_valid_run_dir(tmp_path)
+    note = "Claude count-tokens call failed: BenchmarkCellFailure: HTTP 400: bad tool_use_id"
+    _write_json(
+        run_dir / "tokens" / "tool-a" / "q001.json",
+        {
+            "competitor_id": "tool-a",
+            "corpus_id": "q001",
+            "tool_model_key": "tool-a",
+            "status": "failed",
+            "client_wrapped_tokens": None,
+            "raw_payload_tokens": None,
+            "approximation": False,
+            "notes": note,
+        },
+    )
+
+    report_text = _generate_report(run_dir).read_text(encoding="utf-8")
+    summary_text = generate_readme_summary(run_dir, methodology_path=METHODOLOGY_PATH).read_text(
+        encoding="utf-8"
+    )
+
+    assert "| tool-a | None headline-eligible (1 count(s) failed; 0 placeholder) |" in report_text
+    assert "### Token-Count Failures" in report_text
+    assert f"| tool-a | tool-a | q001 | {note} |" in report_text
+    assert "pending token-count integration" not in report_text
+    assert "1 count(s) failed" in summary_text

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import subprocess
 import sys
@@ -565,6 +566,10 @@ def test_token_record_is_the_honest_placeholder_when_live_guard_is_disabled(
     assert token_record["raw_payload_tokens"] is None
     assert token_record["approximation"] is False
     assert token_record["token_label"] == METHODOLOGY_TOKEN_LABEL
+    assert (token_record["count_model"], token_record["anthropic_version"]) == (
+        "claude-sonnet-5-5",
+        "2023-06-01",
+    )
 
 
 def test_token_record_is_filled_when_live_guard_passes_with_a_fake_counter(
@@ -600,9 +605,85 @@ def test_token_record_is_filled_when_live_guard_passes_with_a_fake_counter(
     assert token_record["status"] == "counted"
     assert token_record["client_wrapped_tokens"] == 55
     assert token_record["raw_payload_tokens"] == 55
-    assert token_record["approximation"] is False
+    assert token_record["approximation"] is True
     assert token_record["token_label"] == METHODOLOGY_TOKEN_LABEL
     assert token_record["serialization_latency_ms"] >= 0
+    assert (token_record["count_model"], token_record["anthropic_version"]) == (
+        "claude-sonnet-5-5",
+        "2023-06-01",
+    )
+
+
+@pytest.mark.parametrize(
+    "raised",
+    [
+        BenchmarkCellFailure("tool_failure", "HTTP 400: bad envelope"),
+        # Not a BenchmarkCellFailure: today this aborts run_benchmark.
+        http.client.IncompleteRead(b"partial"),
+    ],
+)
+def test_token_record_is_failed_and_names_its_count_model_when_the_call_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raised: Exception
+) -> None:
+    from benchmarks.adapters.guard import LIVE_PROVIDERS_ENABLED_ENV, PROVIDER_API_KEY_ENV
+
+    class _FailingCounter:
+        def count(self, messages: Any, tools: Any = None) -> int:
+            raise raised
+
+    monkeypatch.setenv(LIVE_PROVIDERS_ENABLED_ENV, "1")
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV["anthropic"], "fake-not-a-real-key")
+    monkeypatch.setattr("benchmarks.adapters.claude_tokens.LiveClaudeTokenCounter", _FailingCounter)
+    out_dir = tmp_path / "results" / "token-count-fails"
+
+    run_benchmark(
+        BenchmarkConfig(
+            corpus_path=_corpus(tmp_path),
+            manifest_path=_manifest(tmp_path),
+            out_dir=out_dir,
+            run_id="token-count-fails",
+        )
+    )
+
+    token_record = json.loads(
+        (out_dir / "tokens" / "no-mcp" / "q001.json").read_text(encoding="utf-8")
+    )
+    assert token_record["status"] == "failed"
+    assert f"{type(raised).__name__}: " in token_record["notes"]
+    assert (token_record["count_model"], token_record["anthropic_version"]) == (
+        "claude-sonnet-5-5",
+        "2023-06-01",
+    )
+
+
+def test_token_record_redacts_the_api_key_from_a_failed_count_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from benchmarks.adapters.guard import LIVE_PROVIDERS_ENABLED_ENV, PROVIDER_API_KEY_ENV
+
+    class _EchoingCounter:
+        def count(self, messages: Any, tools: Any = None) -> int:
+            raise RuntimeError("echo fake-not-a-real-key")
+
+    monkeypatch.setenv(LIVE_PROVIDERS_ENABLED_ENV, "1")
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV["anthropic"], "fake-not-a-real-key")
+    monkeypatch.setattr("benchmarks.adapters.claude_tokens.LiveClaudeTokenCounter", _EchoingCounter)
+    out_dir = tmp_path / "results" / "token-count-echoes-key"
+
+    run_benchmark(
+        BenchmarkConfig(
+            corpus_path=_corpus(tmp_path),
+            manifest_path=_manifest(tmp_path),
+            out_dir=out_dir,
+            run_id="token-count-echoes-key",
+        )
+    )
+
+    token_record = json.loads(
+        (out_dir / "tokens" / "no-mcp" / "q001.json").read_text(encoding="utf-8")
+    )
+    assert "[redacted]" in token_record["notes"]
+    assert "fake-not-a-real-key" not in token_record["notes"]
 
 
 # --- cell_failure_from: the real reason behind an MCP task-group failure ----

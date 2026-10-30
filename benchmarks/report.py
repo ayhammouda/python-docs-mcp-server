@@ -119,6 +119,9 @@ class CellRecord:
     approximation -- issue #89 / methodology "Token Measurement": the client
     could not expose its exact wrapped message envelope. Approximate counts must
     never be used for headline claims (see ``_basic_stats``, which excludes them)."""
+    token_status: str | None
+    """The token record's ``status`` (``counted``, ``placeholder``, ``failed``), or
+    ``None`` when the cell has no token record or the record has no status."""
 
 
 @dataclass(frozen=True)
@@ -134,6 +137,7 @@ class RunBundle:
     exclusions: list[dict[str, Any]]
     cells: list[CellRecord]
     failure_records: list[dict[str, Any]]
+    token_failure_records: list[dict[str, Any]]
 
 
 def generate_report(
@@ -242,10 +246,14 @@ def _load_run_bundle(run_dir: Path) -> RunBundle:
                 client_wrapped_tokens=token_record.get("client_wrapped_tokens"),
                 raw_payload_tokens=token_record.get("raw_payload_tokens"),
                 token_approximation=bool(token_record.get("approximation", False)),
+                token_status=token_record.get("status"),
             )
         )
 
     failure_records = [record for _, record in _load_cell_records(run_dir / "failures")]
+    token_failure_records = [
+        record for _, record in token_records if record.get("status") == "failed"
+    ]
 
     return RunBundle(
         run_dir=run_dir,
@@ -257,6 +265,7 @@ def _load_run_bundle(run_dir: Path) -> RunBundle:
         exclusions=exclusions,
         cells=cells,
         failure_records=failure_records,
+        token_failure_records=token_failure_records,
     )
 
 
@@ -403,7 +412,8 @@ def _basic_stats(cells: list[CellRecord]) -> dict[str, Any]:
     # methodology "Token Measurement": approximate counts must never be used
     # for headline claims) and exact counts recorded for failed cells. Each
     # excluded bucket is counted so a reader can see the gap isn't silently
-    # dropped. The buckets partition the cells; the rest are placeholders.
+    # dropped. A failed count call has its own bucket, never the placeholder
+    # one. The buckets partition the cells; the rest are placeholders.
     tokens = [
         cell.client_wrapped_tokens
         for cell in cells
@@ -422,6 +432,9 @@ def _basic_stats(cells: list[CellRecord]) -> dict[str, Any]:
         1
         for cell in cells
         if cell.client_wrapped_tokens is not None and cell.token_approximation
+    )
+    tokens_count_failed = sum(
+        1 for cell in cells if cell.client_wrapped_tokens is None and cell.token_status == "failed"
     )
     return {
         "total_cells": total,
@@ -448,7 +461,10 @@ def _basic_stats(cells: list[CellRecord]) -> dict[str, Any]:
         "tokens_present": len(tokens),
         "tokens_approximated": tokens_approximated,
         "tokens_failed_cell": tokens_failed_cell,
-        "tokens_placeholder": total - len(tokens) - tokens_approximated - tokens_failed_cell,
+        "tokens_count_failed": tokens_count_failed,
+        "tokens_placeholder": (
+            total - len(tokens) - tokens_approximated - tokens_failed_cell - tokens_count_failed
+        ),
         "median_client_wrapped_tokens": statistics.median(tokens) if tokens else None,
     }
 
@@ -471,12 +487,15 @@ def _fmt_tokens(stats: dict[str, Any]) -> str:
     placeholder = stats["tokens_placeholder"]
     approximated = stats["tokens_approximated"]
     failed_cell = stats["tokens_failed_cell"]
+    count_failed = stats["tokens_count_failed"]
     if stats["tokens_present"] == 0:
         excluded = []
         if approximated:
             excluded.append(f"approximation:true excludes {approximated} cell(s)")
         if failed_cell:
             excluded.append(f"{failed_cell} failed-cell count(s) excluded")
+        if count_failed:
+            excluded.append(f"{count_failed} count(s) failed")
         if not excluded:
             return f"None (placeholder -- {placeholder} cell(s) pending token-count integration)"
         return f"None headline-eligible ({'; '.join(excluded)}; {placeholder} placeholder)"
@@ -487,6 +506,8 @@ def _fmt_tokens(stats: dict[str, Any]) -> str:
         suffixes.append(f"{approximated} approximation:true excluded")
     if failed_cell:
         suffixes.append(f"{failed_cell} failed-cell count(s) excluded")
+    if count_failed:
+        suffixes.append(f"{count_failed} count(s) failed")
     suffix = f", {', '.join(suffixes)}" if suffixes else ""
     return f"{stats['median_client_wrapped_tokens']:.0f}{suffix}"
 
@@ -662,7 +683,8 @@ def _render_report(
         "could not expose its exact wrapped message envelope) are excluded from this "
         "headline-eligible median; the excluded count is shown alongside it. The median "
         "covers succeeded cells only; exact counts recorded for failed cells are excluded "
-        "and counted alongside it."
+        "and counted alongside it. A failed count is shown as failed, never as pending, and "
+        "listed under 'Failures And Exclusions'."
     )
     lines.append("")
     lines.extend(
@@ -825,6 +847,27 @@ def _render_report(
         )
     else:
         lines.append("No competitors were excluded from this run.")
+    lines.append("")
+
+    lines.append("### Token-Count Failures")
+    lines.append("")
+    if bundle.token_failure_records:
+        lines.extend(
+            _table(
+                ["Competitor", "Tool + Model", "Corpus ID", "Notes"],
+                [
+                    [
+                        str(record.get("competitor_id")),
+                        str(record.get("tool_model_key")),
+                        str(record.get("corpus_id")),
+                        str(record.get("notes")),
+                    ]
+                    for record in bundle.token_failure_records
+                ],
+            )
+        )
+    else:
+        lines.append("No token-count failures in this run.")
     lines.append("")
 
     excluded = [cell for cell in bundle.cells if not cell.included_in_correctness_denominator]
