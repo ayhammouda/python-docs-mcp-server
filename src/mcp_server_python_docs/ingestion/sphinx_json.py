@@ -13,6 +13,7 @@ import os
 import re
 import sqlite3
 import sys
+import venv
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -163,6 +164,13 @@ def make_sphinx_json_env(
     else:
         env["PYTHONPATH"] = str(compat_dir)
     return env
+
+
+def create_sphinx_venv(venv_dir: str, *, with_pip: bool) -> None:
+    """Create the venv build-index runs Sphinx in; doctor probes one made the same way."""
+    # A copied python cannot find a relocatable CPython's libpython (uv-managed builds on
+    # macOS), so POSIX symlinks it. Windows keeps the copy default: symlinks need privileges.
+    venv.create(venv_dir, with_pip=with_pip, symlinks=sys.platform != "win32")
 
 
 def sphinx_parallel_jobs(

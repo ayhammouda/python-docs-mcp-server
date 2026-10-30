@@ -89,6 +89,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   them, not under the page's first section, so `kind="example"` hits point at
   the right anchor. Rebuild the index to get this fix (see the note at the
   top of this release).
+- On macOS, `build-index` no longer fails on a uv-managed Python, such as the
+  one `uvx python-docs-mcp-server` uses. The Sphinx environment's `python`
+  crashed on start (`ensurepip` died with `SIGABRT`), so no documentation was
+  ingested and nothing was published. `doctor`'s "Build venv support" check
+  now creates and runs such an environment, so it fails on a Python that
+  cannot build one instead of passing.
 
 ### Security
 

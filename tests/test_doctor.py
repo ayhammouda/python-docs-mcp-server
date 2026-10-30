@@ -205,11 +205,14 @@ class TestBuildVenvSupportProbe:
 
     def test_probe_passes_when_venv_and_ensurepip_are_importable(self, monkeypatch):
         """Available venv and ensurepip support passes the build prerequisite probe."""
+        commands = []
 
         def fake_run(*args, **kwargs):
             command = args[0]
-            assert "ensurepip" in command[-1]
-            assert "venv" in command[-1]
+            commands.append(command)
+            if command[0] == sys.executable:  # the import check, not the venv's python
+                assert "ensurepip" in command[-1]
+                assert "venv" in command[-1]
             return subprocess.CompletedProcess(
                 args=command,
                 returncode=0,
@@ -225,6 +228,39 @@ class TestBuildVenvSupportProbe:
 
         assert result.passed is True
         assert "build-index" in result.detail
+        assert commands[0][0] == sys.executable
+
+    def test_probe_fails_when_a_fresh_build_venv_python_cannot_run(self, monkeypatch):
+        """A venv python that cannot load libpython fails the probe, as build-index would (D1)."""
+        venv_pythons = []
+
+        def fake_run(command, **kwargs):
+            if command[0] == sys.executable:  # the import check passes
+                return subprocess.CompletedProcess(command, 0, "", "")
+            venv_pythons.append(Path(command[0]))
+            assert Path(command[0]).exists()  # a real throwaway venv
+            return subprocess.CompletedProcess(
+                command, -6, "", "dyld: Library not loaded: @rpath/libpython3.13.dylib"
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        from mcp_server_python_docs.diagnostics import check_build_venv_support
+
+        result = check_build_venv_support()
+
+        assert result.passed is False
+        assert "libpython3.13.dylib" in result.detail
+        assert len(venv_pythons) == 1
+        assert not venv_pythons[0].exists()  # the probe deletes its venv
+
+    def test_probe_passes_on_the_running_interpreter(self):
+        """Unmocked: this Python can create and run a build venv the way build-index does."""
+        from mcp_server_python_docs.diagnostics import check_build_venv_support
+
+        result = check_build_venv_support()
+
+        assert result.passed is True, result.detail
 
 
 class _StubConnection:
