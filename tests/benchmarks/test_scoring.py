@@ -17,6 +17,7 @@ anywhere in this file.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -31,6 +32,9 @@ from benchmarks.scoring import ingest_adjudication_verdicts, score_run
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REAL_SCHEMA_PATH = REPO_ROOT / "docs" / "benchmarks" / "corpus.schema.json"
 REAL_FIXTURE_PATH = REPO_ROOT / "tests" / "benchmarks" / "fixtures" / "corpus.sample.yml"
+FIXTURE_SHA256 = hashlib.sha256(REAL_FIXTURE_PATH.read_bytes()).hexdigest()
+VERDICT = [{"competitor_id": "tool-a", "corpus_id": "SYN-EX-001", "score": 1.0}]
+MISMATCH = "does not match this run's corpus snapshot"
 
 
 def _scoring_record(
@@ -90,6 +94,13 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data), encoding="utf-8")
 
 
+def _write_snapshot(run_dir: Path) -> None:
+    """Copy the fixture corpus byte for byte, as benchmarks.runner does."""
+    snapshot = run_dir / "snapshots" / "corpus.yml"
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    snapshot.write_bytes(REAL_FIXTURE_PATH.read_bytes())
+
+
 def _build_run_dir(
     tmp_path: Path, cells: list[tuple[dict[str, Any], dict[str, Any]]]
 ) -> Path:
@@ -99,6 +110,7 @@ def _build_run_dir(
         corpus_id = scoring["corpus_id"]
         _write_json(run_dir / "scoring" / competitor_id / f"{corpus_id}.json", scoring)
         _write_json(run_dir / "transcripts" / competitor_id / f"{corpus_id}.json", transcript)
+    _write_snapshot(run_dir)
     return run_dir
 
 
@@ -537,6 +549,7 @@ def test_ingest_rejects_verdict_for_failed_cell(tmp_path: Path) -> None:
 def test_ingest_rejects_verdict_with_no_matching_scoring_record(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
+    _write_snapshot(run_dir)
     verdicts_path = _write_verdicts(
         tmp_path / "verdicts.json",
         [{"competitor_id": "tool-a", "corpus_id": "SYN-EX-001", "score": 1.0}],
@@ -573,6 +586,7 @@ def test_score_run_raises_when_transcript_missing(tmp_path: Path) -> None:
     scoring = _scoring_record(competitor_id="tool-a", corpus_id="SYN-EX-001")
     run_dir = tmp_path / "run"
     _write_json(run_dir / "scoring" / "tool-a" / "SYN-EX-001.json", scoring)
+    _write_snapshot(run_dir)
 
     with pytest.raises(BenchmarkValidationError, match="no matching transcript"):
         _score(run_dir)
@@ -587,6 +601,83 @@ def test_score_run_raises_when_corpus_id_missing_from_answer_key_corpus(tmp_path
 
     with pytest.raises(BenchmarkValidationError, match="not present in the answer-key corpus"):
         _score(run_dir)
+
+
+# --- Corpus snapshot pinning ---------------------------------------------------
+
+
+def _queued_run(tmp_path: Path) -> Path:
+    scoring = _scoring_record(competitor_id="tool-a", corpus_id="SYN-EX-001")
+    transcript = _transcript_record(
+        competitor_id="tool-a", corpus_id="SYN-EX-001", answer="candidate answer"
+    )
+    return _build_run_dir(tmp_path, [(scoring, transcript)])
+
+
+def _changed_corpus(tmp_path: Path) -> Path:
+    text = REAL_FIXTURE_PATH.read_text(encoding="utf-8")
+    changed = tmp_path / "corpus.changed.yml"
+    changed.write_text(
+        text.replace("is a made-up placeholder API", "is a changed answer key", 1),
+        encoding="utf-8",
+    )
+    return changed
+
+
+def test_score_run_defaults_to_the_run_snapshot_and_records_its_hash(tmp_path: Path) -> None:
+    run_dir = _queued_run(tmp_path)
+
+    result = score_run(run_dir, schema_path=REAL_SCHEMA_PATH)
+
+    assert result["rollups"]["corpus_sha256"] == FIXTURE_SHA256
+    rollups = json.loads((run_dir / "scoring-rollups.json").read_text(encoding="utf-8"))
+    assert rollups["corpus_sha256"] == FIXTURE_SHA256
+
+
+def test_score_run_refuses_a_corpus_that_differs_from_the_snapshot(tmp_path: Path) -> None:
+    run_dir = _queued_run(tmp_path)
+
+    with pytest.raises(BenchmarkValidationError, match=MISMATCH):
+        score_run(
+            run_dir, corpus_path=_changed_corpus(tmp_path), schema_path=REAL_SCHEMA_PATH
+        )
+
+
+def test_adjudicate_refuses_a_changed_corpus_before_writing_any_verdict(tmp_path: Path) -> None:
+    run_dir = _queued_run(tmp_path)
+    verdicts_path = _write_verdicts(tmp_path / "verdicts.json", VERDICT)
+
+    with pytest.raises(BenchmarkValidationError, match=MISMATCH):
+        ingest_adjudication_verdicts(
+            run_dir,
+            verdicts_path,
+            corpus_path=_changed_corpus(tmp_path),
+            schema_path=REAL_SCHEMA_PATH,
+        )
+
+    assert _read_scoring(run_dir, "tool-a", "SYN-EX-001")["score"] is None
+
+
+def test_score_and_adjudicate_refuse_a_run_without_a_corpus_snapshot(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_json(
+        run_dir / "scoring" / "tool-a" / "SYN-EX-001.json",
+        _scoring_record(competitor_id="tool-a", corpus_id="SYN-EX-001"),
+    )
+    _write_json(
+        run_dir / "transcripts" / "tool-a" / "SYN-EX-001.json",
+        _transcript_record(
+            competitor_id="tool-a", corpus_id="SYN-EX-001", answer="candidate answer"
+        ),
+    )
+    verdicts_path = _write_verdicts(tmp_path / "verdicts.json", VERDICT)
+
+    with pytest.raises(BenchmarkValidationError, match="no corpus snapshot"):
+        _score(run_dir)
+    with pytest.raises(BenchmarkValidationError, match="no corpus snapshot"):
+        _adjudicate(run_dir, verdicts_path)
+
+    assert _read_scoring(run_dir, "tool-a", "SYN-EX-001")["score"] is None
 
 
 # --- CLI subcommands -----------------------------------------------------------
@@ -690,3 +781,27 @@ def test_cli_score_exits_nonzero_with_clean_message_on_missing_run_dir(tmp_path:
     assert result.returncode == 2
     assert "no scoring placeholder files found" in result.stderr
     assert "Traceback" not in result.stderr
+
+
+def test_cli_score_defaults_corpus_to_the_run_snapshot(tmp_path: Path) -> None:
+    run_dir = _queued_run(tmp_path)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "benchmarks",
+            "score",
+            "--run-dir",
+            str(run_dir),
+            "--schema",
+            str(REAL_SCHEMA_PATH),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        cwd=REPO_ROOT,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["rollups"]["corpus_sha256"] == FIXTURE_SHA256
