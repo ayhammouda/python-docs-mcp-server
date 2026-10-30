@@ -565,9 +565,10 @@ calls, cap hits); latency including cold vs warm; C1 dependency table (API key
 required, hosts contacted at query time from proxy logs, works offline); the
 air-gapped arm; every failure with its reason; price snapshot, model versions
 reported by providers, count model, index sha256, image digests; budget
-events (any bound overrun, trajectories discarded by a stop with their
-spend, any split of a model's 24-hour window) and the 2× residual-risk
-statement (section 12).
+events (any bound overrun, requests booked at twice their bound,
+trajectories discarded by a stop with their spend, cells that did not run,
+any split of a model's 24-hour window) and the 2× residual-risk statement
+(section 12).
 
 Grading disclosure, next to the correctness numbers (**Call**):
 
@@ -623,18 +624,26 @@ by pilot measurements.
 for everything in this design (G1, pilot, full run, grading, reruns) is
 Anthropic $200, OpenAI $75 and Google $200. **Call:** the harness enforces
 lower hard caps, leaving a margin of $20, $10 and $20 below the budget:
-Anthropic $180, OpenAI $65, Google $180. Each provider's cap covers that provider's answering, judging,
-reference grading and token counting.
+Anthropic $180, OpenAI $65, Google $180. Each provider's cap covers that
+provider's smoke run, answering, judging, reference grading and token
+counting.
 
 The caps are enforced before money is spent, never after. The mechanism is
 deliberately simple: each provider has one billable request in flight at a
 time.
 
-- **Ledger:** one per provider, recording actual spend (the section 8
-  buckets × the price snapshot). A request that returns no usage object (a
-  timeout, a dropped connection, a trajectory cut by its time cap) may still
-  be billed, so it is booked at twice its bound until the provider's billing
-  shows the real charge.
+- **Ledger:** one per provider, recording actual spend: the section 8
+  buckets × the price snapshot, at the tier the reported input reached.
+  A request rejected with a 4xx status (including 429) is not billed and is
+  booked at zero. A request that ends with no usage object for any other
+  reason (a timeout, a dropped connection, a 5xx, a trajectory cut by its
+  time cap) may still be billed, so it is booked at twice its bound, and
+  that booking stays for the whole run: provider billing is aggregated
+  daily, so it cannot be reconciled per request.
+- **No hidden retries:** every provider client runs with its SDK's
+  automatic retries off (`max_retries=0` for `anthropic` and `openai`, the
+  equivalent for `google-genai`). The harness retries itself, and every
+  attempt is a separate unit in the ledger.
 - **One at a time:** each provider has at most one billable unit in flight,
   either a single model call or a single batch job. Providers run in
   parallel with each other.
@@ -675,7 +684,7 @@ time.
   both.
 - **Unit size:** a batch's bound is the sum of its items' bounds, and a
   batch is split until its bound is at most the provider's margin ($20,
-  $10, $20). Before the pilot, the builder confirms that one call's largest
+  $10, $20) and fits under the remaining cap. Before the pilot, the builder confirms that one call's largest
   bound, after clamping and at the highest tier, is also below every
   margin; the output bound is chosen so that it is.
 - **Why the budget holds:** before each unit, spend plus its bound is at or
@@ -693,8 +702,9 @@ time.
   the split.
 - **Full-run gate:** the full run starts only if the pilot's measured cost per
   trajectory and per graded answer, scaled to the full run and multiplied by
-  1.25, fits under each provider's remaining cap, and the pilot's measured
-  time per trajectory, at one call at a time, fits the 24-hour window. If a
+  1.25, fits under each provider's remaining cap, and the pilot's mean time
+  per trajectory, multiplied by that model's full-run trajectory count and
+  by 1.25, fits the 24-hour window at one call at a time. If a
   provider does not fit, that model's full run uses fewer repeats or
   questions, chosen before running and disclosed in the report. It is never
   dropped silently.
