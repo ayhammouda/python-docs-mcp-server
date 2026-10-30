@@ -81,6 +81,10 @@ class LiveProviderDisabledError(BenchmarkCellFailure):
         super().__init__("tool_failure", message)
 
 
+class MalformedApiKeyError(LiveProviderDisabledError):
+    """Raised when a provider API key is set but holds characters no HTTP header may carry."""
+
+
 class LiveExecutionNotImplementedError(BenchmarkCellFailure):
     """Raised after the guard passes: live execution itself is not implemented.
 
@@ -124,7 +128,7 @@ def require_live_environment(provider: str) -> None:
             f"provider {provider!r}"
         )
     if not raw_key.isascii() or any(char.isspace() or not char.isprintable() for char in raw_key):
-        raise LiveProviderDisabledError(
+        raise MalformedApiKeyError(
             f"live provider calls are disabled: {key_env} contains whitespace, control or "
             "non-ASCII characters"
         )

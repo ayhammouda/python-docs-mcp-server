@@ -145,13 +145,6 @@ class LiveClaudeTokenCounter:
         require_live_environment(self.provider)
         key_env = PROVIDER_API_KEY_ENV[self.provider]
         api_key = os.environ.get(key_env, "").strip()
-        # http.client errors would quote such a key, or one of its characters and its position.
-        if not api_key.isascii() or any(
-            char.isspace() or not char.isprintable() for char in api_key
-        ):
-            raise BenchmarkCellFailure(
-                "tool_failure", f"{key_env} contains whitespace, control or non-ASCII characters"
-            )
 
         request_body: dict[str, Any] = {"model": self._model, "messages": messages}
         if tools:

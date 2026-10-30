@@ -686,6 +686,49 @@ def test_token_record_redacts_the_api_key_from_a_failed_count_note(
     assert "fake-not-a-real-key" not in token_record["notes"]
 
 
+@pytest.mark.parametrize(
+    "api_key", ["fake-not-a-real-key\n", "fake-not-a-real key", "fake-not-a-real-日key"]
+)
+def test_token_record_is_failed_not_pending_for_a_malformed_anthropic_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, api_key: str
+) -> None:
+    # A failed count is shown as failed, never as pending.
+    from benchmarks.adapters.guard import LIVE_PROVIDERS_ENABLED_ENV, PROVIDER_API_KEY_ENV
+
+    def _counter_must_not_be_built(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("LiveClaudeTokenCounter must never be built with a malformed key")
+
+    def _token_record(run_id: str) -> dict[str, Any]:
+        out_dir = tmp_path / "results" / run_id
+        run_benchmark(
+            BenchmarkConfig(
+                corpus_path=_corpus(tmp_path),
+                manifest_path=_manifest(tmp_path),
+                out_dir=out_dir,
+                run_id=run_id,
+            )
+        )
+        return json.loads((out_dir / "tokens" / "no-mcp" / "q001.json").read_text(encoding="utf-8"))
+
+    monkeypatch.setattr(
+        "benchmarks.adapters.claude_tokens.LiveClaudeTokenCounter", _counter_must_not_be_built
+    )
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV["anthropic"], api_key)
+    monkeypatch.setenv(LIVE_PROVIDERS_ENABLED_ENV, "1")
+
+    token_record = _token_record("malformed-key")
+
+    assert token_record["status"] == "failed"
+    assert "MalformedApiKeyError" in token_record["notes"]
+    assert "fake-not-a-real" not in token_record["notes"]
+    assert "日" not in token_record["notes"]
+    assert "count_model" in token_record
+    assert "anthropic_version" in token_record
+
+    monkeypatch.delenv(LIVE_PROVIDERS_ENABLED_ENV)
+    assert _token_record("malformed-key-live-flag-off")["status"] == "placeholder"
+
+
 def test_cell_failure_records_redact_an_api_key_from_a_nested_adapter_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

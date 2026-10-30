@@ -395,7 +395,8 @@ def _build_token_record(
     token status, named by its exception type, rather than
     propagated -- a token-counting problem must never crash the whole
     benchmark run or mask a competitor's actual answer/latency/scoring
-    results for the same cell.
+    results for the same cell. A malformed ``ANTHROPIC_API_KEY`` (the guard's
+    ``MalformedApiKeyError``) is a failed count too, never a pending one.
 
     Imported lazily, for the same reason ``_python_docs_mcp_stdio_answer``
     imports its adapter lazily: ``benchmarks.adapters.guard`` and
@@ -411,6 +412,7 @@ def _build_token_record(
     )
     from benchmarks.adapters.guard import (
         LiveProviderDisabledError,
+        MalformedApiKeyError,
         redact_api_keys,
         require_live_environment,
     )
@@ -426,8 +428,24 @@ def _build_token_record(
         "count_model": DEFAULT_COUNT_MODEL,
         "anthropic_version": ANTHROPIC_API_VERSION,
     }
+
+    def failed_record(exc: Exception) -> dict[str, Any]:
+        # Defense in depth: no exception text may carry the key into a record.
+        return {
+            **base_fields,
+            "status": "failed",
+            "client_wrapped_tokens": None,
+            "raw_payload_tokens": None,
+            "approximation": False,
+            "notes": redact_api_keys(
+                f"Claude count-tokens call failed: {type(exc).__name__}: {exc}"
+            ),
+        }
+
     try:
         require_live_environment("anthropic")
+    except MalformedApiKeyError as exc:
+        return failed_record(exc)
     except LiveProviderDisabledError as exc:
         return {
             **base_fields,
@@ -449,17 +467,7 @@ def _build_token_record(
             counter=LiveClaudeTokenCounter(),
         )
     except Exception as exc:
-        # Defense in depth: no exception text may carry the key into a record.
-        return {
-            **base_fields,
-            "status": "failed",
-            "client_wrapped_tokens": None,
-            "raw_payload_tokens": None,
-            "approximation": False,
-            "notes": redact_api_keys(
-                f"Claude count-tokens call failed: {type(exc).__name__}: {exc}"
-            ),
-        }
+        return failed_record(exc)
 
     return {
         **base_fields,
