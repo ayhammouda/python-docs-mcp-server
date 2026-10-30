@@ -1,7 +1,7 @@
 """Structured logging for service method calls (OPS-01, OPS-02, OPS-03).
 
 Implements per-service-method decorators that log structured key=value (logfmt)
-lines to stderr. NOT FastMCP middleware — the MCP SDK middleware surface is
+lines to stderr. NOT MCPServer middleware — the MCP SDK middleware surface is
 unstable, so we instrument at the service layer.
 
 Log format (logfmt — D-10 from Phase 1):

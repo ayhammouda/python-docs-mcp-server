@@ -76,8 +76,8 @@ class _CallToolResult(Protocol):
     """Structural subset of ``mcp.types.CallToolResult`` this module needs."""
 
     content: list[Any]
-    structuredContent: dict[str, Any] | None
-    isError: bool
+    structured_content: dict[str, Any] | None
+    is_error: bool
 
 
 class _CallToolSession(Protocol):
@@ -99,8 +99,8 @@ def _first_text(result: _CallToolResult) -> str | None:
 
 
 def _tool_result_payload(result: _CallToolResult) -> dict[str, Any] | None:
-    if result.structuredContent is not None:
-        return result.structuredContent
+    if result.structured_content is not None:
+        return result.structured_content
     text = _first_text(result)
     return {"text": text} if text is not None else None
 
@@ -125,10 +125,10 @@ async def _run_deepwiki_flow(
     payload = _tool_result_payload(result)
     tool_calls.append(
         ToolCallRecord(
-            tool="ask_question", arguments=args, result=payload, is_error=bool(result.isError)
+            tool="ask_question", arguments=args, result=payload, is_error=bool(result.is_error)
         )
     )
-    if result.isError:
+    if result.is_error:
         raise BenchmarkCellFailure(
             "tool_failure", f"ask_question returned an error: {_first_text(result)}"
         )
@@ -200,7 +200,7 @@ class DeepWikiAdapter:
         # client submodules unless an actual run is attempted.
         from mcp import ClientSession
 
-        async with _transport_factory(self._endpoint) as (read, write, _get_session_id):
+        async with _transport_factory(self._endpoint) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 return await _run_deepwiki_flow(session, prompt, repo_name=self._repo_name)

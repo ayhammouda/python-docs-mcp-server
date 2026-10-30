@@ -80,8 +80,8 @@ class _CallToolResult(Protocol):
     """Structural subset of ``mcp.types.CallToolResult`` this module needs."""
 
     content: list[Any]
-    structuredContent: dict[str, Any] | None
-    isError: bool
+    structured_content: dict[str, Any] | None
+    is_error: bool
 
 
 class _CallToolSession(Protocol):
@@ -103,8 +103,8 @@ def _first_text(result: _CallToolResult) -> str | None:
 
 
 def _tool_result_payload(result: _CallToolResult) -> dict[str, Any] | None:
-    if result.structuredContent is not None:
-        return result.structuredContent
+    if result.structured_content is not None:
+        return result.structured_content
     text = _first_text(result)
     return {"text": text} if text is not None else None
 
@@ -152,10 +152,10 @@ async def _run_gitmcp_flow(session: _CallToolSession, prompt: str) -> GitMcpResu
             tool="search_cpython_documentation",
             arguments=doc_args,
             result=doc_payload,
-            is_error=bool(doc_result.isError),
+            is_error=bool(doc_result.is_error),
         )
     )
-    if doc_result.isError:
+    if doc_result.is_error:
         raise BenchmarkCellFailure(
             "tool_failure",
             f"search_cpython_documentation returned an error: {_first_text(doc_result)}",
@@ -171,10 +171,10 @@ async def _run_gitmcp_flow(session: _CallToolSession, prompt: str) -> GitMcpResu
                 tool="search_cpython_code",
                 arguments=code_args,
                 result=code_payload,
-                is_error=bool(code_result.isError),
+                is_error=bool(code_result.is_error),
             )
         )
-        if code_result.isError:
+        if code_result.is_error:
             raise BenchmarkCellFailure(
                 "tool_failure",
                 f"search_cpython_code returned an error: {_first_text(code_result)}",
@@ -192,10 +192,10 @@ async def _run_gitmcp_flow(session: _CallToolSession, prompt: str) -> GitMcpResu
             tool="fetch_generic_url_content",
             arguments=fetch_args,
             result=fetch_payload,
-            is_error=bool(fetch_result.isError),
+            is_error=bool(fetch_result.is_error),
         )
     )
-    if fetch_result.isError:
+    if fetch_result.is_error:
         raise BenchmarkCellFailure(
             "tool_failure",
             f"fetch_generic_url_content returned an error: {_first_text(fetch_result)}",
@@ -267,7 +267,7 @@ class GitMcpAdapter:
         # client submodules unless an actual run is attempted.
         from mcp import ClientSession
 
-        async with _transport_factory(self._endpoint) as (read, write, _get_session_id):
+        async with _transport_factory(self._endpoint) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 return await _run_gitmcp_flow(session, prompt)
