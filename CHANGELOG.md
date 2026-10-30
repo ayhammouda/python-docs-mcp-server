@@ -14,6 +14,16 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `server/discover`. It reports its own package version as
   `serverInfo.version` instead of the SDK's. Tool names, parameters and
   results are unchanged.
+- `doctor` now runs the same FTS5 check as the server and, when FTS5 is
+  missing, prints that check's message.
+
+### Removed
+
+- Removed the `pysqlite3` optional extra. Nothing imported `pysqlite3`, so
+  installing the extra never enabled FTS5. When FTS5 is missing, the server and
+  `doctor` now give one hint: install a Python whose SQLite includes FTS5
+  (`uv python install` or python.org). Install commands that still name the
+  extra keep working: pip and uv print a warning that the extra does not exist.
 
 ### Removed
 
@@ -50,6 +60,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   place by hand.
 - `build-index` now deletes `build-*.db*` files older than one day. Killed
   auto-builds used to leave them in the cache folder for good.
+- On a Python whose SQLite lacks FTS5, `build-index` now prints the FTS5 hint
+  and exits with code 1. It used to stop with a raw
+  `sqlite3.OperationalError: no such module: fts5` traceback, because it created
+  the index's FTS5 tables before checking for FTS5. The server's automatic
+  symbol-only build logs the same hint.
 
 ### Security
 
