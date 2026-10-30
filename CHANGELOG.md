@@ -8,6 +8,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
+- Updated locked Click (8.5.0), Platformdirs (4.12.2), Pydantic (2.13.5,
+  pydantic-core 2.46.5) and Ruff (0.16.10), and the pinned setup-uv (v10.3.0),
+  CodeQL (v4.38.2) and cache (v6.1.0) actions.
 - Moved to version 2 of the MCP Python SDK (`mcp>=2.3.0,<3`), which needs
   `pydantic>=2.12`. The server still answers 2025-era clients through the
   `initialize` handshake. It now also serves 2026-07-28 clients through
