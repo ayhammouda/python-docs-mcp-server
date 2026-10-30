@@ -4,10 +4,13 @@ All tests spawn a real subprocess to verify the doctor command's behavior,
 matching the pattern from test_stdio_hygiene.py.
 """
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+from mcp_server_python_docs.errors import FTS5UnavailableError
 
 
 def _isolated_cache_env(tmpdir: str) -> dict[str, str]:
@@ -176,3 +179,38 @@ class TestBuildVenvSupportProbe:
 
         assert result.passed is True
         assert "build-index" in result.detail
+
+
+class TestFts5Probe:
+    """One FTS5 check, storage.db.assert_fts5_available, serves the server and doctor."""
+
+    def test_doctor_reports_the_fts5_check_error(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from mcp_server_python_docs.__main__ import main
+
+        def no_fts5(conn):
+            raise FTS5UnavailableError(
+                "SQLite FTS5 extension is not available in this Python build.\nprobe hint"
+            )
+
+        monkeypatch.setattr("mcp_server_python_docs.storage.db.get_cache_dir", lambda: tmp_path)
+        monkeypatch.setattr("mcp_server_python_docs.storage.db.assert_fts5_available", no_fts5)
+        result = CliRunner().invoke(main, ["doctor"])
+
+        assert result.exit_code == 1
+        assert (
+            "x FAIL: SQLite FTS5 -- SQLite FTS5 extension is not available in this Python build."
+            in result.output
+        )
+        assert "probe hint" in result.output
+
+    def test_doctor_fts5_pass_shows_sqlite_version(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from mcp_server_python_docs.__main__ import main
+
+        monkeypatch.setattr("mcp_server_python_docs.storage.db.get_cache_dir", lambda: tmp_path)
+        result = CliRunner().invoke(main, ["doctor"])
+
+        assert f"+ PASS: SQLite FTS5 -- SQLite {sqlite3.sqlite_version}" in result.output

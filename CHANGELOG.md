@@ -14,6 +14,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `server/discover`. It reports its own package version as
   `serverInfo.version` instead of the SDK's. Tool names, parameters and
   results are unchanged.
+- `doctor` now runs the same FTS5 check as the server and, when FTS5 is
+  missing, prints that check's message.
 
 ### Fixed
 
