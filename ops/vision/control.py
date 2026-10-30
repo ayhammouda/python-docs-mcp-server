@@ -437,6 +437,8 @@ def receipt_status(result):
     for key in ("head_sha", "base_sha", "tree_sha"):
         if isinstance(result.get(key), str) and SHA.fullmatch(result[key]):
             safe[key] = result[key]
+    if type(result.get("pr")) is int and 0 < result["pr"] <= 2**63 - 1:
+        safe["pr"] = result["pr"]
     for key in ("failures", "infrastructure_failures", "updated_at", "retry_after"):
         if type(result.get(key)) is int:
             safe[key] = max(0, min(2**63 - 1, result[key]))
@@ -667,6 +669,7 @@ def verify(number: int, head: str, decision: dict):
     prior = json.loads(checkpoint.read_text()) if checkpoint.exists() else {"attempts": 0}
     prior.update(
         attempts=prior["attempts"] + 1,
+        pr=number, head_sha=head, base_sha=base,
         status="in_progress",
         updated_at=int(time.time()),
         decision=decision,

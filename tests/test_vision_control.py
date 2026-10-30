@@ -1054,3 +1054,34 @@ def test_public_evidence_counts_only_integer_zero_exit_codes(exit_code, families
     verdict = {"commands": [{"command": "pytest -q", "exit_code": exit_code}]}
     evidence = CONTROL["public_evidence"](verdict, "success", "a" * 40, "b" * 40)
     assert evidence["passed_check_families"] == families
+
+
+def test_status_shows_pr_and_shas_of_a_blocked_verification(tmp_path, monkeypatch):
+    module = CONTROL["dispatch"].__globals__
+    monkeypatch.setitem(module, "STATE", tmp_path)
+    monkeypatch.setitem(module, "CONFIG", tmp_path)
+    head, base = "a" * 40, "b" * 40
+    heads = iter([head, "c" * 40])  # the PR head moves while the review runs
+
+    def api(path, method="GET", data=None, role="owner"):
+        if path == "pulls/1":
+            return {"head": {"sha": next(heads)}, "base": {"ref": "main"}, "state": "open"}
+        if path == "branches/main":
+            return {"commit": {"sha": base}}
+        return {"id": 42}
+
+    monkeypatch.setitem(module, "api", api)
+    monkeypatch.setitem(module, "review", lambda *args: {"summary": "private verdict"})
+    CONTROL["verify"](
+        1, head, {"kind": "maintenance", "rationale": "private rationale", "acceptance": "Test"}
+    )
+    status = CONTROL["dispatch"]({"operation": "status"})
+    assert "private" not in json.dumps(status)
+    blocked = status["blocked_verifications"][0]
+    assert (blocked["pr"], blocked["head_sha"], blocked["base_sha"]) == (1, head, base)
+
+
+@pytest.mark.parametrize("pr", [True, 0, -1, "1", 1.0, None])
+def test_status_drops_a_pr_number_that_is_not_a_positive_int(pr):
+    assert "pr" not in CONTROL["receipt_status"]({"status": "failure", "pr": pr})
+    assert CONTROL["receipt_status"]({"status": "failure", "pr": 7})["pr"] == 7
