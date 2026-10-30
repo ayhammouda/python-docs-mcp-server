@@ -197,19 +197,27 @@ consumes indirectly — the tag/SHA/Sphinx-pin triple determines which
 ([`ingestion/publish.py`](../../src/mcp_server_python_docs/ingestion/publish.py))
 sits between ingestion and the storage layer becoming visible to `serve`:
 
-- `record_ingestion_run` (line 76) inserts a row into `ingestion_runs`
-  (`source`, `version`, `status`, `artifact_hash`, `notes`), used to audit
-  each build attempt regardless of outcome.
-- `atomic_swap` (line 344) renames an existing `index.db` to
-  `index.db.previous` (for rollback) and then `os.replace()`s the freshly
-  built database into place as the new `index.db`; both operations rely on
-  same-filesystem atomic rename semantics. `rollback()` reverses this by
-  restoring `index.db.previous`.
-- `publish_index` (line 419) orchestrates the sequence: compute the build
+- `record_ingestion_run` (line 109) inserts a row into `ingestion_runs`
+  (`source`, `version`, `status`, `artifact_hash`, `notes`), used to record
+  each build that reaches publishing; a rejected build is deleted with its
+  row.
+- `atomic_swap` (line 377) keeps `index.db` present throughout. It
+  hard-links an existing `index.db` to `index.db.previous.<pid>.tmp`
+  (copying it where the filesystem has no hard links), `os.replace()`s that
+  onto `index.db.previous` and removes the temporary name, then
+  `os.replace()`s the build onto `index.db`. On Windows a running MCP client
+  holds `index.db` open, so a replace fails; it then logs that clients must
+  be stopped, names the kept build, and re-raises. `rollback()` restores
+  `index.db.previous`.
+- `publish_index` (line 496) orchestrates the sequence: compute the build
   artifact's SHA256, record the ingestion run, run smoke tests against the
   new database, and only call `atomic_swap` (plus print a restart-required
-  message to stderr) if the smoke tests pass; on failure it marks the run
-  failed and returns `False` without swapping anything into place.
+  message to stderr) if the smoke tests pass; on failure it logs every smoke
+  message and the build path at ERROR, deletes the build and returns `False`.
+  Before the `atomic_swap` call, its last read-write step switches the build
+  to `journal_mode = DELETE`, so read-only servers never create `-wal` or
+  `-shm` files; if the switch fails it keeps the build, logs its path and
+  returns `False`.
 
 ---
 
@@ -247,24 +255,24 @@ exact Python identifier search.
 **Connection management**
 ([`storage/db.py`](../../src/mcp_server_python_docs/storage/db.py)):
 
-- `get_readonly_connection` (line 48) opens the database with SQLite URI mode
+- `get_readonly_connection` (line 47) opens the database with SQLite URI mode
   `?mode=ro` (preventing accidental writes at the connection level),
   `check_same_thread=False`, and `row_factory = sqlite3.Row`. This is the
   connection type `serve` uses.
-- `get_readwrite_connection` (line 60) creates parent directories as needed,
+- `get_readwrite_connection` (line 59) creates parent directories as needed,
   opens a normal read-write connection, and additionally sets
   `PRAGMA journal_mode = WAL`. This is the connection type `build-index`
   uses.
-- `assert_fts5_available` (line 74) checks FTS5 support with a
-  platform-aware error message: on a read-write connection it attempts to
-  `CREATE`/`DROP` a temporary FTS5 table as a definitive check; on a
-  read-only connection, where that `CREATE` fails for the unrelated reason
-  that the connection is read-only, it falls back to checking
+- `assert_fts5_available` (line 73) checks FTS5 support with one actionable
+  error message: it attempts to `CREATE`/`DROP` a temporary FTS5 table as a
+  definitive check. That works on the server's read-only connection too,
+  because the table lives in the temp schema. Only if that `CREATE` fails
+  because the connection is read-only does it fall back to checking
   `PRAGMA compile_options` for `ENABLE_FTS5`. If FTS5 is genuinely
-  unavailable, it raises `FTS5UnavailableError` with a platform-specific
-  remediation hint (the `pysqlite3-binary` extra on Linux x86-64; a
-  `uv python install` or python.org build otherwise).
-- `bootstrap_schema` (line 116) drops and recreates the three FTS5 virtual
+  unavailable, it raises `FTS5UnavailableError` telling the user to install a
+  Python whose SQLite includes FTS5 (`uv python install` or python.org).
+  `doctor` runs the same check on an in-memory connection.
+- `bootstrap_schema` (line 104) drops and recreates the three FTS5 virtual
   tables unconditionally — because FTS5 has no `ALTER` for tokenizer
   configuration, `IF NOT EXISTS` alone cannot pick up a tokenizer change —
   then executes the full `schema.sql` DDL via `executescript()`. Every

@@ -14,16 +14,49 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `server/discover`. It reports its own package version as
   `serverInfo.version` instead of the SDK's. Tool names, parameters and
   results are unchanged.
+- `doctor` now runs the same FTS5 check as the server and, when FTS5 is
+  missing, prints that check's message.
+
+### Removed
+
+- Removed the `pysqlite3` optional extra. Nothing imported `pysqlite3`, so
+  installing the extra never enabled FTS5. When FTS5 is missing, the server and
+  `doctor` now give one hint: install a Python whose SQLite includes FTS5
+  (`uv python install` or python.org). Install commands that still name the
+  extra keep working: pip and uv print a warning that the extra does not exist.
 
 ### Fixed
 
 - The server now exits cleanly, with exit code 0 and no traceback, when a
   client closes the connection mid-session.
+- A failed `build-index` run (no version ingested, an error, or Ctrl-C) no
+  longer leaves `build-*.db`, `-wal` or `-shm` files in the cache folder. The
+  test suite no longer runs `build-index` against the real cache folder.
+- When smoke tests reject a new index, `build-index` logs every smoke message
+  and the build path at ERROR and deletes the build.
+- The published `index.db` now uses SQLite's rollback journal
+  (`journal_mode=DELETE`), so servers that open it read-only no longer create
+  `index.db-wal` and `index.db-shm` files beside it.
+- `index.db` no longer disappears for a moment while a new index is published,
+  so a server that starts at that moment no longer starts an auto-build. When
+  a running MCP client blocks the publish on Windows, `build-index` now says to
+  stop the clients, keeps the new build and names it, so it can be moved into
+  place by hand.
+- `build-index` now deletes `build-*.db*` files older than one day. Killed
+  auto-builds used to leave them in the cache folder for good.
 - On a Python whose SQLite lacks FTS5, `build-index` now prints the FTS5 hint
   and exits with code 1. It used to stop with a raw
   `sqlite3.OperationalError: no such module: fts5` traceback, because it created
   the index's FTS5 tables before checking for FTS5. The server's automatic
   symbol-only build logs the same hint.
+
+### Security
+
+- Releases publish only the exact files the build job produced. The PyPI and
+  GitHub-release jobs download `dist` by artifact ID. They refuse to attest,
+  upload or attach anything if the SHA-256 listing differs from the build's.
+  The release build job builds the project only with `hatchling` and its
+  dependencies pinned by hash, and runs its tests against the wheel it ships.
 
 ## [0.4.0] — Unreleased
 

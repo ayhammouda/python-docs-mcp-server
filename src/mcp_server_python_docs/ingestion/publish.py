@@ -1,16 +1,18 @@
 """Atomic-swap publishing with smoke tests and rollback (PUBL-01 through PUBL-06).
 
 Handles the full publish pipeline: timestamped build artifacts, SHA256 hashing,
-smoke test validation, atomic rename with .previous backup, and the restart
-message to stderr.
+smoke test validation, atomic replace with a hard-linked .previous backup, and
+the restart message to stderr.
 """
 from __future__ import annotations
 
 import hashlib
 import logging
 import os
+import shutil
 import sqlite3
 import sys
+import time
 from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
@@ -52,6 +54,37 @@ def generate_build_path() -> Path:
     return cache_dir / f"build-{timestamp}.db"
 
 
+def delete_build(build_db_path: Path) -> None:
+    """Delete a build artifact and its WAL/SHM sidecars.
+
+    Close the build's connection first, or SQLite recreates the sidecars.
+    """
+    for suffix in ("", "-wal", "-shm"):
+        Path(f"{build_db_path}{suffix}").unlink(missing_ok=True)
+    logger.info("Deleted failed build %s", build_db_path.name)
+
+
+def sweep_stale_builds(cache_dir: Path, max_age_seconds: float = 86_400.0) -> list[Path]:
+    """Delete build-*.db* files older than ``max_age_seconds``; return the deleted paths.
+
+    A killed auto-build leaves its build file behind. The age floor spares a
+    build that another process is still writing.
+    """
+    cutoff = time.time() - max_age_seconds
+    removed: list[Path] = []
+    for path in cache_dir.glob("build-*.db*"):
+        try:
+            if path.stat().st_mtime >= cutoff:
+                continue
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("Could not delete stale build file %s: %s", path, exc)
+            continue
+        logger.info("Deleted stale build file %s", path.name)
+        removed.append(path)
+    return removed
+
+
 def compute_sha256(db_path: Path) -> str:
     """Compute the SHA256 hex digest of a file (PUBL-02).
 
@@ -87,7 +120,7 @@ def record_ingestion_run(
         conn: Read-write SQLite connection.
         source: Source identifier (e.g., 'python-docs').
         version: Version string (e.g., '3.13' or '3.10,3.11,3.12,3.13,3.14').
-        status: Run status ('building', 'smoke_testing', 'published', 'failed').
+        status: Run status ('smoke_testing' or 'published').
         artifact_hash: SHA256 hash of the build artifact.
         notes: Optional notes about the run.
 
@@ -347,10 +380,13 @@ def atomic_swap(
 ) -> Path | None:
     """Atomically swap a new database into place (PUBL-04).
 
-    If a previous ``index.db`` exists, it is renamed to ``index.db.previous``
-    for rollback. The new database is then renamed to ``index.db``.
+    ``index.db`` stays present throughout. An existing ``index.db`` is
+    hard-linked to ``index.db.previous.<pid>.tmp`` (copied where the
+    filesystem has no hard links), and that name is ``os.replace()``d onto
+    ``index.db.previous`` for rollback. The new database is then
+    ``os.replace()``d onto ``index.db``.
 
-    Both renames must be on the same filesystem for POSIX atomicity.
+    All names must be on the same filesystem for POSIX atomicity.
 
     Args:
         new_db_path: Path to the new build artifact.
@@ -359,22 +395,63 @@ def atomic_swap(
 
     Returns:
         Path to the .previous backup if one was created, or None.
+
+    Raises:
+        PermissionError: A replace was refused, as on Windows while a running
+            MCP client holds ``index.db`` open. The error is logged at ERROR
+            with the kept build's path, and the build is left in place. The
+            temporary link is removed when possible; otherwise a WARNING
+            names it.
+        OSError: The backup could not be made or renamed, as on a full disk.
+            The temporary backup is removed (a WARNING names it when that
+            fails); ``index.db`` is untouched.
     """
     if target_path is None:
         target_path = get_index_path()
 
     previous_path: Path | None = None
 
+    def replace(src: Path, dst: Path) -> None:
+        try:
+            os.replace(src, dst)
+        except PermissionError as e:
+            logger.error(
+                "Could not replace %s (%s). On Windows a running MCP client holds the index open: "
+                "stop every MCP client, then move %s onto %s, or run build-index again. "
+                "build-index deletes builds older than one day.",
+                dst,
+                e,
+                new_db_path,
+                target_path,
+            )
+            raise
+
     if target_path.exists():
         previous = target_path.parent / (target_path.name + ".previous")
-        # Remove old .previous if it exists
-        if previous.exists():
-            previous.unlink()
-        os.rename(target_path, previous)
+        tmp = previous.with_name(f"{previous.name}.{os.getpid()}.tmp")
+        tmp.unlink(missing_ok=True)
+        try:
+            try:
+                os.link(target_path, tmp)
+            except OSError:
+                shutil.copy2(target_path, tmp)
+            replace(tmp, previous)
+        except BaseException:  # incl. KeyboardInterrupt: no temp backup may outlive this run
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError as cleanup_error:  # keep the original error, not this one
+                logger.warning(
+                    "Could not remove %s (%s). Delete it once every MCP client is stopped.",
+                    tmp,
+                    cleanup_error,
+                )
+            raise
+        # rename is a no-op when tmp and .previous already name the same file
+        tmp.unlink(missing_ok=True)
         logger.info("Previous index backed up to %s", previous)
         previous_path = previous
 
-    os.replace(new_db_path, target_path)
+    replace(new_db_path, target_path)
     logger.info("New index published at %s", target_path)
 
     return previous_path
@@ -427,8 +504,11 @@ def publish_index(
     1. Compute SHA256 of the build artifact
     2. Record ingestion run
     3. Run smoke tests
-    4. If passed: atomic swap + restart message
-    5. If failed: update run status, return False
+    4. If they failed: log the smoke messages at ERROR, delete the build, return False
+    5. Mark the run published and switch the build to ``journal_mode = DELETE``;
+       if that fails, keep the build, log at ERROR, return False
+    6. Atomic swap; if it is refused, keep the build and return False
+    7. Print the restart message
 
     Args:
         build_db_path: Path to the build artifact database.
@@ -436,7 +516,9 @@ def publish_index(
         require_content: Whether publish validation should require content tables.
 
     Returns:
-        True if publishing succeeded, False if smoke tests failed.
+        True if publishing succeeded; False if the smoke tests failed (the build is
+        deleted), the build could not leave WAL mode (the build is kept), or the
+        swap was refused (the build is kept).
     """
     # Compute SHA256 (PUBL-02)
     artifact_hash = compute_sha256(build_db_path)
@@ -465,22 +547,13 @@ def publish_index(
         require_content=require_content,
         expected_versions=parse_expected_versions(version),
     )
+    log = logger.info if passed else logger.error
     for msg in messages:
-        logger.info("Smoke test: %s", msg)
+        log("Smoke test: %s", msg)
 
     if not passed:
-        # Update run status to failed
-        conn = get_readwrite_connection(build_db_path)
-        try:
-            conn.execute(
-                "UPDATE ingestion_runs SET status = ?, notes = ?, "
-                "finished_at = CURRENT_TIMESTAMP WHERE id = ?",
-                ("failed", "\n".join(messages), run_id),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-        logger.error("Smoke tests failed — not publishing")
+        logger.error("Smoke tests failed; deleting build %s", build_db_path)
+        delete_build(build_db_path)
         return False
 
     # Update run status to published (preserve build_mode note)
@@ -492,11 +565,29 @@ def publish_index(
             ("published", build_notes, run_id),
         )
         conn.commit()
+        # Last read-write step: every read-write open turns WAL back on.
+        try:
+            journal_mode = conn.execute("PRAGMA journal_mode = DELETE").fetchone()[0]
+        except sqlite3.OperationalError as e:
+            journal_mode = e
     finally:
         conn.close()
 
+    if journal_mode != "delete":
+        logger.error(
+            "Could not switch build %s to journal_mode=DELETE (%s); not publishing it. "
+            "Close the program holding it and run build-index again.",
+            build_db_path,
+            journal_mode,
+        )
+        return False
+
     # Atomic swap (PUBL-04)
-    atomic_swap(build_db_path)
+    try:
+        atomic_swap(build_db_path)
+    except PermissionError as e:
+        logger.error("Could not publish %s (%s); the build is kept.", build_db_path, e)
+        return False
 
     # Restart message (PUBL-05)
     print_restart_message()

@@ -34,9 +34,6 @@ dependencies = [
     "zstandard>=0.23.0",
 ]
 
-[project.optional-dependencies]
-pysqlite3 = ["pysqlite3-binary>=0.5.4"]
-
 [dependency-groups]
 dev = [
     "pytest>=8.0",

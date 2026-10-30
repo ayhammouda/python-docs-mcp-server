@@ -169,9 +169,11 @@ def build_index(versions: str, skip_content: bool) -> None:
     from mcp_server_python_docs.ingestion.inventory import ingest_inventory
     from mcp_server_python_docs.ingestion.publish import (
         _version_sort_key,
+        delete_build,
         generate_build_path,
         parse_expected_versions,
         publish_index,
+        sweep_stale_builds,
     )
     from mcp_server_python_docs.ingestion.sphinx_json import (
         build_sphinx_bootstrap_requirements,
@@ -211,9 +213,11 @@ def build_index(versions: str, skip_content: bool) -> None:
 
     # Build into a timestamped artifact, not directly to index.db (PUBL-01)
     build_db_path = generate_build_path()
+    sweep_stale_builds(build_db_path.parent)
     logger.info("Building index at %s", build_db_path)
 
     conn = get_readwrite_connection(build_db_path)
+    built = False
     try:
         # Before bootstrap_schema: its FTS5 tables would fail first, with a bare
         # "no such module: fts5" instead of the check's hint (STOR-08).
@@ -400,9 +404,6 @@ def build_index(versions: str, skip_content: bool) -> None:
 
         if not any_version_succeeded:
             logger.error("No versions were successfully ingested")
-            # Clean up the failed build artifact
-            if build_db_path.exists():
-                build_db_path.unlink()
             raise SystemExit(1)
 
         # Populate synonyms from synonyms.yaml (INGR-C-09)
@@ -411,14 +412,18 @@ def build_index(versions: str, skip_content: bool) -> None:
 
         # Rebuild FTS indexes (INGR-C-08)
         rebuild_fts_indexes(conn)
+        built = True
     finally:
+        # Close before deleting, or SQLite recreates the -wal/-shm sidecars.
         conn.close()
+        if not built:
+            delete_build(build_db_path)
 
     # Publish: smoke test + atomic swap (PUBL-01 through PUBL-05)
     versions_str = ",".join(version_list)
     success = publish_index(build_db_path, versions_str, require_content=not skip_content)
     if not success:
-        logger.error("Publishing failed — smoke tests did not pass")
+        logger.error("Publishing failed; see the errors above")
         raise SystemExit(1)
 
 
@@ -502,12 +507,18 @@ def validate_corpus(db_path: str | None) -> None:
 @main.command()
 def doctor() -> None:
     """Check environment health and report issues (CLI-02)."""
+    import contextlib
     import shutil
     import sqlite3
     from pathlib import Path
 
     from mcp_server_python_docs.diagnostics import check_build_venv_support
-    from mcp_server_python_docs.storage.db import get_cache_dir, get_index_path
+    from mcp_server_python_docs.errors import FTS5UnavailableError
+    from mcp_server_python_docs.storage.db import (
+        assert_fts5_available,
+        get_cache_dir,
+        get_index_path,
+    )
 
     results: list[tuple[str, bool, str]] = []  # (probe_name, passed, detail)
 
@@ -524,23 +535,12 @@ def doctor() -> None:
     fts5_ok = False
     fts5_detail = ""
     try:
-        mem_conn = sqlite3.connect(":memory:")
-        mem_conn.execute("CREATE VIRTUAL TABLE _fts5_check USING fts5(x)")
-        mem_conn.execute("DROP TABLE _fts5_check")
-        mem_conn.close()
+        with contextlib.closing(sqlite3.connect(":memory:")) as mem_conn:
+            assert_fts5_available(mem_conn)
         fts5_ok = True
         fts5_detail = f"SQLite {sqlite3.sqlite_version}"
-    except sqlite3.OperationalError:
-        import platform as plat
-
-        if plat.system() == "Linux" and plat.machine() == "x86_64":
-            fts5_detail = (
-                "FTS5 unavailable -- pip install 'python-docs-mcp-server[pysqlite3]'"
-            )
-        else:
-            fts5_detail = (
-                "FTS5 unavailable -- install Python from python.org or uv python install"
-            )
+    except FTS5UnavailableError as e:
+        fts5_detail = str(e)
     results.append(("SQLite FTS5", fts5_ok, fts5_detail))
 
     # 3. Build-index Sphinx venv support

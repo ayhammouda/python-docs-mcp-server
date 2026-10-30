@@ -1,20 +1,42 @@
 # Release process
 
-Vision releases through the project broker after the scoped GitHub Apps are
-activated (`ops/vision/README.md`). While setup is pending, release eligibility
-fails closed. Do not substitute personal tokens or bypass checks.
+The Claude Code project owner releases under the 2026-10-30 amendment in
+`AGENT-EXECUTION-PIPELINE.md`. Release eligibility fails closed. Do not bypass
+or disable checks.
 
 1. Merge the version/changelog PR after independent current-head verification
    and all required CI. `pyproject.toml`, `uv.lock`, `server.json` and its package
    entry must agree. CI covers Python 3.12–3.14 on Ubuntu and macOS, the real
    benchmark corpus, offline full-index regression, and installed-wheel stdio.
+   If an update from `main` changed the head, carry verification forward only
+   under the amendment's rule: a conflict-free update, green required checks,
+   a new record for the new head, and either (a) a rebase whose
+   `git range-diff` shows no patch changes or (b) a merge of `main` whose
+   `git show --remerge-diff <merge-commit>` prints no diff. Otherwise
+   re-verify the changed part with all three parts (Fable reviewer, Codex
+   `gpt-6-astra` at `xhigh` in a read-only sandbox, `ponytail-review`), none
+   run by the implementer. The partial record adds a
+   `scope: delta <old-head>..<new-head>` line and a link to the full record it
+   extends, and states the three delta verdicts and the new head's check result.
 2. Wait for the required checks on the resulting **main commit** to pass.
-3. Run `pdctl release EXACT_MAIN_COMMIT vX.Y.Z`. The broker confirms main
-   ancestry, the merged PR's verifier App check, main CI and manifest versions
-   before creating the tag. Release tags cannot be moved or deleted.
+   On that exact commit, run
+   `uv build --build-constraint .github/build-constraints.txt --require-hashes --out-dir "$(mktemp -d)"`.
+   It checks the hash-pinned build backend described below. Do not tag if it
+   fails.
+3. The owner tags that exact commit and pushes the tag:
+   `git tag -a vX.Y.Z <exact main sha> -m "vX.Y.Z"`, then
+   `git push origin vX.Y.Z`. Check the versions from step 1 first: release tags
+   cannot be moved or deleted, so a failed release still spends the tag. The
+   eligibility job confirms main ancestry, a single-parent commit from one
+   merged PR, CodeQL on its head, the owner's verification record for that head
+   and the required main checks. The record is a process tripwire, not a
+   security boundary; the 2026-10-30 amendment defines it and its limits.
 4. The release workflow runs eligibility → build/test/manifest validation →
    installed-wheel integration on Python 3.13 and 3.14 → PyPI → MCP Registry →
    GitHub release. Integration builds documentation 3.10–3.14 before publishing.
+   The build job records the SHA-256 of every file in `dist/` and the artifact ID
+   as job outputs. The PyPI and GitHub-release jobs download that artifact ID and
+   refuse to attest, publish or attach anything whose checksum listing differs.
    PyPI receives the same wheel that passed integration, with provenance.
 5. Confirm every job succeeded, the exact version is visible on PyPI and in the
    MCP Registry, the GitHub release has both artifacts, and a clean
@@ -27,9 +49,28 @@ release URL and verifies its SHA-256 before extracting the executable. The
 manifest is validated **before** PyPI publication. Do not use an unverified
 `curl | tar` download or a moving `latest` URL.
 
+The release build installs its build backend from `.github/build-constraints.txt`.
+That file pins `hatchling` and every dependency with SHA-256 hashes, and the build
+runs `uv build --build-constraint .github/build-constraints.txt --require-hashes`.
+Every project build in the build job uses that file. The job syncs dependencies with
+`uv sync --locked --dev --no-install-project --no-build`, which builds neither the
+project nor any source distribution. It installs the built wheel with
+`uv pip install --no-deps dist/*.whl` and runs every later command with
+`uv run --no-sync`, so nothing re-syncs and rebuilds the project. The tests run
+against that installed wheel, and the test suite's own wheel build gets the same
+constraints through `UV_BUILD_CONSTRAINT` and `UV_REQUIRE_HASHES`.
+To update it, run
+`echo hatchling | uv pip compile --generate-hashes --universal --python-version 3.12 --upgrade - -o .github/build-constraints.txt`,
+then
+`uv build --build-constraint .github/build-constraints.txt --require-hashes --out-dir "$(mktemp -d)"`,
+and review the diff like a lockfile change. A broken file fails the release in
+the build job, before anything is published. The tag is spent by then, though,
+so check the file before you tag.
+
 PyPI Trusted Publishing remains bound to this repository, `release.yml` and the
-`pypi` environment. Activation restricts that environment to `v*` tags and tag
-creation to the owner App; the separate immutable-tag rule has no bypass actors.
+`pypi` environment. The intended settings limit that environment to `v*` tags
+and tag creation to repository admins; the separate immutable-tag rule stays
+unchanged, with no bypass actors.
 No routine human reviewer is required. If publication partially fails, record
 which registries succeeded and diagnose the failure; never overwrite a published
 version, move a tag, or claim a release complete from a partial result.

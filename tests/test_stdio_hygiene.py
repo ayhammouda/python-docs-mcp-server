@@ -20,6 +20,8 @@ def _isolated_cache_env(tmpdir: str) -> dict[str, str]:
         "HOME": str(tmp_path),
         "XDG_CACHE_HOME": str(tmp_path),
         "LOCALAPPDATA": str(tmp_path / "AppData" / "Local"),
+        # platformdirs on Windows asks the shell API and ignores LOCALAPPDATA unless this is set
+        "WIN_PD_OVERRIDE_LOCAL_APPDATA": str(tmp_path / "AppData" / "Local"),
         "APPDATA": str(tmp_path / "AppData" / "Roaming"),
         "USERPROFILE": str(tmp_path),
     }
@@ -87,8 +89,25 @@ class TestStdioHygiene:
             # stderr should have the missing-index message
             assert "build-index" in result.stderr
 
-    def test_build_index_bad_version_stderr_only(self):
+    def test_build_index_bad_version_stderr_only(self, tmp_path):
         """build-index with unreachable version should log to stderr, not stdout."""
+        env = _isolated_cache_env(str(tmp_path))  # never the developer's real cache
+        resolved = subprocess.run(
+            [
+                sys.executable, "-c",
+                "from mcp_server_python_docs.storage.db import get_cache_dir;"
+                " print(get_cache_dir())",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+        cache_dir = Path(resolved.stdout.strip())
+        assert cache_dir.resolve().is_relative_to(tmp_path.resolve()), (
+            f"cache resolves to {cache_dir}, outside {tmp_path}: "
+            "build-index would use the real cache"
+        )
         result = subprocess.run(
             [
                 sys.executable, "-m", "mcp_server_python_docs",
@@ -97,9 +116,11 @@ class TestStdioHygiene:
             capture_output=True,
             text=True,
             timeout=30,
+            env=env,
         )
         # This will fail (invalid version), but any output should be on stderr
         # stdout should be empty because of fd redirection
         assert result.stdout == "", (
             f"build-index produced stdout: {result.stdout!r}"
         )
+        assert sorted(p.name for p in tmp_path.rglob("build-*")) == []

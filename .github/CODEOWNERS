@@ -4,12 +4,13 @@
 # required by §10 (Pre-flight Checklist).
 #
 # These entries retain GitHub account visibility, not a human approval gate.
-# Vision owns project decisions under the 2026-10-01 pipeline amendment.
-# Required PR/CI rules enforce delivery; independent agent verification is
-# recorded against the current head. Do not require a self-approval from this
-# shared GitHub identity or treat CODEOWNERS as an independent verification.
+# The Claude Code owner (@ayhammouda's account) owns project decisions under the
+# 2026-10-30 pipeline amendment. Required PR/CI rules enforce delivery;
+# independent verification is recorded against the current head. Do not require
+# a self-approval from this shared GitHub identity or treat CODEOWNERS as an
+# independent verification.
 #
-# Autonomous agents may NOT modify these paths without explicit Vision approval
+# Autonomous agents may NOT modify these paths without explicit owner approval
 # (pipeline §2). Any agent PR touching them must add the `supervisor-review`
 # label and stop short of self-merging (pipeline §7).
 
