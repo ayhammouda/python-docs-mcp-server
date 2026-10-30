@@ -22,7 +22,7 @@ or disable checks.
    `git tag -a vX.Y.Z <exact main sha> -m "vX.Y.Z"`, then
    `git push origin vX.Y.Z`. Check the versions from step 1 first: release tags
    cannot be moved or deleted, so a failed release still spends the tag. The
-   eligibility job confirms main ancestry, a single-parent squash merge of one
+   eligibility job confirms main ancestry, a single-parent commit from one
    merged PR, CodeQL on its head, the owner's verification record for that head
    and the required main checks. The record is an unedited PR comment, posted
    no later than the merge, by the repository owner. Its first line is exactly

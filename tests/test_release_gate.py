@@ -71,7 +71,7 @@ def test_release_eligibility_rejects_incomplete_or_wrong_identity_evidence():
         gate(state.__getitem__, SHA, OWNER)
     state[f"compare/{SHA}...main"]["status"] = "ahead"
     state[f"git/commits/{SHA}"]["parents"].append({"sha": "d" * 40})
-    with pytest.raises(ValueError, match="single-parent"):
+    with pytest.raises(ValueError, match="single-parent commit"):
         gate(state.__getitem__, SHA, OWNER)
     state[f"git/commits/{SHA}"]["parents"].pop()
     codeql["conclusion"] = "failure"

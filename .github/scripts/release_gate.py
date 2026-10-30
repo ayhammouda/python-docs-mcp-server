@@ -68,8 +68,9 @@ def require_eligible(api, sha: str, owner: str) -> None:
     codeql = [c for c in head_checks if c["name"] == "CodeQL" and c["app"]["id"] == 57789]
     if not codeql or max(codeql, key=lambda c: c["id"])["conclusion"] != "success":
         raise ValueError("Missing or failing CodeQL findings check on merged PR head")
+    # The main ruleset allows only squash merges (allowed_merge_methods: ["squash"]).
     if len(api(f"git/commits/{sha}")["parents"]) != 1:
-        raise ValueError("Release commit must be a single-parent squash merge")
+        raise ValueError("Release commit must be a single-parent commit")
     comments, page = [], 1
     while batch := api(f"issues/{prs[0]['number']}/comments?per_page=100&page={page}"):
         comments += batch
