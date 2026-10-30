@@ -7,8 +7,8 @@
 
 **Goal:** Ship every fix from the 2026-10-30 whole-repo audit in nine
 reviewable PRs, as refined by the best-practice research. This covers the 19
-numbered findings, the 11 smaller ones, and 10 related issues the research
-found.
+numbered findings, the smaller findings (7 rows in the research note), and the
+11 related issues the research found (N1–N11).
 
 **Spec:** `docs/research/2026-10-30-audit-fix-best-practices.md`. Its verdict
 tables list every finding, and its sections give the evidence and the fix to
@@ -132,11 +132,17 @@ Each decision states what it costs if it turns out wrong.
 - **Wave 0.5:** a docs-only PR puts this roadmap, the nine plans and the
   research note on `main`. Every plan stops if they are missing, because
   `AGENTS.md` accepts only linked files that exist.
-- **Wave 1, in parallel:** PRs 1, 3, 4, 5, 6, 8 and 9. They touch different
-  files, apart from small, separate hunks in `__main__.py`, `storage/db.py`
-  and `schema.sql`.
+- **Wave 1, in parallel:** PRs 1, 3, 4, 5, 8 and 9. PR 6 is deferred; see
+  "Governance Change". They touch different files, apart from small,
+  separate hunks in `__main__.py`, `storage/db.py` and `schema.sql`.
   - Merge PR 4 first, because it isolates the test that writes into the
     developer's real cache (N11).
+  - Until a branch contains PR 4's isolation commit, every `pytest` run on
+    it isolates the cache:
+    `ISO=$(mktemp -d /private/tmp/pdmcp-test.XXXXXX); XDG_CACHE_HOME="${ISO:?}" uv run --locked pytest --tb=short -q`.
+    Without that, `tests/test_stdio_hygiene.py` runs `build-index --versions
+    99.99` against the real cache and leaves `build-*.db-wal`/`-shm` files
+    there.
   - Then PR 1, PR 3 and PR 5. Whichever lands last refreshes the line
     references in `DESIGN.md`.
 - **Wave 2:** PR 2, which then regenerates `tests/fixtures/tools-list.json` if
@@ -158,8 +164,8 @@ These apply to every plan.
   - `uv run --locked pyright src/ benchmarks/`
   - `uv run --locked pytest --tb=short -q`
 - **Existing tests:** never delete one or weaken an assertion, except where a
-  plan says so explicitly (PRs 3 and 9). Those PRs list each change in the PR
-  body.
+  plan says so explicitly (PRs 3, 6 and 9; PR 6 is deferred). Those PRs list
+  each change in the PR body.
 - **Forbidden territory:** `AGENT-EXECUTION-PIPELINE.md` §2 and §7 apply.
   - Any PR that touches it gets the `supervisor-review` label.
   - Its PR body has a `## Why this triggered supervisor review` section. That

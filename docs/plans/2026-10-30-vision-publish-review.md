@@ -863,6 +863,24 @@ Expected: a few thousand characters.
   merge, keep 64 KiB and list the unmeasured cap there as an open risk.
 
 - [ ] **Step 4: Implement `extract_verdict(text: str) -> dict` above `review()`.**
+
+  > **Revision (2026-10-30, Codex peer review of #163): the scan below can be
+  > bypassed. Do not implement it as written.**
+  >
+  > Take `GOOD_VERDICT` and append `{"approved": false,}`. The scan
+  > skips the malformed rejection because it does not decode, and
+  > `key_token` misses the escaped key, so the scan returns `approved=True`.
+  >
+  > Use a strict single-verdict parse instead:
+  > 1. Strip surrounding whitespace and at most one ```` ```json ```` fence.
+  > 2. Call `value, end = decoder.raw_decode(body)`.
+  > 3. Raise `malformed` unless `end == len(body)`, `value` is a `dict` and
+  >    `keys <= value.keys()`.
+  >
+  > Keep the strict type rules below. Add the regression test: `GOOD_VERDICT`
+  > followed by `{"approved": false,}` must raise `malformed`. Draft #168
+  > implements the scan, so it must switch to this parse before it resumes.
+
   The scan below sets the security behaviour:
   - It reads top-level objects only, needs exactly one verdict-shaped object,
     and skips anything that does not decode.
