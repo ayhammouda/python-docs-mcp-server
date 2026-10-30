@@ -137,10 +137,9 @@ Each decision states what it costs if it turns out wrong.
   separate hunks in `__main__.py`, `storage/db.py` and `schema.sql`.
   - Merge PR 4 first, because it isolates the test that writes into the
     developer's real cache (N11).
-  - Until a branch contains PR 4's isolation commit, every `pytest` run on
-    it isolates the cache:
-    `ISO=$(mktemp -d "${TMPDIR:-/tmp}/pdmcp-test.XXXXXX"); XDG_CACHE_HOME="${ISO:?}" uv run --locked pytest --tb=short -q`.
-    Without that, `tests/test_stdio_hygiene.py` runs `build-index --versions
+  - Until a branch contains PR 4's isolation commit, run `pytest` there only
+    with the cache-isolated Gate command (see "Global Constraints").
+    Otherwise `tests/test_stdio_hygiene.py` runs `build-index --versions
     99.99` against the real cache and leaves `build-*.db-wal`/`-shm` files
     there.
   - Then PR 1, PR 3 and PR 5. Whichever lands last refreshes the line
@@ -162,7 +161,9 @@ These apply to every plan.
 - **Gate (`AGENTS.md`):** run it fresh before opening the PR.
   - `uv run --locked ruff check src/ tests/ benchmarks/ ops/ .github/scripts/`
   - `uv run --locked pyright src/ benchmarks/`
-  - `uv run --locked pytest --tb=short -q`
+  - `ISO=$(mktemp -d "${TMPDIR:-/tmp}/pdmcp-test.XXXXXX"); XDG_CACHE_HOME="${ISO:?}" uv run --locked pytest --tb=short -q`.
+    This isolates the cache on macOS and Linux. On Windows, platformdirs
+    ignores `XDG_CACHE_HOME`, so these plans do not run the suite on Windows.
 - **Existing tests:** never delete one or weaken an assertion, except where a
   plan says so explicitly (PRs 3, 6 and 9; PR 6 is deferred). Those PRs list
   each change in the PR body.
@@ -188,7 +189,10 @@ These apply to every plan.
     - either sets `ISO=/tmp/<name>;` in the same command and passes
       `XDG_CACHE_HOME="${ISO:?}"`, after a step that prints `get_index_path()`
       and stops on a real-cache path;
-    - or patches both `get_cache_dir` bindings in a `python -c` one-liner.
+    - or patches both `get_cache_dir` bindings in a `python -c` one-liner;
+    - or, for the test suite, uses the Gate's `mktemp` command. That form
+      needs no print-and-stop step: `mktemp` always makes a new directory,
+      and `${ISO:?}` stops the command if it fails.
   - Never delete files in the real cache by hand.
 - **Retrieval checks:** PRs 1 and 2 change retrieval. Each runs
   `uv run --locked python -m benchmarks.regression --output <file>` on a full

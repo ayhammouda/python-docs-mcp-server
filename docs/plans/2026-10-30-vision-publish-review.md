@@ -886,15 +886,23 @@ Expected: a few thousand characters.
   >    `approved=True`, and a repeated `exit_code` can hide a failed command.
   >    Fix: build the decoder with an `object_pairs_hook` that raises
   >    `malformed` when any object, at any depth (command entries too),
-  >    repeats a name.
+  >    repeats a name. `ReviewFailure` subclasses `ValueError`, and the scan
+  >    catches `ValueError` to skip text that does not decode. So put
+  >    `except ReviewFailure: raise` before that handler. Then a repeated name
+  >    anywhere in the reply stops the scan, instead of making it skip that
+  >    object and accept a verdict nested inside it.
   >
-  > The `REPLY_SHAPES` cases in Step 1 still pass. Add three regression tests,
+  > The `REPLY_SHAPES` cases in Step 1 still pass. Add five regression tests,
   > each of which must raise `malformed`. Use raw strings, or Python decodes
   > the escapes:
   > - `GOOD_VERDICT` followed by `r'{"\u0061pproved": false,}'`;
   > - a verdict whose `"approved": true` is replaced by
   >   `r'"approved": false, "\u0061pproved": true'`;
-  > - a command entry with a repeated `exit_code`.
+  > - a command entry with a repeated `exit_code`;
+  > - a wrapper with a repeated name around the verdict:
+  >   `'{"a": 1, "a": 2, "verdict": ' + json.dumps(GOOD_VERDICT) + '}'`;
+  > - a decoy with a repeated name before the verdict:
+  >   `'{"a": 1, "a": 2}\n' + json.dumps(GOOD_VERDICT)`.
   >
   > Draft #168 implements the scan without either check, so it must add both
   > before it resumes.
