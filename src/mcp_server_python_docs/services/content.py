@@ -53,6 +53,30 @@ class ContentService:
         """Retrieve documentation content by slug, optionally narrowed to a section by anchor."""
         resolved_version = self._resolve_version(version)
 
+        # Resolve the canonical slug first, so '.html' callers share cache entries.
+        doc_row = None
+        for candidate in dict.fromkeys((slug, slug.removesuffix(".html"))):
+            doc_row = self._db.execute(
+                """
+                SELECT d.id, d.title, d.slug
+                FROM documents d
+                JOIN doc_sets ds ON d.doc_set_id = ds.id
+                WHERE d.slug = ? AND ds.version = ?
+                LIMIT 1
+                """,
+                (candidate, resolved_version),
+            ).fetchone()
+            if doc_row is not None:
+                break
+
+        if doc_row is None:
+            raise PageNotFoundError(
+                f"Page {slug!r} not found for version {resolved_version}. "
+                "Use a page slug such as 'library/asyncio-task' ('.html' accepted) "
+                "and pass any '#fragment' as anchor; search_docs returns both."
+            )
+        slug = doc_row["slug"]
+
         if self._persistent_cache is not None:
             cached = self._persistent_cache.get(
                 version=resolved_version,
@@ -63,23 +87,6 @@ class ContentService:
             )
             if cached is not None:
                 return cached
-
-        # Find the document
-        doc_row = self._db.execute(
-            """
-            SELECT d.id, d.title, d.slug, d.content_text
-            FROM documents d
-            JOIN doc_sets ds ON d.doc_set_id = ds.id
-            WHERE d.slug = ? AND ds.version = ?
-            LIMIT 1
-            """,
-            (slug, resolved_version),
-        ).fetchone()
-
-        if doc_row is None:
-            raise PageNotFoundError(
-                f"Page {slug!r} not found for version {resolved_version}"
-            )
 
         doc_id = doc_row["id"]
         doc_title = doc_row["title"]
@@ -106,7 +113,10 @@ class ContentService:
                 )
         else:
             # The stored page is canonical; nested anchor excerpts can overlap.
-            full_text = doc_row["content_text"] or ""
+            text_row = self._db.execute(
+                "SELECT content_text FROM documents WHERE id = ?", (doc_id,)
+            ).fetchone()
+            full_text = text_row["content_text"] or ""
 
             title = doc_title
 

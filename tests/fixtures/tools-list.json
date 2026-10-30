@@ -158,7 +158,7 @@
     "inputSchema": {
       "properties": {
         "slug": {
-          "description": "Page slug (e.g. 'library/asyncio-task.html')",
+          "description": "Page slug from a search_docs hit, e.g. 'library/asyncio-task' ('.html' suffix accepted)",
           "maxLength": 500,
           "title": "Slug",
           "type": "string"

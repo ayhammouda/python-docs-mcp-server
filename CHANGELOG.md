@@ -89,6 +89,23 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   them, not under the page's first section, so `kind="example"` hits point at
   the right anchor. Rebuild the index to get this fix (see the note at the
   top of this release).
+- `get_docs` now accepts the `.html` slug form that its description showed and
+  that hit URIs carry. It returns the canonical slug, and repeat `.html` calls
+  are served from the persistent cache. An unknown slug now gets an error that
+  shows the slug form and points to `search_docs`. The `slug` description now
+  reads "Page slug from a search_docs hit, e.g. 'library/asyncio-task'
+  ('.html' suffix accepted)".
+- `compare_versions` now reads "Added in version" notes, which docs built with
+  Sphinx 7.3 or later use (Python 3.12 onwards), and keeps patch versions such
+  as 3.5.1. `changed_in` is now the newest "Changed in version" note that v2
+  adds over v1, and `new_in` the earliest "Added in version" note in the v2
+  section. It now reads the whole section, not only its first 8,000
+  characters, so a note or change late in a long section is no longer missed.
+- `get_docs` pagination no longer starts a page with a combining accent cut off
+  from its letter.
+- `detect_python_version` no longer runs `python3 --version` on every call,
+  which could stall other tool calls for up to 5 seconds. It returns what the
+  server detected at startup, the same value `get_docs` already uses.
 - On macOS, `build-index` no longer fails on a uv-managed Python, such as the
   one `uvx python-docs-mcp-server` uses. The Sphinx environment's `python`
   crashed on start (`ensurepip` died with `SIGABRT`), so no documentation was

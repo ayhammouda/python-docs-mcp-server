@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 from mcp_server_python_docs.models import SearchDocsResult, SymbolHit
 from mcp_server_python_docs.retrieval.query import (
+    _build_concept_patterns,
     build_match_expression,
     classify_query,
     expand_synonyms,
@@ -35,6 +36,7 @@ class SearchService:
     def __init__(self, db: sqlite3.Connection, synonyms: dict[str, list[str]]) -> None:
         self._db = db
         self._synonyms = synonyms
+        self._concept_patterns = _build_concept_patterns(synonyms)
         self._last_synonym_expanded: bool = False
         self._last_resolution: str = "none"
         # Note: _symbol_exists uses direct SQL (not the version-scoped symbol
@@ -118,7 +120,9 @@ class SearchService:
 
         # Track synonym expansion for observability (OPS-01)
         original_tokens = set(query.lower().split()) if query.strip() else set()
-        expanded = expand_synonyms(query, self._synonyms)
+        expanded = expand_synonyms(
+            query, self._synonyms, _concept_patterns=self._concept_patterns
+        )
         self._last_synonym_expanded = expanded != original_tokens
 
         # Classify query for routing (RETR-04)
@@ -138,7 +142,7 @@ class SearchService:
                 return SearchDocsResult(hits=[], note=None)
 
         # FTS5 path: build match expression with synonym expansion (RETR-05)
-        match_expr = build_match_expression(query, self._synonyms)
+        match_expr = build_match_expression(query, self._synonyms, _expanded=expanded)
 
         # Route to appropriate FTS5 table based on kind
         if kind == "section":

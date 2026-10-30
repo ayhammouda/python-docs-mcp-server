@@ -22,6 +22,7 @@ from mcp_server_python_docs.services.cache import (
 )
 from mcp_server_python_docs.services.content import ContentService
 from mcp_server_python_docs.services.observability import _format_logfmt
+from mcp_server_python_docs.services.persistent_cache import PersistentDocsCache
 from mcp_server_python_docs.services.search import SearchService
 from mcp_server_python_docs.services.version import VersionService
 
@@ -80,6 +81,27 @@ def populated_with_content(populated_db):
         (doc_set_id,),
     )
 
+    db.commit()
+    return db
+
+
+@pytest.fixture
+def production_slug_db(populated_db):
+    """A page stored the way Sphinx ingestion stores it: slug without '.html'."""
+    db = populated_db
+    doc_set_id = db.execute("SELECT id FROM doc_sets LIMIT 1").fetchone()[0]
+    db.execute(
+        "INSERT INTO documents (doc_set_id, uri, slug, title, content_text, char_count) "
+        "VALUES (?, 'library/json.html', 'library/json', 'json', 'json page content', 17)",
+        (doc_set_id,),
+    )
+    doc_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+    db.execute(
+        "INSERT INTO sections (document_id, uri, anchor, heading, level, ordinal, "
+        "content_text, char_count) VALUES (?, 'library/json.html#json.dumps', "
+        "'json.dumps', 'json.dumps', 2, 0, 'Serialize obj to a JSON formatted str.', 38)",
+        (doc_id,),
+    )
     db.commit()
     return db
 
@@ -154,6 +176,31 @@ class TestSearchService:
         svc.search("http", kind="section")
         assert svc._last_synonym_expanded is True
 
+    def test_search_expands_synonyms_once_with_prebuilt_patterns(
+        self, populated_with_content, monkeypatch
+    ):
+        from mcp_server_python_docs.retrieval import query
+        from mcp_server_python_docs.services import search
+
+        svc = SearchService(populated_with_content, {"parse json": ["json", "json.loads"]})
+        calls = []
+        real_expand = query.expand_synonyms
+
+        def counting_expand(text, synonyms, **kwargs):
+            calls.append(text)
+            return real_expand(text, synonyms, **kwargs)
+
+        monkeypatch.setattr(query, "expand_synonyms", counting_expand)
+        monkeypatch.setattr(search, "expand_synonyms", counting_expand)
+        monkeypatch.setattr(
+            query,
+            "_build_concept_patterns",
+            lambda synonyms: pytest.fail("concept patterns rebuilt during search"),
+        )
+        svc.search("parse json", kind="section")
+        assert calls == ["parse json"]
+        assert svc._last_synonym_expanded is True
+
 
 # === ContentService Tests ===
 
@@ -215,6 +262,42 @@ class TestContentService:
         svc = ContentService(populated_with_content)
         result = svc.get_docs(slug="library/asyncio-task.html")
         assert result.version == "3.13"
+
+    def test_get_docs_accepts_html_suffix_and_returns_canonical_slug(self, production_slug_db):
+        result = ContentService(production_slug_db).get_docs("library/json.html", "3.13")
+        assert result.slug == "library/json"
+        assert result.content == "json page content"
+
+    def test_get_docs_html_slug_reaches_a_section(self, production_slug_db):
+        result = ContentService(production_slug_db).get_docs(
+            "library/json.html", "3.13", anchor="json.dumps"
+        )
+        assert (result.slug, result.anchor) == ("library/json", "json.dumps")
+        assert "Serialize obj" in result.content
+
+    def test_get_docs_unknown_slug_error_is_actionable(self, production_slug_db):
+        with pytest.raises(PageNotFoundError) as exc_info:
+            ContentService(production_slug_db).get_docs("library/nope", "3.13")
+        message = str(exc_info.value)
+        assert "'library/asyncio-task'" in message
+        assert "search_docs" in message
+
+    def test_get_docs_does_not_strip_a_fragment(self, production_slug_db):
+        with pytest.raises(PageNotFoundError, match="anchor"):
+            ContentService(production_slug_db).get_docs("library/json.html#json.dumps", "3.13")
+
+    def test_get_docs_html_caller_hits_persistent_cache(self, production_slug_db, tmp_path):
+        """N7: an '.html' caller must hit the entry stored under the canonical slug."""
+        index_path = tmp_path / "index.db"
+        index_path.write_bytes(b"index")
+        cache = PersistentDocsCache(tmp_path / "retrieved.sqlite3", index_path)
+        svc = ContentService(production_slug_db, cache)
+        first = svc.get_docs("library/json.html", "3.13", max_chars=500)
+        second = svc.get_docs("library/json.html", "3.13", max_chars=500)
+        assert second == first
+        assert first.slug == "library/json"
+        stats = cache.stats()
+        assert (stats.hits, stats.misses, stats.writes) == (1, 1, 1)
 
 
 # === VersionService Tests ===
@@ -470,6 +553,18 @@ class TestToolRegistration:
             "detect_python_version", "compare_versions", "whatsnew_for_version",
         ):
             assert inspect.iscoroutinefunction(tools[name].fn), name
+
+    def test_get_docs_slug_description_shows_canonical_form(self):
+        import anyio
+
+        from mcp_server_python_docs.server import create_server
+
+        tools = anyio.run(create_server().list_tools)
+        schemas = {tool.name: tool.input_schema for tool in tools}
+        assert schemas["get_docs"]["properties"]["slug"]["description"] == (
+            "Page slug from a search_docs hit, e.g. 'library/asyncio-task' "
+            "('.html' suffix accepted)"
+        )
 
     def test_runtime_tool_schemas_include_input_constraints(self):
         import anyio

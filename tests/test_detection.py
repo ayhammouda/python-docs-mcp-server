@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -123,3 +124,55 @@ def test_falls_back_to_runtime_when_no_python3(tmp_path, monkeypatch) -> None:
 
     assert source == "server runtime"
     assert version == f"{sys.version_info.major}.{sys.version_info.minor}"
+
+
+async def test_detect_tool_returns_startup_values_without_reprobing(monkeypatch) -> None:
+    """The tool reports what startup detected; it never spawns python3 per call."""
+    from mcp_server_python_docs.server import create_server
+
+    monkeypatch.setattr(
+        detection, "detect_python_version", lambda: pytest.fail("tool re-ran detection")
+    )
+    tool = create_server()._tool_manager._tools["detect_python_version"]
+    app_ctx = SimpleNamespace(
+        detected_python_raw="3.9",
+        detected_python_source="python3 in PATH",
+        detected_python_version=None,
+    )
+    ctx = SimpleNamespace(request_context=SimpleNamespace(lifespan_context=app_ctx))
+    result = await tool.fn(ctx=ctx)
+    assert (
+        result.detected_version, result.source, result.matched_index_version, result.is_default
+    ) == ("3.9", "python3 in PATH", None, False)
+
+
+def test_lifespan_stores_startup_detection(tmp_path, monkeypatch) -> None:
+    """app_lifespan keeps the raw detection, so the tool can return it."""
+    import anyio
+    from mcp.server.mcpserver import MCPServer
+
+    from mcp_server_python_docs import server
+    from mcp_server_python_docs.storage.db import bootstrap_schema, get_readwrite_connection
+
+    index_path = tmp_path / "index.db"
+    conn = get_readwrite_connection(index_path)
+    bootstrap_schema(conn)
+    conn.execute(
+        "INSERT INTO doc_sets (source, version, language, label, is_default) "
+        "VALUES ('python-docs', '3.13', 'en', 'Python 3.13', 1)"
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(server, "get_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr(server, "get_index_path", lambda: index_path)
+    monkeypatch.setattr(server, "detect_python_version", lambda: ("3.9", "python3 in PATH"))
+
+    async def enter():
+        async with server.app_lifespan(MCPServer("test")) as app_ctx:
+            return (
+                app_ctx.detected_python_raw,
+                app_ctx.detected_python_source,
+                app_ctx.detected_python_version,
+            )
+
+    assert anyio.run(enter) == ("3.9", "python3 in PATH", None)
