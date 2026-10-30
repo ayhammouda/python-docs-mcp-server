@@ -209,7 +209,7 @@ sits between ingestion and the storage layer becoming visible to `serve`:
   holds `index.db` open, so a replace fails; it then logs that clients must
   be stopped, names the kept build, and re-raises. `rollback()` restores
   `index.db.previous`.
-- `publish_index` (line 503) orchestrates the sequence: compute the build
+- `publish_index` (line 496) orchestrates the sequence: compute the build
   artifact's SHA256, record the ingestion run, run smoke tests against the
   new database, and only call `atomic_swap` (plus print a restart-required
   message to stderr) if the smoke tests pass; on failure it logs every smoke
