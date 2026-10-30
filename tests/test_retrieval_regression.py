@@ -1,6 +1,7 @@
 """Curated retrieval regression coverage for search/get_docs behavior."""
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -142,7 +143,7 @@ def _make_app_context(db, detected_python_version: str | None) -> AppContext:
 
 
 def _make_ctx(app_context: AppContext):
-    """Build a minimal FastMCP tool context shim."""
+    """Build a minimal MCPServer tool context shim."""
     return SimpleNamespace(
         request_context=SimpleNamespace(lifespan_context=app_context)
     )
@@ -215,7 +216,7 @@ def test_retrieval_regression_cases(case, regression_db):
             detected_python_version=case["detected_python_version"],
         )
         ctx = _make_ctx(app_context)
-        result = tool.fn(ctx=ctx, **case["input"])
+        result = asyncio.run(tool.fn(ctx=ctx, **case["input"]))
         _assert_docs_expectations(result, case["expect"])
         return
 

@@ -1,4 +1,4 @@
-"""FastMCP server with lifespan DI and tool registration.
+"""MCPServer with lifespan DI and tool registration.
 
 Thin server layer — delegates all tool logic to services.
 Dependency rule: server -> services -> retrieval/storage.
@@ -19,11 +19,12 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 
 import yaml
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
+from mcp_server_python_docs import __version__
 from mcp_server_python_docs.app_context import AppContext
 from mcp_server_python_docs.detection import detect_python_version, match_to_indexed
 from mcp_server_python_docs.errors import DocsServerError
@@ -118,7 +119,7 @@ def _auto_build_symbol_index(index_path) -> bool:
 
 
 @asynccontextmanager
-async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
+async def app_lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
     """Manage application lifecycle with typed context (SRVR-01).
 
     Loads synonyms eagerly (SRVR-11), opens read-only DB handle (STOR-06),
@@ -221,16 +222,16 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
 # Shared tool annotations — all tools are read-only (SRVR-02, SRVR-03, SRVR-04)
 _TOOL_ANNOTATIONS = ToolAnnotations(
-    readOnlyHint=True,
-    destructiveHint=False,
-    idempotentHint=True,
-    openWorldHint=False,
+    read_only_hint=True,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=False,
 )
 _PYPI_TOOL_ANNOTATIONS = ToolAnnotations(
-    readOnlyHint=True,
-    destructiveHint=False,
-    idempotentHint=True,
-    openWorldHint=True,
+    read_only_hint=True,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=True,
 )
 
 SearchQueryParam = Annotated[
@@ -291,20 +292,21 @@ CompareVersionParam = Annotated[
 ]
 
 
-def create_server() -> FastMCP:
-    """Create and configure the FastMCP server."""
-    mcp = FastMCP(
+def create_server() -> MCPServer:
+    """Create and configure the MCPServer."""
+    mcp = MCPServer(
         "python-docs-mcp-server",
+        version=__version__,
         lifespan=app_lifespan,
     )
 
     @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-    def search_docs(
+    async def search_docs(
         query: SearchQueryParam,
         version: VersionParam = None,
         kind: SearchKindParam = "auto",
         max_results: MaxResultsParam = 5,
-        ctx: Context = None,  # type: ignore[assignment]
+        ctx: Context[AppContext] = None,  # type: ignore[assignment]
     ) -> SearchDocsResult:
         """Search Python documentation. Use kind='symbol' for API lookups
         (asyncio.TaskGroup), kind='example' for code samples, kind='auto' otherwise.
@@ -320,13 +322,13 @@ def create_server() -> FastMCP:
             raise ToolError(f"Internal error: {type(e).__name__}")
 
     @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-    def get_docs(
+    async def get_docs(
         slug: SlugParam,
         version: VersionParam = None,
         anchor: AnchorParam = None,
         max_chars: MaxCharsParam = 8000,
         start_index: StartIndexParam = 0,
-        ctx: Context = None,  # type: ignore[assignment]
+        ctx: Context[AppContext] = None,  # type: ignore[assignment]
     ) -> GetDocsResult:
         """Retrieve a documentation page or specific section. Provide anchor for
         section-only retrieval (much cheaper). Pagination via start_index."""
@@ -345,7 +347,7 @@ def create_server() -> FastMCP:
     @mcp.tool(annotations=_PYPI_TOOL_ANNOTATIONS)
     async def lookup_package_docs(
         package: PackageParam,
-        ctx: Context = None,  # type: ignore[assignment]
+        ctx: Context[AppContext] = None,  # type: ignore[assignment]
     ) -> PackageDocsResult:
         """Look up package-declared docs/homepage/source URLs via official PyPI metadata.
 
@@ -360,8 +362,8 @@ def create_server() -> FastMCP:
             raise ToolError(f"Internal error: {type(e).__name__}")
 
     @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-    def list_versions(
-        ctx: Context = None,  # type: ignore[assignment]
+    async def list_versions(
+        ctx: Context[AppContext] = None,  # type: ignore[assignment]
     ) -> ListVersionsResult:
         """List Python documentation versions available in this index."""
         app_ctx: AppContext = ctx.request_context.lifespan_context
@@ -374,8 +376,8 @@ def create_server() -> FastMCP:
             raise ToolError(f"Internal error: {type(e).__name__}")
 
     @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-    def detect_python_version(
-        ctx: Context = None,  # type: ignore[assignment]
+    async def detect_python_version(
+        ctx: Context[AppContext] = None,  # type: ignore[assignment]
     ) -> DetectPythonVersionResult:
         """Detect the Python version in the user's environment.
         Returns the detected version, how it was found, and whether it
@@ -396,11 +398,11 @@ def create_server() -> FastMCP:
         )
 
     @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-    def compare_versions(
+    async def compare_versions(
         symbol: SymbolParam,
         v1: CompareVersionParam,
         v2: CompareVersionParam,
-        ctx: Context = None,  # type: ignore[assignment]
+        ctx: Context[AppContext] = None,  # type: ignore[assignment]
     ) -> CompareVersionsResult:
         """Diff a Python stdlib symbol between two indexed versions. Returns
         change=added|removed|changed|unchanged with optional new_in, changed_in,
@@ -417,12 +419,12 @@ def create_server() -> FastMCP:
             raise ToolError(f"Internal error: {type(e).__name__}")
 
     @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-    def whatsnew_for_version(
+    async def whatsnew_for_version(
         version: CompareVersionParam,
         kind: WhatsNewKind | None = None,
         start_index: StartIndexParam = 0,
         max_sections: MaxResultsParam = 20,
-        ctx: Context = None,  # type: ignore[assignment]
+        ctx: Context[AppContext] = None,  # type: ignore[assignment]
     ) -> WhatsNewResult:
         """Browse indexed official What's New sections in document order.
 
@@ -439,10 +441,7 @@ def create_server() -> FastMCP:
             logger.exception("Unexpected error in whatsnew_for_version")
             raise ToolError(f"Internal error: {type(e).__name__}")
 
-    # SRVR-07: _meta hint for get_docs tool.
-    # FastMCP 1.27 does not expose a public API for setting _meta on tool
-    # definitions. Deferred until the mcp SDK adds _meta support to the
-    # decorator API or tool manager. The hint is advisory — clients work
-    # correctly without it.
+    # SRVR-07: a _meta hint for get_docs could be set with @mcp.tool(meta=...).
+    # It is not set; the hint is advisory and clients work correctly without it.
 
     return mcp

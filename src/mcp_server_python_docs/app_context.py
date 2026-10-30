@@ -1,4 +1,4 @@
-"""Typed application context for FastMCP lifespan DI.
+"""Typed application context for MCPServer lifespan DI.
 
 The AppContext dataclass is yielded by app_lifespan and accessed in tool
 handlers via ctx.request_context.lifespan_context. This replaces module-level

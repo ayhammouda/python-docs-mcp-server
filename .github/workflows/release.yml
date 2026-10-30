@@ -20,6 +20,7 @@ jobs:
     permissions:
       contents: read
       checks: read
+      # Also covers listing the PR's issue comments; no issues scope needed.
       pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -28,7 +29,6 @@ jobs:
       - name: Require verified main commit
         env:
           GH_TOKEN: ${{ github.token }}
-          VERIFIER_APP_ID: ${{ vars.VISION_VERIFIER_APP_ID }}
         run: python .github/scripts/release_gate.py
 
   build:

@@ -9,7 +9,7 @@
 
 `python-docs-mcp-server` is a local MCP server that hosts such as Claude Code,
 Claude Desktop, Cursor, and Codex spawn as a subprocess, speaking the Model
-Context Protocol over a wire transport. FastMCP, the server framework this
+Context Protocol over a wire transport. The MCP Python SDK, the server framework this
 project builds on, supports more than one wire transport. The eighth layer of
 the eight-layer architecture (principle 2.7 — source connector, ingestion,
 storage, retrieval, budget, serializer, cache, transport) is that transport
@@ -46,7 +46,7 @@ contract that makes stdio safe to use.
 
 ## Considered Options
 
-1. Stdio-only via FastMCP, with an explicit fd-hygiene sequence around it.
+1. Stdio-only via the MCP Python SDK, with an explicit fd-hygiene sequence around it.
    (chosen)
    - Matches how every documented MCP host spawns this server today.
    - Requires disciplined ordering at import time and at server start because
@@ -62,7 +62,7 @@ contract that makes stdio safe to use.
 
 ## Decision Outcome
 
-The shipped transport is stdio-only via FastMCP:
+The shipped transport is stdio-only via the MCP Python SDK:
 `mcp_server.run(transport="stdio")` in the `serve` command of
 [`src/mcp_server_python_docs/__main__.py`](../../src/mcp_server_python_docs/__main__.py).
 Nothing else in `src/` implements an HTTP, SSE, streamable, or websocket
@@ -87,7 +87,7 @@ The `serve` command reverses the redirection immediately before serving: it
 hands off the saved fd via `_consume_saved_stdout_fd()`, restores fd 1 with
 `os.dup2(saved_stdout_fd, 1)` and closes the temporary duplicate, and restores
 the Python-level stdout object with `sys.stdout = sys.__stdout__`. Both the fd
-and the Python object must be restored — restoring only one leaves FastMCP
+and the Python object must be restored — restoring only one leaves the MCP Python SDK
 emitting JSON-RPC frames on stderr instead of the wire. Only after this
 restoration does `mcp_server.run(transport="stdio")` run. A client
 disconnecting while `run()` is in progress raises `BrokenPipeError`; `serve`
@@ -120,15 +120,22 @@ read as ruling that out.
 
 ## Layer Contract (principle 2.7)
 
-- **Inputs:** A ready `FastMCP` server instance from `create_server()`, plus
+- **Inputs:** A ready `MCPServer` instance from `create_server()`, plus
   the process's stdin/stdout file descriptors as the physical stdio channel.
 - **Outputs:** JSON-RPC 2.0 frames written to fd 1 (stdout) for the MCP
   client, and a clean process exit (including on client disconnect via
   `BrokenPipeError`).
-- **Invariants:** Fd 1 carries only JSON-RPC protocol frames once `serve()`
-  restores it; all logging and any print output are on stderr for the whole
-  process lifetime; SIGPIPE is ignored so client disconnect cannot crash the
-  process with a signal; the fd-swap/restore ordering in `__main__.py` is
+- **Invariants:** The client's stdout pipe carries only JSON-RPC protocol
+  frames. Before `run()`, the import-time fd swap keeps stray output off fd 1.
+  During `run()`, the MCP SDK (v2) writes frames through a private duplicate
+  of the restored fd 1 and points fd 1 itself at stderr. When `run()` returns,
+  the SDK hands fd 1 back to the client pipe and `serve()` points it at stderr
+  again, so a stray `print()` inside a tool lands on stderr even if it is
+  still buffered at exit. All logging and any print output
+  are on stderr for the whole process lifetime; SIGPIPE is ignored so client
+  disconnect cannot crash the process with a signal; `serve()` catches
+  `BrokenPipeError` with `except*` because the SDK raises it inside an
+  `ExceptionGroup`; the fd-swap/restore ordering in `__main__.py` is
   preserved exactly (save and redirect before other imports, restore
   immediately before `run()`); no HTTP, SSE, or other network transport is
   active alongside stdio.
