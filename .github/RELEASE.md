@@ -11,7 +11,11 @@ or disable checks.
    If an update from `main` changed the head, carry verification forward only
    under the amendment's rule: a conflict-free update, no changed patch in
    `git range-diff`, green required checks, and a new record for the new head.
-   Otherwise verify again.
+   Otherwise re-verify the changed part with all three parts (Fable reviewer,
+   Codex `gpt-6-astra` at `xhigh` in a read-only sandbox, `ponytail-review`),
+   none run by the implementer. The partial record adds a
+   `scope: delta <old-head>..<new-head>` line and a link to the full record it
+   extends, and states the three delta verdicts and the new head's check result.
 2. Wait for the required checks on the resulting **main commit** to pass.
 3. The owner tags that exact commit and pushes the tag:
    `git tag -a vX.Y.Z <exact main sha> -m "vX.Y.Z"`, then

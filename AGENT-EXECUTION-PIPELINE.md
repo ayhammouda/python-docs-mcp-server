@@ -496,6 +496,10 @@ Independent verification covers the exact PR head and has three parts:
    read-only sandbox;
 3. a `ponytail-review` pass.
 
+Each of the three parts is run by an agent other than the implementer of the
+change. That includes `ponytail-review`: a pass run in the implementer's own
+session does not count as independent.
+
 Fix Critical and Important findings test-first. Record each declined finding
 with its reason. The record is a PR comment by the owner. Its first line is
 exactly `Independent verification: PASS`. It contains a line
@@ -526,9 +530,26 @@ conflicts. Before carrying it forward, the owner:
    and it includes the range-diff evidence and a link to the original full
    verification.
 
-Run full verification again if the update needed conflict resolution, any
-patch changed, or the PR got new commits of its own. At minimum the new
-verification covers the changed parts, with the Fable reviewer and Codex.
+#### Re-verification
+
+When the PR gets new commits of its own, an update needed conflict resolution,
+or `git range-diff` shows a changed patch, re-verification covers the changed
+part with all three parts:
+
+1. a Fable reviewer;
+2. Codex `gpt-6-astra` at `xhigh`, in a read-only sandbox;
+3. `ponytail-review`.
+
+No part may be run by the implementer of the change.
+
+The partial record is the same record comment as a full one, with two added
+lines:
+
+- `scope: delta <old-head>..<new-head>`;
+- a link to the full verification record it extends.
+
+It also states the three delta verdicts and the required-check result on the
+new head.
 
 ### Merge gate
 
