@@ -237,8 +237,12 @@ class TestBuildVenvSupportProbe:
         def fake_run(command, **kwargs):
             if command[0] == sys.executable:  # the import check passes
                 return subprocess.CompletedProcess(command, 0, "", "")
-            venv_pythons.append(Path(command[0]))
-            assert Path(command[0]).exists()  # a real throwaway venv
+            venv_python = Path(command[0])
+            venv_pythons.append(venv_python)
+            # A real throwaway venv; Windows resolves Scripts/python to python.exe.
+            assert (
+                venv_python.with_suffix(".exe") if sys.platform == "win32" else venv_python
+            ).exists()
             return subprocess.CompletedProcess(
                 command, -6, "", "dyld: Library not loaded: @rpath/libpython3.13.dylib"
             )
@@ -252,7 +256,7 @@ class TestBuildVenvSupportProbe:
         assert result.passed is False
         assert "libpython3.13.dylib" in result.detail
         assert len(venv_pythons) == 1
-        assert not venv_pythons[0].exists()  # the probe deletes its venv
+        assert not venv_pythons[0].parent.parent.exists()  # the probe deletes its venv
 
     def test_probe_passes_on_the_running_interpreter(self):
         """Unmocked: this Python can create and run a build venv the way build-index does."""
@@ -261,6 +265,38 @@ class TestBuildVenvSupportProbe:
         result = check_build_venv_support()
 
         assert result.passed is True, result.detail
+        assert "can create a venv and run its Python" in result.detail  # pip is not checked
+
+    @pytest.mark.parametrize(
+        ("target", "error"),
+        [
+            ("tempfile.TemporaryDirectory", OSError(28, "No space left on device")),
+            (
+                "tempfile.TemporaryDirectory",
+                FileNotFoundError(2, "No usable temporary directory found"),
+            ),
+            ("venv.create", ValueError("TMPDIR=/tmp/a:b")),
+        ],
+    )
+    def test_doctor_reports_a_probe_error_and_runs_the_next_probe(
+        self, tmp_path, monkeypatch, target, error
+    ):
+        """A temp dir or venv error is a FAIL row that names it, not a crash hiding every row."""
+        from click.testing import CliRunner
+
+        from mcp_server_python_docs.__main__ import main
+
+        def fail(*args, **kwargs):
+            raise error
+
+        monkeypatch.setattr("mcp_server_python_docs.storage.db.get_cache_dir", lambda: tmp_path)
+        monkeypatch.setattr(target, fail)
+        result = CliRunner().invoke(main, ["doctor"])
+
+        assert isinstance(result.exception, SystemExit), result.exception
+        assert "x FAIL: Build venv support -- " in result.output
+        assert f"{type(error).__name__}: {error}" in result.output
+        assert "Cache directory -- " in result.output
 
 
 class _StubConnection:
