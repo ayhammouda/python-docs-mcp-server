@@ -22,6 +22,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - A failed `build-index` run (no version ingested, an error, or Ctrl-C) no
   longer leaves `build-*.db`, `-wal` or `-shm` files in the cache folder. The
   test suite no longer runs `build-index` against the real cache folder.
+- When smoke tests reject a new index, `build-index` logs every smoke message
+  and the build path at ERROR and deletes the build.
 
 ## [0.4.0] — Unreleased
 

@@ -97,7 +97,7 @@ def record_ingestion_run(
         conn: Read-write SQLite connection.
         source: Source identifier (e.g., 'python-docs').
         version: Version string (e.g., '3.13' or '3.10,3.11,3.12,3.13,3.14').
-        status: Run status ('building', 'smoke_testing', 'published', 'failed').
+        status: Run status ('smoke_testing' or 'published').
         artifact_hash: SHA256 hash of the build artifact.
         notes: Optional notes about the run.
 
@@ -438,7 +438,7 @@ def publish_index(
     2. Record ingestion run
     3. Run smoke tests
     4. If passed: atomic swap + restart message
-    5. If failed: update run status, return False
+    5. If failed: log the smoke messages at ERROR, delete the build, return False
 
     Args:
         build_db_path: Path to the build artifact database.
@@ -475,22 +475,13 @@ def publish_index(
         require_content=require_content,
         expected_versions=parse_expected_versions(version),
     )
+    log = logger.info if passed else logger.error
     for msg in messages:
-        logger.info("Smoke test: %s", msg)
+        log("Smoke test: %s", msg)
 
     if not passed:
-        # Update run status to failed
-        conn = get_readwrite_connection(build_db_path)
-        try:
-            conn.execute(
-                "UPDATE ingestion_runs SET status = ?, notes = ?, "
-                "finished_at = CURRENT_TIMESTAMP WHERE id = ?",
-                ("failed", "\n".join(messages), run_id),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-        logger.error("Smoke tests failed — not publishing")
+        logger.error("Smoke tests failed; deleting build %s", build_db_path)
+        delete_build(build_db_path)
         return False
 
     # Update run status to published (preserve build_mode note)

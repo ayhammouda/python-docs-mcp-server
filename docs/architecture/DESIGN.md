@@ -198,8 +198,9 @@ consumes indirectly — the tag/SHA/Sphinx-pin triple determines which
 sits between ingestion and the storage layer becoming visible to `serve`:
 
 - `record_ingestion_run` (line 76) inserts a row into `ingestion_runs`
-  (`source`, `version`, `status`, `artifact_hash`, `notes`), used to audit
-  each build attempt regardless of outcome.
+  (`source`, `version`, `status`, `artifact_hash`, `notes`), used to record
+  each build that reaches publishing; a rejected build is deleted with its
+  row.
 - `atomic_swap` (line 344) renames an existing `index.db` to
   `index.db.previous` (for rollback) and then `os.replace()`s the freshly
   built database into place as the new `index.db`; both operations rely on
@@ -208,8 +209,8 @@ sits between ingestion and the storage layer becoming visible to `serve`:
 - `publish_index` (line 419) orchestrates the sequence: compute the build
   artifact's SHA256, record the ingestion run, run smoke tests against the
   new database, and only call `atomic_swap` (plus print a restart-required
-  message to stderr) if the smoke tests pass; on failure it marks the run
-  failed and returns `False` without swapping anything into place.
+  message to stderr) if the smoke tests pass; on failure it logs every smoke
+  message and the build path at ERROR, deletes the build and returns `False`.
 
 ---
 

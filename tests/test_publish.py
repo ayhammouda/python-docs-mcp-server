@@ -6,6 +6,7 @@ restart message (PUBL-05), and ingestion-while-serving regression (PUBL-06).
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 import sys
 from pathlib import Path
@@ -20,6 +21,7 @@ from mcp_server_python_docs.ingestion.publish import (
     compute_sha256,
     generate_build_path,
     print_restart_message,
+    publish_index,
     rollback,
     run_smoke_tests,
 )
@@ -410,6 +412,20 @@ class TestSmokeTests:
 
         assert row is not None
         assert "build_mode=symbol_only" in row[0]
+
+    def test_rejected_build_is_logged_at_error_and_deleted(self, isolated_cache, caplog):
+        build = isolated_cache / "build-1.db"
+        conn = get_readwrite_connection(build)
+        bootstrap_schema(conn)
+        conn.close()
+
+        with caplog.at_level(logging.INFO):
+            assert publish_index(build, "3.13", require_content=False) is False
+
+        errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+        assert "Smoke test: FAIL: symbols: 0 rows (need >= 1000)" in errors
+        assert any(str(build) in message for message in errors)
+        assert list(isolated_cache.iterdir()) == []
 
 
 class TestReadOnlyConnection:
