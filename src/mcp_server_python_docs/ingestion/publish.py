@@ -414,7 +414,7 @@ def atomic_swap(
             os.replace(src, dst)
         except PermissionError as e:
             logger.error(
-                "Could not replace %s (%s). On Windows a running MCP client holds it open: "
+                "Could not replace %s (%s). On Windows a running MCP client holds the index open: "
                 "stop every MCP client, then move %s onto %s, or run build-index again. "
                 "build-index deletes builds older than one day.",
                 dst,
@@ -500,8 +500,11 @@ def publish_index(
     1. Compute SHA256 of the build artifact
     2. Record ingestion run
     3. Run smoke tests
-    4. If passed: atomic swap + restart message
-    5. If failed: log the smoke messages at ERROR, delete the build, return False
+    4. If they failed: log the smoke messages at ERROR, delete the build, return False
+    5. Mark the run published and switch the build to ``journal_mode = DELETE``;
+       if that fails, keep the build, log at ERROR, return False
+    6. Atomic swap; if it is refused, keep the build and return False
+    7. Print the restart message
 
     Args:
         build_db_path: Path to the build artifact database.
