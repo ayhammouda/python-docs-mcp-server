@@ -162,7 +162,7 @@ def test_generate_report_includes_all_required_sections(tmp_path: Path) -> None:
 
     # Token counts: placeholders surfaced honestly, never as zero.
     assert "Token Counts" in text
-    assert "None (placeholder" in text
+    assert "None \\(placeholder" in text
 
     # Latency median/p95.
     assert "Latency (Median / p95)" in text
@@ -191,8 +191,8 @@ def test_generate_readme_summary_uses_strict_tool_model_pairings(tmp_path: Path)
     assert "Raw result bundle" in text
     # Every row is a strict tool_model_key pairing (contains ':'), never a
     # tool-only row.
-    assert "no-mcp-baseline:gpt-4o-mini" in text
-    assert "python-docs-mcp-server:openai/gpt-4o-mini" in text
+    assert "no-mcp-baseline\\:gpt-4o-mini" in text
+    assert "python-docs-mcp-server\\:openai/gpt-4o-mini" in text
     assert "Error Rate" in text
     assert "Timeout Rate" in text
 
@@ -421,7 +421,7 @@ def test_failed_competitor_is_disclosed_not_dropped(tmp_path: Path) -> None:
     # Error/timeout rate columns exist so a fully-failing tool cannot hide
     # behind an empty correctness table.
     assert "100.0%" in report_text  # error rate for the all-failing tool_model_key
-    assert "crashy:openai/gpt-4o" in summary_text
+    assert "crashy\\:openai/gpt-4o" in summary_text
     assert "100.0%" in summary_text
 
 
@@ -656,7 +656,7 @@ def test_report_excludes_approximated_tokens_from_headline_median(tmp_path: Path
 
     # Only the exact count (100) drives the headline-eligible median -- the
     # approximation (999999) must never move it.
-    assert "| tool-a | 100, 1 approximation:true excluded |" in text
+    assert "| tool-a | 100, 1 approximation\\:true excluded |" in text
     assert "999999" not in text
 
 
@@ -667,7 +667,7 @@ def test_readme_summary_excludes_approximated_tokens_from_headline_row(tmp_path:
         run_dir, methodology_path=METHODOLOGY_PATH
     ).read_text(encoding="utf-8")
 
-    assert "100, 1 approximation:true excluded" in text
+    assert "100, 1 approximation\\:true excluded" in text
     assert "999999" not in text
 
 
@@ -765,10 +765,10 @@ def test_latency_is_split_into_success_and_failed_cells(tmp_path: Path) -> None:
         encoding="utf-8"
     )
 
-    assert "| tool-a | 1000.0 | 1000.0 | 1000.0 | 1000.0 | 5.0 (n=26) | 52.0% | 0.0% |" in (
+    assert "| tool-a | 1000.0 | 1000.0 | 1000.0 | 1000.0 | 5.0 \\(n=26\\) | 52.0% | 0.0% |" in (
         report_text
     )
-    assert "| 52.0% | 0.0% | 1000.0 | 1000.0 | 5.0 (n=26) |" in summary_text
+    assert "| 52.0% | 0.0% | 1000.0 | 1000.0 | 5.0 \\(n=26\\) |" in summary_text
 
 
 def test_token_median_excludes_counts_from_failed_cells(tmp_path: Path) -> None:
@@ -778,7 +778,7 @@ def test_token_median_excludes_counts_from_failed_cells(tmp_path: Path) -> None:
 
     text = _generate_report(run_dir).read_text(encoding="utf-8")
 
-    assert "| tool-a | 100, 1 failed-cell count(s) excluded |" in text
+    assert "| tool-a | 100, 1 failed-cell count\\(s\\) excluded |" in text
     assert "999999" not in text
 
 
@@ -801,7 +801,7 @@ def test_report_renders_manifest_exclusions(tmp_path: Path) -> None:
     assert "### Excluded Competitors" in report_text
     assert (
         "| some-excluded-competitor | vendor denied benchmarking permission | "
-        "forbidden-without-permission | 2026-07-09 | <https://example.test/terms> |"
+        "forbidden-without-permission | 2026-07-09 | https\\://example.test/terms |"
     ) in report_text
     assert (
         "- **Excluded competitors:** some-excluded-competitor "
@@ -824,7 +824,7 @@ def test_report_renders_manifest_exclusions(tmp_path: Path) -> None:
         ),
         (
             [{}],
-            "| (unnamed) |  |  |  |  |",
+            "| \\(unnamed\\) |  |  |  |  |",
             "- **Excluded competitors:** (unnamed)",
         ),
     ],
@@ -923,11 +923,14 @@ def test_failed_token_count_renders_as_failed_and_is_listed(tmp_path: Path) -> N
         encoding="utf-8"
     )
 
-    assert "| tool-a | None headline-eligible (1 count(s) failed; 0 placeholder) |" in report_text
+    escaped_note = note.replace(":", "\\:")
+    assert r"| tool-a | None headline-eligible \(1 count\(s\) failed; 0 placeholder\) |" in (
+        report_text
+    )
     assert "### Token-Count Failures" in report_text
-    assert f"| tool-a | tool-a | q001 | {note} |" in report_text
+    assert f"| tool-a | tool-a | q001 | {escaped_note} |" in report_text
     assert "pending token-count integration" not in report_text
-    assert "1 count(s) failed" in summary_text
+    assert r"1 count\(s\) failed" in summary_text
 
 
 def test_report_escapes_pipes_inside_table_cells(tmp_path: Path) -> None:
@@ -959,8 +962,8 @@ def test_report_escapes_pipes_inside_table_cells(tmp_path: Path) -> None:
     report_text = _generate_report(run_dir).read_text(encoding="utf-8")
 
     assert (
-        "| tool-a | tool-a | q001 | Claude count-tokens call failed: HTTP 502: Error \\| Gateway |"
-        in report_text
+        "| tool-a | tool-a | q001 | "
+        "Claude count-tokens call failed\\: HTTP 502\\: Error \\| Gateway |" in report_text
     )
     assert (
         "| tool-a | tool-a | q001 | tool_failure | proxy said Error \\| Gateway | True |"
@@ -984,14 +987,14 @@ def test_report_escapes_a_backslash_before_a_pipe_inside_a_table_cell(tmp_path: 
     report_text = _generate_report(run_dir).read_text(encoding="utf-8")
 
     # GFM reads "\\" as a literal backslash and "\|" as a literal pipe.
-    row = r"| tool-a | tool-a | q001 | tool_failure | regex (a\\\|b) failed | True |"
+    row = r"| tool-a | tool-a | q001 | tool_failure | regex \(a\\\|b\) failed | True |"
     assert row in report_text
 
 
 @pytest.mark.parametrize(
     ("path", "rendered"),
     [
-        pytest.param(r"C:\py\python.exe", r"C:\\py\\python.exe", id="windows-path"),
+        pytest.param(r"C:\py\python.exe", r"C\:\\py\\python.exe", id="windows-path"),
         pytest.param(r"\\server\share\python.exe", r"\\\\server\\share\\python.exe", id="unc-path"),
     ],
 )
@@ -1025,75 +1028,78 @@ _GFM_BACKSLASH_ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
     ("text", "escaped"),
     [
         pytest.param("__init__", r"\_\_init\_\_", id="dunder"),
-        pytest.param(r"C:\_scratch_\python.exe", r"C:\\\_scratch\_\\python.exe", id="path"),
         pytest.param("a*b*c", r"a\*b\*c", id="asterisks"),
+        pytest.param("https://x.y/__init__", r"https\://x.y/\_\_init\_\_", id="url-dunder"),
+        pytest.param(
+            "www.example.com/__main__.html?a=1&b=2",
+            r"www\.example.com/\_\_main\_\_.html?a=1\&b=2",
+            id="www",
+        ),
+        pytest.param(r"C:\_scratch_\python.exe", r"C\:\\\_scratch\_\\python.exe", id="path"),
+        pytest.param(r"\\server\share", r"\\\\server\\share", id="unc"),
+        pytest.param("a|b", r"a\|b", id="pipe"),
+        pytest.param(r"a\|b", r"a\\\|b", id="backslash-pipe"),
+        pytest.param(
+            "https://example.test/?a=1&copy;x", r"https\://example.test/?a=1\&copy;x", id="entity"
+        ),
+        pytest.param("a <b> (c) !#~", r"a \<b\> \(c\) \!\#\~", id="html-and-punctuation"),
     ],
 )
 def test_table_cells_render_markdown_punctuation_literally(text: str, escaped: str) -> None:
+    # Owner ruling (round 7): nothing is linked; every cell is literal plain text.
     cell = _table(["Value"], [[text]])[2][2:-2]
 
     assert cell == escaped
     assert _GFM_BACKSLASH_ESCAPE.sub(r"\1", cell) == text
 
 
-def test_table_keeps_a_multi_line_cell_on_one_row() -> None:
-    assert _table(["Value"], [["a\nb\r\nc\rd"]])[2:] == ["| a b c d |"]
-
-
 @pytest.mark.parametrize(
-    ("text", "markdown"),
+    ("text", "escaped"),
     [
         pytest.param(
-            "see https://x.y/__init__ now", "see <https://x.y/__init__> now", id="dunder-anchor"
-        ),
-        pytest.param("https://x.y/a.", "<https://x.y/a>.", id="trailing-period-outside"),
-        pytest.param(
-            "(see https://x.y/a_(b)), then",
-            r"(see <https://x.y/a_(b)>), then",
-            id="balanced-paren-kept-unbalanced-moved",
+            "https://x.y/\x01![p](https://evil.example/p.png)",
+            "https\\://x.y/\ufffd\\!\\[p\\]\\(https\\://evil.example/p.png\\)",
+            id="image",
         ),
         pytest.param(
-            "fetch of https://x.y/a?b=1&c=~d*e failed",
-            "fetch of <https://x.y/a?b=1&c=~d*e> failed",
-            id="query-kept-literal",
+            "https://x.y/\x01[trusted](https://evil.example)",
+            "https\\://x.y/\ufffd\\[trusted\\]\\(https\\://evil.example\\)",
+            id="disguised-link",
         ),
         pytest.param(
-            "https://x.y/<img src=x onerror=alert(1)>",
-            "<https://x.y/>&lt;img src=x onerror=alert(1)&gt;",
-            id="html-after-url",
+            "https://x.y/\x01`code`", "https\\://x.y/\ufffd\\`code\\`", id="code-span"
         ),
-        pytest.param(
-            "https://x.y/![a](https://evil.example/p.png)`c`",
-            "<https://x.y/![a](https://evil.example/p.png)`c`>",
-            id="link-syntax-inside-url",
-        ),
-        pytest.param(
-            "www.example.com/__main__.html?a=1&b=2",
-            r"www\.example.com/\_\_main\_\_.html?a=1\&b=2",
-            id="www-not-linked",
-        ),
-        pytest.param("foowww.x.y/_a_/", r"foowww\.x.y/\_a\_/", id="www-without-boundary"),
-        pytest.param("foohttps://x.y/_a_", r"foohttps://x.y/\_a\_", id="url-without-boundary"),
-        pytest.param("a <b> &lt; c", r"a &lt;b&gt; \&lt; c", id="html-and-entity-text"),
     ],
 )
-def test_table_cells_render_urls_as_explicit_autolinks(text: str, markdown: str) -> None:
-    # Bare URLs autolink differently across renderers; "<URL>" is taken literally.
-    assert _table(["Value"], [[text]])[2] == f"| {markdown} |"
+def test_table_cells_publish_no_markdown_from_a_control_character_payload(
+    text: str, escaped: str
+) -> None:
+    cell = _table(["Value"], [[text]])[2][2:-2]
+
+    assert cell == escaped
+    assert "![" not in cell
+    assert "](" not in cell
+    assert re.search(r"(?<!\\)`", cell) is None
 
 
-def test_table_escapes_a_pipe_inside_a_url_so_the_cell_boundary_holds() -> None:
-    cell = _table(["Value"], [["https://x.y/a?b=1&b=2|c d"]])[2]
+def test_table_replaces_control_characters_and_keeps_one_row() -> None:
+    lines = _table(["Value"], [["a\tb\x00c\x7fd\x1fe\r\nf"]])
 
-    assert cell == r"| <https://x.y/a?b=1&b=2\|c> d |"
+    assert lines[2:] == ["| a b\ufffdc\ufffdd\ufffde f |"]
 
 
-def test_table_ends_a_url_at_a_backslash_so_a_pipe_after_it_cannot_split_the_cell() -> None:
-    # Inside the autolink "\|" would become "\\|": an escaped backslash, then a live
-    # column delimiter that publishes the rest of the URL as raw Markdown.
-    cell = _table(["Value"], [[r"https://x.y/a\|[click](https://evil.example)"]])[2]
+def test_table_escapes_a_one_megabyte_cell_in_linear_time() -> None:
+    unit = "ab|:(www.x"
+    started = time.perf_counter()
+    lines = _table(["Value"], [[unit * 100_000]])
+    elapsed = time.perf_counter() - started
 
-    assert cell == r"| <https://x.y/a>\\\|\[click\](<https://evil.example>) |"
+    assert lines[2] == "| " + r"ab\|\:\(www\.x" * 100_000 + " |"
+    assert elapsed < 1.0
+
+
+def test_table_keeps_a_multi_line_cell_on_one_row() -> None:
+    assert _table(["Value"], [["a\nb\r\nc\rd"]])[2:] == ["| a b c d |"]
 
 
 def test_token_paragraph_gives_the_real_reason_for_approximate_counts(tmp_path: Path) -> None:

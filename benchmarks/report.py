@@ -525,42 +525,25 @@ def _relative_link(target: Path, from_dir: Path) -> str:
     return os.path.relpath(target.resolve(), start=from_dir.resolve())
 
 
-#: An http(s) URL run first, then "www." (never linked), then the characters that
-#: change rendering inside an inline table cell. The URL run ends at "\" (never valid
-#: in a URL): inside the autolink "\|" would become "\\|", which the table splitter
-#: reads as an escaped backslash and then a live column delimiter. "_" counts only at
-#: a word edge: between letters or digits it cannot open or close emphasis. "#", "+",
-#: "-", "." and the like matter only at the start of a block, which a cell never is.
-_CELL_MARKDOWN = re.compile(
-    r"(?P<url>(?<![A-Za-z0-9])https?://[^\s<>\\]+)|www\.|[\\`*\[\]|~&<>]|(?<![^\W_])_|_(?![^\W_])"
-)
-_CELL_ENTITIES = {"<": "&lt;", ">": "&gt;", "www.": "www\\."}
-_URL_TRAILING = ".,;:!?'\""
-
-
-def _escape_cell_match(match: re.Match[str]) -> str:
-    url = match["url"]
-    if url is None:
-        return _CELL_ENTITIES.get(match[0], "\\" + match[0])
-    # Trailing punctuation and an unbalanced ")" belong to the sentence, not the link.
-    end, unbalanced = len(url), url.count(")") - url.count("(")
-    while url[end - 1] in _URL_TRAILING or (url[end - 1] == ")" and unbalanced > 0):
-        unbalanced -= url[end - 1] == ")"
-        end -= 1
-    return "<" + url[:end].replace("|", "\\|") + ">" + url[end:]  # splitter resolves "\|"
+#: Every Markdown-significant ASCII punctuation character, plus the dot of "www.".
+#: Nothing is linked: an escaped ":" breaks "scheme://" and "www\." breaks the www
+#: form, so no renderer's extended autolink fires. "_" counts only at a word edge:
+#: between letters or digits it cannot open or close emphasis.
+_CELL_MARKDOWN = re.compile(r"www\.|[\\`*\[\]<>()!|&#~:]|(?<![^\W_])_|_(?![^\W_])")
+#: C0 controls and DEL: one of them inside text can change how a renderer parses it.
+_CELL_CONTROLS = dict.fromkeys([*range(0x20), 0x7F], "�")
 
 
 def _cell(text: str) -> str:
     """Render ``text`` as one literal plain-text table cell.
 
-    Line breaks become spaces (a newline would end the row). Then, in one linear pass:
-    an http(s) URL becomes an explicit ``<URL>`` autolink, whose content CommonMark
-    takes literally, so it renders the same in every renderer; "www." gets an escaped
-    dot so no extended autolink fires; "<" and ">" become entities; and every other
-    significant character gets a backslash, so a proxy error body such as
-    "Error | Gateway" cannot add a column and ``__init__`` stays ``__init__``.
+    Line breaks and tabs become spaces (a newline would end the row), any other
+    control character becomes U+FFFD, and then one linear pass puts a backslash before
+    every significant character, so a proxy error body such as "Error | Gateway"
+    cannot add a column and ``__init__`` stays ``__init__``.
     """
-    return _CELL_MARKDOWN.sub(_escape_cell_match, re.sub(r"\r\n|[\r\n]", " ", text))
+    text = re.sub(r"\r\n|[\r\n\t]", " ", text).translate(_CELL_CONTROLS)
+    return _CELL_MARKDOWN.sub(lambda m: "www\\." if m[0] == "www." else "\\" + m[0], text)
 
 
 def _table(headers: list[str], rows: list[list[str]]) -> list[str]:
