@@ -499,6 +499,31 @@ class TestSmokeTests:
         assert str(build) in caplog.text
         assert "Restart your MCP client" not in capsys.readouterr().err
 
+    def test_refused_backup_is_logged_and_keeps_the_build(
+        self, isolated_cache, monkeypatch, caplog
+    ):
+        index = isolated_cache / "index.db"
+        index.write_bytes(b"old index")
+        build = isolated_cache / "build-1.db"
+        self._create_symbols_only_db(build)
+
+        def no_links(src, dst, *args, **kwargs):
+            raise OSError(errno.EPERM, "hard links not supported here")
+
+        def refused_copy(src, dst, *args, **kwargs):
+            raise PermissionError(errno.EACCES, "index.db is not readable")
+
+        monkeypatch.setattr("mcp_server_python_docs.ingestion.publish.os.link", no_links)
+        monkeypatch.setattr("mcp_server_python_docs.ingestion.publish.shutil.copy2", refused_copy)
+        with caplog.at_level(logging.ERROR):
+            assert publish_index(build, "3.13", require_content=False) is False
+
+        errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+        assert any(str(build) in message for message in errors)
+        assert build.exists()
+        assert index.read_bytes() == b"old index"
+        assert not list(isolated_cache.glob("*.tmp"))
+
 
 class TestReadOnlyConnection:
     def test_can_query_existing_db(self, tmp_path):

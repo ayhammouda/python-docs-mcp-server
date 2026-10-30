@@ -592,8 +592,9 @@ def publish_index(
     # Atomic swap (PUBL-04)
     try:
         atomic_swap(build_db_path)
-    except PermissionError:
-        return False  # atomic_swap logged the refusal and kept the build
+    except PermissionError as e:
+        logger.error("Could not publish %s (%s); the build is kept.", build_db_path, e)
+        return False
 
     # Restart message (PUBL-05)
     print_restart_message()
