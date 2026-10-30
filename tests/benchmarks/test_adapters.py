@@ -182,6 +182,37 @@ def test_redact_api_keys_removes_a_key_that_contains_another_key(
     assert redact_api_keys("echo fake-x1y2 and fake-x1") == "echo [redacted] and [redacted]"
 
 
+@pytest.mark.parametrize(
+    ("openai_key", "anthropic_key"),
+    [
+        pytest.param("fake-abcXYZ", "XYZsecret123", id="second-key-longer"),
+        pytest.param("fake-abcdefXYZ", "XYZsecret1", id="first-key-longer"),
+    ],
+)
+def test_redact_api_keys_leaves_no_fragment_when_two_keys_overlap_in_the_text(
+    monkeypatch: pytest.MonkeyPatch, openai_key: str, anthropic_key: str
+) -> None:
+    for key_env in PROVIDER_API_KEY_ENV.values():
+        monkeypatch.delenv(key_env, raising=False)
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV["openai"], openai_key)
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV["anthropic"], anthropic_key)
+    overlapped = openai_key + anthropic_key.removeprefix("XYZ")
+
+    assert redact_api_keys(f"echo {overlapped} end") == "echo [redacted] end"
+
+
+def test_redact_api_keys_redacts_every_occurrence_of_a_repeated_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for key_env in PROVIDER_API_KEY_ENV.values():
+        monkeypatch.delenv(key_env, raising=False)
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV["ref"], "fake-ref-key")
+
+    assert (
+        redact_api_keys("a fake-ref-key b fake-ref-key c") == "a [redacted] b [redacted] c"
+    )
+
+
 # --- Live adapter stubs: guard enforced, no network ever possible -----------
 
 

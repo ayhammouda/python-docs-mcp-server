@@ -136,11 +136,24 @@ def require_live_environment(provider: str) -> None:
 
 def redact_api_keys(text: str) -> str:
     """Replace every set :data:`PROVIDER_API_KEY_ENV` key in ``text`` with ``[redacted]``."""
-    # Skip empty values: str.replace("", ...) would insert the marker between every
-    # character. Longest first, so a key that contains another key leaves no fragment.
+    # Find every match of every key in the original text (overlaps included), merge
+    # overlapping or adjacent spans, then redact each merged span once, so keys that
+    # contain or overlap each other leave no fragment. Empty values are skipped.
     api_keys = {os.environ.get(key_env, "").strip() for key_env in PROVIDER_API_KEY_ENV.values()}
-    for api_key in sorted(filter(None, api_keys), key=len, reverse=True):
-        text = text.replace(api_key, "[redacted]")
+    spans: list[tuple[int, int]] = []
+    for api_key in filter(None, api_keys):
+        start = text.find(api_key)
+        while start != -1:
+            spans.append((start, start + len(api_key)))
+            start = text.find(api_key, start + 1)
+    merged: list[list[int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    for start, end in reversed(merged):
+        text = text[:start] + "[redacted]" + text[end:]
     return text
 
 
