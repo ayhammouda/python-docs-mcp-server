@@ -27,6 +27,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Removed `ingestion_runs.artifact_hash` and the "Build artifact SHA256" log
   line. The hash was taken before the last writes to the build, so it never
   matched the published `index.db`.
+- Removed the test-only `zstd-dict-v1` cache codec. A cached `get_docs` result
+  stored under a codec this version does not know is treated as a miss and
+  recomputed.
 
 ### Fixed
 

@@ -461,7 +461,7 @@ invalidation signal.
 
 This document does not add to ADR-007's contract; see the ADR for the full
 Decision Drivers, Considered Options, and Layer Contract, including the
-codec registry details (`none`, `zstd`, `zstd-dict-v1`) and the operational
+codec registry details (`none`, `zstd`) and the operational
 risks recorded in its Consequences section.
 
 ---
