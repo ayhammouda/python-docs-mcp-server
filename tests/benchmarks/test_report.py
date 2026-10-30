@@ -4,12 +4,13 @@ import hashlib
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 import yaml
 
-from benchmarks.report import _fmt_tokens, generate_readme_summary, generate_report
+from benchmarks.report import _fmt_tokens, _table, generate_readme_summary, generate_report
 from benchmarks.runner import BenchmarkConfig, BenchmarkValidationError, run_benchmark
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -986,17 +987,33 @@ def test_report_escapes_a_backslash_before_a_pipe_inside_a_table_cell(tmp_path: 
     assert row in report_text
 
 
-def test_report_keeps_a_backticked_windows_path_unchanged(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("path", "rendered"),
+    [
+        pytest.param(r"C:\py\python.exe", r"C:\\py\\python.exe", id="windows-path"),
+        pytest.param(r"\\server\share\python.exe", r"\\\\server\\share\\python.exe", id="unc-path"),
+    ],
+)
+def test_report_renders_windows_paths_literally(tmp_path: Path, path: str, rendered: str) -> None:
     run_dir = _minimal_valid_run_dir(tmp_path)
     environment_path = run_dir / "environment.json"
     environment = json.loads(environment_path.read_text(encoding="utf-8"))
-    environment["python_executable"] = r"C:\py\python.exe"
+    environment["python_executable"] = path
     environment_path.write_text(json.dumps(environment), encoding="utf-8")
 
     report_text = _generate_report(run_dir).read_text(encoding="utf-8")
 
-    # GFM does not process backslash escapes inside a code span.
-    assert r"| python_executable | `C:\py\python.exe` |" in report_text
+    # Table cells are plain text, where GFM reads "\\" as one literal backslash.
+    assert f"| python_executable | {rendered} |" in report_text
+
+
+def test_table_escapes_a_long_backslash_run_in_linear_time() -> None:
+    started = time.perf_counter()
+    lines = _table(["Value"], [["\\" * 40_000]])
+    elapsed = time.perf_counter() - started
+
+    assert lines[2] == "| " + "\\" * 80_000 + " |"
+    assert elapsed < 1.0
 
 
 def test_token_paragraph_gives_the_real_reason_for_approximate_counts(tmp_path: Path) -> None:

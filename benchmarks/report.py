@@ -50,7 +50,6 @@ import hashlib
 import json
 import math
 import os
-import re
 import statistics
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -527,13 +526,10 @@ def _relative_link(target: Path, from_dir: Path) -> str:
 
 def _table(headers: list[str], rows: list[list[str]]) -> list[str]:
     lines = ["| " + " | ".join(headers) + " |", "| " + " | ".join(["---"] * len(headers)) + " |"]
-    # An unescaped "|" in a cell (e.g. a proxy error body) would add a column. Escape
-    # it, doubling only the backslashes right before it, so a literal "\|" stays text
-    # and other backslashes (e.g. Windows paths in code spans) are left alone.
+    # Cells are plain text: escape backslashes, then pipes, so a proxy error body such
+    # as "Error | Gateway" cannot add a column and paths keep their backslashes.
     lines.extend(
-        "| "
-        + " | ".join(re.sub(r"(\\*)\|", lambda m: m.group(1) * 2 + "\\|", cell) for cell in row)
-        + " |"
+        "| " + " | ".join(cell.replace("\\", "\\\\").replace("|", "\\|") for cell in row) + " |"
         for row in rows
     )
     return lines
@@ -571,7 +567,7 @@ def _render_report(
     lines.extend(
         _table(
             ["Field", "Value"],
-            [[str(key), f"`{value}`"] for key, value in sorted(bundle.environment.items())],
+            [[str(key), str(value)] for key, value in sorted(bundle.environment.items())],
         )
     )
     lines.append("")
@@ -791,7 +787,7 @@ def _render_report(
             _table(
                 ["Metric", "Value"],
                 [
-                    ["Model families included", ", ".join(f"`{key}`" for key in tool_model_keys)],
+                    ["Model families included", ", ".join(tool_model_keys)],
                     ["Mean correctness (avg of per-model means)", agg_mean_display],
                     ["Mean error rate (avg of per-model rates)", agg_error_display],
                 ],
@@ -953,7 +949,7 @@ def _render_readme_summary(bundle: RunBundle, methodology_path: Path, summary_pa
             ],
             [
                 [
-                    f"`{tool_model_key}`",
+                    tool_model_key,
                     _fmt_score(
                         (stats := _basic_stats(by_tool_model[tool_model_key]))["scored_cells"],
                         stats["total_cells"],
