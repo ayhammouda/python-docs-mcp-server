@@ -37,12 +37,12 @@ two-latch guard, PLAN-87 section 2.2), called as the first statement of
 from __future__ import annotations
 
 import asyncio
-import re
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from benchmarks.adapters.guard import require_live_competitor
 from benchmarks.runner import BenchmarkCellFailure, cell_failure_from
+from benchmarks.urls import first_web_url
 
 #: Hosted endpoint pin (PLAN-87 section 1.2). Repository target is fixed to
 #: python/cpython -- any second target repo is explicitly out of scope for
@@ -54,8 +54,6 @@ DEFAULT_ENDPOINT = "https://gitmcp.io/python/cpython"
 CODE_REFERENCE = "idosal/git-mcp@main#c487a29"
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
-
-_URL_RE = re.compile(r"https?://[^\s\"']+")
 
 
 @dataclass(frozen=True)
@@ -113,9 +111,10 @@ def _extract_first_url(result: _CallToolResult) -> str | None:
     """Pick the top hit's URL out of a search result.
 
     Prefers a structured hit list (``hits``/``results``) with a ``url``
-    field, falling back to scanning the first text block for an
-    ``http(s)://`` URL. Returns ``None`` (never raises) when neither yields
-    a candidate.
+    field, falling back to the first ``http(s)://`` URL in the first text
+    block (doc search prints ``#### (<file>)[<url>] (Score: ...)``), with
+    surrounding punctuation dropped by :func:`benchmarks.urls.first_web_url`.
+    Returns ``None`` (never raises) when neither yields a candidate.
     """
     payload = _tool_result_payload(result)
     if isinstance(payload, dict):
@@ -127,11 +126,7 @@ def _extract_first_url(result: _CallToolResult) -> str | None:
                 if isinstance(url, str) and url:
                     return url
     text = _first_text(result)
-    if text:
-        match = _URL_RE.search(text)
-        if match:
-            return match.group(0)
-    return None
+    return first_web_url(text) if text else None
 
 
 async def _run_gitmcp_flow(session: _CallToolSession, prompt: str) -> GitMcpResult:

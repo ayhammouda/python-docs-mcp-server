@@ -175,9 +175,19 @@ async def test_context7_flow_calls_resolve_then_query_and_records_payloads() -> 
 
 
 async def test_context7_flow_falls_back_to_text_regex_when_no_structured_candidates() -> None:
+    # Context7 3.2.3 text: the team-filter note, then the labeled result list.
+    resolve_text = (
+        "Note: results are filtered by your team's library policies. "
+        "Manage them at https://context7.com/dashboard?tab=policies\n"
+        "\n"
+        "Available Libraries:\n"
+        "- Title: Python\n"
+        "- Context7-compatible library ID: /python/cpython\n"
+        "- Description: ...\n"
+    )
     session = _ScriptedSession(
         {
-            "resolve-library-id": _result(text="Best match: /python/cpython (Python stdlib)"),
+            "resolve-library-id": _result(text=resolve_text),
             "query-docs": _result(text="content"),
         }
     )
@@ -185,6 +195,20 @@ async def test_context7_flow_falls_back_to_text_regex_when_no_structured_candida
     await context7_adapter._run_context7_flow(session, "q")
 
     assert session.calls[1][1]["libraryId"] == "/python/cpython"
+
+
+async def test_context7_flow_ignores_an_unlabeled_library_id() -> None:
+    session = _ScriptedSession(
+        {
+            "resolve-library-id": _result(text="Best match: /python/cpython (Python stdlib)"),
+            "query-docs": _result(text="content"),
+        }
+    )
+
+    result = await context7_adapter._run_context7_flow(session, "q")
+
+    assert len(result.tool_calls) == 1
+    assert result.answer == ""
 
 
 async def test_context7_flow_falls_back_to_structured_content_when_no_text_block() -> None:
@@ -327,6 +351,22 @@ async def test_gitmcp_flow_falls_back_to_structured_content_when_no_text_block()
     assert result.answer == "structured fetch text"
 
 
+async def test_gitmcp_flow_fetches_the_doc_search_url_without_its_bracket() -> None:
+    readme = "https://github.com/python/cpython/blob/main/README.rst"
+    session = _ScriptedSession(
+        {
+            "search_cpython_documentation": _result(
+                text=f"#### (README.rst)[{readme}] (Score: 1)"
+            ),
+            "fetch_generic_url_content": _result(text="readme content"),
+        }
+    )
+
+    await gitmcp_adapter._run_gitmcp_flow(session, "q")
+
+    assert session.calls[1] == ("fetch_generic_url_content", {"url": readme})
+
+
 async def test_gitmcp_flow_raises_tool_failure_when_doc_search_errors() -> None:
     session = _ScriptedSession(
         {"search_cpython_documentation": _result(text="boom", is_error=True)}
@@ -447,6 +487,21 @@ async def test_ref_tools_flow_falls_back_to_structured_content_when_no_text_bloc
     result = await ref_tools_adapter._run_ref_tools_flow(session, "q")
 
     assert result.answer == "structured content"
+
+
+async def test_ref_tools_flow_reads_the_url_line_not_the_overview() -> None:
+    session = _ScriptedSession(
+        {
+            "ref_search_documentation": _result(
+                text=f"overview: see https://example.org/blog.\nurl: {_PATHLIB_DOC_URL}\n"
+            ),
+            "ref_read_url": _result(text="pathlib docs"),
+        }
+    )
+
+    await ref_tools_adapter._run_ref_tools_flow(session, "q")
+
+    assert session.calls[1] == ("ref_read_url", {"url": _PATHLIB_DOC_URL})
 
 
 async def test_ref_tools_flow_returns_empty_answer_when_no_hits() -> None:
