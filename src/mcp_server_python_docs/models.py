@@ -1,7 +1,8 @@
-"""Pydantic input/output models for all MCP tools.
+"""Pydantic result models for all MCP tools.
 
-These models define the tool contracts. MCPServer auto-generates outputSchema
-from BaseModel return types, providing structuredContent for free (SRVR-05).
+MCPServer builds each tool's inputSchema from the tool function's signature in
+server.py, and its outputSchema from these BaseModel return types, which
+provides structuredContent for free (SRVR-05).
 """
 from __future__ import annotations
 
@@ -10,32 +11,6 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 # --- search_docs models ---
-
-
-class SearchDocsInput(BaseModel):
-    """Input parameters for search_docs tool."""
-
-    query: str = Field(
-        max_length=500,
-        description="Search query - Python symbol (asyncio.TaskGroup) or concept (parse json)",
-    )
-    version: str | None = Field(
-        default=None,
-        description="Python version (e.g. '3.13'). Defaults to latest.",
-    )
-    kind: Literal["auto", "page", "symbol", "section", "example"] = Field(
-        default="auto",
-        description=(
-            "Search type. Use 'symbol' for API lookups, "
-            "'example' for code samples, 'auto' otherwise."
-        ),
-    )
-    max_results: int = Field(
-        default=5,
-        ge=1,
-        le=20,
-        description="Maximum number of results to return.",
-    )
 
 
 class SymbolHit(BaseModel):
@@ -68,34 +43,6 @@ class SearchDocsResult(BaseModel):
 
 
 # --- get_docs models ---
-
-
-class GetDocsInput(BaseModel):
-    """Input parameters for get_docs tool."""
-
-    slug: str = Field(
-        max_length=500,
-        description="Page slug (e.g. 'library/asyncio-task.html')",
-    )
-    version: str | None = Field(
-        default=None,
-        description="Python version. Defaults to latest.",
-    )
-    anchor: str | None = Field(
-        default=None,
-        description="Section anchor for section-only retrieval",
-    )
-    max_chars: int = Field(
-        default=8000,
-        ge=100,
-        le=50000,
-        description="Maximum characters to return",
-    )
-    start_index: int = Field(
-        default=0,
-        ge=0,
-        description="Start position for pagination",
-    )
 
 
 class GetDocsResult(BaseModel):

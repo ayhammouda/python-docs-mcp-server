@@ -397,3 +397,39 @@ def test_no_hardcoded_cache_path():
             + "\n".join(violations)
             + "\nAll cache paths must use platformdirs.user_cache_dir()"
         )
+
+
+def test_unused_tables_are_not_created():
+    """Nothing read synonyms or redirects; new indexes no longer create them."""
+    conn = _make_db()
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '%fts%'"
+        )
+    }
+    conn.close()
+    assert tables == {
+        "doc_sets", "documents", "sections", "symbols", "examples", "ingestion_runs",
+    }
+
+
+def test_symbols_has_no_location_id_columns():
+    """Nothing wrote symbols.document_id or section_id; hits resolve by URI and anchor."""
+    conn = _make_db()
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(symbols)")]
+    conn.close()
+    assert columns == [
+        "id", "doc_set_id", "qualified_name", "normalized_name",
+        "module", "symbol_type", "uri", "anchor",
+    ]
+
+
+def test_ingestion_runs_has_no_artifact_hash():
+    """The hash was taken before the last writes, so it never matched the published file."""
+    conn = _make_db()
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(ingestion_runs)")]
+    conn.close()
+    assert columns == [
+        "id", "source", "version", "status", "started_at", "finished_at", "notes",
+    ]

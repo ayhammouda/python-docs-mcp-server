@@ -1,0 +1,868 @@
+[
+  {
+    "name": "search_docs",
+    "description": "Search Python documentation. Use kind='symbol' for API lookups\n(asyncio.TaskGroup), kind='example' for code samples, kind='auto' otherwise.\nWhen version is omitted, searches across all versions. Pass the version\nfrom each hit's version field to get_docs for consistent results.",
+    "inputSchema": {
+      "properties": {
+        "query": {
+          "description": "Search query - Python symbol (asyncio.TaskGroup) or concept (parse json)",
+          "maxLength": 500,
+          "title": "Query",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Python version (e.g. '3.13'). Defaults to latest.",
+          "title": "Version"
+        },
+        "kind": {
+          "default": "auto",
+          "description": "Search type. Use 'symbol' for API lookups, 'example' for code samples, 'auto' otherwise.",
+          "enum": [
+            "auto",
+            "page",
+            "symbol",
+            "section",
+            "example"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "max_results": {
+          "default": 5,
+          "description": "Maximum number of results to return.",
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Max Results",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "title": "search_docsArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "SymbolHit": {
+          "description": "A single search result hit.",
+          "properties": {
+            "uri": {
+              "description": "Documentation URI path",
+              "title": "Uri",
+              "type": "string"
+            },
+            "title": {
+              "description": "Display title",
+              "title": "Title",
+              "type": "string"
+            },
+            "kind": {
+              "description": "Hit type: class, function, method, module, etc.",
+              "title": "Kind",
+              "type": "string"
+            },
+            "snippet": {
+              "default": "",
+              "description": "Brief excerpt or description",
+              "title": "Snippet",
+              "type": "string"
+            },
+            "score": {
+              "default": 0.0,
+              "description": "Relevance score",
+              "title": "Score",
+              "type": "number"
+            },
+            "version": {
+              "description": "Python version this hit belongs to",
+              "title": "Version",
+              "type": "string"
+            },
+            "slug": {
+              "default": "",
+              "description": "Page slug for get_docs follow-up",
+              "title": "Slug",
+              "type": "string"
+            },
+            "anchor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Section anchor for get_docs follow-up; None for page-level hits",
+              "title": "Anchor"
+            }
+          },
+          "required": [
+            "uri",
+            "title",
+            "kind",
+            "version"
+          ],
+          "title": "SymbolHit",
+          "type": "object"
+        }
+      },
+      "description": "Output from search_docs tool.",
+      "properties": {
+        "hits": {
+          "description": "Search result hits",
+          "items": {
+            "$ref": "#/$defs/SymbolHit"
+          },
+          "title": "Hits",
+          "type": "array"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Informational note (e.g., limited search mode)",
+          "title": "Note"
+        }
+      },
+      "title": "SearchDocsResult",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "get_docs",
+    "description": "Retrieve a documentation page or specific section. Provide anchor for\nsection-only retrieval (much cheaper). Pagination via start_index.",
+    "inputSchema": {
+      "properties": {
+        "slug": {
+          "description": "Page slug (e.g. 'library/asyncio-task.html')",
+          "maxLength": 500,
+          "title": "Slug",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Python version (e.g. '3.13'). Defaults to latest.",
+          "title": "Version"
+        },
+        "anchor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Section anchor for section-only retrieval",
+          "title": "Anchor"
+        },
+        "max_chars": {
+          "default": 8000,
+          "description": "Maximum characters to return",
+          "maximum": 50000,
+          "minimum": 100,
+          "title": "Max Chars",
+          "type": "integer"
+        },
+        "start_index": {
+          "default": 0,
+          "description": "Start position for pagination",
+          "minimum": 0,
+          "title": "Start Index",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "slug"
+      ],
+      "title": "get_docsArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "description": "Output from get_docs tool.",
+      "properties": {
+        "content": {
+          "description": "Documentation content in markdown",
+          "title": "Content",
+          "type": "string"
+        },
+        "slug": {
+          "description": "Page slug",
+          "title": "Slug",
+          "type": "string"
+        },
+        "title": {
+          "description": "Page or section title",
+          "title": "Title",
+          "type": "string"
+        },
+        "version": {
+          "description": "Python version",
+          "title": "Version",
+          "type": "string"
+        },
+        "anchor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Section anchor if section-level",
+          "title": "Anchor"
+        },
+        "char_count": {
+          "description": "Total character count of full content",
+          "title": "Char Count",
+          "type": "integer"
+        },
+        "truncated": {
+          "default": false,
+          "description": "Whether content was truncated",
+          "title": "Truncated",
+          "type": "boolean"
+        },
+        "next_start_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Next start_index for pagination, if truncated",
+          "title": "Next Start Index"
+        }
+      },
+      "required": [
+        "content",
+        "slug",
+        "title",
+        "version",
+        "char_count"
+      ],
+      "title": "GetDocsResult",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "lookup_package_docs",
+    "description": "Look up package-declared docs/homepage/source URLs via official PyPI metadata.\n\nThis is not generic web search: it only queries PyPI's JSON API and\nreturns official PyPI metadata plus package-declared project URLs.",
+    "inputSchema": {
+      "properties": {
+        "package": {
+          "description": "PyPI package/project name",
+          "maxLength": 214,
+          "minLength": 1,
+          "title": "Package",
+          "type": "string"
+        }
+      },
+      "required": [
+        "package"
+      ],
+      "title": "lookup_package_docsArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "PackageDocsSource": {
+          "description": "A package-declared documentation or project source URL.",
+          "properties": {
+            "label": {
+              "description": "Label from PyPI metadata or a normalized core metadata field",
+              "title": "Label",
+              "type": "string"
+            },
+            "url": {
+              "description": "HTTP(S) URL declared by the package on PyPI",
+              "title": "Url",
+              "type": "string"
+            },
+            "kind": {
+              "description": "Source category: pypi, docs, documentation, homepage, home_page, source, source_code, repository, or repo",
+              "enum": [
+                "pypi",
+                "docs",
+                "documentation",
+                "homepage",
+                "home_page",
+                "source",
+                "source_code",
+                "repository",
+                "repo"
+              ],
+              "title": "Kind",
+              "type": "string"
+            },
+            "declared_by": {
+              "description": "Where this source declaration came from",
+              "title": "Declared By",
+              "type": "string"
+            }
+          },
+          "required": [
+            "label",
+            "url",
+            "kind",
+            "declared_by"
+          ],
+          "title": "PackageDocsSource",
+          "type": "object"
+        }
+      },
+      "description": "Output from lookup_package_docs tool.",
+      "properties": {
+        "package": {
+          "description": "Canonical package name returned by PyPI when available",
+          "title": "Package",
+          "type": "string"
+        },
+        "version": {
+          "description": "Latest version reported by PyPI metadata",
+          "title": "Version",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "description": "Package summary from PyPI metadata",
+          "title": "Summary",
+          "type": "string"
+        },
+        "metadata_source": {
+          "description": "Official PyPI JSON API URL used for lookup",
+          "title": "Metadata Source",
+          "type": "string"
+        },
+        "trust_boundary": {
+          "const": "pypi-declared-metadata",
+          "default": "pypi-declared-metadata",
+          "description": "Indicates results are limited to PyPI/project-declared metadata",
+          "title": "Trust Boundary",
+          "type": "string"
+        },
+        "sources": {
+          "description": "Package-declared PyPI, documentation, homepage, and source URLs",
+          "items": {
+            "$ref": "#/$defs/PackageDocsSource"
+          },
+          "title": "Sources",
+          "type": "array"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Controlled-scope note, for example skipped labels or not-found details",
+          "title": "Note"
+        }
+      },
+      "required": [
+        "package",
+        "version",
+        "metadata_source"
+      ],
+      "title": "PackageDocsResult",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "list_versions",
+    "description": "List Python documentation versions available in this index.",
+    "inputSchema": {
+      "properties": {},
+      "title": "list_versionsArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "VersionInfo": {
+          "description": "Information about an available Python version.",
+          "properties": {
+            "version": {
+              "description": "Python version string (e.g. '3.13')",
+              "title": "Version",
+              "type": "string"
+            },
+            "language": {
+              "default": "en",
+              "description": "Documentation language",
+              "title": "Language",
+              "type": "string"
+            },
+            "label": {
+              "description": "Display label",
+              "title": "Label",
+              "type": "string"
+            },
+            "is_default": {
+              "description": "Whether this is the default version",
+              "title": "Is Default",
+              "type": "boolean"
+            },
+            "built_at": {
+              "description": "When this version's index was built",
+              "title": "Built At",
+              "type": "string"
+            }
+          },
+          "required": [
+            "version",
+            "label",
+            "is_default",
+            "built_at"
+          ],
+          "title": "VersionInfo",
+          "type": "object"
+        }
+      },
+      "description": "Output from list_versions tool.",
+      "properties": {
+        "versions": {
+          "description": "Available documentation versions",
+          "items": {
+            "$ref": "#/$defs/VersionInfo"
+          },
+          "title": "Versions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "versions"
+      ],
+      "title": "ListVersionsResult",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "detect_python_version",
+    "description": "Detect the Python version in the user's environment.\nReturns the detected version, how it was found, and whether it\nmatches an indexed documentation set.",
+    "inputSchema": {
+      "properties": {},
+      "title": "detect_python_versionArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "description": "Output from detect_python_version tool.",
+      "properties": {
+        "detected_version": {
+          "description": "Python major.minor detected from the user's environment (e.g. '3.13')",
+          "title": "Detected Version",
+          "type": "string"
+        },
+        "source": {
+          "description": "How the version was detected: '.python-version file', 'python3 in PATH', or 'server runtime'",
+          "title": "Source",
+          "type": "string"
+        },
+        "matched_index_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The detected version if it matches an indexed doc set, otherwise null",
+          "title": "Matched Index Version"
+        },
+        "is_default": {
+          "description": "Whether this detected version is being used as the default for get_docs",
+          "title": "Is Default",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "detected_version",
+        "source",
+        "is_default"
+      ],
+      "title": "DetectPythonVersionResult",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "compare_versions",
+    "description": "Diff a Python stdlib symbol between two indexed versions. Returns\nchange=added|removed|changed|unchanged with optional new_in, changed_in,\ndeprecated_in, signature_delta (advisory), see_also_added/removed,\nsection_diff, and note fields. Both versions must be indexed; otherwise\nan actionable error names the available versions.",
+    "inputSchema": {
+      "properties": {
+        "symbol": {
+          "description": "Qualified Python symbol name, e.g. 'asyncio.TaskGroup'",
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Symbol",
+          "type": "string"
+        },
+        "v1": {
+          "description": "Python version string, e.g. '3.11'",
+          "title": "V1",
+          "type": "string"
+        },
+        "v2": {
+          "description": "Python version string, e.g. '3.11'",
+          "title": "V2",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol",
+        "v1",
+        "v2"
+      ],
+      "title": "compare_versionsArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "description": "Output from compare_versions tool (CMPR-01, CMPR-03).\n\nTyped contract returned by CompareService.compare and the source MCPServer\nauto-derives the compare_versions outputSchema from. The four ``change``\ncases (added / removed / changed / unchanged) all share this shape;\noptional delta fields are ``None`` when they do not apply to the case,\nkeeping the JSON shape predictable and token-frugal (no full re-printing\nof unchanged content, per CMPR-03).",
+      "properties": {
+        "symbol": {
+          "description": "Qualified symbol name being compared",
+          "title": "Symbol",
+          "type": "string"
+        },
+        "v1": {
+          "description": "Source Python version",
+          "title": "V1",
+          "type": "string"
+        },
+        "v2": {
+          "description": "Target Python version",
+          "title": "V2",
+          "type": "string"
+        },
+        "change": {
+          "description": "Diff discriminator: 'added' (symbol new in v2), 'removed' (symbol absent in v2), 'changed' (symbol present in both with a detected delta), or 'unchanged' (symbol present in both, no delta)",
+          "enum": [
+            "added",
+            "removed",
+            "changed",
+            "unchanged"
+          ],
+          "title": "Change",
+          "type": "string"
+        },
+        "new_in": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Version string extracted from the v2 section text; populated when change == 'added', and may also be set when change == 'changed' if the v2 section carries a versionadded marker for a sub-feature",
+          "title": "New In"
+        },
+        "removed_in": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Version where the symbol is first absent; populated when change == 'removed' (equals v2)",
+          "title": "Removed In"
+        },
+        "changed_in": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Version extracted from the v2 section; populated when change == 'changed'",
+          "title": "Changed In"
+        },
+        "deprecated_in": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Version extracted from a deprecation marker in the v2 section",
+          "title": "Deprecated In"
+        },
+        "signature_delta": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Best-effort heuristic: first non-empty diff line between v1 and v2 section text. MAY be a docstring change or prose change rather than a true signature change \u2014 treat as advisory, not authoritative.",
+          "title": "Signature Delta"
+        },
+        "see_also_added": {
+          "description": "See-also link labels present in v2 but not v1",
+          "items": {
+            "type": "string"
+          },
+          "title": "See Also Added",
+          "type": "array"
+        },
+        "see_also_removed": {
+          "description": "See-also link labels present in v1 but not v2",
+          "items": {
+            "type": "string"
+          },
+          "title": "See Also Removed",
+          "type": "array"
+        },
+        "section_diff": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Short unified-diff snippet (difflib.unified_diff), truncated to honor the token budget; populated only when change == 'changed' and the diff is non-trivially short",
+          "title": "Section Diff"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional advisory note about result completeness, e.g. when docs pages could not be fetched for one or both versions and the diff is therefore based on symbol presence alone.",
+          "title": "Note"
+        }
+      },
+      "required": [
+        "symbol",
+        "v1",
+        "v2",
+        "change"
+      ],
+      "title": "CompareVersionsResult",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "whatsnew_for_version",
+    "description": "Browse indexed official What's New sections in document order.\n\nUse kind to narrow the release topics. Sections are bounded; for full\ntext use get_docs(slug='whatsnew/X.Y', version='X.Y', anchor=section.anchor).\nPagination start_index counts nonempty sections after kind filtering.",
+    "inputSchema": {
+      "properties": {
+        "version": {
+          "description": "Python version string, e.g. '3.11'",
+          "title": "Version",
+          "type": "string"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "enum": [
+                "new_module",
+                "new_feature",
+                "deprecation",
+                "removal",
+                "performance",
+                "syntax",
+                "other"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Kind"
+        },
+        "start_index": {
+          "default": 0,
+          "description": "Start position for pagination",
+          "minimum": 0,
+          "title": "Start Index",
+          "type": "integer"
+        },
+        "max_sections": {
+          "default": 20,
+          "description": "Maximum number of results to return.",
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Max Sections",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version"
+      ],
+      "title": "whatsnew_for_versionArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "WhatsNewSection": {
+          "description": "A nonempty, bounded section from an indexed official release page.",
+          "properties": {
+            "title": {
+              "description": "Official section heading",
+              "title": "Title",
+              "type": "string"
+            },
+            "anchor": {
+              "description": "Stable section anchor for get_docs follow-up",
+              "title": "Anchor",
+              "type": "string"
+            },
+            "body": {
+              "description": "Bounded section text; truncated sections include a get_docs hint",
+              "title": "Body",
+              "type": "string"
+            },
+            "kind": {
+              "description": "Conservative heading-hierarchy category",
+              "enum": [
+                "new_module",
+                "new_feature",
+                "deprecation",
+                "removal",
+                "performance",
+                "syntax",
+                "other"
+              ],
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "title",
+            "anchor",
+            "body",
+            "kind"
+          ],
+          "title": "WhatsNewSection",
+          "type": "object"
+        }
+      },
+      "description": "Paginated sections from What's New in one Python version.",
+      "properties": {
+        "sections": {
+          "items": {
+            "$ref": "#/$defs/WhatsNewSection"
+          },
+          "title": "Sections",
+          "type": "array"
+        },
+        "next_start_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Next Start Index"
+        }
+      },
+      "title": "WhatsNewResult",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  }
+]

@@ -162,6 +162,7 @@ def build_index(versions: str, skip_content: bool) -> None:
     import venv
     from pathlib import Path
 
+    from mcp_server_python_docs.errors import FTS5UnavailableError
     from mcp_server_python_docs.ingestion.cpython_versions import (
         CPYTHON_DOCS_BUILD_CONFIG,
     )
@@ -179,7 +180,6 @@ def build_index(versions: str, skip_content: bool) -> None:
         build_sphinx_json_command,
         ingest_sphinx_json_dir,
         make_sphinx_json_env,
-        populate_synonyms,
         rebuild_fts_indexes,
         write_json_build_requirements,
         write_sphinx_json_sitecustomize,
@@ -218,8 +218,14 @@ def build_index(versions: str, skip_content: bool) -> None:
     conn = get_readwrite_connection(build_db_path)
     built = False
     try:
+        # Before bootstrap_schema: its FTS5 tables would fail first, with a bare
+        # "no such module: fts5" instead of the check's hint (STOR-08).
+        try:
+            assert_fts5_available(conn)
+        except FTS5UnavailableError as e:
+            logger.error("%s", e)
+            raise SystemExit(1)
         bootstrap_schema(conn)
-        assert_fts5_available(conn)
 
         any_version_succeeded = False
 
@@ -399,10 +405,6 @@ def build_index(versions: str, skip_content: bool) -> None:
             logger.error("No versions were successfully ingested")
             raise SystemExit(1)
 
-        # Populate synonyms from synonyms.yaml (INGR-C-09)
-        synonym_count = populate_synonyms(conn)
-        logger.info("Populated %d synonyms", synonym_count)
-
         # Rebuild FTS indexes (INGR-C-08)
         rebuild_fts_indexes(conn)
         built = True
@@ -500,12 +502,18 @@ def validate_corpus(db_path: str | None) -> None:
 @main.command()
 def doctor() -> None:
     """Check environment health and report issues (CLI-02)."""
+    import contextlib
     import shutil
     import sqlite3
     from pathlib import Path
 
     from mcp_server_python_docs.diagnostics import check_build_venv_support
-    from mcp_server_python_docs.storage.db import get_cache_dir, get_index_path
+    from mcp_server_python_docs.errors import FTS5UnavailableError
+    from mcp_server_python_docs.storage.db import (
+        assert_fts5_available,
+        get_cache_dir,
+        get_index_path,
+    )
 
     results: list[tuple[str, bool, str]] = []  # (probe_name, passed, detail)
 
@@ -522,23 +530,12 @@ def doctor() -> None:
     fts5_ok = False
     fts5_detail = ""
     try:
-        mem_conn = sqlite3.connect(":memory:")
-        mem_conn.execute("CREATE VIRTUAL TABLE _fts5_check USING fts5(x)")
-        mem_conn.execute("DROP TABLE _fts5_check")
-        mem_conn.close()
+        with contextlib.closing(sqlite3.connect(":memory:")) as mem_conn:
+            assert_fts5_available(mem_conn)
         fts5_ok = True
         fts5_detail = f"SQLite {sqlite3.sqlite_version}"
-    except sqlite3.OperationalError:
-        import platform as plat
-
-        if plat.system() == "Linux" and plat.machine() == "x86_64":
-            fts5_detail = (
-                "FTS5 unavailable -- pip install 'python-docs-mcp-server[pysqlite3]'"
-            )
-        else:
-            fts5_detail = (
-                "FTS5 unavailable -- install Python from python.org or uv python install"
-            )
+    except FTS5UnavailableError as e:
+        fts5_detail = str(e)
     results.append(("SQLite FTS5", fts5_ok, fts5_detail))
 
     # 3. Build-index Sphinx venv support
