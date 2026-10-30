@@ -19,6 +19,10 @@ or disable checks.
    `scope: delta <old-head>..<new-head>` line and a link to the full record it
    extends, and states the three delta verdicts and the new head's check result.
 2. Wait for the required checks on the resulting **main commit** to pass.
+   On that exact commit, run
+   `uv build --build-constraint .github/build-constraints.txt --require-hashes --out-dir "$(mktemp -d)"`.
+   It checks the hash-pinned build backend described below. Do not tag if it
+   fails.
 3. The owner tags that exact commit and pushes the tag:
    `git tag -a vX.Y.Z <exact main sha> -m "vX.Y.Z"`, then
    `git push origin vX.Y.Z`. Check the versions from step 1 first: release tags
@@ -30,6 +34,9 @@ or disable checks.
 4. The release workflow runs eligibility → build/test/manifest validation →
    installed-wheel integration on Python 3.13 and 3.14 → PyPI → MCP Registry →
    GitHub release. Integration builds documentation 3.10–3.14 before publishing.
+   The build job records the SHA-256 of every file in `dist/` and the artifact ID
+   as job outputs. The PyPI and GitHub-release jobs download that artifact ID and
+   refuse to attest, publish or attach anything whose checksum listing differs.
    PyPI receives the same wheel that passed integration, with provenance.
 5. Confirm every job succeeded, the exact version is visible on PyPI and in the
    MCP Registry, the GitHub release has both artifacts, and a clean
@@ -41,6 +48,24 @@ The Linux publisher helper `.github/scripts/install_publisher.sh` pins the
 release URL and verifies its SHA-256 before extracting the executable. The
 manifest is validated **before** PyPI publication. Do not use an unverified
 `curl | tar` download or a moving `latest` URL.
+
+The release build installs its build backend from `.github/build-constraints.txt`.
+That file pins `hatchling` and every dependency with SHA-256 hashes, and the build
+runs `uv build --build-constraint .github/build-constraints.txt --require-hashes`.
+Every project build in the build job uses that file. The job syncs dependencies with
+`uv sync --locked --dev --no-install-project --no-build`, which builds neither the
+project nor any source distribution. It installs the built wheel with
+`uv pip install --no-deps dist/*.whl` and runs every later command with
+`uv run --no-sync`, so nothing re-syncs and rebuilds the project. The tests run
+against that installed wheel, and the test suite's own wheel build gets the same
+constraints through `UV_BUILD_CONSTRAINT` and `UV_REQUIRE_HASHES`.
+To update it, run
+`echo hatchling | uv pip compile --generate-hashes --universal --python-version 3.12 --upgrade - -o .github/build-constraints.txt`,
+then
+`uv build --build-constraint .github/build-constraints.txt --require-hashes --out-dir "$(mktemp -d)"`,
+and review the diff like a lockfile change. A broken file fails the release in
+the build job, before anything is published. The tag is spent by then, though,
+so check the file before you tag.
 
 PyPI Trusted Publishing remains bound to this repository, `release.yml` and the
 `pypi` environment. The intended settings limit that environment to `v*` tags

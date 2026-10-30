@@ -35,6 +35,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `build-index` now deletes `build-*.db*` files older than one day. Killed
   auto-builds used to leave them in the cache folder for good.
 
+### Security
+
+- Releases publish only the exact files the build job produced. The PyPI and
+  GitHub-release jobs download `dist` by artifact ID. They refuse to attest,
+  upload or attach anything if the SHA-256 listing differs from the build's.
+  The release build job builds the project only with `hatchling` and its
+  dependencies pinned by hash, and runs its tests against the wheel it ships.
+
 ## [0.4.0] — Unreleased
 
 ### Added
