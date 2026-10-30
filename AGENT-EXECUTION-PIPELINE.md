@@ -496,9 +496,12 @@ Independent verification covers the exact PR head and has three parts:
    read-only sandbox;
 3. a `ponytail-review` pass.
 
-Each of the three parts is run by an agent other than the implementer of the
-change. That includes `ponytail-review`: a pass run in the implementer's own
-session does not count as independent.
+Each of the three parts, `ponytail-review` included, is run by an agent that
+is independent of the change. An agent is independent of a change when it wrote
+no part of it and reviews from a fresh context. A fresh-context subagent
+dispatched by the implementing session qualifies; a pass run inside the
+implementing agent's own context does not. At least one of the three parts is
+dispatched by the owner, not by the implementing session.
 
 Fix Critical and Important findings test-first. Record each declined finding
 with its reason. The record is a PR comment by the owner. Its first line is
