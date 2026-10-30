@@ -167,8 +167,8 @@ the same MCP bridge as every other system.
   (section 12). Hitting one of these ends the trajectory as a failure that
   stays in the denominator. Caps are identical across systems
   within a model; comparisons are only ever made within a model.
-- **Result cap (Call):** each tool result is truncated at 100,000 characters
-  with a marker, the hit is recorded, and the loop continues. It is a safety
+- **Result cap (Call):** each tool result is truncated at 100,000 UTF-8
+  bytes (on a character boundary) with a marker, the hit is recorded, and the loop continues. It is a safety
   net, not a failure. In practice only `docs-fetch` can reach it, and its
   `start_index` lets the model read on.
 - **Canonical tool results:** each MCP `CallToolResult` becomes one canonical
@@ -621,20 +621,28 @@ The caps are enforced before money is spent, never after:
   reasoning budget. The builder confirms which applies for each provider
   before the pilot. It is the same for every system and frozen before the
   pilot.
-- **Per-call input bound:** never a token count, because count endpoints
-  return estimates. For the first call, one token per UTF-8 byte of the
-  whole request (system prompt, tool definitions, user message). For later
-  calls, the previous call's reported input (every input field, cached and
-  cache-write tokens included) plus its reported output, plus one token per
-  UTF-8 byte of every message added since. Every provider's
-  tokenizer works on bytes and never emits a token for less than one byte,
-  so content cannot exceed this. Message framing gets a fixed allowance per
-  added message: twice the largest framing overhead seen in the pilot, and
-  at least 256 tokens.
+- **Per-call input bound:** never a token count. For the first call, one
+  token per UTF-8 byte of the whole request (system prompt, tool
+  definitions, user message), plus the framing allowance for each of its
+  messages. For later calls: the previous call's total billed input, plus
+  every reported output field of that call (thinking and reasoning tokens
+  included), plus one token per UTF-8 byte of every message added since,
+  plus the framing allowance for each added message. Total billed input is
+  Anthropic's `input_tokens` plus both cache fields, OpenAI's
+  `input_tokens`, and Gemini's `promptTokenCount` (the last two already
+  include cached tokens).
+- **Framing allowance:** a fixed number of tokens per message for wrappers
+  and provider-injected text (for example the tool-use system prompt).
+  It is twice the largest framing overhead seen in the pilot, and at least
+  256 tokens.
+- One token per byte is an assumption about tokenizers, not something
+  every provider documents. So the pilot checks every call's reported input
+  against its bound, and any call over its bound stops the pilot until the
+  bound is corrected.
 - **Pilot:** a trajectory reserves its structural worst case: 8 model calls,
   each at the largest input the caps allow (system prompt, tool
-  definitions, and 12 results at the 100,000-character result cap, by the
-  input bound), plus the output bound.
+  definitions, and 12 results at the 100,000-byte result cap, by the input
+  bound), plus the output bound.
 - **Full run:** the structural bound is far above a real trajectory's cost
   and would refuse work with money left. So each trajectory reserves 2 × the
   pilot's p99 trajectory cost for that model, the same for every system of
@@ -642,10 +650,11 @@ The caps are enforced before money is spent, never after:
   cost so far plus that call's input bound and output bound fits in the
   reservation. If it does not, the trajectory ends as a cap-hit failure in
   the denominator. The report lists those cap hits per (model, system).
-- If a bill still exceeds its bound (for example, framing larger than the
-  allowance), the excess comes out of the margin between the enforced caps
-  and the budget. It is recorded, and the allowance is doubled for the rest
-  of the run.
+- If a bill exceeds its bound, that provider's run stops at once: no new
+  call, trajectory or batch starts. The margin between the enforced cap and
+  the budget covers only the requests already in flight. The run resumes
+  only after the bound is corrected and the overrun is recorded in the
+  report.
 - A batch job reserves its full worst case before submission, and is split
   or not submitted if that does not fit. Batches cannot be stopped midway,
   so they are sized up front.
