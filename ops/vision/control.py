@@ -159,6 +159,9 @@ def validate_publication(data: dict) -> None:
         raise ValueError("Only codex/ or agent/ branches may be published")
     if not SHA.fullmatch(data.get("base_sha", "")):
         raise ValueError("Exact base commit required")
+    tree_sha = data.get("tree_sha")
+    if not isinstance(tree_sha, str) or not SHA.fullmatch(tree_sha):
+        raise ValueError("Exact committed tree required")
     if not isinstance(data.get("message"), str) or not 1 <= len(data["message"]) <= 2000:
         raise ValueError("Bounded commit message required")
     if not isinstance(data.get("changes"), list) or not 1 <= len(data["changes"]) <= 500:
@@ -179,6 +182,10 @@ def validate_publication(data: dict) -> None:
         seen.add(path)
         if change.get("mode", "100644") not in {"100644", "100755"}:
             raise ValueError("Symlinks and submodules are not publishable")
+        if "sha" in change and (
+            not isinstance(change["sha"], str) or not SHA.fullmatch(change["sha"])
+        ):
+            raise ValueError("Blob SHA must be 40 hex characters")
         if change.get("content") is not None:
             base64.b64decode(change["content"], validate=True)
 
@@ -205,6 +212,8 @@ def publish(data: dict):
             }
         )
     tree = api("git/trees", "POST", {"base_tree": base["tree"]["sha"], "tree": entries})
+    if tree["sha"] != data["tree_sha"]:
+        raise ValueError("Built tree does not match the committed tree")
     commit = api(
         "git/commits",
         "POST",

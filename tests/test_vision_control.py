@@ -110,6 +110,7 @@ def test_publication_rejects_unsafe_refs_paths_and_file_modes():
     data = {
         "branch": "codex/fix",
         "base_sha": "a" * 40,
+        "tree_sha": "c" * 40,
         "message": "Fix",
         "changes": [
             {
@@ -172,6 +173,7 @@ def test_unreviewed_publication_never_creates_an_executable_ref(monkeypatch):
             {
                 "branch": "codex/change",
                 "base_sha": "a" * 40,
+                "tree_sha": "b" * 40,
                 "message": "Change",
                 "decision": {
                     "kind": "policy",
@@ -808,3 +810,63 @@ def test_release_requires_semver_tag_matching_versions_and_gate(tmp_path, monkey
     assert CONTROL["release"](sha, "v1.2.3") == {"ref": "refs/tags/v1.2.3"}
     assert posts == [("git/refs", {"ref": "refs/tags/v1.2.3", "sha": sha})]
     assert set(gates) == {(sha, 42)}
+
+
+PUBLICATION = {
+    "branch": "codex/change",
+    "base_sha": "a" * 40,
+    "tree_sha": "d" * 40,
+    "message": "Change",
+    "decision": {"kind": "maintenance", "rationale": "Fix", "acceptance": "Tests"},
+    "changes": [{"path": "src/x.py", "mode": "100644", "sha": "e" * 40, "content": "eA=="}],
+}
+
+
+def fake_github(monkeypatch, ref=None, tree="d" * 40):
+    """GitHub stand-in for publish(): records (path, method, data) and review() calls."""
+    module = CONTROL["publish"].__globals__
+    calls, reviews = [], []
+
+    def api(path, method="GET", data=None, role="owner"):
+        calls.append((path, method, data))
+        if path.startswith("git/ref/"):
+            if isinstance(ref, Exception):
+                raise ref
+            if ref is None:
+                raise RuntimeError("GitHub HTTP 404")
+            return {"object": {"sha": ref}}
+        if path.startswith("git/commits/"):
+            return {"tree": {"sha": "f" * 40}}
+        if path == "git/trees":
+            return {"sha": tree}
+        if path == "git/commits":
+            return {"sha": "9" * 40}
+        if path == "branches/main":
+            return {"commit": {"sha": "a" * 40}}
+        return {"sha": "e" * 40}
+
+    monkeypatch.setitem(module, "api", api)
+    monkeypatch.setitem(module, "review", lambda *args: reviews.append(args) or {})
+    return calls, reviews
+
+
+def test_publish_refuses_a_tree_that_differs_from_the_commit(monkeypatch):
+    calls, reviews = fake_github(monkeypatch, tree="c" * 40)
+    with pytest.raises(ValueError, match="committed tree"):
+        CONTROL["publish"](PUBLICATION)
+    assert not any(path == "git/commits" for path, _, _ in calls)
+    assert reviews == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"tree_sha": None},
+        {"tree_sha": "d" * 39},
+        {"tree_sha": "D" * 40},
+        {"changes": [{**PUBLICATION["changes"][0], "sha": "z" * 40}]},
+    ],
+)
+def test_publication_requires_an_exact_tree_sha(change):
+    with pytest.raises(ValueError):
+        CONTROL["validate_publication"]({**PUBLICATION, **change})

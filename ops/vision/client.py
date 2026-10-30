@@ -15,21 +15,22 @@ def publication(branch, base, message):
     if git("status", "--porcelain").strip():
         raise ValueError("Commit the intended changes first; checkout must be clean")
     changes = []
-    for path in git("diff", "--name-only", "-z", base, "HEAD").decode().split("\0"):
-        if not path:
-            continue
-        entry = git("ls-tree", "-z", "HEAD", "--", path)
-        change = {"path": path, "content": None}
-        if entry:
-            change.update(
-                mode=entry.decode().split(" ", 1)[0],
-                content=base64.b64encode(git("show", f"HEAD:{path}")).decode(),
-            )
-        changes.append(change)
+    fields = git("diff-tree", "-r", "-z", "--no-renames", base, "HEAD").split(b"\0")[:-1]
+    for meta, raw in zip(fields[0::2], fields[1::2], strict=True):
+        path = raw.decode()
+        _, mode, _, sha, _ = meta.decode().split(" ")
+        if mode == "000000":
+            changes.append({"path": path, "content": None})
+        elif mode in {"100644", "100755"}:
+            content = base64.b64encode(git("cat-file", "blob", sha)).decode()
+            changes.append({"path": path, "mode": mode, "sha": sha, "content": content})
+        else:
+            raise ValueError(f"Mode {mode} is not publishable: {path}")
     return {
         "operation": "publish",
         "branch": branch,
         "base_sha": base,
+        "tree_sha": git("rev-parse", "HEAD^{tree}").decode().strip(),
         "message": message,
         "changes": changes,
     }
