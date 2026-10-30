@@ -319,9 +319,9 @@ class TestIndexFormatProbe:
         result = _doctor_with_index(tmp_path, monkeypatch, user_version=2)
         assert (
             "FAIL: Index format -- version 2, newer than this release (expected 1) "
-            "-- upgrade python-docs-mcp-server, or to rebuild it for this release, "
-            f"run: {REBUILD}\n"
+            "-- upgrade python-docs-mcp-server\n"
         ) in result.stderr
+        assert REBUILD not in result.stderr  # a rebuild would downgrade the index
         assert result.returncode == 1
 
     def test_doctor_rebuild_command_keeps_indexed_versions(self, tmp_path, monkeypatch):
@@ -358,6 +358,7 @@ class TestIndexFormatProbe:
             result.stderr
         )
         assert "unreadable" not in result.stderr
+        assert REBUILD not in result.stderr
         assert result.returncode == 1
 
     def test_doctor_skips_format_probe_without_index(self, tmp_path):

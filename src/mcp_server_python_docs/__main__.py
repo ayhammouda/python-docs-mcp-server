@@ -613,13 +613,12 @@ def doctor() -> None:
         elif found_format == INDEX_FORMAT_VERSION:
             results.append(("Index format", True, f"version {found_format}"))
         elif found_format is not None and found_format > INDEX_FORMAT_VERSION:
-            # A rebuild here would downgrade an index from a newer release.
+            # No rebuild advice: a rebuild here would downgrade an index from a newer release.
             results.append((
                 "Index format",
                 False,
                 f"version {found_format}, newer than this release "
-                f"(expected {INDEX_FORMAT_VERSION}) -- upgrade python-docs-mcp-server, "
-                f"or to rebuild it for this release, {rebuild}",
+                f"(expected {INDEX_FORMAT_VERSION}) -- upgrade python-docs-mcp-server",
             ))
         else:
             results.append((
