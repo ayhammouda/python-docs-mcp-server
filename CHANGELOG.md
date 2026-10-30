@@ -22,7 +22,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Removed the `pysqlite3` optional extra. Nothing imported `pysqlite3`, so
   installing the extra never enabled FTS5. When FTS5 is missing, the server and
   `doctor` now give one hint: install a Python whose SQLite includes FTS5
-  (`uv python install` or python.org).
+  (`uv python install` or python.org). Install commands that still name the
+  extra keep working: pip and uv print a warning that the extra does not exist.
 
 ### Fixed
 
