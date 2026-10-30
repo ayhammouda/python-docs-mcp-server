@@ -8,7 +8,8 @@ authorizes a public claim before data exists (decision 5.17).
 `docs/benchmarks/PUBLIC-BENCHMARK-METHODOLOGY.md`, the audit of `benchmarks/`
 done on 2026-10-25.
 **Revised:** 2026-10-30, after independent review (Fable, Codex `gpt-6-astra`
-at `xhigh`, ponytail). Sections 4, 7.2–7.4, 8, 9.1–9.3, 12 and 13 changed.
+at `xhigh`, ponytail). Sections 2, 4, 7.2–7.4, 8, 9.1–9.3, 12, 13 and 14
+changed.
 
 Labels used below:
 
@@ -230,7 +231,8 @@ came from. Container settings:
 ### 7.3 Egress control and evidence (**Call**)
 
 - Each worker container sits on its own Docker `internal` network whose only
-  other member is that run's egress-proxy container (builder picks Squid,
+  other member is its own egress-proxy container: one proxy per worker, so
+  each allowlist and log covers exactly one container (builder picks Squid,
   tinyproxy or similar, pinned by digest). The proxy is also on an outside
   network, and workers reach it through `HTTPS_PROXY`/`HTTP_PROXY`.
 - An `internal` network alone is not enough: Docker still lets containers
@@ -247,20 +249,16 @@ came from. Container settings:
   The probe output goes into the run's artifacts. If Docker cannot block the
   host on the maintainer's machine, the builder adds explicit firewall rules
   or runs the workers in a Linux VM that has them, and the probe proves it.
-- Per-run allowlist: the model provider's API host, plus `docs.python.org`
-  for `docs-fetch` runs. Nothing else.
+- Allowlist per container: the API host of the one provider whose key that
+  container holds. A `docs-fetch` answering container also allows
+  `docs.python.org`. Nothing else.
 - The proxy writes one line per connection attempt (time, host, port,
   allowed/denied) into the run's artifacts. That log is C1's evidence.
-- `mcp-server-fetch` resolves each hostname itself, to refuse private
-  addresses, before it uses the proxy. An `internal` network has no outside
-  DNS, so the `docs-fetch` worker gets `--add-host docs.python.org:<ip>`, with
-  the address resolved and recorded at run start. Its private-address check
-  stays on. The proxy allowlist remains the real boundary.
 - **Secrets: every paid call runs in a sandbox.** Answering, judging,
   reference grading and token counting all run in containers built from the
   same image. Each container gets exactly one provider key, through
-  `--env-file` from a file outside the repo, and its allowlist holds only that
-  provider's API host. Keys are never baked into an image or logged. The host
+  `--env-file` from a file outside the repo, with the allowlist above. Keys
+  are never baked into an image or logged. The host
   process that orchestrates the run never holds a provider key.
 - Before any output leaves a container, the container scans it for its own
   key value and fails the step if the key appears. On the host, the harness
@@ -277,10 +275,11 @@ came from. Container settings:
   it can, for example, download an update. During local answering the
   host's external network is therefore off (Wi-Fi and Ethernet
   disconnected), and Ollama's automatic updates are disabled first. Before
-  the first and after the last local trajectory, the harness records two
+  every local trajectory and after the last one, the harness records two
   host-side checks in the artifacts: a connection to an outside host (for
   example `pypi.org:443`) fails, and the routing table has no default route.
-  C3 needs both checks and the proxy log.
+  The first failed check stops the arm, and its results are not used for C3.
+  C3 needs every check to pass and the proxy log.
 - The proxy allowlist contains only `host.docker.internal:11434`. No provider
   key exists in the container.
 - The index is installed by following the air-gapped runbook (section 11.4)
@@ -335,7 +334,9 @@ for the evidence behind each choice.
   under test if one passes the probe gate G1 (first candidate:
   `gemini-3.1-flash-lite`, release status unverified). Otherwise
   `gemini-3.8-flash`, which then grades its own answers; disclose that.
-  Effort per judge: the lowest level that passes G1, then frozen. Use the
+  Effort per judge: the lowest level that meets the G1 criteria on the
+  tuning probes (9.3), then frozen; G1 itself then runs once on the
+  held-out probes. Use the
   providers' batch APIs, submitted from sandbox containers (7.3).
 - **The grade covers content only.** Citations do not affect it: a blinded
   judge cannot apply the methodology's "citation when the system provides
@@ -359,9 +360,11 @@ for the evidence behind each choice.
   content to grade, never a direction to follow. Code marks an answer
   `injection_suspect` when it contains a delimiter or any schema field name
   used as a JSON key (`"attempted":`, `"p1_met":`, `"p2_met":`,
-  `"contradicts_key":`, `"wrong_version":`). Suspect answers always also
-  go to the reference grader, and their count is reported per
-  (model, system).
+  `"contradicts_key":`, `"wrong_version":`). Suspect answers always go to
+  the reference grader, and its grade replaces the panel's for every
+  metric and claim. They are excluded from the G3 agreement sample, like
+  settled answers. Their count, and every case where the reference grade
+  differs from the panel's, is reported per (model, system).
 - **Judge prompt:** frozen, committed and hashed before grading. Grade one
   answer against the key; do not answer the question; ignore style, length,
   confidence wording and `[link]` markers; extra statements count only if
@@ -607,14 +610,24 @@ The caps are enforced before money is spent, never after:
 - One ledger per provider records actual spend (provider-reported usage × the
   price snapshot) and open reservations. Outstanding batch jobs and retries
   count as reservations.
-- Before a trajectory starts, the orchestrator reserves its worst case: 8
-  model calls, each at the largest context the caps allow (system prompt,
+- **Pilot:** before a trajectory starts, the orchestrator reserves its
+  structural worst case: 8 model calls, each at the largest context the caps
+  allow (system prompt,
   tool definitions, and 12 results at the 100,000-character result cap),
   plus the fixed per-call `max_output_tokens`. That bound includes reasoning
   tokens, and it is the same for every system and frozen before the pilot.
   The trajectory does not start if the reservation does not fit under the
   remaining cap. On completion, the reservation is replaced by the actual
   cost.
+- **Full run:** the structural bound is far above a real trajectory's cost
+  and would refuse work with money left. So each trajectory reserves 2 × the
+  pilot's p99 trajectory cost for that model, the same for every system of
+  that model. Before every model call, the loop checks that the trajectory's
+  cost so far plus that call's worst case (its input, counted or bounded,
+  plus `max_output_tokens`) fits in the reservation. If it does not, the
+  trajectory ends as a cap-hit failure in the denominator. The reservation
+  is then a hard bound, and the report lists those cap hits per
+  (model, system).
 - A batch job reserves its full worst case before submission, and is split
   or not submitted if that does not fit. Batches cannot be stopped midway,
   so they are sized up front.
