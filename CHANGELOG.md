@@ -24,6 +24,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   Nothing wrote them; symbol hits still resolve through their URI and anchor.
   Versions up to 0.4.0 still read these columns, so after a downgrade, rebuild
   the index.
+- Removed `ingestion_runs.artifact_hash` and the "Build artifact SHA256" log
+  line. The hash was taken before the last writes to the build, so it never
+  matched the published `index.db`.
 
 ### Fixed
 

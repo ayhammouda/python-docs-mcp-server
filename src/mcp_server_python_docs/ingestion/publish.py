@@ -1,12 +1,11 @@
 """Atomic-swap publishing with smoke tests and rollback (PUBL-01 through PUBL-06).
 
-Handles the full publish pipeline: timestamped build artifacts, SHA256 hashing,
-smoke test validation, atomic replace with a hard-linked .previous backup, and
-the restart message to stderr.
+Handles the full publish pipeline: timestamped build artifacts, smoke test
+validation, atomic replace with a hard-linked .previous backup, and the
+restart message to stderr.
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import shutil
@@ -85,33 +84,11 @@ def sweep_stale_builds(cache_dir: Path, max_age_seconds: float = 86_400.0) -> li
     return removed
 
 
-def compute_sha256(db_path: Path) -> str:
-    """Compute the SHA256 hex digest of a file (PUBL-02).
-
-    Reads the file in 8KB chunks for memory efficiency.
-
-    Args:
-        db_path: Path to the database file.
-
-    Returns:
-        SHA256 hex digest string (64 characters).
-    """
-    h = hashlib.sha256()
-    with open(db_path, "rb") as f:
-        while True:
-            chunk = f.read(8192)
-            if not chunk:
-                break
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def record_ingestion_run(
     conn: sqlite3.Connection,
     source: str,
     version: str,
     status: str,
-    artifact_hash: str | None,
     notes: str | None = None,
 ) -> int:
     """Record an ingestion run in the ingestion_runs table (PUBL-02).
@@ -121,7 +98,6 @@ def record_ingestion_run(
         source: Source identifier (e.g., 'python-docs').
         version: Version string (e.g., '3.13' or '3.10,3.11,3.12,3.13,3.14').
         status: Run status ('smoke_testing' or 'published').
-        artifact_hash: SHA256 hash of the build artifact.
         notes: Optional notes about the run.
 
     Returns:
@@ -129,9 +105,9 @@ def record_ingestion_run(
     """
     cursor = conn.execute(
         "INSERT INTO ingestion_runs "
-        "(source, version, status, started_at, finished_at, artifact_hash, notes) "
-        "VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?)",
-        (source, version, status, artifact_hash, notes),
+        "(source, version, status, started_at, finished_at, notes) "
+        "VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)",
+        (source, version, status, notes),
     )
     conn.commit()
     return cursor.lastrowid  # type: ignore[return-value]
@@ -501,14 +477,13 @@ def publish_index(
 ) -> bool:
     """Orchestrate the full publish pipeline.
 
-    1. Compute SHA256 of the build artifact
-    2. Record ingestion run
-    3. Run smoke tests
-    4. If they failed: log the smoke messages at ERROR, delete the build, return False
-    5. Mark the run published and switch the build to ``journal_mode = DELETE``;
+    1. Record ingestion run
+    2. Run smoke tests
+    3. If they failed: log the smoke messages at ERROR, delete the build, return False
+    4. Mark the run published and switch the build to ``journal_mode = DELETE``;
        if that fails, keep the build, log at ERROR, return False
-    6. Atomic swap; if it is refused, keep the build and return False
-    7. Print the restart message
+    5. Atomic swap; if it is refused, keep the build and return False
+    6. Print the restart message
 
     Args:
         build_db_path: Path to the build artifact database.
@@ -520,10 +495,6 @@ def publish_index(
         deleted), the build could not leave WAL mode (the build is kept), or the
         swap was refused (the build is kept).
     """
-    # Compute SHA256 (PUBL-02)
-    artifact_hash = compute_sha256(build_db_path)
-    logger.info("Build artifact SHA256: %s", artifact_hash)
-
     # Record ingestion run
     from mcp_server_python_docs.storage.db import get_readwrite_connection
 
@@ -535,7 +506,6 @@ def publish_index(
             source="python-docs",
             version=version,
             status="smoke_testing",
-            artifact_hash=artifact_hash,
             notes=build_notes,
         )
     finally:

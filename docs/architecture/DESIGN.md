@@ -194,11 +194,10 @@ consumes indirectly — the tag/SHA/Sphinx-pin triple determines which
 ([`ingestion/publish.py`](../../src/mcp_server_python_docs/ingestion/publish.py))
 sits between ingestion and the storage layer becoming visible to `serve`:
 
-- `record_ingestion_run` (line 109) inserts a row into `ingestion_runs`
-  (`source`, `version`, `status`, `artifact_hash`, `notes`), used to record
-  each build that reaches publishing; a rejected build is deleted with its
-  row.
-- `atomic_swap` (line 377) keeps `index.db` present throughout. It
+- `record_ingestion_run` (line 87) inserts a row into `ingestion_runs`
+  (`source`, `version`, `status`, `notes`), used to record each build that
+  reaches publishing; a rejected build is deleted with its row.
+- `atomic_swap` (line 353) keeps `index.db` present throughout. It
   hard-links an existing `index.db` to `index.db.previous.<pid>.tmp`
   (copying it where the filesystem has no hard links), `os.replace()`s that
   onto `index.db.previous` and removes the temporary name, then
@@ -206,10 +205,10 @@ sits between ingestion and the storage layer becoming visible to `serve`:
   holds `index.db` open, so a replace fails; it then logs that clients must
   be stopped, names the kept build, and re-raises. `rollback()` restores
   `index.db.previous`.
-- `publish_index` (line 496) orchestrates the sequence: compute the build
-  artifact's SHA256, record the ingestion run, run smoke tests against the
-  new database, and only call `atomic_swap` (plus print a restart-required
-  message to stderr) if the smoke tests pass; on failure it logs every smoke
+- `publish_index` (line 472) orchestrates the sequence: record the ingestion
+  run, run smoke tests against the new database, and only call `atomic_swap`
+  (plus print a restart-required message to stderr) if the smoke tests pass;
+  on failure it logs every smoke
   message and the build path at ERROR, deletes the build and returns `False`.
   Before the `atomic_swap` call, its last read-write step switches the build
   to `journal_mode = DELETE`, so read-only servers never create `-wal` or
@@ -240,8 +239,8 @@ function and a method; `doc_sets.language` defaults to `'en'`, reserving
 space for future i18n without a migration.
 
 **FTS5 virtual tables** (derived, rebuildable from the canonical tables, not
-themselves a source of truth): `sections_fts` (line 103), `symbols_fts`
-(line 109), `examples_fts` (line 115). All three use external-content mode
+themselves a source of truth): `sections_fts` (line 102), `symbols_fts`
+(line 108), `examples_fts` (line 114). All three use external-content mode
 (`content='<table>', content_rowid='id'`) and the tokenizer
 `unicode61 remove_diacritics 2 tokenchars '._'`, which treats `.` and `_` as
 token characters rather than separators — so `asyncio.TaskGroup` indexes as

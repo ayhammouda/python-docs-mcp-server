@@ -82,7 +82,6 @@ CREATE TABLE IF NOT EXISTS ingestion_runs (
     status           TEXT NOT NULL,
     started_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     finished_at      TEXT,
-    artifact_hash    TEXT,
     notes            TEXT
 );
 

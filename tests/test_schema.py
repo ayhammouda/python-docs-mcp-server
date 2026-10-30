@@ -423,3 +423,13 @@ def test_symbols_has_no_location_id_columns():
         "id", "doc_set_id", "qualified_name", "normalized_name",
         "module", "symbol_type", "uri", "anchor",
     ]
+
+
+def test_ingestion_runs_has_no_artifact_hash():
+    """The hash was taken before the last writes, so it never matched the published file."""
+    conn = _make_db()
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(ingestion_runs)")]
+    conn.close()
+    assert columns == [
+        "id", "source", "version", "status", "started_at", "finished_at", "notes",
+    ]
