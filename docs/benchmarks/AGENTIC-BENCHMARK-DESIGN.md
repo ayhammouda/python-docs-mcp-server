@@ -163,9 +163,9 @@ the same MCP bridge as every other system.
   use; auto is the only common setting).
 - **Caps (Call):** at most 8 model calls and 12 tool calls per trajectory,
   30 s per tool call, and 300 s per trajectory (900 s in the air-gapped arm,
-  for both of its systems), plus the per-trajectory cost reservation
-  (section 12). Hitting one of these ends the trajectory as a failure that
-  stays in the denominator. Caps are identical across systems
+  for both of its systems). Hitting one of these ends the trajectory as a
+  failure that stays in the denominator. A budget stop (section 12) is not
+  a cap: the trajectories it cuts off are discarded, not scored. Caps are identical across systems
   within a model; comparisons are only ever made within a model.
 - **Result cap (Call):** each tool result is truncated at 100,000 UTF-8
   bytes (on a character boundary) with a marker, the hit is recorded, and the loop continues. It is a safety
@@ -626,23 +626,29 @@ lower hard caps, leaving a margin of $20, $10 and $20 below the budget:
 Anthropic $180, OpenAI $65, Google $180. Each provider's cap covers that provider's answering, judging,
 reference grading and token counting.
 
-The caps are enforced before money is spent, never after:
+The caps are enforced before money is spent, never after. The mechanism is
+deliberately simple: each provider has one billable request in flight at a
+time.
 
-- One ledger per provider records actual spend (provider-reported usage × the
-  price snapshot) and open reservations. Outstanding batch jobs and retries
-  count as reservations. A call that returns no usage object (a timeout, a
-  dropped connection, a trajectory cut by its time cap) may still be billed,
-  so it is booked as spent at its full bound and never released.
-- Every trajectory reserves its budget before it starts, and does not start
-  if the reservation does not fit under the remaining cap. On completion,
-  the reservation is replaced by the actual cost.
+- **Ledger:** one per provider, recording actual spend (the section 8
+  buckets × the price snapshot). A request that returns no usage object (a
+  timeout, a dropped connection, a trajectory cut by its time cap) may still
+  be billed, so it is booked at twice its bound until the provider's billing
+  shows the real charge.
+- **One at a time:** each provider has at most one billable unit in flight,
+  either a single model call or a single batch job. Providers run in
+  parallel with each other.
+- **Before every unit:** the ledger's spend plus the unit's bound must be at
+  or under the provider's cap. If it is not, that provider's run stops and no
+  new unit starts. A trajectory cut off this way is discarded, not scored. It
+  is rerun if the cap is raised; otherwise the report lists the cells that
+  did not run.
 - **Per-call output bound:** the provider's hard output limit as
   configured. That is `max_output_tokens` where it also caps reasoning or
   thinking tokens, otherwise `max_output_tokens` plus the configured
   reasoning budget. The builder confirms which applies for each provider
-  before the pilot. It is chosen so that one pilot trajectory's structural
-  reservation (below) is at most half of every provider's cap, and it is
-  the same for every system and frozen before the pilot.
+  before the pilot. It is the same for every system and frozen before the
+  pilot.
 - **Per-call input bound:** never a token count. For the first call, one
   token per UTF-8 byte of the whole request (system prompt, tool
   definitions, user message), plus the framing allowance for each of its
@@ -651,27 +657,11 @@ The caps are enforced before money is spent, never after:
   since, plus the framing allowance for each added message. The totals are
   the sums of the section 8 buckets: total input is uncached plus
   cache-write plus cached input, and total output is the output bucket,
-  thinking and reasoning
-  included once.
+  thinking and reasoning included once.
 - **Framing allowance:** a fixed number of tokens per message for wrappers
   and provider-injected text (for example the tool-use system prompt).
   It is twice the largest framing overhead seen in the pilot, and at least
   256 tokens.
-- One token per byte is an assumption about tokenizers, not something
-  every provider documents. So the pilot checks every call's reported input
-  against its bound, and any call over its bound stops the pilot until the
-  bound is corrected.
-- **Pilot:** a trajectory reserves its structural worst case: 8 model calls,
-  each at the largest input the caps allow (system prompt, tool
-  definitions, and 12 results at the 100,000-byte result cap, by the input
-  bound), plus the output bound.
-- **Full run:** the structural bound is far above a real trajectory's cost
-  and would refuse work with money left. So each trajectory reserves 2 × the
-  pilot's p99 trajectory cost for that model, the same for every system of
-  that model. Before every model call, the loop checks that the trajectory's
-  cost so far plus that call's input bound and output bound fits in the
-  reservation. If it does not, the trajectory ends as a cap-hit failure in
-  the denominator. The report lists those cap hits per (model, system).
 - **Clamping:** a call's input bound never exceeds the model's maximum
   accepted input, because the provider rejects a larger request before
   billing it.
@@ -683,32 +673,31 @@ The caps are enforced before money is spent, never after:
   Where a model charges a higher long-context tier above an input size,
   a bound that reaches that size is priced at that tier, input and output
   both.
-- **In-flight limit:** trajectory reservations count against the cap only.
-  What is limited in flight is billable work not yet billed: the bounds of
-  calls already dispatched, plus the reservations of submitted batches
-  that have not finished. Their sum never exceeds the provider's margin
-  ($20, $10, $20); a call or batch waits until it fits. Spend plus
-  reservations stays at or under the cap, so if no request costs more than
-  twice its bound, the excess is at most the in-flight bounds, and actual
-  spend stays at or under cap plus margin, which is the budget. The pilot's
-  per-call check is the evidence for that factor. An error larger than 2×
-  is the accepted residual risk, and the report states it.
-- A batch job reserves its full worst case before submission. It is split
-  until it fits under both the remaining cap and the in-flight limit, or
-  it is not submitted. Batches cannot be stopped midway, so they are sized
-  up front.
-- If a bill exceeds its bound, that provider's run stops at once: no new
-  call, trajectory or batch starts. The margin absorbs only the requests
-  already in flight. Trajectories cut off by the stop are discarded and
-  rerun later; they are not scored as failures. The run resumes only after
-  the bound is corrected and the overrun is recorded in the report. If the
-  stop pushes a model past its 24-hour window (section 6), that model's
-  cells are rerun in a new window, or the report discloses the split.
-- The full run starts only if the pilot's measured cost per trajectory and
-  per graded answer, scaled to the full run and multiplied by 1.25, fits
-  under each provider's remaining cap. If one provider does not fit, that
-  model's full run uses fewer repeats or questions, chosen before running
-  and disclosed in the report. It is never dropped silently.
+- **Unit size:** a batch's bound is the sum of its items' bounds, and a
+  batch is split until its bound is at most the provider's margin ($20,
+  $10, $20). Before the pilot, the builder confirms that one call's largest
+  bound, after clamping and at the highest tier, is also below every
+  margin; the output bound is chosen so that it is.
+- **Why the budget holds:** before each unit, spend plus its bound is at or
+  under the cap, and only that unit is in flight. If no unit costs more than
+  twice its bound, the overrun is at most one bound, which is at most the
+  margin, so spend stays at or under cap plus margin, which is the budget.
+  One token per byte is an assumption about tokenizers, not something every
+  provider documents, so the pilot checks every call's reported input
+  against its bound. An error larger than 2× is the accepted residual risk,
+  and the report states it.
+- **Overrun:** if a bill exceeds its bound, that provider's run stops at once.
+  It resumes only after the bound is corrected and the overrun is recorded
+  in the report. If a stop pushes a model past its 24-hour window (section
+  6), that model's cells are rerun in a new window, or the report discloses
+  the split.
+- **Full-run gate:** the full run starts only if the pilot's measured cost per
+  trajectory and per graded answer, scaled to the full run and multiplied by
+  1.25, fits under each provider's remaining cap, and the pilot's measured
+  time per trajectory, at one call at a time, fits the 24-hour window. If a
+  provider does not fit, that model's full run uses fewer repeats or
+  questions, chosen before running and disclosed in the report. It is never
+  dropped silently.
 
 The pilot decides whether k = 3 is enough (if the C2 interval cannot exclude
 1.0 for reasons of variance alone, raise k within the caps). Run before
