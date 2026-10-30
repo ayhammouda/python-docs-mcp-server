@@ -27,6 +27,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - The published `index.db` now uses SQLite's rollback journal
   (`journal_mode=DELETE`), so servers that open it read-only no longer create
   `index.db-wal` and `index.db-shm` files beside it.
+- `index.db` no longer disappears for a moment while a new index is published,
+  so a server that starts at that moment no longer starts an auto-build. When
+  a running MCP client blocks the publish on Windows, `build-index` now says to
+  stop the clients, keeps the new build and names it, so it can be moved into
+  place by hand.
 
 ## [0.4.0] — Unreleased
 

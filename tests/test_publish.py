@@ -6,7 +6,9 @@ restart message (PUBL-05), and ingestion-while-serving regression (PUBL-06).
 """
 from __future__ import annotations
 
+import errno
 import logging
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -477,6 +479,28 @@ class TestSmokeTests:
         assert "journal_mode" in caplog.text
         assert str(build) in caplog.text
 
+    def test_locked_index_keeps_the_build(self, isolated_cache, monkeypatch, caplog, capsys):
+        index = isolated_cache / "index.db"
+        index.write_bytes(b"old index")
+        build = isolated_cache / "build-1.db"
+        self._create_symbols_only_db(build)
+        real_replace = os.replace
+
+        def locked_target(src, dst):
+            if Path(dst) == index:
+                raise PermissionError(errno.EACCES, "The process cannot access the file")
+            real_replace(src, dst)
+
+        monkeypatch.setattr("mcp_server_python_docs.ingestion.publish.os.replace", locked_target)
+        with caplog.at_level(logging.ERROR):
+            assert publish_index(build, "3.13", require_content=False) is False
+
+        assert build.exists()
+        assert index.read_bytes() == b"old index"
+        assert "stop every MCP client" in caplog.text
+        assert str(build) in caplog.text
+        assert "Restart your MCP client" not in capsys.readouterr().err
+
 
 class TestReadOnlyConnection:
     def test_can_query_existing_db(self, tmp_path):
@@ -545,6 +569,75 @@ class TestAtomicSwap:
         assert target.read_bytes() == b"newest"
         assert prev is not None
         assert prev.read_bytes() == b"current"  # Not "very old"
+
+    def test_target_exists_at_every_replace(self, tmp_path, monkeypatch):
+        target = tmp_path / "index.db"
+        target.write_bytes(b"old")
+        new_db = tmp_path / "build-123.db"
+        new_db.write_bytes(b"new")
+        real_replace = os.replace
+        replaced_onto: list[str] = []
+
+        def checked_replace(src, dst):
+            assert target.exists(), f"index.db missing at replace({src}, {dst})"
+            replaced_onto.append(Path(dst).name)
+            real_replace(src, dst)
+
+        monkeypatch.setattr("mcp_server_python_docs.ingestion.publish.os.replace", checked_replace)
+        prev = atomic_swap(new_db, target)
+
+        assert target.read_bytes() == b"new"
+        assert prev == tmp_path / "index.db.previous"
+        assert prev.read_bytes() == b"old"
+        assert replaced_onto == ["index.db.previous", "index.db"]
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["index.db", "index.db.previous"]
+
+    def test_swap_copies_when_hard_links_fail(self, tmp_path, monkeypatch):
+        target = tmp_path / "index.db"
+        target.write_bytes(b"old")
+        new_db = tmp_path / "build-123.db"
+        new_db.write_bytes(b"new")
+
+        def no_links(src, dst, *args, **kwargs):
+            raise OSError(errno.EPERM, "hard links not supported here")
+
+        monkeypatch.setattr("mcp_server_python_docs.ingestion.publish.os.link", no_links)
+        prev = atomic_swap(new_db, target)
+
+        assert target.read_bytes() == b"new"
+        assert prev is not None and prev.read_bytes() == b"old"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["index.db", "index.db.previous"]
+
+    def test_swap_after_a_refused_replace_leaves_no_temp_link(self, tmp_path):
+        target = tmp_path / "index.db"
+        target.write_bytes(b"old")
+        os.link(target, tmp_path / "index.db.previous")  # a refused publish left this link
+        new_db = tmp_path / "build-123.db"
+        new_db.write_bytes(b"new")
+        prev = atomic_swap(new_db, target)
+        assert target.read_bytes() == b"new"
+        assert prev is not None and prev.read_bytes() == b"old"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["index.db", "index.db.previous"]
+
+    def test_refused_previous_replace_cleans_temp_link(self, tmp_path, monkeypatch, caplog):
+        target = tmp_path / "index.db"
+        target.write_bytes(b"old")
+        new_db = tmp_path / "build-123.db"
+        new_db.write_bytes(b"new")
+        real_replace = os.replace
+
+        def locked_previous(src, dst):
+            if Path(dst).name == "index.db.previous":
+                raise PermissionError(errno.EACCES, "The process cannot access the file")
+            real_replace(src, dst)
+
+        monkeypatch.setattr("mcp_server_python_docs.ingestion.publish.os.replace", locked_previous)
+        with caplog.at_level(logging.ERROR), pytest.raises(PermissionError):
+            atomic_swap(new_db, target)
+
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["build-123.db", "index.db"]
+        assert target.read_bytes() == b"old"
+        assert "stop every MCP client" in caplog.text
 
 
 # ── Rollback tests ──

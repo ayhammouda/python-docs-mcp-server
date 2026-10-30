@@ -201,11 +201,14 @@ sits between ingestion and the storage layer becoming visible to `serve`:
   (`source`, `version`, `status`, `artifact_hash`, `notes`), used to record
   each build that reaches publishing; a rejected build is deleted with its
   row.
-- `atomic_swap` (line 344) renames an existing `index.db` to
-  `index.db.previous` (for rollback) and then `os.replace()`s the freshly
-  built database into place as the new `index.db`; both operations rely on
-  same-filesystem atomic rename semantics. `rollback()` reverses this by
-  restoring `index.db.previous`.
+- `atomic_swap` (line 355) keeps `index.db` present throughout. It
+  hard-links an existing `index.db` to `index.db.previous.<pid>.tmp`
+  (copying it where the filesystem has no hard links), `os.replace()`s that
+  onto `index.db.previous` and removes the temporary name, then
+  `os.replace()`s the build onto `index.db`. On Windows a running MCP client
+  holds `index.db` open, so a replace fails; it then logs that clients must
+  be stopped, names the kept build, and re-raises. `rollback()` restores
+  `index.db.previous`.
 - `publish_index` (line 419) orchestrates the sequence: compute the build
   artifact's SHA256, record the ingestion run, run smoke tests against the
   new database, and only call `atomic_swap` (plus print a restart-required

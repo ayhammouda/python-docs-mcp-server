@@ -1,14 +1,15 @@
 """Atomic-swap publishing with smoke tests and rollback (PUBL-01 through PUBL-06).
 
 Handles the full publish pipeline: timestamped build artifacts, SHA256 hashing,
-smoke test validation, atomic rename with .previous backup, and the restart
-message to stderr.
+smoke test validation, atomic replace with a hard-linked .previous backup, and
+the restart message to stderr.
 """
 from __future__ import annotations
 
 import hashlib
 import logging
 import os
+import shutil
 import sqlite3
 import sys
 from collections.abc import Iterable
@@ -357,10 +358,13 @@ def atomic_swap(
 ) -> Path | None:
     """Atomically swap a new database into place (PUBL-04).
 
-    If a previous ``index.db`` exists, it is renamed to ``index.db.previous``
-    for rollback. The new database is then renamed to ``index.db``.
+    ``index.db`` stays present throughout. An existing ``index.db`` is
+    hard-linked to ``index.db.previous.<pid>.tmp`` (copied where the
+    filesystem has no hard links), and that name is ``os.replace()``d onto
+    ``index.db.previous`` for rollback. The new database is then
+    ``os.replace()``d onto ``index.db``.
 
-    Both renames must be on the same filesystem for POSIX atomicity.
+    All names must be on the same filesystem for POSIX atomicity.
 
     Args:
         new_db_path: Path to the new build artifact.
@@ -369,22 +373,51 @@ def atomic_swap(
 
     Returns:
         Path to the .previous backup if one was created, or None.
+
+    Raises:
+        PermissionError: A replace was refused, as on Windows while a running
+            MCP client holds ``index.db`` open. The temporary link is removed,
+            the error is logged at ERROR with the kept build's path, and the
+            build is left in place.
     """
     if target_path is None:
         target_path = get_index_path()
 
     previous_path: Path | None = None
+    tmp: Path | None = None
+
+    def replace(src: Path, dst: Path) -> None:
+        try:
+            os.replace(src, dst)
+        except PermissionError as e:
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)
+            logger.error(
+                "Could not replace %s (%s). On Windows a running MCP client holds it open: "
+                "stop every MCP client, then move %s onto %s, or run build-index again. "
+                "build-index deletes builds older than one day.",
+                dst,
+                e,
+                new_db_path,
+                target_path,
+            )
+            raise
 
     if target_path.exists():
         previous = target_path.parent / (target_path.name + ".previous")
-        # Remove old .previous if it exists
-        if previous.exists():
-            previous.unlink()
-        os.rename(target_path, previous)
+        tmp = previous.with_name(f"{previous.name}.{os.getpid()}.tmp")
+        tmp.unlink(missing_ok=True)
+        try:
+            os.link(target_path, tmp)
+        except OSError:
+            shutil.copy2(target_path, tmp)
+        replace(tmp, previous)
+        # rename is a no-op when tmp and .previous already name the same file
+        tmp.unlink(missing_ok=True)
         logger.info("Previous index backed up to %s", previous)
         previous_path = previous
 
-    os.replace(new_db_path, target_path)
+    replace(new_db_path, target_path)
     logger.info("New index published at %s", target_path)
 
     return previous_path
@@ -447,7 +480,8 @@ def publish_index(
 
     Returns:
         True if publishing succeeded; False if the smoke tests failed (the build is
-        deleted) or the build could not leave WAL mode (the build is kept).
+        deleted), the build could not leave WAL mode (the build is kept), or the
+        swap was refused (the build is kept).
     """
     # Compute SHA256 (PUBL-02)
     artifact_hash = compute_sha256(build_db_path)
@@ -512,7 +546,10 @@ def publish_index(
         return False
 
     # Atomic swap (PUBL-04)
-    atomic_swap(build_db_path)
+    try:
+        atomic_swap(build_db_path)
+    except PermissionError:
+        return False  # atomic_swap logged the refusal and kept the build
 
     # Restart message (PUBL-05)
     print_restart_message()
