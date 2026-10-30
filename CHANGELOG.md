@@ -89,6 +89,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   them, not under the page's first section, so `kind="example"` hits point at
   the right anchor. Rebuild the index to get this fix (see the note at the
   top of this release).
+- `get_docs` now accepts the `.html` slug form that its description showed and
+  that hit URIs carry. It returns the canonical slug, and repeat `.html` calls
+  are served from the persistent cache. An unknown slug now gets an error that
+  shows the slug form and points to `search_docs`. The `slug` description now
+  reads "Page slug from a search_docs hit, e.g. 'library/asyncio-task'
+  ('.html' suffix accepted)".
 
 ### Security
 

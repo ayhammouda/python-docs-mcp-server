@@ -260,7 +260,11 @@ MaxResultsParam = Annotated[
 ]
 SlugParam = Annotated[
     str,
-    Field(max_length=500, description="Page slug (e.g. 'library/asyncio-task.html')"),
+    Field(
+        max_length=500,
+        description="Page slug from a search_docs hit, e.g. 'library/asyncio-task' "
+        "('.html' suffix accepted)",
+    ),
 ]
 AnchorParam = Annotated[
     str | None,
