@@ -8,9 +8,11 @@ URL rules:
 - RFC 3986 appendix C: delimiters around a URI (whitespace, ``<>``, quotes)
   are not part of it. Square brackets are legal only around an IP-literal
   host, so a URL here ends at ``[`` or ``]``.
-- GFM extended autolinks: a trailing ``?!.,:*_~`` is dropped, and a trailing
+- GFM extended autolinks: a trailing ``?!.,:*~`` is dropped, and a trailing
   ``)`` is dropped only while closing parentheses outnumber opening ones.
   ``)`` is a legal RFC 3986 sub-delimiter, so it is never dropped blindly.
+- Unlike GFM, a trailing ``_`` is kept on purpose: docs.python.org anchors
+  end in ``__`` (e.g. ``#object.__init__``).
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from __future__ import annotations
 import re
 
 _URL_RE = re.compile(r"https?://[^\s<>\"'`{}|\\^\[\]]+")
-_GFM_TRAILING = "?!.,:*_~"
+_GFM_TRAILING = "?!.,:*~"
 
 
 def _trim(url: str) -> str:

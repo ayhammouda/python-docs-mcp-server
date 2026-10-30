@@ -11,6 +11,7 @@ README = "https://github.com/python/cpython/blob/main/README.rst"
 OS = "https://docs.python.org/3/library/os.html"
 RE = "https://docs.python.org/3/library/re.html"
 WIKIPEDIA = "https://en.wikipedia.org/wiki/Python_(programming_language)"
+INIT = "https://docs.python.org/3/reference/datamodel.html#object.__init__"
 
 #: Context7 3.2.3 ``resolve-library-id`` text when team library filters apply:
 #: the policy note comes first, then the labeled result lines.
@@ -39,6 +40,19 @@ def test_first_web_url_drops_delimiters_but_keeps_balanced_parentheses(
     text: str, expected: str
 ) -> None:
     assert first_web_url(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param(f"[constructor]({INIT})", id="markdown-link"),
+        pytest.param(f"<{INIT}>", id="angle-autolink"),
+        pytest.param(f"#### (datamodel.rst)[{INIT}] (Score: 1)", id="gitmcp-doc-search"),
+        pytest.param(f"see {INIT}.", id="bare-then-period"),
+    ],
+)
+def test_first_web_url_keeps_a_python_dunder_anchor(text: str) -> None:
+    assert first_web_url(text) == INIT
 
 
 def test_labeled_value_finds_the_context7_id_behind_a_filter_note() -> None:
