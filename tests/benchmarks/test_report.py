@@ -921,3 +921,12 @@ def test_failed_token_count_renders_as_failed_and_is_listed(tmp_path: Path) -> N
     assert f"| tool-a | tool-a | q001 | {note} |" in report_text
     assert "pending token-count integration" not in report_text
     assert "1 count(s) failed" in summary_text
+
+
+def test_token_paragraph_gives_the_real_reason_for_approximate_counts(tmp_path: Path) -> None:
+    report_text = _generate_report(_minimal_valid_run_dir(tmp_path)).read_text(encoding="utf-8")
+    token_paragraph = report_text.split("## Token Counts (After Client Rewrap)", 1)[1]
+    token_paragraph = token_paragraph.split("\n\n", 2)[1]
+
+    assert "name-only tool stubs and no system prompt" in token_paragraph
+    assert "could not expose its exact wrapped message envelope" not in token_paragraph

@@ -12,8 +12,8 @@ files) plus ``docs/benchmarks/model-matrix.yml`` (the model axis, see
   success latency (median/p95/min/max over succeeded cells) beside a
   failed-cell latency median and count, failures, manifest exclusions, and
   environment metadata. Token records marked ``approximation: true`` (issue
-  #89 -- the client could not expose its exact client-wrapped message
-  envelope; see ``benchmarks.adapters.claude_tokens``) and exact counts
+  #89 -- the fixed-flow envelope has name-only tool stubs and no system
+  prompt; see ``benchmarks.adapters.claude_tokens``) and exact counts
   recorded for failed cells are counted and shown separately, never folded
   into the headline-eligible median (see ``_basic_stats``).
 - A compact README-safe summary template: strict tool+model
@@ -116,8 +116,8 @@ class CellRecord:
     raw_payload_tokens: int | None
     token_approximation: bool
     """True when the token record's ``client_wrapped_tokens`` count (if any) is an
-    approximation -- issue #89 / methodology "Token Measurement": the client
-    could not expose its exact wrapped message envelope. Approximate counts must
+    approximation -- issue #89 / methodology amendment of 2026-10-30: the fixed-flow
+    envelope has name-only tool stubs and no system prompt. Approximate counts must
     never be used for headline claims (see ``_basic_stats``, which excludes them)."""
     token_status: str | None
     """The token record's ``status`` (``counted``, ``placeholder``, ``failed``), or
@@ -679,8 +679,9 @@ def _render_report(
     lines.append(
         f"Primary metric label: `{METHODOLOGY_TOKEN_LABEL}` (see the methodology's 'Token "
         "Measurement' section). `None` placeholders are surfaced honestly below, never "
-        "reported as zero. Records marked `approximation: true` (issue #89 -- the client "
-        "could not expose its exact wrapped message envelope) are excluded from this "
+        "reported as zero. Records marked `approximation: true` (the fixed-flow envelope "
+        "has name-only tool stubs and no system prompt; see the methodology amendment of "
+        "2026-10-30) are excluded from this "
         "headline-eligible median; the excluded count is shown alongside it. The median "
         "covers succeeded cells only; exact counts recorded for failed cells are excluded "
         "and counted alongside it. A failed count is shown as failed, never as pending, and "
