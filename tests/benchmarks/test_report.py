@@ -801,7 +801,7 @@ def test_report_renders_manifest_exclusions(tmp_path: Path) -> None:
     assert "### Excluded Competitors" in report_text
     assert (
         "| some-excluded-competitor | vendor denied benchmarking permission | "
-        "forbidden-without-permission | 2026-07-09 | https://example.test/terms |"
+        "forbidden-without-permission | 2026-07-09 | <https://example.test/terms> |"
     ) in report_text
     assert (
         "- **Excluded competitors:** some-excluded-competitor "
@@ -1041,28 +1041,51 @@ def test_table_keeps_a_multi_line_cell_on_one_row() -> None:
 
 
 @pytest.mark.parametrize(
-    "text",
+    ("text", "markdown"),
     [
-        pytest.param("see https://x.y/__init__ now", id="dunder-in-url"),
-        pytest.param("fetch of https://x.y/a?b=1&c=~d*e failed", id="amp-tilde-star"),
-        pytest.param("see www.x.y/__main__.html?a=1&b=2", id="www"),
+        pytest.param(
+            "see https://x.y/__init__ now", "see <https://x.y/__init__> now", id="dunder-anchor"
+        ),
+        pytest.param("https://x.y/a.", "<https://x.y/a>.", id="trailing-period-outside"),
+        pytest.param(
+            "(see https://x.y/a_(b)), then",
+            r"(see <https://x.y/a_(b)>), then",
+            id="balanced-paren-kept-unbalanced-moved",
+        ),
+        pytest.param(
+            "fetch of https://x.y/a?b=1&c=~d*e failed",
+            "fetch of <https://x.y/a?b=1&c=~d*e> failed",
+            id="query-kept-literal",
+        ),
+        pytest.param(
+            "https://x.y/<img src=x onerror=alert(1)>",
+            "<https://x.y/>&lt;img src=x onerror=alert(1)&gt;",
+            id="html-after-url",
+        ),
+        pytest.param(
+            "https://x.y/![a](https://evil.example/p.png)`c`",
+            "<https://x.y/![a](https://evil.example/p.png)`c`>",
+            id="link-syntax-inside-url",
+        ),
+        pytest.param(
+            "www.example.com/__main__.html?a=1&b=2",
+            r"www\.example.com/\_\_main\_\_.html?a=1\&b=2",
+            id="www-not-linked",
+        ),
+        pytest.param("foowww.x.y/_a_/", r"foowww\.x.y/\_a\_/", id="www-without-boundary"),
+        pytest.param("foohttps://x.y/_a_", r"foohttps://x.y/\_a\_", id="url-without-boundary"),
+        pytest.param("a <b> &lt; c", r"a &lt;b&gt; \&lt; c", id="html-and-entity-text"),
     ],
 )
-def test_table_leaves_autolinked_urls_unescaped(text: str) -> None:
-    # GFM builds extended autolinks from the raw text, before backslash escapes
-    # resolve, so an escape inside a URL would show up in its text and its href.
-    assert _table(["Value"], [[text]])[2] == f"| {text} |"
+def test_table_cells_render_urls_as_explicit_autolinks(text: str, markdown: str) -> None:
+    # Bare URLs autolink differently across renderers; "<URL>" is taken literally.
+    assert _table(["Value"], [[text]])[2] == f"| {markdown} |"
 
 
 def test_table_escapes_a_pipe_inside_a_url_so_the_cell_boundary_holds() -> None:
-    assert _table(["Value"], [["https://x.y/a|b c"]])[2] == r"| https://x.y/a\|b c |"
+    cell = _table(["Value"], [["https://x.y/a?b=1&b=2|c d"]])[2]
 
-
-def test_table_escapes_link_and_code_syntax_that_follows_a_url() -> None:
-    # A renderer that linkifies after inline parsing would otherwise publish these.
-    cell = _table(["Value"], [["https://x.y/![a](https://evil.example/p.png)`c`"]])[2]
-
-    assert cell == r"| https://x.y/!\[a\](https://evil.example/p.png)\`c\` |"
+    assert cell == r"| <https://x.y/a?b=1&b=2\|c> d |"
 
 
 def test_token_paragraph_gives_the_real_reason_for_approximate_counts(tmp_path: Path) -> None:

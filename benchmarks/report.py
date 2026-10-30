@@ -525,31 +525,38 @@ def _relative_link(target: Path, from_dir: Path) -> str:
     return os.path.relpath(target.resolve(), start=from_dir.resolve())
 
 
-#: A URL run first (GFM extended autolinks are built from the raw text, before
-#: backslash escapes resolve), then the characters that change rendering inside an
-#: inline table cell. The run stops at link, image and code-span syntax and at "\",
-#: so those stay escaped even for a renderer that linkifies after inline parsing.
-#: "_" counts only at a word edge: between letters or digits it cannot open or close
-#: emphasis. "#", "+", "-", "." and the like matter only at the start of a block,
-#: which a cell never is.
+#: An http(s) URL run first, then "www." (never linked), then the characters that
+#: change rendering inside an inline table cell. "_" counts only at a word edge:
+#: between letters or digits it cannot open or close emphasis. "#", "+", "-", "." and
+#: the like matter only at the start of a block, which a cell never is.
 _CELL_MARKDOWN = re.compile(
-    r"(?P<url>(?:https?://|www\.)[^\s<>\[\]`\\]+)|[\\`*\[\]<|~&]|(?<![^\W_])_|_(?![^\W_])"
+    r"(?P<url>(?<![A-Za-z0-9])https?://[^\s<>]+)|www\.|[\\`*\[\]|~&<>]|(?<![^\W_])_|_(?![^\W_])"
 )
+_CELL_ENTITIES = {"<": "&lt;", ">": "&gt;", "www.": "www\\."}
+_URL_TRAILING = ".,;:!?'\""
 
 
 def _escape_cell_match(match: re.Match[str]) -> str:
-    if match["url"] is not None:
-        return match["url"].replace("|", "\\|")  # the table splitter resolves "\|"
-    return "\\" + match[0]
+    url = match["url"]
+    if url is None:
+        return _CELL_ENTITIES.get(match[0], "\\" + match[0])
+    # Trailing punctuation and an unbalanced ")" belong to the sentence, not the link.
+    end, unbalanced = len(url), url.count(")") - url.count("(")
+    while url[end - 1] in _URL_TRAILING or (url[end - 1] == ")" and unbalanced > 0):
+        unbalanced -= url[end - 1] == ")"
+        end -= 1
+    return "<" + url[:end].replace("|", "\\|") + ">" + url[end:]  # splitter resolves "\|"
 
 
 def _cell(text: str) -> str:
     """Render ``text`` as one literal plain-text table cell.
 
-    Line breaks become spaces (a newline would end the row), then every significant
-    character gets a backslash, in one linear pass, so a proxy error body such as
-    "Error | Gateway" cannot add a column and ``__init__`` stays ``__init__``. URLs
-    keep their raw text, with only "|" escaped.
+    Line breaks become spaces (a newline would end the row). Then, in one linear pass:
+    an http(s) URL becomes an explicit ``<URL>`` autolink, whose content CommonMark
+    takes literally, so it renders the same in every renderer; "www." gets an escaped
+    dot so no extended autolink fires; "<" and ">" become entities; and every other
+    significant character gets a backslash, so a proxy error body such as
+    "Error | Gateway" cannot add a column and ``__init__`` stays ``__init__``.
     """
     return _CELL_MARKDOWN.sub(_escape_cell_match, re.sub(r"\r\n|[\r\n]", " ", text))
 
