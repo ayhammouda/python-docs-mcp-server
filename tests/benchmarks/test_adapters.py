@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from benchmarks.adapters import (
@@ -211,6 +213,24 @@ def test_redact_api_keys_redacts_every_occurrence_of_a_repeated_key(
     assert (
         redact_api_keys("a fake-ref-key b fake-ref-key c") == "a [redacted] b [redacted] c"
     )
+
+
+def test_redact_api_keys_stays_linear_on_a_large_body_with_many_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for key_env in PROVIDER_API_KEY_ENV.values():
+        monkeypatch.delenv(key_env, raising=False)
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV["ref"], "fake-ref-key")
+    filler = " " + "x" * 100 + " "
+    body = ("fake-ref-key" + filler) * 20_000  # 2.3 MB, 20,000 matches
+
+    started = time.perf_counter()
+    redacted = redact_api_keys(body)
+    elapsed = time.perf_counter() - started
+
+    assert redacted == ("[redacted]" + filler) * 20_000
+    # Rebuilding the string once per match took seconds here; one pass takes milliseconds.
+    assert elapsed < 1.0
 
 
 # --- Live adapter stubs: guard enforced, no network ever possible -----------

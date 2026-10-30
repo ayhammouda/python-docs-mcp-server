@@ -152,9 +152,13 @@ def redact_api_keys(text: str) -> str:
             merged[-1][1] = max(merged[-1][1], end)
         else:
             merged.append([start, end])
-    for start, end in reversed(merged):
-        text = text[:start] + "[redacted]" + text[end:]
-    return text
+    parts: list[str] = []
+    position = 0
+    for start, end in merged:  # one pass: copying the tail per match is quadratic
+        parts += (text[position:start], "[redacted]")
+        position = end
+    parts.append(text[position:])
+    return "".join(parts)
 
 
 def require_live_competitor(name: str) -> None:
