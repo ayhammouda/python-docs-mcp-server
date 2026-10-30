@@ -630,7 +630,9 @@ The caps are enforced before money is spent, never after:
 
 - One ledger per provider records actual spend (provider-reported usage × the
   price snapshot) and open reservations. Outstanding batch jobs and retries
-  count as reservations.
+  count as reservations. A call that returns no usage object (a timeout, a
+  dropped connection, a trajectory cut by its time cap) may still be billed,
+  so it is booked as spent at its full bound and never released.
 - Every trajectory reserves its budget before it starts, and does not start
   if the reservation does not fit under the remaining cap. On completion,
   the reservation is replaced by the actual cost.
@@ -638,8 +640,9 @@ The caps are enforced before money is spent, never after:
   configured. That is `max_output_tokens` where it also caps reasoning or
   thinking tokens, otherwise `max_output_tokens` plus the configured
   reasoning budget. The builder confirms which applies for each provider
-  before the pilot. It is the same for every system and frozen before the
-  pilot.
+  before the pilot. It is chosen so that one pilot trajectory's structural
+  reservation (below) is at most half of every provider's cap, and it is
+  the same for every system and frozen before the pilot.
 - **Per-call input bound:** never a token count. For the first call, one
   token per UTF-8 byte of the whole request (system prompt, tool
   definitions, user message), plus the framing allowance for each of its
@@ -669,9 +672,17 @@ The caps are enforced before money is spent, never after:
   cost so far plus that call's input bound and output bound fits in the
   reservation. If it does not, the trajectory ends as a cap-hit failure in
   the denominator. The report lists those cap hits per (model, system).
-- **Pricing a bound:** an input bound is priced at the provider's highest
-  input rate (the cache-write rate where one exists), and an output bound
-  at the output rate.
+- **Clamping:** a call's input bound never exceeds the model's maximum
+  accepted input, because the provider rejects a larger request before
+  billing it.
+- **Pricing a bound:** an input bound is priced at the highest input rate
+  the harness's requests can incur: OpenAI's cache-write rate for the
+  default 30-minute lifetime (the harness never requests the 12-hour
+  lifetime), and the uncached rate for Anthropic and Gemini (no explicit
+  caching is requested). An output bound is priced at the output rate.
+  Where a model charges a higher long-context tier above an input size,
+  a bound that reaches that size is priced at that tier, input and output
+  both.
 - **In-flight limit:** trajectory reservations count against the cap only.
   What is limited in flight is billable work not yet billed: the bounds of
   calls already dispatched, plus the reservations of submitted batches
