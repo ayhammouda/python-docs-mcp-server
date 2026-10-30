@@ -4,8 +4,8 @@ Implements the "Token Measurement" section of
 ``docs/benchmarks/PUBLIC-BENCHMARK-METHODOLOGY.md`` (roadmap decision 5.8):
 count the client-rewrapped message envelope with Claude token counting,
 record raw payload tokens separately as diagnostic data, and mark a result
-``approximation: true`` when the exact client-wrapped envelope cannot be
-recovered.
+``approximation: true``. Every fixed-flow count is one: the envelope has no
+real tool definitions or system prompt (see "Envelope exactness" below).
 
 **Binding pre-flight amendment (issue #89, 2026-07-08):** no third-party
 dependency may be added for this -- not the ``anthropic`` SDK, not an
