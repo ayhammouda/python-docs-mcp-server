@@ -231,3 +231,83 @@ These are requirements, not separate PRs here (design §11):
 Since quality comes first, use superpowers:subagent-driven-development for
 every plan. Run each wave's plans in parallel sessions, one worktree per
 branch.
+
+## Release Plan (owner decision, 2026-10-30)
+
+The order is **0.4.1 (pre-benchmark) → benchmark → v0.5.0 (launch)**.
+
+- Shipping the fixes first means users don't wait on known bugs while the
+  benchmark is built.
+- The benchmark then measures an artifact anyone can install from PyPI.
+- v0.5.0 stays the launch release that strategic roadmap §4 defines: the public
+  benchmark plus the launch post.
+
+### What ships in 0.4.1
+
+- PR #162: the MCP SDK v2 migration and the `certifi` security lock.
+- PR #158: Python 3.15 docs coverage.
+  - It is already on `main` (`e4f8b71`), but it came after the `v0.4.0` tag
+    and has no CHANGELOG entry yet.
+- Audit PRs 1–5. PRs 1 and 3 ship together (D7), so users rebuild the index
+  only once.
+- PR #164 (`.gitignore`) and PR #160, if merged.
+
+### Merged before the tag but not part of the wheel
+
+- **PR 8 (release integrity):** it must be on `main` before tagging, because it
+  changes how `publish` downloads and checks `dist`. 0.4.1 is its first real
+  use, so watch that the artifact-ID download and the checksum comparison pass.
+- **PRs 6 and 7 (Vision) and PR #163 (plans):** they can land anytime, and are
+  independent of the release.
+- **Not before 0.4.1:** PR 9 and the benchmark harness. `benchmarks/` is not in
+  the wheel.
+
+### Gates, following `.github/RELEASE.md`
+
+1. Everything above is merged, and the required CI passes on the resulting
+   `main` commit. That includes "Product regression" on the full index, because
+   PR 1 changes search.
+2. Manual QA per `.github/INTEGRATION-TEST.md`: MCP Inspector and one real
+   client. This is still open from PR #162.
+3. A release-prep PR:
+   - Set version `0.4.1` in `pyproject.toml`, `uv.lock` and both `server.json`
+     entries.
+   - Move `[Unreleased]` under `## [0.4.1] — <release date>`.
+   - Add the missing PR #158 entry under Added.
+   - Keep PR 1's rebuild instruction (`doctor` prints the exact command).
+   - Correct the stale header `## [0.4.0] — Unreleased` to the published date,
+     `2026-10-19` (PyPI upload). This edits CHANGELOG history, which is
+     forbidden territory, so the PR needs `supervisor-review`, and Vision
+     decides.
+4. Vision runs `pdctl release <exact main commit> v0.4.1`.
+5. Confirm step 5 of `RELEASE.md`:
+   - every job passed;
+   - PyPI and the MCP Registry show 0.4.1;
+   - the GitHub release has both artifacts;
+   - `uvx --refresh python-docs-mcp-server@0.4.1 --version` reports `0.4.1`.
+
+### Version number
+
+0.4.1 contains an addition (Python 3.15 docs) and a major-version change of a
+dependency (`mcp` 2). Strict SemVer would ask for a minor bump. SemVer 2.0.0
+item 4 allows this under 0.y.z, and the project keeps the minor number for the
+v0.5.0 launch. Tool names, parameters and result shapes do not change.
+
+### After 0.4.1
+
+**Benchmark track (design §12):**
+- PR 9 first.
+- Then the harness, with mocked end-to-end CI.
+- Then one container per (model, system), plus the air-gapped arm (design
+  §7.2–7.4).
+- Then a pilot, then the full run.
+- The full run installs `python-docs-mcp-server==0.4.1` from PyPI and records
+  the index sha256.
+- API keys from the local, ignored `.env.local` go only into the containers.
+  The Gemini key must be named `GOOGLE_API_KEY`.
+
+**v0.5.0 (launch):**
+- the benchmark report and the README summary;
+- the launch post;
+- any fixes the benchmark turns up. If a fix changes retrieval, the affected
+  cells are re-run before publishing.
