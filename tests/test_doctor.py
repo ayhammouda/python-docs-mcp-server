@@ -1,7 +1,7 @@
 """Tests for the doctor CLI subcommand (CLI-02).
 
-All tests spawn a real subprocess to verify the doctor command's behavior,
-matching the pattern from test_stdio_hygiene.py.
+`TestDoctor` spawns a real subprocess, matching test_stdio_hygiene.py. The
+probe classes call the checks in-process.
 """
 import os
 import platform
@@ -233,6 +233,7 @@ class TestFts5Probe:
         assert f"+ PASS: SQLite FTS5 -- SQLite {sqlite3.sqlite_version}" in result.output
 
     def test_fts5_hint_never_suggests_pysqlite3(self, monkeypatch):
+        # The old pysqlite3 hint was Linux x86-64 only; keep testing there.
         monkeypatch.setattr(platform, "system", lambda: "Linux")
         monkeypatch.setattr(platform, "machine", lambda: "x86_64")
         with pytest.raises(FTS5UnavailableError) as excinfo:
@@ -243,6 +244,7 @@ class TestFts5Probe:
         assert "python.org" in message
 
     def test_readonly_probe_without_fts5_gets_the_one_hint(self, monkeypatch):
+        # The old pysqlite3 hint was Linux x86-64 only; keep testing there.
         monkeypatch.setattr(platform, "system", lambda: "Linux")
         monkeypatch.setattr(platform, "machine", lambda: "x86_64")
         conn = _StubConnection("attempt to write a readonly database", ("THREADSAFE=1",))

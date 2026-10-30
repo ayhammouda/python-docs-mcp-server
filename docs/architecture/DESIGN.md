@@ -256,10 +256,10 @@ exact Python identifier search.
   `PRAGMA journal_mode = WAL`. This is the connection type `build-index`
   uses.
 - `assert_fts5_available` (line 73) checks FTS5 support with one actionable
-  error message: on a read-write connection it attempts to
-  `CREATE`/`DROP` a temporary FTS5 table as a definitive check; on a
-  read-only connection, where that `CREATE` fails for the unrelated reason
-  that the connection is read-only, it falls back to checking
+  error message: it attempts to `CREATE`/`DROP` a temporary FTS5 table as a
+  definitive check. That works on the server's read-only connection too,
+  because the table lives in the temp schema. Only if that `CREATE` fails
+  because the connection is read-only does it fall back to checking
   `PRAGMA compile_options` for `ENABLE_FTS5`. If FTS5 is genuinely
   unavailable, it raises `FTS5UnavailableError` telling the user to install a
   Python whose SQLite includes FTS5 (`uv python install` or python.org).
