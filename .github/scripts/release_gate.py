@@ -1,10 +1,15 @@
 """Fail closed unless this tag names an independently verified main commit.
 
-The verification record is a PR comment by the repository owner whose first line
-is exactly ``Independent verification: PASS`` and which has a ``head: <sha>``
-line for the merged PR head. Anyone who can post as the owner account can write
-it, so it is a process tripwire, not a security boundary. Tag creation rules,
-immutable tags, the ``pypi`` environment and the required checks carry security.
+The verification record is an unedited PR comment by the repository owner whose
+first line is exactly ``Independent verification: PASS`` and which has a
+``head: <sha>`` line for the merged PR head. Anyone who can post as the owner
+account can write it, and the owner account also merges, so it is a process
+tripwire, not a security boundary. Tag creation rules, immutable tags, the
+``pypi`` environment and the required checks carry security.
+
+A credential-bound check needs a verifier identity separate from the merger: a
+dedicated GitHub App with ``checks: write``, or a machine account. Restoring one
+is the path back to that stronger control, and it is Aymen's decision.
 """
 
 import json
@@ -30,7 +35,13 @@ RECORD = "Independent verification: PASS"
 
 def is_record(comment, owner: str, head: str) -> bool:
     lines = comment["body"].replace("\r\n", "\n").split("\n")
-    return comment["user"]["login"] == owner and lines[0] == RECORD and f"head: {head}" in lines
+    return (
+        (comment["user"] or {}).get("login") == owner
+        # An edited record could name a head nobody verified, so only unedited ones count.
+        and comment["updated_at"] == comment["created_at"]
+        and lines[0] == RECORD
+        and f"head: {head}" in lines
+    )
 
 
 def require_eligible(api, sha: str, owner: str) -> None:

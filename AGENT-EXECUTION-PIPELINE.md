@@ -474,7 +474,12 @@ Escalate to Aymen only for:
 - GitHub settings that need an admin: rulesets, environments, Apps, secrets;
 - account or credential access;
 - spending beyond the budget below;
-- an external blocker.
+- an external blocker;
+- restoring a verifier identity separate from the merger (see below).
+
+Until Aymen changes them, the `main` ruleset still requires the retired
+verifier App's "Independent verification" check and tag creation is limited
+to that App. The owner can neither merge nor tag until then.
 
 ### Implementers
 
@@ -495,7 +500,35 @@ Fix Critical and Important findings test-first. Record each declined finding
 with its reason. The record is a PR comment by the owner. Its first line is
 exactly `Independent verification: PASS`. It contains a line
 `head: <40-hex head SHA>` and states the three verdicts and the gate result.
-A new head invalidates it.
+A new head invalidates it. Post a new comment for a new record; the release
+gate ignores edited comments.
+
+The record is a process tripwire, not a security boundary. The owner account
+writes it and also merges, so anyone who can act as that account can forge it.
+A credential-bound check needs a verifier identity separate from the merger: a
+dedicated GitHub App with `checks: write`, or a machine account. Restoring one
+is the path back to that control, and the owner escalates it to Aymen.
+
+#### Carrying verification forward after an update from `main`
+
+The `main` ruleset requires branches to be up to date before merging, so every
+merge forces open PRs to update, which changes their head SHAs.
+
+Carry verification forward when the head changed only because the branch was
+updated from current `main`, by rebase or by merging `main` into it, with no
+conflicts. Before carrying it forward, the owner:
+
+1. runs `git range-diff <old-base>..<old-head> <new-base>..<new-head>` and
+   confirms that none of the PR's own patches changed;
+2. confirms that the required checks pass on the new head;
+3. posts a new record comment. Its first line is
+   `Independent verification: PASS`, it names the new head on a `head:` line,
+   and it includes the range-diff evidence and a link to the original full
+   verification.
+
+Run full verification again if the update needed conflict resolution, any
+patch changed, or the PR got new commits of its own. At minimum the new
+verification covers the changed parts, with the Fable reviewer and Codex.
 
 ### Merge gate
 

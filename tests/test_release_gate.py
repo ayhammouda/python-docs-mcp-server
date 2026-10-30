@@ -13,6 +13,11 @@ RECORD = (
     "Fable reviewer: PASS. Codex peer review: PASS. ponytail-review: PASS.\n"
     "Gate: green."
 )
+CREATED = "2026-10-30T10:00:00Z"
+
+
+def note(body, login=OWNER, updated_at=CREATED):
+    return {"user": {"login": login}, "body": body, "created_at": CREATED, "updated_at": updated_at}
 
 
 def make_state(comments):
@@ -40,12 +45,12 @@ def make_state(comments):
 
 
 def test_release_eligibility_rejects_incomplete_or_wrong_identity_evidence():
-    state = make_state([{"user": {"login": OWNER}, "body": RECORD}])
+    state = make_state([note(RECORD)])
     checks = state[f"commits/{SHA}/check-runs?per_page=100"]["check_runs"]
     codeql = state[f"commits/{HEAD}/check-runs?per_page=100"]["check_runs"][0]
     gate = GATE["require_eligible"]
     gate(state.__getitem__, SHA, OWNER)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="repository owner"):
         gate(state.__getitem__, SHA, "")
     with pytest.raises(ValueError, match="verification record"):
         gate(state.__getitem__, SHA, "someone-else")
@@ -69,28 +74,17 @@ def test_release_eligibility_rejects_incomplete_or_wrong_identity_evidence():
 @pytest.mark.parametrize(
     "comment",
     [
-        pytest.param({"user": {"login": "someone-else"}, "body": RECORD}, id="not-owner"),
-        pytest.param({"user": {"login": OWNER}, "body": "\n" + RECORD}, id="first-line-blank"),
+        pytest.param(note(RECORD, login="someone-else"), id="not-owner"),
+        pytest.param(note("\n" + RECORD), id="first-line-blank"),
+        pytest.param(note(RECORD.replace("PASS\n", "PASS \n", 1)), id="first-line-trailing-space"),
         pytest.param(
-            {"user": {"login": OWNER}, "body": RECORD.replace("PASS\n", "PASS (partial)\n", 1)},
-            id="first-line-suffix",
+            note(RECORD.replace("PASS\n", "PASS (partial)\n", 1)), id="first-line-suffix"
         ),
-        pytest.param(
-            {"user": {"login": OWNER}, "body": RECORD.replace(": PASS", ": FAIL", 1)},
-            id="fail-verdict",
-        ),
-        pytest.param(
-            {"user": {"login": OWNER}, "body": RECORD.replace(HEAD, "d" * 40)},
-            id="other-head",
-        ),
-        pytest.param(
-            {"user": {"login": OWNER}, "body": RECORD.replace("head: ", "verified head: ")},
-            id="head-not-own-line",
-        ),
-        pytest.param(
-            {"user": {"login": OWNER}, "body": RECORD.replace(f"head: {HEAD}\n", "")},
-            id="head-missing",
-        ),
+        pytest.param(note(RECORD.replace(": PASS", ": FAIL", 1)), id="fail-verdict"),
+        pytest.param(note(RECORD.replace(HEAD, "d" * 40)), id="other-head"),
+        pytest.param(note(RECORD.replace("head: ", "verified head: ")), id="head-not-own-line"),
+        pytest.param(note(RECORD.replace(f"head: {HEAD}\n", "")), id="head-missing"),
+        pytest.param(note(RECORD, updated_at="2026-10-30T11:00:00Z"), id="edited"),
     ],
 )
 def test_release_eligibility_requires_exact_owner_verification_record(comment):
@@ -114,11 +108,15 @@ def test_release_eligibility_ignores_retired_verifier_check_without_record():
 
 
 def test_release_eligibility_accepts_record_among_other_comments_with_crlf():
+    deleted_author = note(RECORD)
+    deleted_author["user"] = None
     state = make_state(
         [
-            {"user": {"login": "someone-else"}, "body": RECORD},
-            {"user": {"login": OWNER}, "body": "Looks good."},
-            {"user": {"login": OWNER}, "body": RECORD.replace("\n", "\r\n")},
+            deleted_author,
+            note(RECORD, login="someone-else"),
+            note("Looks good."),
+            note(RECORD.replace(f"head: {HEAD}", "head: " + "d" * 40)),
+            note(RECORD.replace("\n", "\r\n")),
         ]
     )
     GATE["require_eligible"](state.__getitem__, SHA, OWNER)
