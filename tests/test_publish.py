@@ -851,6 +851,33 @@ class TestBuildCleanup:
         assert build_dirs == [isolated_cache]  # the build really ran in tmp_path
         assert list(isolated_cache.glob("build-*")) == []
 
+    def test_successful_build_reaches_publish(self, isolated_cache, monkeypatch):
+        from click.testing import CliRunner
+
+        from mcp_server_python_docs.__main__ import main
+
+        calls: list[tuple[Path, bool]] = []  # (build path, existed when publish ran)
+
+        def recording_publish(build_db_path, version, *, require_content=True):
+            calls.append((build_db_path, build_db_path.exists()))
+            return True
+
+        monkeypatch.setattr(
+            "mcp_server_python_docs.ingestion.inventory.ingest_inventory",
+            lambda conn, version, *, is_default=False: 1,
+        )
+        monkeypatch.setattr(
+            "mcp_server_python_docs.ingestion.publish.publish_index", recording_publish
+        )
+
+        result = CliRunner().invoke(main, ["build-index", "--versions", "3.13", "--skip-content"])
+
+        assert result.exit_code == 0
+        assert len(calls) == 1
+        build_db_path, existed = calls[0]
+        assert build_db_path.parent == isolated_cache
+        assert existed  # a dropped `built = True` would delete the build before publish
+
     def test_sweep_removes_only_stale_build_files(self, tmp_path):
         two_days_ago = time.time() - 2 * 86_400
         stale = [tmp_path / f"build-20200101-000000-000000.db{s}" for s in ("", "-wal", "-shm")]
