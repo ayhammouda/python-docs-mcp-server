@@ -32,6 +32,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   a running MCP client blocks the publish on Windows, `build-index` now says to
   stop the clients, keeps the new build and names it, so it can be moved into
   place by hand.
+- `build-index` now deletes `build-*.db*` files older than one day. Killed
+  auto-builds used to leave them in the cache folder for good.
 
 ## [0.4.0] — Unreleased
 

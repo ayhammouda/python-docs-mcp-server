@@ -11,6 +11,7 @@ import logging
 import os
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,7 @@ from mcp_server_python_docs.ingestion.publish import (
     publish_index,
     rollback,
     run_smoke_tests,
+    sweep_stale_builds,
 )
 from mcp_server_python_docs.storage.db import (
     bootstrap_schema,
@@ -847,4 +849,61 @@ class TestBuildCleanup:
 
         assert result.exit_code == 1
         assert build_dirs == [isolated_cache]  # the build really ran in tmp_path
+        assert list(isolated_cache.glob("build-*")) == []
+
+    def test_sweep_removes_only_stale_build_files(self, tmp_path):
+        two_days_ago = time.time() - 2 * 86_400
+        stale = [tmp_path / f"build-20200101-000000-000000.db{s}" for s in ("", "-wal", "-shm")]
+        fresh = tmp_path / "build-20261030-000000-000000.db"
+        kept = [
+            tmp_path / name
+            for name in ("index.db", "index.db.previous", "retrieved-docs-cache.sqlite3")
+        ]
+        for path in [*stale, fresh, *kept]:
+            path.write_bytes(b"x")
+        for path in [*stale, *kept]:
+            os.utime(path, (two_days_ago, two_days_ago))
+
+        removed = sweep_stale_builds(tmp_path)
+
+        assert sorted(removed) == sorted(stale)
+        assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+            [fresh.name, *(p.name for p in kept)]
+        )
+
+    def test_sweep_skips_files_it_cannot_delete(self, tmp_path, monkeypatch, caplog):
+        stuck = tmp_path / "build-20200101-000000-000000.db"
+        stuck.write_bytes(b"x")
+        two_days_ago = time.time() - 2 * 86_400
+        os.utime(stuck, (two_days_ago, two_days_ago))
+        real_unlink = Path.unlink
+
+        def refuse(self, missing_ok=False):
+            if self == stuck:
+                raise PermissionError(errno.EACCES, "in use by another process")
+            real_unlink(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", refuse)
+        with caplog.at_level(logging.WARNING):
+            assert sweep_stale_builds(tmp_path) == []
+
+        assert stuck.exists()
+        assert str(stuck) in caplog.text
+
+    def test_build_index_sweeps_stale_builds(self, isolated_cache, monkeypatch):
+        from click.testing import CliRunner
+
+        from mcp_server_python_docs.__main__ import main
+
+        stale = isolated_cache / "build-20200101-000000-000000.db-wal"
+        stale.write_bytes(b"")
+        two_days_ago = time.time() - 2 * 86_400
+        os.utime(stale, (two_days_ago, two_days_ago))
+        monkeypatch.setattr(
+            "mcp_server_python_docs.ingestion.inventory.ingest_inventory", _offline
+        )
+
+        result = CliRunner().invoke(main, ["build-index", "--versions", "3.13", "--skip-content"])
+
+        assert result.exit_code == 1
         assert list(isolated_cache.glob("build-*")) == []

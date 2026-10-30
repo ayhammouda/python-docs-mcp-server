@@ -172,6 +172,7 @@ def build_index(versions: str, skip_content: bool) -> None:
         generate_build_path,
         parse_expected_versions,
         publish_index,
+        sweep_stale_builds,
     )
     from mcp_server_python_docs.ingestion.sphinx_json import (
         build_sphinx_bootstrap_requirements,
@@ -211,6 +212,7 @@ def build_index(versions: str, skip_content: bool) -> None:
 
     # Build into a timestamped artifact, not directly to index.db (PUBL-01)
     build_db_path = generate_build_path()
+    sweep_stale_builds(build_db_path.parent)
     logger.info("Building index at %s", build_db_path)
 
     conn = get_readwrite_connection(build_db_path)

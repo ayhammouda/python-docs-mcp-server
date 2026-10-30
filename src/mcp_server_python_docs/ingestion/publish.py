@@ -12,6 +12,7 @@ import os
 import shutil
 import sqlite3
 import sys
+import time
 from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
@@ -61,6 +62,27 @@ def delete_build(build_db_path: Path) -> None:
     for suffix in ("", "-wal", "-shm"):
         Path(f"{build_db_path}{suffix}").unlink(missing_ok=True)
     logger.info("Deleted failed build %s", build_db_path.name)
+
+
+def sweep_stale_builds(cache_dir: Path, max_age_seconds: float = 86_400.0) -> list[Path]:
+    """Delete build-*.db* files older than ``max_age_seconds``; return the deleted paths.
+
+    A killed auto-build leaves its build file behind. The age floor spares a
+    build that another process is still writing.
+    """
+    cutoff = time.time() - max_age_seconds
+    removed: list[Path] = []
+    for path in cache_dir.glob("build-*.db*"):
+        try:
+            if path.stat().st_mtime >= cutoff:
+                continue
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("Could not delete stale build file %s: %s", path, exc)
+            continue
+        logger.info("Deleted stale build file %s", path.name)
+        removed.append(path)
+    return removed
 
 
 def compute_sha256(db_path: Path) -> str:
