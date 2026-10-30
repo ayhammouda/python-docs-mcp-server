@@ -526,8 +526,12 @@ def _relative_link(target: Path, from_dir: Path) -> str:
 
 def _table(headers: list[str], rows: list[list[str]]) -> list[str]:
     lines = ["| " + " | ".join(headers) + " |", "| " + " | ".join(["---"] * len(headers)) + " |"]
-    # An unescaped "|" in a cell (e.g. a proxy error body) would add a column.
-    lines.extend("| " + " | ".join(cell.replace("|", "\\|") for cell in row) + " |" for row in rows)
+    # An unescaped "|" in a cell (e.g. a proxy error body) would add a column; escape
+    # backslashes first so a literal "\|" cannot turn back into a column delimiter.
+    lines.extend(
+        "| " + " | ".join(cell.replace("\\", "\\\\").replace("|", "\\|") for cell in row) + " |"
+        for row in rows
+    )
     return lines
 
 
