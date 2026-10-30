@@ -4,6 +4,11 @@
 **Status:** Research notes. These notes do not change the accepted
 methodology in `docs/benchmarks/PUBLIC-BENCHMARK-METHODOLOGY.md`. They do not
 authorize paid calls or public claims (see issue #63 and decision 5.17).
+**Update 2026-10-30:** `docs/benchmarks/AGENTIC-BENCHMARK-DESIGN.md`
+supersedes this note wherever they differ. §2.2–2.4 (provider-hosted MCP),
+§6 (frameworks) and §7–8 (recommendation, open questions) record options
+the design rejected or settled; they stay as evidence for those choices.
+The repo has used `mcp` 2.3.0 since #162 (`0b37e9c`).
 **Scope:** How to benchmark `python-docs-mcp-server` against several LLMs
 called through their **APIs** (Anthropic Claude, OpenAI GPT/Codex, Google
 Gemini Flash, Google Gemma), with each model run in its own sandbox.
@@ -93,8 +98,10 @@ often, so re-check them on the day of any live run.
   Token counting supports "all active models"
   ([token counting](https://platform.claude.com/docs/en/build-with-claude/token-counting)),
   so a live count with that default will likely fail **(inferred)**.
-  - Claude 4.7 and later use a newer tokenizer. It produces about 30% more
-    tokens for the same text (same source).
+  - Opus 4.7 introduced a newer tokenizer, shared by Fable 5, Fable 5.1,
+    Mythos 5 and Mythos 5.1. It counts roughly 30% more tokens than
+    models before Opus 4.7, depending on content. The page does not say
+    which other models use it (same source, checked 2026-10-30).
   - The count model is therefore part of the methodology. Pin it and record
     it **(inferred)**.
 
@@ -329,7 +336,8 @@ Reproducibility hazards:
 - Earlier revisions used a connection-scoped `initialize` handshake. Peers
   detect each other's era and fall back
   ([transports](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports)).
-- This repo locks `mcp==1.30.0` (`uv.lock`). PyPI's latest `mcp` is 2.3.0.
+- When this note was written the repo locked `mcp==1.30.0` (`uv.lock`);
+  since #162 it locks 2.3.0, PyPI's latest.
   Pin the harness's MCP client version and record it, because the client
   version is part of the system under test **(inferred)**.
 
@@ -571,7 +579,7 @@ Use two separate numbers. Never merge them.
    - OpenAI injects functions into the system message
      ([function calling](https://developers.openai.com/api/docs/guides/function-calling)).
    - Counts are not comparable across providers, and the tokenizer can change
-     between generations of one provider (about +30% at Claude 4.7)
+     between generations of one provider (roughly +30% from Opus 4.7 on)
      ([token counting](https://platform.claude.com/docs/en/build-with-claude/token-counting)).
    - Store the raw usage objects verbatim. `model-matrix.yml` already marks
      them as diagnostic.
@@ -853,6 +861,7 @@ timings.
    calls are authorized yet.
 8. Should the harness's MCP client be the repo's locked `mcp==1.30.0` or a
    2.x client? This matters for competitor servers on the 2026-07-28 spec.
+   (Settled: the repo moved to 2.3.0 in #162.)
 9. Is Secure MCP Tunnel or a public Streamable HTTP deployment worth building
    for a "native connector" demo? It is not needed for the core benchmark.
 

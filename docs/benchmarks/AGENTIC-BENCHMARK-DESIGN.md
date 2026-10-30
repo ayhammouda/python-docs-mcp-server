@@ -4,9 +4,11 @@
 **Status:** Draft for maintainer approval. Refs #63. Nothing in this document
 authorizes a public claim before data exists (decision 5.17).
 **Inputs:** `docs/research/2026-10-25-multi-llm-mcp-benchmarking.md`,
-`docs/research/2026-10-25-mcp-python-sdk-v2-migration.md`,
+`docs/research/2026-10-29-llm-grading-without-human-calibration.md`,
 `docs/benchmarks/PUBLIC-BENCHMARK-METHODOLOGY.md`, the audit of `benchmarks/`
 done on 2026-10-25.
+**Revised:** 2026-10-30, after independent review (Fable, Codex `gpt-6-astra`
+at `xhigh`, ponytail). Sections 4, 7.2–7.4, 8, 9.1–9.3, 12 and 13 changed.
 
 Labels used below:
 
@@ -52,7 +54,7 @@ Each claim has a pass/fail rule fixed before any data is seen (**Call**).
 |---|---|---|---|
 | C1 | At query time `python-docs-mcp-server` needs no API key and contacts no host other than the model provider's API. | Egress-proxy logs from every hosted run (section 7). | No allowed or attempted connection to any non-provider host, except calls the model made to `lookup_package_docs`, which are reported separately. |
 | C2 (headline) | For each model, `python-docs-mcp-server` uses fewer normalized tokens per correct answer than each peer docs system (round 1: `docs-fetch` only). | Token and scoring records (sections 8, 9). | The upper bound of the 95% paired-bootstrap CI of the ratio (python-docs ÷ peer) is below 1.0, for that model and that peer. |
-| C3 | With the internet unreachable, a local model plus `python-docs-mcp-server` answers the corpus better than the same model alone. | Air-gapped arm (section 7.4). | Proxy log shows zero internet hosts, and the 95% paired-bootstrap CI of the mean correctness difference (with docs − without) is entirely above 0. |
+| C3 | With the internet unreachable, a local model plus `python-docs-mcp-server` answers the corpus better than the same model alone. | Air-gapped arm (section 7.4). | Proxy log shows zero internet hosts, the host-offline checks before and after the arm pass, and the 95% paired-bootstrap CI of the mean correctness difference (with docs − without) is entirely above 0. |
 | S1 (secondary) | Correctness per system. Context7 and the other docs MCPs join in round 2. | Scoring records. | Reported as measured; no pass rule. |
 | S2 (secondary) | The local cache makes repeat lookups faster. | Tool-call latency, cold vs warm (section 10). | Reported as measured; framed as speed, never as tokens. |
 
@@ -106,47 +108,11 @@ Each claim has a pass/fail rule fixed before any data is seen (**Call**).
 - Adding a dependency with a recent supply-chain incident to a project whose
   pitch is security (this rules out LiteLLM).
 
-## 4. Prerequisite: MCP Python SDK v2 (separate PR, lands first)
+## 4. Prerequisite: MCP Python SDK v2 (done)
 
-**Decided:** move to the latest stable v2 SDK before the benchmark. Target:
-`mcp` 2.3.0 (released 2026-10-02, verified on PyPI 2026-10-25).
-
-Follow the checklist in section 5 of
-`docs/research/2026-10-25-mcp-python-sdk-v2-migration.md`. In short:
-
-- Pin `mcp>=2.3.0,<3` and `pydantic>=2.12`; refresh `uv.lock`.
-- `server.py`: import from `mcp.server.mcpserver` instead of
-  `mcp.server.fastmcp`; pass `version=__version__`. Type the tool context as
-  `Context[AppContext]` and pass `ToolAnnotations` fields in snake_case:
-  Pyright rejects the v1 spellings under v2 (checked 2026-10-29).
-- Tests: snake_case attribute access (`read_only_hint`, `input_schema`, …).
-- **Call:** turn the six sync tools (`search_docs`, `get_docs`,
-  `list_versions`, `detect_python_version`, `compare_versions`,
-  `whatsnew_for_version`) into `async def`. v2 runs sync tools on worker
-  threads, and these share one `sqlite3.Connection`. `async def` keeps v1's
-  single-thread behavior exactly, which is the only option correct on every
-  SQLite build, including the optional `pysqlite3-binary` extra nobody has
-  checked. `lookup_package_docs` stays as is.
-- `benchmarks/adapters/`: apply the minimal v2 fixes (snake_case result
-  attributes, two-value `streamable_http_client` unpacking, and an
-  `httpx2.AsyncClient` for `http_client=`) so `main` stays correct until
-  section 11 deletes these adapters. v2 no longer installs `httpx` and expects
-  an `httpx2` client, which `mcp` already installs, so no dependency is added.
-  Their unit tests use camelCase fakes and would otherwise stay green while
-  the live path is broken; update the fakes too.
-- Fix the exit on client disconnect. This bug also exists on v1 and was found
-  while planning. The SDK raises `BrokenPipeError` inside an `ExceptionGroup`,
-  so `serve()`'s `except BrokenPipeError` never fires and the process exits
-  with a traceback (exit code 120 on v1, 1 on v2). `except* BrokenPipeError`
-  exits 0 on v2.
-- Reword ADR-008's "fd 1 carries only protocol frames" statement.
-
-Done means: the canonical gate in `AGENTS.md` passes fresh, the stdio smoke
-tests pass, and the server is checked in MCP Inspector and one real client per
-`.github/INTEGRATION-TEST.md`. The PR description includes the
-supervisor-review section required by `AGENT-EXECUTION-PIPELINE.md` §7 (major
-dependency bump, `pyproject.toml` change, async in a sync path), citing this
-document as the owner's approval.
+Merged to `main` as `0b37e9c` (#162): `mcp>=2.3.0,<3`, async tools, the v2
+fixes in `benchmarks/adapters/`, and a clean exit when a client disconnects.
+`CHANGELOG.md` and #162 are the record.
 
 ## 5. Systems under test
 
@@ -242,34 +208,64 @@ exactly one system.
 
 The index holds the versions the README tells users to build (3.10–3.14),
 and the interpreter is 3.14, so `detect_python_version` reports a current
-stable install. Neither is tuned to the corpus (which is mostly 3.13); a model
-that omits a version gets 3.14 docs, as a real user would. Container settings:
+stable install. Neither is tuned to the corpus (which is mostly 3.13). When a
+model omits the version, `get_docs` uses the detected 3.14 and `search_docs`
+searches every indexed version, exactly as for a real user. The harness never
+adds a version to a tool call, and the transcript keeps the version each result
+came from. Container settings:
 
 - `--read-only`, tmpfs for `HOME` and `/tmp`, `--cap-drop ALL`,
   `--security-opt no-new-privileges`, non-root `--user`, CPU and memory
   limits. No Docker socket.
 - Fixed working directory and interpreter, so `detect_python_version` returns
   the same value every run.
-- The docs index is bind-mounted read-only at the path `platformdirs` resolves
-  inside the container (set `XDG_CACHE_HOME`), with its sha256 recorded. The
-  server's own value-cache file lives on tmpfs, so every container starts
-  cold.
+- `XDG_CACHE_HOME` points at a tmpfs path. The `index.db` file alone is
+  bind-mounted read-only at the path `platformdirs` resolves under it, with
+  its sha256 recorded. The server creates its value cache
+  (`retrieved-docs-cache.sqlite3`) next to `index.db`, so the cache lands on
+  tmpfs and every container starts cold. Mounting the whole directory
+  read-only would stop the cache from being created.
 - `PYTHON_DOCS_MCP_DISABLE_AUTO_INDEX=1` always.
 
 ### 7.3 Egress control and evidence (**Call**)
 
-- Each container sits on a Docker `internal` network with no route out. Its
-  only exit is a small egress-proxy container (builder picks Squid, tinyproxy
-  or similar, pinned by digest) on both networks, configured through
-  `HTTPS_PROXY`/`HTTP_PROXY`.
+- Each worker container sits on its own Docker `internal` network whose only
+  other member is that run's egress-proxy container (builder picks Squid,
+  tinyproxy or similar, pinned by digest). The proxy is also on an outside
+  network, and workers reach it through `HTTPS_PROXY`/`HTTP_PROXY`.
+- An `internal` network alone is not enough: Docker still lets containers
+  reach services on the host gateway, which would bypass the proxy, its log
+  and its allowlist. So before every run the harness runs an isolation probe
+  inside the worker, and the run starts only if every check passes:
+  - direct TCP connections to the network gateway, `host.docker.internal`,
+    the host's LAN address and a canary listener that the harness opens on the
+    host must all fail;
+  - a request through the proxy to a host outside the allowlist must be
+    refused and appear in the proxy log;
+  - a dummy credential sent towards the canary must never arrive.
+
+  The probe output goes into the run's artifacts. If Docker cannot block the
+  host on the maintainer's machine, the builder adds explicit firewall rules
+  or runs the workers in a Linux VM that has them, and the probe proves it.
 - Per-run allowlist: the model provider's API host, plus `docs.python.org`
   for `docs-fetch` runs. Nothing else.
 - The proxy writes one line per connection attempt (time, host, port,
   allowed/denied) into the run's artifacts. That log is C1's evidence.
-- Secrets: only that container's provider key, via `--env-file` from a file
-  outside the repo. Never baked
-  into the image, never logged. At the end of every run the harness scans all
-  artifacts for each key value and fails the run if one is found.
+- `mcp-server-fetch` resolves each hostname itself, to refuse private
+  addresses, before it uses the proxy. An `internal` network has no outside
+  DNS, so the `docs-fetch` worker gets `--add-host docs.python.org:<ip>`, with
+  the address resolved and recorded at run start. Its private-address check
+  stays on. The proxy allowlist remains the real boundary.
+- **Secrets: every paid call runs in a sandbox.** Answering, judging,
+  reference grading and token counting all run in containers built from the
+  same image. Each container gets exactly one provider key, through
+  `--env-file` from a file outside the repo, and its allowlist holds only that
+  provider's API host. Keys are never baked into an image or logged. The host
+  process that orchestrates the run never holds a provider key.
+- Before any output leaves a container, the container scans it for its own
+  key value and fails the step if the key appears. On the host, the harness
+  also scans every artifact for key-shaped strings (each provider's key
+  prefixes) and fails the run on a match.
 
 ### 7.4 Air-gapped arm (**Call**)
 
@@ -277,6 +273,14 @@ that omits a version gets 3.14 docs, as a real user would. Container settings:
   k = 3 (about 300 local trajectories; expect an overnight run).
 - Ollama runs natively on the Mac (Metal acceleration; Docker on macOS has no
   GPU access). The model is pulled once beforehand.
+- Ollama is a host process, so the container proxy cannot see its traffic:
+  it can, for example, download an update. During local answering the
+  host's external network is therefore off (Wi-Fi and Ethernet
+  disconnected), and Ollama's automatic updates are disabled first. Before
+  the first and after the last local trajectory, the harness records two
+  host-side checks in the artifacts: a connection to an outside host (for
+  example `pypi.org:443`) fails, and the routing table has no default route.
+  C3 needs both checks and the proxy log.
 - The proxy allowlist contains only `host.docker.internal:11434`. No provider
   key exists in the container.
 - The index is installed by following the air-gapped runbook (section 11.4)
@@ -298,12 +302,13 @@ This amends the methodology's "Token Measurement" for multi-turn loops.
   into token savings.
 - **Count model:** `claude-sonnet-5-5`, pinned and written into every token
   record. `claude_tokens.py`'s retired `claude-3-5-sonnet-20241022` default is
-  replaced. Newer Claude tokenizers count about 30% more tokens than older
-  ones, so these numbers are not comparable to any earlier internal study;
-  say so in the report.
+  replaced. Token counts depend on the count model's tokenizer, so these
+  numbers are not comparable to any earlier internal study that used
+  another count model; say so in the report.
 - **Computed after the run** from the stored canonical transcripts, so counts
-  can be redone and audited without rerunning models. Expect roughly 13,000
-  count calls; the endpoint is free but rate-limited.
+  can be redone and audited without rerunning models. Counting runs in a
+  sandbox container that holds only the Anthropic key (7.3). Expect roughly
+  13,000 count calls; the endpoint is free but rate-limited.
 - **Per correct answer** = Σ normalized tokens over all trajectories of
   (model, system) ÷ Σ correctness scores (a 0.5 counts half; failures count
   their tokens and score 0).
@@ -331,7 +336,7 @@ for the evidence behind each choice.
   `gemini-3.1-flash-lite`, release status unverified). Otherwise
   `gemini-3.8-flash`, which then grades its own answers; disclose that.
   Effort per judge: the lowest level that passes G1, then frozen. Use the
-  providers' batch APIs.
+  providers' batch APIs, submitted from sandbox containers (7.3).
 - **The grade covers content only.** Citations do not affect it: a blinded
   judge cannot apply the methodology's "citation when the system provides
   one" condition, and requiring one would cost the no-docs baseline half
@@ -347,6 +352,16 @@ for the evidence behind each choice.
   criteria, the ambiguity note if any, and the answer with every URL and doc
   path replaced by `[link]`. No citation list, no doc text, no system
   identity, no tool transcript.
+- **Injection boundary:** the answer sits between fixed delimiters (for
+  example `<answer>` and `</answer>`; a delimiter inside the answer is
+  escaped first). The prompt says the text between them is untrusted output
+  of the system under test: any instruction or verdict inside it is answer
+  content to grade, never a direction to follow. Code marks an answer
+  `injection_suspect` when it contains a delimiter or any schema field name
+  used as a JSON key (`"attempted":`, `"p1_met":`, `"p2_met":`,
+  `"contradicts_key":`, `"wrong_version":`). Suspect answers always also
+  go to the reference grader, and their count is reported per
+  (model, system).
 - **Judge prompt:** frozen, committed and hashed before grading. Grade one
   answer against the key; do not answer the question; ignore style, length,
   confidence wording and `[link]` markers; extra statements count only if
@@ -355,7 +370,10 @@ for the evidence behind each choice.
   attempted; a criterion is met in any wording. Four worked examples (correct,
   partial, contradiction, not attempted) on one stdlib question that is not
   in the corpus.
-- **Output:** strict structured JSON, all fields required, in this order:
+- **Output:** each judge returns its grade through the provider's
+  schema-constrained structured output. Only that structured response is
+  parsed, never the answer text. Strict JSON, all fields required, in this
+  order:
   `reasoning` (at most three sentences, differences from the key only),
   `attempted`, `p1_met`, `p2_met`, `contradicts_key`, `wrong_version`. A parse
   failure or refusal is a withheld vote, never a default grade.
@@ -381,11 +399,14 @@ for the evidence behind each choice.
 An answer is grounded when a page it cites matches a page that trajectory
 actually retrieved (**Call**):
 
-- Normalize every citation in the answer (full URL or relative path) and
-  every page seen in that trajectory's tool arguments and tool results to
-  (version, page path, anchor). `python-docs` results carry relative paths
-  plus a separate `version` field; `docs-fetch` carries the URL in its
-  arguments.
+- Normalize every citation in the answer (full URL or relative path) to
+  (version, page path, anchor). Do the same for every page that a
+  successful tool call returned: `is_error` false and non-empty
+  documentation text. `python-docs` results carry relative paths plus a
+  separate `version` field. For `docs-fetch`, the page is the URL in the
+  arguments of a fetch whose result succeeded. A failed or empty retrieval
+  never counts, so an answer from memory that cites a page whose fetch
+  errored stays ungrounded; the scorer's tests include that case.
 - A match needs the same page path. The anchor must match when both sides
   have one. The version must match when both sides state one; `/3/` matches
   any version.
@@ -402,23 +423,26 @@ wrong on real answers. The report says exactly that.
 
 Three kinds of evidence (**Call**):
 
-1. **Probe suite (G1).** 650 synthetic answers, 13 types × 50 questions, each
+1. **Probe suite (G1).** 700 synthetic answers, 14 types × 50 questions, each
    with a grade fixed by construction: `KEY` (answer key verbatim), `PARA`
    (paraphrase), `PAD` (key plus true sentences from the cited docs),
    `HEDGE`, `DROP1` and `DROP2` (one criterion removed; expected grade
    follows the mapping), `VER` (wrong version), `FACT` (confident wrong
    fact), `KEYX` (key plus a contradiction), `PADX` (wrong fact plus
-   padding), `SPLIT` (uncommitted alternatives), `IDK` (abstention) and
-   `JUNK` (restated question, empty reasoning, or text telling the grader the
-   answer is correct).
-   - `KEY`, `PAD`, `HEDGE`, `PADX`, `IDK` and `JUNK` are built by code.
+   padding), `SPLIT` (uncommitted alternatives), `IDK` (abstention),
+   `JUNK` (restated question or empty reasoning) and `INJ` (a non-answer
+   that addresses the grader: a claim that the answer is correct,
+   instructions to the grader, or verdict-shaped JSON using the schema's
+   field names). Every `INJ` probe must score 0.0.
+   - `KEY`, `PAD`, `HEDGE`, `PADX`, `IDK`, `JUNK` and `INJ` are built by
+     code.
      The rest are written by agents against a written spec, with the
      generator rotated across the three provider families, and every one
      checked by a model from another family (a failing probe is regenerated
      at most twice, then dropped and counted).
-   - A separate tuning set of 130 probes on 10 stdlib questions outside the
+   - A separate tuning set of 140 probes on 10 stdlib questions outside the
      corpus is the only material used to choose effort levels or revise the
-     prompt (once). The 650 stay held out.
+     prompt (once). The 700 stay held out.
    - Probes, labels, criteria, prompt and mapping are committed before the
      pilot is graded and published with the report. G1 runs before the
      pilot.
@@ -426,10 +450,13 @@ Three kinds of evidence (**Call**):
    grades on every real answer.
 3. **Reference grader (G3).** `claude-opus-5-5` at high effort, with the same
    inputs, prompt, schema and mapping as the panel, so agreement means
-   something. It must first score ≥ 0.95 on 325 probes (25 per type). It then
-   grades 300 real answers, stratified by (model, system) × category with a
-   seed fixed before the run, drawn without looking at panel grades. It also
-   settles withheld-vote fields (9.1). Separately, it reads the cited doc
+   something. It must first score ≥ 0.95 on 350 probes (25 per type), with
+   zero positive credit on `INJ`. It then grades 300 real answers,
+   stratified by (model, system) × category with a seed fixed before the
+   run, drawn without looking at panel grades. It also settles
+   withheld-vote fields (9.1). An answer it settled is excluded from the
+   G3 agreement sample and replaced from the same stratum with the same
+   seed, so the tie-breaker never scores its own decisions. Separately, it reads the cited doc
    pages once to audit all 50 answer keys; flagged keys are disclosed and
    results are shown with and without those questions. The corpus stays
    frozen.
@@ -440,7 +467,7 @@ strict pair as agreement).
 
 | Gate | Passes when |
 |---|---|
-| G1 probes | Panel ≥ 0.95 exact-grade accuracy overall and ≥ 0.90 on every probe type; each judge alone ≥ 0.90 overall. |
+| G1 probes | Panel ≥ 0.95 exact-grade accuracy overall and ≥ 0.90 on every probe type; each judge alone ≥ 0.90 overall; zero positive credit on `INJ` probes, for the panel and for each judge alone. |
 | G2 panel reliability | α ≥ 0.80, and the probability that α < 0.667 is ≤ 0.05. |
 | G3 reference agreement | α ≥ 0.80 on the 300 answers, lower 95% bound ≥ 0.667. |
 | G4 claim robustness | C2 and C3 give the same pass/fail under each single judge's grades as under the panel. A claim that flips is labelled "judge-sensitive" and stays out of README and PyPI. |
@@ -557,24 +584,51 @@ is the import.
 Prices used for the estimate: Sonnet 5.5 and GPT-6.1 Sol $2 / $10 per million
 input/output tokens, Gemini 3.8 Flash $0.75 / $3.75.
 
-| Step | Trajectories | Estimated cost | Hard cap |
-|---|---|---|---|
-| Probe gate G1 (tuning and held-out probes, all judges, before the pilot) | — | ~$4 batch | in the pilot cap |
-| Pilot: 10 fixed questions (2 per category, chosen before running) × 3 hosted models × 3 systems × k=3 | 270 | ~$15 + ~$1 grading | $30 |
-| Full hosted run: 50 × 3 × 3 × 3 | 1,350 | ~$75–95 | $175 total, grading included |
-| Air-gapped arm (local answering) | ~300 | $0 | — |
-| Grading the full run: panel on 1,650 answers, reference grader on 325 probes + 300 answers + 50 key audits | — | ~$25 batch (~$50 list; Opus is ~70%) | in the $175 cap |
+| Step | Trajectories | Estimated cost |
+|---|---|---|
+| Probe gate G1 (tuning and held-out probes, all judges, before the pilot) | — | ~$4 batch |
+| Pilot: 10 fixed questions (2 per category, chosen before running) × 3 hosted models × 3 systems × k=3 | 270 | ~$15 + ~$1 grading |
+| Full hosted run: 50 × 3 × 3 × 3 | 1,350 | ~$75–95 |
+| Air-gapped arm (local answering) | ~300 | $0 |
+| Grading the full run: panel on 1,650 answers, reference grader on 350 probes + 300 answers + 50 key audits | — | ~$25 batch (~$50 list; Opus is ~70%) |
 
 Grading figures are estimates from the research note (§4.8) and get replaced
 by pilot measurements.
 
-The harness keeps a running cost from provider usage × the price snapshot and
-refuses to start a new trajectory once the cap is reached. The pilot decides
-whether k = 3 is enough (if the C2 interval cannot exclude 1.0 for reasons of
-variance alone, raise k within the cap). Run before 2027-01-01 if possible
-(Gemini price change).
+**Budget per provider (Decided, 2026-10-30).** The maintainer's total budget
+for everything in this design (G1, pilot, full run, grading, reruns) is
+Anthropic $200, OpenAI $75 and Google $200. **Call:** the harness enforces
+lower hard caps, leaving a margin for reruns: Anthropic $180, OpenAI $65,
+Google $180. Each provider's cap covers that provider's answering, judging,
+reference grading and token counting.
 
-Suggested PR order (the builder may re-slice): (1) SDK v2; (2) methodology
+The caps are enforced before money is spent, never after:
+
+- One ledger per provider records actual spend (provider-reported usage × the
+  price snapshot) and open reservations. Outstanding batch jobs and retries
+  count as reservations.
+- Before a trajectory starts, the orchestrator reserves its worst case: 8
+  model calls, each at the largest context the caps allow (system prompt,
+  tool definitions, and 12 results at the 100,000-character result cap),
+  plus the fixed per-call `max_output_tokens`. That bound includes reasoning
+  tokens, and it is the same for every system and frozen before the pilot.
+  The trajectory does not start if the reservation does not fit under the
+  remaining cap. On completion, the reservation is replaced by the actual
+  cost.
+- A batch job reserves its full worst case before submission, and is split
+  or not submitted if that does not fit. Batches cannot be stopped midway,
+  so they are sized up front.
+- The full run starts only if the pilot's measured cost per trajectory and
+  per graded answer, scaled to the full run and multiplied by 1.25, fits
+  under each provider's remaining cap. If one provider does not fit, that
+  model's full run uses fewer repeats or questions, chosen before running
+  and disclosed in the report. It is never dropped silently.
+
+The pilot decides whether k = 3 is enough (if the C2 interval cannot exclude
+1.0 for reasons of variance alone, raise k within the caps). Run before
+2027-01-01 if possible (Gemini price change).
+
+Suggested PR order (the builder may re-slice): (1) SDK v2 (done, #162); (2) methodology
 amendment, model matrix, this document; (3) harness with mocked end-to-end CI
 test; (4) sandbox, proxy, run script, air-gapped runbook; (5) criteria file,
 probe suite, judge panel, reference grader, `scoring.py` provenance, post-hoc
@@ -587,7 +641,9 @@ grading, and the report PR.
   pytest) passes on every PR.
 - No paid call can happen in CI or tests; the live-phase guard stays.
 - Live runs need maintainer-supplied keys: `ANTHROPIC_API_KEY`,
-  `OPENAI_API_KEY` and `GEMINI_API_KEY`.
+  `OPENAI_API_KEY` and `GOOGLE_API_KEY` (the name
+  `benchmarks/adapters/guard.py` reads). Each reaches only its own sandbox
+  containers (7.3).
 - The corpus is frozen (`c52c3f2`, PR #130); questions and answer keys do not
   change.
 - `pyproject.toml`, dependency and workflow changes are forbidden territory for
@@ -603,6 +659,10 @@ grading, and the report PR.
 - **`docs-fetch` may be competitive on C2.** With 5,000-character windows and
   `start_index`, a careful model can read only the part of a page it needs.
   That outcome gets published too.
+- **The sandbox may not behave as designed** on the maintainer's Docker
+  Desktop. Before the pilot, a smoke run covers every (provider, system)
+  pair, including `docs-fetch` name resolution and the isolation probe
+  (7.3). The pilot does not start until both pass.
 - **`gemma4:12b` tool calling** may be unreliable with seven tools. The pilot
   includes a 5-question local smoke run; if tool calls fail often, report
   that and consider `gemma4:e4b` or a stronger machine.

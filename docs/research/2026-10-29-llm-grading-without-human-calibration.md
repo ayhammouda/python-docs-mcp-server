@@ -4,6 +4,10 @@
 **Status:** Research notes for the maintainer. They do not change
 `docs/benchmarks/AGENTIC-BENCHMARK-DESIGN.md` or the accepted methodology.
 They do not authorize paid calls or public claims (decision 5.17).
+**Update 2026-10-30:** design §9 is the decision. Where §4 below differs
+from it (for example the `INJ` probe type, the injection boundary and the
+G3 sample rule added after review), the design wins; §4 stays as the
+reasoning behind it.
 **Question:** How should the agentic benchmark grade free-text answers with
 LLM or agent graders when no human calibration is available, so that the
 correctness numbers are trustworthy enough to publish?
