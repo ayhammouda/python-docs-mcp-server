@@ -1,16 +1,7 @@
 """Fail closed unless this tag names an independently verified main commit.
 
-The verification record is an unedited PR comment, posted no later than the
-merge, by the repository owner. Its first line is exactly
-``Independent verification: PASS`` and it has a ``head: <sha>`` line for the
-merged PR head. Anyone who can post as the owner
-account can write it, and the owner account also merges, so it is a process
-tripwire, not a security boundary. Tag creation rules, immutable tags, the
-``pypi`` environment and the required checks carry security.
-
-A credential-bound check needs a verifier identity separate from the merger: a
-dedicated GitHub App with ``checks: write``, or a machine account. Restoring one
-is the path back to that stronger control, and it is Aymen's decision.
+The owner's verification record is a process tripwire, not a security boundary;
+see the 2026-10-30 amendment in ``AGENT-EXECUTION-PIPELINE.md``.
 """
 
 import json
