@@ -151,6 +151,7 @@ def build_match_expression(
     synonyms: dict[str, list[str]],
     *,
     _concept_patterns: dict[str, re.Pattern[str]] | None = None,
+    _expanded: set[str] | None = None,
 ) -> str:
     """Build a complete FTS5 MATCH expression with synonym expansion.
 
@@ -161,6 +162,8 @@ def build_match_expression(
         query: User search query.
         synonyms: Synonym mapping for expansion.
         _concept_patterns: Pre-compiled regex patterns for multi-word concepts.
+        _expanded: The caller's ``expand_synonyms`` result for this query;
+            when given, the expansion is not run again.
 
     Returns:
         FTS5-safe MATCH expression string.
@@ -169,7 +172,9 @@ def build_match_expression(
     if not query:
         return '""'
 
-    expanded = expand_synonyms(query, synonyms, _concept_patterns=_concept_patterns)
+    expanded = _expanded
+    if expanded is None:
+        expanded = expand_synonyms(query, synonyms, _concept_patterns=_concept_patterns)
     original_tokens = set(query.lower().split())
 
     # If expansion added new terms, OR-join all terms

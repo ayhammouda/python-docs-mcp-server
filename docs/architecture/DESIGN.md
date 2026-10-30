@@ -372,9 +372,10 @@ no storage imports." Given `(text, max_chars, start_index)`, it returns
 `(truncated_text, is_truncated, next_start_index)`. If the remaining text
 (from `start_index` onward) fits within `max_chars`, it is returned unchanged
 with `is_truncated=False` and `next_start_index=None`. Otherwise the text is
-cut at the `max_chars` boundary and then walked backward past any Unicode
-combining marks (category `M*`) so a base character is never separated from
-its diacritics; in the degenerate case where backing up would collapse the
+cut at the `max_chars` boundary, and the cut point moves back while the
+character at the cut is a Unicode combining mark (category `M*`), so no page
+starts with one and a base character stays with its diacritics; in the
+degenerate case where backing up would collapse the
 slice to zero length, it instead walks forward from the base character
 through its combining marks. `next_start_index` is set to the resulting cut
 point whenever the text was truncated, which is what callers use to
@@ -388,10 +389,12 @@ codebase. Its sequence: resolve the version strictly via
 `resolve_version_strict` (an explicit unknown version raises
 `VersionNotFoundError`; `None` resolves to the doc set marked
 `is_default=1`, falling back to the highest version string if none is
-marked default); check
-the persistent cache (§6) and return immediately on a hit, bypassing storage,
-retrieval, and budget entirely; otherwise look up the document by slug and
-version; if an `anchor` was given, resolve exactly that section's text
+marked default); look up the page by slug and version, trying the slug as
+given and then without `.html`, and raise `PageNotFoundError` with an
+actionable message (the slug form, `#fragment` as `anchor`, `search_docs`) if
+neither matches; check the persistent cache (§6) under the canonical
+`documents.slug` and return immediately on a hit, bypassing retrieval and
+budget; otherwise, if an `anchor` was given, resolve exactly that section's text
 through an in-memory section cache, else concatenate every section for the
 page in `ordinal` order (each rendered as `## {heading}\n\n{content}`) into
 one `full_text`; call `apply_budget(full_text, max_chars, start_index)`;

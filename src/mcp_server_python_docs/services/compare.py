@@ -6,9 +6,9 @@ unchanged), the version/symbol error paths, and the see-also / deprecation /
 signature-delta heuristics.
 
 No structured signature/deprecation/see-also metadata is stored in the index,
-so this service derives those signals from section *text* using the regex
-literals locked by the Plan 09-01 data-shape spike, plus symbol presence/absence
-across the two doc_sets (via ``create_symbol_cache``).
+so this service derives those signals from section *text*, plus symbol
+presence/absence across the two doc_sets (via ``create_symbol_cache``). The
+version-note patterns follow the 2026-10-30 audit research (Search 3).
 
 Algorithm ordering is FIXED per cross-AI review H2:
   1. validate BOTH versions (validate_version raises the unknown-version error
@@ -36,12 +36,14 @@ from mcp_server_python_docs.services.version_resolution import validate_version
 if TYPE_CHECKING:
     from mcp_server_python_docs.services.content import ContentService
 
-# --- Locked extractor regexes (verbatim from 09-01-data-shape-spike-SUMMARY) ---
-# All four HOLD against the spike fixture (A1/A2/sibling probes). Scalar
-# extractors return None on no-match; _extract_see_also returns [].
-_NEW_IN_RE = re.compile(r"New in version\s+(\d+\.\d+)")
-_CHANGED_IN_RE = re.compile(r"Changed in version\s+(\d+\.\d+)")
-_DEPRECATED_IN_RE = re.compile(r"Deprecated since version\s+(\d+\.\d+)")
+# --- Version-note extractors ---
+# Sphinx before 7.3 writes "New in version"; Sphinx 7.3 and later write "Added
+# in version", which covers the docs of CPython 3.12 onwards. A version can
+# carry a patch part, as in 3.5.1. "Deprecated since" stays case-sensitive so
+# CPython's "Soft deprecated since" note is not read as a deprecation.
+_NEW_IN_RE = re.compile(r"\b(?:New|Added) in version\s+(\d+(?:\.\d+)+)")
+_CHANGED_IN_RE = re.compile(r"Changed in version\s+(\d+(?:\.\d+)+)")
+_DEPRECATED_IN_RE = re.compile(r"Deprecated since version\s+(\d+(?:\.\d+)+)")
 # Markdown link label extractor; MUST be applied only within a "See also" window
 # (locate case-insensitive "see also", read forward to next ATX heading / window
 # end), not against the whole section, or it captures unrelated body links.
@@ -56,14 +58,9 @@ _SECTION_DIFF_MAX_CHARS = 600
 _SIGNATURE_LINE_MAX = 80
 
 
-def _extract_version(pattern: re.Pattern[str], text: str) -> str | None:
-    """Return the captured version from the first match of ``pattern``, or None.
-
-    Shared by the New-in / Changed-in / Deprecated-since extractors, which differ
-    only by their (spike-locked) pattern literal (``_NEW_IN_RE`` etc.).
-    """
-    match = pattern.search(text)
-    return match.group(1) if match else None
+def _vt(version: str) -> tuple[int, ...]:
+    """Turn a version into an integer tuple, so that 3.10 sorts after 3.9."""
+    return tuple(int(part) for part in version.split("."))
 
 
 def _extract_see_also(text: str) -> list[str]:
@@ -136,26 +133,25 @@ class CompareService:
 
         CR-01: symbol URIs carry ".html" (``library/json.html#...``) but real
         Sphinx ingestion stores ``documents.slug`` EXTENSIONLESS
-        (``library/json``), and ``get_docs`` matches ``documents.slug`` exactly.
-        Try the extensionless form first, then the raw ".html" page, mirroring
-        ``retrieval.ranker._document_candidates`` so resolution holds on a real
-        index. Raises PageNotFoundError only when every candidate misses.
+        (``library/json``). ``get_docs`` now resolves the ".html" form itself;
+        it raises PageNotFoundError when the page or section is missing.
+
+        Reads the WHOLE section: a note past ``get_docs``' default page would
+        otherwise be missed. A truncated first page costs one more call.
         """
-        page = uri.split("#", 1)[0]
-        candidates = (page[:-5], page) if page.endswith(".html") else (page,)
-        last_exc: PageNotFoundError | None = None
-        for slug in candidates:
-            try:
-                result = self._content.get_docs(
-                    slug=slug, version=version, anchor=anchor
-                )
-            except PageNotFoundError as exc:
-                last_exc = exc
-                continue
-            return result.content
-        # candidates is non-empty, so last_exc is always set when we reach here.
-        assert last_exc is not None
-        raise last_exc
+        slug = uri.split("#", 1)[0]
+        result = self._content.get_docs(slug=slug, version=version, anchor=anchor)
+        text = result.content
+        while result.next_start_index is not None:
+            result = self._content.get_docs(
+                slug=slug,
+                version=version,
+                anchor=anchor,
+                max_chars=result.char_count,
+                start_index=result.next_start_index,
+            )
+            text += result.content
+        return text
 
     @log_tool_call("compare_versions")
     def compare(self, symbol: str, v1: str, v2: str) -> CompareVersionsResult:
@@ -197,7 +193,7 @@ class CompareService:
             new_in: str | None = None
             try:
                 text_v2 = self._section_text(sym_v2.uri, sym_v2.anchor, v2)
-                new_in = _extract_version(_NEW_IN_RE, text_v2)
+                new_in = min(_NEW_IN_RE.findall(text_v2), key=_vt, default=None)
             except PageNotFoundError:
                 new_in = None
             return CompareVersionsResult(
@@ -228,8 +224,13 @@ class CompareService:
                 note=_PAGE_UNAVAILABLE_NOTE,
             )
 
-        changed_in = _extract_version(_CHANGED_IN_RE, text_v2)
-        deprecated_in = _extract_version(_DEPRECATED_IN_RE, text_v2)
+        changed_in = max(
+            set(_CHANGED_IN_RE.findall(text_v2)) - set(_CHANGED_IN_RE.findall(text_v1)),
+            key=_vt,
+            default=None,
+        )
+        m = _DEPRECATED_IN_RE.search(text_v2)
+        deprecated_in = m.group(1) if m else None
 
         # signature_delta (M1, advisory): first non-empty line comparison.
         first_v1 = _first_nonempty_line(text_v1)
