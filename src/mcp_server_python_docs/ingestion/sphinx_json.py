@@ -2,22 +2,21 @@
 
 Handles per-document failure isolation (INGR-C-06) so one broken file never
 aborts the whole build. Converts HTML body fragments to markdown (INGR-C-05),
-extracts code blocks with doctest classification (INGR-C-07), populates
-FTS5 indexes (INGR-C-08), and seeds the synonyms table (INGR-C-09).
+extracts code blocks with doctest classification (INGR-C-07) and
+populates FTS5 indexes (INGR-C-08).
 """
 from __future__ import annotations
 
-import importlib.resources
 import json
 import logging
 import os
 import re
 import sqlite3
 import sys
+import venv
 from collections.abc import Mapping
 from pathlib import Path
 
-import yaml
 from bs4 import BeautifulSoup, Tag
 from markdownify import markdownify as md
 
@@ -165,6 +164,13 @@ def make_sphinx_json_env(
     else:
         env["PYTHONPATH"] = str(compat_dir)
     return env
+
+
+def create_sphinx_venv(venv_dir: str, *, with_pip: bool) -> None:
+    """Create the venv build-index runs Sphinx in; doctor probes one made the same way."""
+    # A copied python cannot find a relocatable CPython's libpython (uv-managed builds on
+    # macOS), so POSIX symlinks it. Windows keeps the copy default: symlinks need privileges.
+    venv.create(venv_dir, with_pip=with_pip, symlinks=sys.platform != "win32")
 
 
 def sphinx_parallel_jobs(
@@ -374,6 +380,32 @@ def extract_sections(body_html: str, doc_uri: str) -> list[dict]:
     return sections
 
 
+def _code_block_anchor(div: Tag) -> str:
+    """Return the anchor of the section or API entry that contains a code block.
+
+    Sphinx (docutils >= 0.17) puts ids on ``<section>`` and ``<dt>``, not on
+    headings. Walking out from the block, the first match wins: a ``dd`` gives
+    the id from the ``dt`` group that heads it (the ``dt`` lines after the
+    previous ``dd``), then a ``section`` (or legacy ``div.section``) gives its
+    own id. Older markup with ids on headings falls back to the previous
+    heading with an id.
+    """
+    for parent in div.parents:
+        if parent.name == "dd":
+            for sibling in parent.find_previous_siblings(["dt", "dd"]):
+                if sibling.name == "dd":
+                    break
+                if sibling.get("id"):
+                    return str(sibling["id"])
+        is_section = parent.name == "section" or (
+            parent.name == "div" and "section" in (parent.get("class") or [])
+        )
+        if is_section and parent.get("id"):
+            return str(parent["id"])
+    heading = div.find_previous(re.compile(r"^h[1-6]$"), id=True)
+    return str(heading["id"]) if isinstance(heading, Tag) else ""
+
+
 def extract_code_blocks(body_html: str) -> list[dict]:
     """Extract code blocks from HTML body, classifying doctests vs examples (INGR-C-07).
 
@@ -416,14 +448,7 @@ def extract_code_blocks(body_html: str) -> list[dict]:
         if not code.strip():
             continue
 
-        # Find nearest preceding heading to determine section
-        section_anchor = ""
-        element = div
-        while element:
-            element = element.find_previous(re.compile(r"^h[1-6]$"), id=True)
-            if element:
-                section_anchor = element.get("id", "")
-                break
+        section_anchor = _code_block_anchor(div)
 
         blocks.append(
             {
@@ -603,47 +628,6 @@ def ingest_sphinx_json_dir(
         failures,
     )
     return success, failures
-
-
-def populate_synonyms(conn: sqlite3.Connection) -> int:
-    """Populate the synonyms table from the packaged synonyms.yaml (INGR-C-09).
-
-    Reads ``data/synonyms.yaml`` via ``importlib.resources`` and inserts
-    each concept-expansion pair into the ``synonyms`` table.
-
-    Args:
-        conn: Read-write SQLite connection.
-
-    Returns:
-        Number of synonym entries inserted.
-    """
-    ref = importlib.resources.files("mcp_server_python_docs") / "data" / "synonyms.yaml"
-    with importlib.resources.as_file(ref) as path:
-        data = yaml.safe_load(path.read_text())
-
-    if not isinstance(data, dict):
-        from mcp_server_python_docs.errors import IngestionError
-
-        raise IngestionError(
-            f"synonyms.yaml must be a YAML mapping, got {type(data).__name__}"
-        )
-
-    count = 0
-    for concept, expansion in data.items():
-        if isinstance(expansion, list):
-            expansion_str = " ".join(str(e) for e in expansion)
-        else:
-            expansion_str = str(expansion)
-
-        conn.execute(
-            "INSERT OR REPLACE INTO synonyms (concept, expansion) VALUES (?, ?)",
-            (concept, expansion_str),
-        )
-        count += 1
-
-    conn.commit()
-    logger.info("Populated %d synonym entries", count)
-    return count
 
 
 def rebuild_fts_indexes(conn: sqlite3.Connection) -> None:

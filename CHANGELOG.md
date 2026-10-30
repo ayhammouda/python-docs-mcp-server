@@ -8,12 +8,6 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
-- Moved to version 2 of the MCP Python SDK (`mcp>=2.3.0,<3`), which needs
-  `pydantic>=2.12`. The server still answers 2025-era clients through the
-  `initialize` handshake. It now also serves 2026-07-28 clients through
-  `server/discover`. It reports its own package version as
-  `serverInfo.version` instead of the SDK's. Tool names, parameters and
-  results are unchanged.
 - The benchmark harness (development tooling, not part of the package) now
   reports success latency and failed-cell latency separately, lists manifest
   exclusions, keeps the real reason when a cell fails inside MCP task groups,
@@ -28,11 +22,6 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   prompt, and the `external_provider_calls` field, a constant rather than a
   measurement.
 
-### Fixed
-
-- The server now exits cleanly, with exit code 0 and no traceback, when a
-  client closes the connection mid-session.
-
 ### Security
 
 - The MCP servers that the benchmark harness starts now get the MCP SDK's
@@ -43,7 +32,124 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `ANTHROPIC_API_KEY` that contains whitespace or control characters before
   sending any request, and count-failure notes never include the key.
 
-## [0.4.0] — Unreleased
+## [0.4.1] — 2026-10-30
+
+- **Rebuild the index after upgrading.** New indexes record format version 1
+  (`PRAGMA user_version`). `doctor` reports `FAIL: Index format` for an index
+  built by another release and prints the `build-index` command for the
+  versions that index holds; for an index from a newer release it suggests
+  upgrading instead. Run it, then restart your MCP client. An index you
+  do not rebuild keeps working, but its code examples stay filed under each
+  page's first section.
+
+### Added
+
+- Opt-in Python 3.15 documentation. `build-index --versions 3.15` (alone or
+  with other versions) builds it from the source-pinned CPython `v3.15.0`
+  tag. Nothing builds 3.15 unless you ask for it: the server's automatic
+  first-run build stays on 3.13, and the README's first-run commands are
+  unchanged. As with any version, when 3.15 is the highest one in a build it
+  becomes that index's default version.
+  ([#158](https://github.com/ayhammouda/python-docs-mcp-server/pull/158))
+
+### Changed
+
+- Updated locked Click (8.5.0), Platformdirs (4.12.2), Pydantic (2.13.5,
+  pydantic-core 2.46.5) and Ruff (0.16.10), and the pinned setup-uv (v10.3.0),
+  CodeQL (v4.38.2) and cache (v6.1.0) actions.
+- Moved to version 2 of the MCP Python SDK (`mcp>=2.3.0,<3`), which needs
+  `pydantic>=2.12`. The server still answers 2025-era clients through the
+  `initialize` handshake. It now also serves 2026-07-28 clients through
+  `server/discover`. It reports its own package version as
+  `serverInfo.version` instead of the SDK's. Tool names, parameters and
+  results are unchanged.
+- `doctor` now runs the same FTS5 check as the server and, when FTS5 is
+  missing, prints that check's message.
+
+### Removed
+
+- Removed the `pysqlite3` optional extra. Nothing imported `pysqlite3`, so
+  installing the extra never enabled FTS5. When FTS5 is missing, the server and
+  `doctor` now give one hint: install a Python whose SQLite includes FTS5
+  (`uv python install` or python.org). Install commands that still name the
+  extra keep working: pip and uv print a warning that the extra does not exist.
+- New indexes no longer contain the unused `synonyms` and `redirects` tables.
+  Search still expands synonyms from the packaged `synonyms.yaml`. Existing
+  indexes keep working; no rebuild is needed.
+- New indexes no longer contain `symbols.document_id` and `symbols.section_id`.
+  Nothing wrote them; symbol hits still resolve through their URI and anchor.
+  Versions up to 0.4.0 still read these columns, so after a downgrade, rebuild
+  the index.
+- Removed `ingestion_runs.artifact_hash` and the "Build artifact SHA256" log
+  line. The hash was taken before the last writes to the build, so it never
+  matched the published `index.db`.
+- Removed the test-only `zstd-dict-v1` cache codec. A cached `get_docs` result
+  stored under a codec this version does not know is treated as a miss and
+  recomputed.
+
+### Fixed
+
+- The server now exits cleanly, with exit code 0 and no traceback, when a
+  client closes the connection mid-session.
+- A failed `build-index` run (no version ingested, an error, or Ctrl-C) no
+  longer leaves `build-*.db`, `-wal` or `-shm` files in the cache folder. The
+  test suite no longer runs `build-index` against the real cache folder.
+- When smoke tests reject a new index, `build-index` logs every smoke message
+  and the build path at ERROR and deletes the build.
+- The published `index.db` now uses SQLite's rollback journal
+  (`journal_mode=DELETE`), so servers that open it read-only no longer create
+  `index.db-wal` and `index.db-shm` files beside it.
+- `index.db` no longer disappears for a moment while a new index is published,
+  so a server that starts at that moment no longer starts an auto-build. When
+  a running MCP client blocks the publish on Windows, `build-index` now says to
+  stop the clients, keeps the new build and names it, so it can be moved into
+  place by hand.
+- `build-index` now deletes `build-*.db*` files older than one day. Killed
+  auto-builds used to leave them in the cache folder for good.
+- On a Python whose SQLite lacks FTS5, `build-index` now prints the FTS5 hint
+  and exits with code 1. It used to stop with a raw
+  `sqlite3.OperationalError: no such module: fts5` traceback, because it created
+  the index's FTS5 tables before checking for FTS5. The server's automatic
+  symbol-only build logs the same hint.
+- Code examples are now filed under the section or API entry that contains
+  them, not under the page's first section, so `kind="example"` hits point at
+  the right anchor. Rebuild the index to get this fix (see the note at the
+  top of this release).
+- `get_docs` now accepts the `.html` slug form that its description showed and
+  that hit URIs carry. It returns the canonical slug, and repeat `.html` calls
+  are served from the persistent cache. An unknown slug now gets an error that
+  shows the slug form and points to `search_docs`. The `slug` description now
+  reads "Page slug from a search_docs hit, e.g. 'library/asyncio-task'
+  ('.html' suffix accepted)".
+- `compare_versions` now reads "Added in version" notes, which docs built with
+  Sphinx 7.3 or later use (Python 3.12 onwards), and keeps patch versions such
+  as 3.5.1. `changed_in` is now the newest "Changed in version" note that v2
+  adds over v1, and `new_in` the earliest "Added in version" note in the v2
+  section. It now reads the whole section, not only its first 8,000
+  characters, so a note or change late in a long section is no longer missed.
+- `get_docs` pagination no longer starts a page with a combining accent cut off
+  from its letter.
+- `detect_python_version` no longer runs `python3 --version` on every call,
+  which could stall other tool calls for up to 5 seconds. It returns what the
+  server detected at startup, the same value `get_docs` already uses.
+- On macOS, `build-index` no longer fails on a uv-managed Python, such as the
+  one `uvx python-docs-mcp-server` uses. The Sphinx environment's `python`
+  crashed on start (`ensurepip` died with `SIGABRT`), so no documentation was
+  ingested and nothing was published. `doctor`'s "Build venv support" check
+  now creates and runs such an environment, so it fails on a Python that
+  cannot build one instead of passing.
+
+### Security
+
+- Releases publish only the exact files the build job produced. The PyPI and
+  GitHub-release jobs download `dist` by artifact ID. They refuse to attest,
+  upload or attach anything if the SHA-256 listing differs from the build's.
+  The release build job builds the project only with `hatchling` and its
+  dependencies pinned by hash, and runs its tests against the wheel it ships.
+- Locked `certifi` 2026.10.23 to address
+  [PYSEC-2026-4320](https://github.com/certifi/python-certifi/security/advisories/GHSA-6q48-6c7w-9gw2).
+
+## [0.4.0] — 2026-10-19
 
 ### Added
 

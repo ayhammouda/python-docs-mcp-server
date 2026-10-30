@@ -8,6 +8,8 @@ import sqlite3
 import threading
 from pathlib import Path
 
+import pytest
+
 from mcp_server_python_docs.models import GetDocsResult
 from mcp_server_python_docs.services.content import ContentService
 from mcp_server_python_docs.services.persistent_cache import _NO_ANCHOR_KEY, PersistentDocsCache
@@ -252,6 +254,25 @@ def test_invalid_cached_json_is_best_effort_miss(tmp_path: Path, caplog):
 
     assert "Persistent docs cache entry ignored" in caplog.text
     assert cache.stats().misses == 1
+
+
+@pytest.mark.parametrize("codec", ["zstd-dict-v1", "brotli"])
+def test_row_with_unknown_codec_is_a_miss_then_rewritten(tmp_path: Path, caplog, codec):
+    _, cache = _cache(tmp_path)
+    cache.put(result=_result("payload"), max_chars=100, start_index=0)
+    with sqlite3.connect(cache.cache_path) as conn:
+        conn.execute("UPDATE retrieved_docs_cache SET compression = ?", (codec,))
+    key = dict(version="3.12", slug="library/json.html", anchor=None, max_chars=100, start_index=0)
+
+    with caplog.at_level(logging.WARNING):
+        assert cache.get(**key) is None
+    assert f"Unsupported cache codec: {codec}" in caplog.text
+    assert cache.stats().misses == 1
+
+    cache.put(result=_result("payload"), max_chars=100, start_index=0)
+    with sqlite3.connect(cache.cache_path) as conn:
+        assert conn.execute("SELECT compression FROM retrieved_docs_cache").fetchone()[0] == "zstd"
+    assert cache.get(**key) == _result("payload")
 
 
 def test_cache_disables_gracefully_when_index_missing(tmp_path: Path, caplog):

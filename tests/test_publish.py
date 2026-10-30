@@ -1,13 +1,17 @@
 """Tests for atomic-swap publishing module.
 
-Covers build path generation (PUBL-01), SHA256 hashing (PUBL-02),
+Covers build path generation (PUBL-01),
 smoke tests (PUBL-03), atomic swap with rollback (PUBL-04),
 restart message (PUBL-05), and ingestion-while-serving regression (PUBL-06).
 """
 from __future__ import annotations
 
+import errno
+import logging
+import os
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -17,11 +21,12 @@ from mcp_server_python_docs.ingestion.publish import (
     SMOKE_SENTINEL_SYMBOL,
     _version_sort_key,
     atomic_swap,
-    compute_sha256,
     generate_build_path,
     print_restart_message,
+    publish_index,
     rollback,
     run_smoke_tests,
+    sweep_stale_builds,
 )
 from mcp_server_python_docs.storage.db import (
     bootstrap_schema,
@@ -42,43 +47,12 @@ class TestBuildPath:
 
     def test_unique(self):
         """Two calls produce different paths (different timestamps)."""
-        import time
-
         p1 = generate_build_path()
         time.sleep(0.01)  # Ensure different second if needed
         p2 = generate_build_path()
         # They should at least have the same prefix pattern
         assert "build-" in p1.name
         assert "build-" in p2.name
-
-
-# ── SHA256 tests (PUBL-02) ──
-
-
-class TestSHA256:
-    def test_hex_digest(self, tmp_path):
-        """compute_sha256 returns a valid hex digest."""
-        test_file = tmp_path / "test.db"
-        test_file.write_bytes(b"test content")
-        sha = compute_sha256(test_file)
-        assert len(sha) == 64
-        assert all(c in "0123456789abcdef" for c in sha)
-
-    def test_deterministic(self, tmp_path):
-        """Same content produces same hash."""
-        f1 = tmp_path / "a.db"
-        f2 = tmp_path / "b.db"
-        f1.write_bytes(b"identical")
-        f2.write_bytes(b"identical")
-        assert compute_sha256(f1) == compute_sha256(f2)
-
-    def test_different_content(self, tmp_path):
-        """Different content produces different hash."""
-        f1 = tmp_path / "a.db"
-        f2 = tmp_path / "b.db"
-        f1.write_bytes(b"content A")
-        f2.write_bytes(b"content B")
-        assert compute_sha256(f1) != compute_sha256(f2)
 
 
 # ── Smoke test tests (PUBL-03) ──
@@ -383,8 +357,6 @@ class TestSmokeTests:
         This ensures validate-corpus can auto-detect the build mode and skip
         content checks (P2 fix for publish/validate consistency).
         """
-        from mcp_server_python_docs.ingestion.publish import publish_index
-
         monkeypatch.setattr(
             "mcp_server_python_docs.storage.db.get_cache_dir", lambda: tmp_path
         )
@@ -410,6 +382,117 @@ class TestSmokeTests:
 
         assert row is not None
         assert "build_mode=symbol_only" in row[0]
+
+    def test_rejected_build_is_logged_at_error_and_deleted(self, isolated_cache, caplog):
+        build = isolated_cache / "build-1.db"
+        conn = get_readwrite_connection(build)
+        bootstrap_schema(conn)
+        conn.close()
+
+        with caplog.at_level(logging.INFO):
+            assert publish_index(build, "3.13", require_content=False) is False
+
+        errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+        assert "Smoke test: FAIL: symbols: 0 rows (need >= 1000)" in errors
+        assert any(str(build) in message for message in errors)
+        assert list(isolated_cache.iterdir()) == []
+
+    def test_published_index_uses_rollback_journal(self, isolated_cache):
+        build = isolated_cache / "build-1.db"
+        self._create_symbols_only_db(build)
+
+        assert publish_index(build, "3.13", require_content=False) is True
+
+        index = isolated_cache / "index.db"
+        with open(index, "rb") as f:
+            assert f.read(20)[18:20] == b"\x01\x01"  # b"\x02\x02" means WAL
+        conn = get_readonly_connection(index)
+        assert conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0] == 2100
+        conn.close()
+        assert sorted(p.name for p in isolated_cache.iterdir()) == ["index.db"]
+
+    def test_new_readers_ignore_stale_sidecars_of_a_wal_index(self, isolated_cache):
+        if sys.platform == "win32":
+            pytest.skip("Windows cannot replace an index.db that a reader holds open")
+        index = isolated_cache / "index.db"
+        conn = get_readwrite_connection(index)  # an index published before this fix: WAL mode
+        bootstrap_schema(conn)
+        conn.close()
+        old = get_readonly_connection(index)  # a running server; leaves index.db-wal and -shm
+        assert old.execute("SELECT COUNT(*) FROM symbols").fetchone()[0] == 0
+        build = isolated_cache / "build-1.db"
+        self._create_symbols_only_db(build)
+
+        assert publish_index(build, "3.13", require_content=False) is True
+
+        new = get_readonly_connection(index)
+        assert new.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        assert new.execute("SELECT COUNT(*) FROM symbols").fetchone()[0] == 2100
+        new.close()
+        assert old.execute("SELECT COUNT(*) FROM symbols").fetchone()[0] == 0
+        old.close()
+
+    def test_publish_aborts_when_build_cannot_leave_wal(self, isolated_cache, caplog):
+        build = isolated_cache / "build-1.db"
+        self._create_symbols_only_db(build)
+        holder = get_readonly_connection(build)  # e.g. a sqlite3 shell left open on the build
+        holder.execute("SELECT COUNT(*) FROM symbols").fetchone()
+        try:
+            with caplog.at_level(logging.ERROR):
+                assert publish_index(build, "3.13", require_content=False) is False
+        finally:
+            holder.close()
+        assert not (isolated_cache / "index.db").exists()
+        assert build.exists()
+        assert "journal_mode" in caplog.text
+        assert str(build) in caplog.text
+
+    def test_locked_index_keeps_the_build(self, isolated_cache, monkeypatch, caplog, capsys):
+        index = isolated_cache / "index.db"
+        index.write_bytes(b"old index")
+        build = isolated_cache / "build-1.db"
+        self._create_symbols_only_db(build)
+        real_replace = os.replace
+
+        def locked_target(src, dst):
+            if Path(dst) == index:
+                raise PermissionError(errno.EACCES, "The process cannot access the file")
+            real_replace(src, dst)
+
+        monkeypatch.setattr("mcp_server_python_docs.ingestion.publish.os.replace", locked_target)
+        with caplog.at_level(logging.ERROR):
+            assert publish_index(build, "3.13", require_content=False) is False
+
+        assert build.exists()
+        assert index.read_bytes() == b"old index"
+        assert "stop every MCP client" in caplog.text
+        assert str(build) in caplog.text
+        assert "Restart your MCP client" not in capsys.readouterr().err
+
+    def test_refused_backup_is_logged_and_keeps_the_build(
+        self, isolated_cache, monkeypatch, caplog
+    ):
+        index = isolated_cache / "index.db"
+        index.write_bytes(b"old index")
+        build = isolated_cache / "build-1.db"
+        self._create_symbols_only_db(build)
+
+        def no_links(src, dst, *args, **kwargs):
+            raise OSError(errno.EPERM, "hard links not supported here")
+
+        def refused_copy(src, dst, *args, **kwargs):
+            raise PermissionError(errno.EACCES, "index.db is not readable")
+
+        monkeypatch.setattr("mcp_server_python_docs.ingestion.publish.os.link", no_links)
+        monkeypatch.setattr("mcp_server_python_docs.ingestion.publish.shutil.copy2", refused_copy)
+        with caplog.at_level(logging.ERROR):
+            assert publish_index(build, "3.13", require_content=False) is False
+
+        errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+        assert any(str(build) in message for message in errors)
+        assert build.exists()
+        assert index.read_bytes() == b"old index"
+        assert not list(isolated_cache.glob("*.tmp"))
 
 
 class TestReadOnlyConnection:
@@ -479,6 +562,152 @@ class TestAtomicSwap:
         assert target.read_bytes() == b"newest"
         assert prev is not None
         assert prev.read_bytes() == b"current"  # Not "very old"
+
+    def test_target_exists_at_every_replace(self, tmp_path, monkeypatch):
+        target = tmp_path / "index.db"
+        target.write_bytes(b"old")
+        new_db = tmp_path / "build-123.db"
+        new_db.write_bytes(b"new")
+        real_replace = os.replace
+        replaced_onto: list[str] = []
+
+        def checked_replace(src, dst):
+            assert target.exists(), f"index.db missing at replace({src}, {dst})"
+            replaced_onto.append(Path(dst).name)
+            real_replace(src, dst)
+
+        monkeypatch.setattr("mcp_server_python_docs.ingestion.publish.os.replace", checked_replace)
+        prev = atomic_swap(new_db, target)
+
+        assert target.read_bytes() == b"new"
+        assert prev == tmp_path / "index.db.previous"
+        assert prev.read_bytes() == b"old"
+        assert replaced_onto == ["index.db.previous", "index.db"]
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["index.db", "index.db.previous"]
+
+    def test_swap_copies_when_hard_links_fail(self, tmp_path, monkeypatch):
+        target = tmp_path / "index.db"
+        target.write_bytes(b"old")
+        new_db = tmp_path / "build-123.db"
+        new_db.write_bytes(b"new")
+
+        def no_links(src, dst, *args, **kwargs):
+            raise OSError(errno.EPERM, "hard links not supported here")
+
+        monkeypatch.setattr("mcp_server_python_docs.ingestion.publish.os.link", no_links)
+        prev = atomic_swap(new_db, target)
+
+        assert target.read_bytes() == b"new"
+        assert prev is not None and prev.read_bytes() == b"old"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["index.db", "index.db.previous"]
+
+    def test_failed_backup_copy_leaves_no_partial_backup(self, tmp_path, monkeypatch):
+        target = tmp_path / "index.db"
+        target.write_bytes(b"old")
+        new_db = tmp_path / "build-123.db"
+        new_db.write_bytes(b"new")
+
+        def no_links(src, dst, *args, **kwargs):
+            raise OSError(errno.EPERM, "hard links not supported here")
+
+        def disk_fills_up(src, dst, *args, **kwargs):
+            Path(dst).write_bytes(b"ol")  # a partial copy, then the disk is full
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr("mcp_server_python_docs.ingestion.publish.os.link", no_links)
+        monkeypatch.setattr("mcp_server_python_docs.ingestion.publish.shutil.copy2", disk_fills_up)
+        with pytest.raises(OSError) as failed:
+            atomic_swap(new_db, target)
+
+        assert failed.value.errno == errno.ENOSPC
+        assert target.read_bytes() == b"old"
+        assert new_db.exists()
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["build-123.db", "index.db"]
+
+    def test_swap_after_a_refused_replace_leaves_no_temp_link(self, tmp_path):
+        target = tmp_path / "index.db"
+        target.write_bytes(b"old")
+        os.link(target, tmp_path / "index.db.previous")  # a refused publish left this link
+        new_db = tmp_path / "build-123.db"
+        new_db.write_bytes(b"new")
+        prev = atomic_swap(new_db, target)
+        assert target.read_bytes() == b"new"
+        assert prev is not None and prev.read_bytes() == b"old"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["index.db", "index.db.previous"]
+
+    def test_refused_previous_replace_cleans_temp_link(self, tmp_path, monkeypatch, caplog):
+        target = tmp_path / "index.db"
+        target.write_bytes(b"old")
+        new_db = tmp_path / "build-123.db"
+        new_db.write_bytes(b"new")
+        real_replace = os.replace
+
+        def locked_previous(src, dst):
+            if Path(dst).name == "index.db.previous":
+                raise PermissionError(errno.EACCES, "The process cannot access the file")
+            real_replace(src, dst)
+
+        monkeypatch.setattr("mcp_server_python_docs.ingestion.publish.os.replace", locked_previous)
+        with caplog.at_level(logging.ERROR), pytest.raises(PermissionError):
+            atomic_swap(new_db, target)
+
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["build-123.db", "index.db"]
+        assert target.read_bytes() == b"old"
+        assert "stop every MCP client" in caplog.text
+
+    def test_refused_temp_link_cleanup_still_logs_the_refusal(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        target = tmp_path / "index.db"
+        target.write_bytes(b"old")
+        new_db = tmp_path / "build-123.db"
+        new_db.write_bytes(b"new")
+        tmp_link = tmp_path / f"index.db.previous.{os.getpid()}.tmp"
+        real_replace = os.replace
+        real_unlink = Path.unlink
+
+        def locked_previous(src, dst):
+            if Path(dst).name == "index.db.previous":
+                raise PermissionError(errno.EACCES, "index.db.previous is held open")
+            real_replace(src, dst)
+
+        def locked_link(self, missing_ok=False):
+            if self.name.endswith(".tmp") and self.exists():  # Windows: a client holds index.db
+                raise PermissionError(errno.EACCES, "the temp link is held open")
+            real_unlink(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr("mcp_server_python_docs.ingestion.publish.os.replace", locked_previous)
+        monkeypatch.setattr(Path, "unlink", locked_link)
+        with caplog.at_level(logging.WARNING), pytest.raises(PermissionError) as refused:
+            atomic_swap(new_db, target)
+
+        assert refused.value.strerror == "index.db.previous is held open"  # the replace's error
+
+        errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("stop every MCP client" in message for message in errors)
+        assert any(str(tmp_link) in message for message in warnings)
+        assert target.read_bytes() == b"old"
+
+    def test_failed_previous_replace_leaves_no_temp_link(self, tmp_path, monkeypatch):
+        target = tmp_path / "index.db"
+        target.write_bytes(b"old")
+        new_db = tmp_path / "build-123.db"
+        new_db.write_bytes(b"new")
+        real_replace = os.replace
+
+        def failing_previous(src, dst):
+            if Path(dst).name == "index.db.previous":
+                raise OSError(errno.EIO, "I/O error")
+            real_replace(src, dst)
+
+        monkeypatch.setattr("mcp_server_python_docs.ingestion.publish.os.replace", failing_previous)
+        with pytest.raises(OSError) as failed:
+            atomic_swap(new_db, target)
+
+        assert failed.value.errno == errno.EIO
+        assert target.read_bytes() == b"old"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["build-123.db", "index.db"]
 
 
 # ── Rollback tests ──
@@ -596,3 +825,151 @@ class TestIngestionWhileServing:
         # Cleanup
         conn_ro.close()
         conn_ro2.close()
+
+
+# ── Failed-build cleanup (build-index) ──
+
+
+def _offline(conn, version, *, is_default=False):
+    raise RuntimeError("objects.inv download failed")
+
+
+def _interrupted(conn, version, *, is_default=False):
+    raise KeyboardInterrupt
+
+
+def _no_symbols(conn, version, *, is_default=False):
+    return 0
+
+
+def _disk_error(conn):
+    raise sqlite3.OperationalError("disk I/O error")
+
+
+@pytest.fixture
+def isolated_cache(tmp_path, monkeypatch):
+    """Send index.db (storage.db's binding) and new builds (publish's binding) to tmp_path."""
+    monkeypatch.setattr("mcp_server_python_docs.storage.db.get_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr("mcp_server_python_docs.ingestion.publish.get_cache_dir", lambda: tmp_path)
+    return tmp_path
+
+
+class TestBuildCleanup:
+    @pytest.mark.parametrize(
+        ("ingest", "rebuild"),
+        [(_offline, None), (_interrupted, None), (_no_symbols, _disk_error)],
+        ids=["no-version-ingested", "ctrl-c", "error-after-ingestion"],
+    )
+    def test_failed_build_leaves_no_files(self, isolated_cache, monkeypatch, ingest, rebuild):
+        from click.testing import CliRunner
+
+        from mcp_server_python_docs.__main__ import main
+
+        build_dirs: list[Path] = []
+
+        def recording_ingest(conn, version, *, is_default=False):
+            build_dirs.append(Path(conn.execute("PRAGMA database_list").fetchone()[2]).parent)
+            return ingest(conn, version, is_default=is_default)
+
+        monkeypatch.setattr(
+            "mcp_server_python_docs.ingestion.inventory.ingest_inventory", recording_ingest
+        )
+        if rebuild is not None:
+            monkeypatch.setattr(
+                "mcp_server_python_docs.ingestion.sphinx_json.rebuild_fts_indexes", rebuild
+            )
+
+        result = CliRunner().invoke(main, ["build-index", "--versions", "3.13", "--skip-content"])
+
+        assert result.exit_code == 1
+        assert build_dirs == [isolated_cache]  # the build really ran in tmp_path
+        assert list(isolated_cache.glob("build-*")) == []
+
+    def test_successful_build_reaches_publish(self, isolated_cache, monkeypatch):
+        from click.testing import CliRunner
+
+        from mcp_server_python_docs.__main__ import main
+
+        calls: list[tuple[Path, bool]] = []  # (build path, existed when publish ran)
+
+        def recording_publish(build_db_path, version, *, require_content=True):
+            calls.append((build_db_path, build_db_path.exists()))
+            return True
+
+        monkeypatch.setattr(
+            "mcp_server_python_docs.ingestion.inventory.ingest_inventory",
+            lambda conn, version, *, is_default=False: 1,
+        )
+        monkeypatch.setattr(
+            "mcp_server_python_docs.ingestion.publish.publish_index", recording_publish
+        )
+
+        result = CliRunner().invoke(main, ["build-index", "--versions", "3.13", "--skip-content"])
+
+        assert result.exit_code == 0
+        assert len(calls) == 1
+        build_db_path, existed = calls[0]
+        assert build_db_path.parent == isolated_cache
+        assert existed  # a dropped `built = True` would delete the build before publish
+
+    def test_sweep_removes_only_stale_build_files(self, tmp_path):
+        two_days_ago = time.time() - 2 * 86_400
+        stale = [tmp_path / f"build-20200101-000000-000000.db{s}" for s in ("", "-wal", "-shm")]
+        fresh = tmp_path / "build-20261030-000000-000000.db"
+        kept = [
+            tmp_path / name
+            for name in (
+                "index.db",
+                "index.db.previous",
+                "index.db.previous.12345.tmp",
+                "retrieved-docs-cache.sqlite3",
+            )
+        ]
+        for path in [*stale, fresh, *kept]:
+            path.write_bytes(b"x")
+        for path in [*stale, *kept]:
+            os.utime(path, (two_days_ago, two_days_ago))
+
+        removed = sweep_stale_builds(tmp_path)
+
+        assert sorted(removed) == sorted(stale)
+        assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+            [fresh.name, *(p.name for p in kept)]
+        )
+
+    def test_sweep_skips_files_it_cannot_delete(self, tmp_path, monkeypatch, caplog):
+        stuck = tmp_path / "build-20200101-000000-000000.db"
+        stuck.write_bytes(b"x")
+        two_days_ago = time.time() - 2 * 86_400
+        os.utime(stuck, (two_days_ago, two_days_ago))
+        real_unlink = Path.unlink
+
+        def refuse(self, missing_ok=False):
+            if self == stuck:
+                raise PermissionError(errno.EACCES, "in use by another process")
+            real_unlink(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", refuse)
+        with caplog.at_level(logging.WARNING):
+            assert sweep_stale_builds(tmp_path) == []
+
+        assert stuck.exists()
+        assert str(stuck) in caplog.text
+
+    def test_build_index_sweeps_stale_builds(self, isolated_cache, monkeypatch):
+        from click.testing import CliRunner
+
+        from mcp_server_python_docs.__main__ import main
+
+        stale = isolated_cache / "build-20200101-000000-000000.db-wal"
+        stale.write_bytes(b"")
+        two_days_ago = time.time() - 2 * 86_400
+        os.utime(stale, (two_days_ago, two_days_ago))
+        monkeypatch.setattr(
+            "mcp_server_python_docs.ingestion.inventory.ingest_inventory", _offline
+        )
+
+        result = CliRunner().invoke(main, ["build-index", "--versions", "3.13", "--skip-content"])
+
+        assert result.exit_code == 1
+        assert list(isolated_cache.glob("build-*")) == []

@@ -15,6 +15,8 @@
 [![No API Keys](https://img.shields.io/badge/API%20keys-none-success)](#why-use-it)
 [![Official Python Docs](https://img.shields.io/badge/source-official%20python%20docs-informational)](https://docs.python.org/3/)
 
+[![Python Docs MCP server](https://mcprush.com/badge/python-docs-mcp/card.svg)](https://mcprush.com/to/python-docs-mcp?ref=badge)
+
 Built for the moment your agent needs `asyncio.TaskGroup` signatures, `pathlib.Path` semantics, or what changed in 3.12 — *not* a web fetch, *not* a hosted API, *not* a vector store hallucinating section anchors. Just an indexed slice of `docs.python.org`, returned by symbol or by query, scoped to the version you actually ship on.
 
 ## Why this exists
@@ -254,7 +256,7 @@ The server currently exposes seven MCP tools:
 | `get_docs` | Retrieve a specific documentation page or section by slug and optional anchor. Returns markdown content with budget-enforced truncation and pagination. Retrieved results are cached on disk by Python docs version and request identity. |
 | `lookup_package_docs` | Look up official PyPI package metadata and return package-declared documentation/homepage/source URLs. This is a controlled PyPI metadata lookup, not generic web search. |
 | `list_versions` | List all indexed Python versions with metadata. |
-| `detect_python_version` | Detect the user's local Python version and report whether that version has been indexed. |
+| `detect_python_version` | Report the Python version detected in the user's environment when the server started, and whether that version is indexed. |
 | `compare_versions` | Diff a Python stdlib symbol between two indexed versions. Returns `change=added|removed|changed|unchanged` with optional `new_in`, `changed_in`, `deprecated_in`, `signature_delta` (advisory heuristic), `see_also_added/removed`, `section_diff`, and `note` deltas. Token-frugal — emits only changed fields, not full content. |
 | `whatsnew_for_version` | Browse nonempty sections of the already-indexed official What's New page for one Python version. Optional `kind` filters by conservative heading-hierarchy category. `start_index` and `max_sections` paginate the filtered results; the structured response is capped at 20,000 characters, and truncated excerpts include a stable anchor and `get_docs` follow-up hint. Canonical titles and anchors are unchanged; if one section cannot fit its metadata plus nonempty indexed text and any required continuation hint, an explicit bounded error is returned. Page size may be reduced to reserve usable excerpts. The cap counts Unicode characters in the model JSON, excluding the MCP envelope. Querying is offline. |
 
@@ -324,8 +326,12 @@ Check the local environment:
 uvx python-docs-mcp-server doctor
 ```
 
-This checks the runtime Python version, SQLite FTS5, cache/index paths, disk
-space, and the `venv`/`ensurepip` support needed by `build-index`.
+This checks the runtime Python version, SQLite FTS5, cache/index paths, the
+index format, disk space, and the `venv`/`ensurepip` support needed by
+`build-index`. If it reports `FAIL: Index format`, run the `build-index`
+command it prints; it lists the versions your index already holds (or every
+supported version, if it cannot read them). If it says your index is newer
+than this release, upgrade python-docs-mcp-server instead.
 
 Validate an existing index:
 
@@ -337,23 +343,16 @@ uvx python-docs-mcp-server validate-corpus
 
 ### FTS5 unavailable
 
-If your Python build does not include SQLite FTS5:
-
-**Linux x86-64**
-
-Linux x86-64 users can install the optional bundled SQLite package:
-
-```bash
-pip install 'python-docs-mcp-server[pysqlite3]'
-```
-
-**macOS / Windows / Linux ARM**
-
-Install Python from [python.org](https://www.python.org/) or use:
+The index needs SQLite's FTS5 extension. The python.org installers,
+`uv python install`, and the Pythons from Linux distributions, Homebrew and
+conda all include it. If `doctor` reports `FAIL: SQLite FTS5`, your Python was
+built against a SQLite without FTS5. Install one that has it:
 
 ```bash
 uv python install
 ```
+
+Or install Python from [python.org](https://www.python.org/).
 
 ### Missing `pythonX.Y-venv` on Debian/Ubuntu
 

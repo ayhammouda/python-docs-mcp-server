@@ -63,7 +63,7 @@ def _load_synonyms() -> dict[str, list[str]]:
 
 
 def _assert_fts5(conn: sqlite3.Connection) -> None:
-    """Check FTS5 availability with platform-aware error (STOR-08)."""
+    """Check FTS5 availability; the error says how to get a Python with FTS5 (STOR-08)."""
     from mcp_server_python_docs.storage.db import assert_fts5_available
 
     assert_fts5_available(conn)
@@ -198,6 +198,7 @@ async def app_lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
                 persistent_docs_cache=persistent_docs_cache,
                 detected_python_version=matched,
                 detected_python_source=detected_src,
+                detected_python_raw=detected_ver,
             )
         except Exception:
             # HYGN-05: log lifespan errors, write last-error.log, re-raise original
@@ -260,7 +261,11 @@ MaxResultsParam = Annotated[
 ]
 SlugParam = Annotated[
     str,
-    Field(max_length=500, description="Page slug (e.g. 'library/asyncio-task.html')"),
+    Field(
+        max_length=500,
+        description="Page slug from a search_docs hit, e.g. 'library/asyncio-task' "
+        "('.html' suffix accepted)",
+    ),
 ]
 AnchorParam = Annotated[
     str | None,
@@ -383,18 +388,11 @@ def create_server() -> MCPServer:
         Returns the detected version, how it was found, and whether it
         matches an indexed documentation set."""
         app_ctx: AppContext = ctx.request_context.lifespan_context
-        detected_ver = app_ctx.detected_python_version
-
-        # Re-run detection to get the raw version even if it didn't match
-        from mcp_server_python_docs.detection import detect_python_version as _detect
-
-        raw_ver, raw_src = _detect()
-
         return DetectPythonVersionResult(
-            detected_version=raw_ver,
-            source=raw_src,
-            matched_index_version=detected_ver,
-            is_default=detected_ver is not None,
+            detected_version=app_ctx.detected_python_raw,
+            source=app_ctx.detected_python_source or "",
+            matched_index_version=app_ctx.detected_python_version,
+            is_default=app_ctx.detected_python_version is not None,
         )
 
     @mcp.tool(annotations=_TOOL_ANNOTATIONS)

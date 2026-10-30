@@ -1,5 +1,5 @@
 -- schema.sql — python-docs-mcp-server storage schema
--- Version: Phase 2 (2026-04-16)
+-- Index format: 1 (PRAGMA user_version, end of file)
 --
 -- Design decisions:
 --   - FTS5 tokenizer: unicode61 remove_diacritics 2 tokenchars '._'
@@ -61,8 +61,6 @@ CREATE TABLE IF NOT EXISTS symbols (
     normalized_name  TEXT NOT NULL,
     module           TEXT,
     symbol_type      TEXT,
-    document_id      INTEGER REFERENCES documents(id) ON DELETE SET NULL,
-    section_id       INTEGER REFERENCES sections(id) ON DELETE SET NULL,
     uri              TEXT NOT NULL,
     anchor           TEXT,
     UNIQUE(doc_set_id, qualified_name, symbol_type)
@@ -77,21 +75,6 @@ CREATE TABLE IF NOT EXISTS examples (
     ordinal          INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS synonyms (
-    id               INTEGER PRIMARY KEY,
-    concept          TEXT NOT NULL,
-    expansion        TEXT NOT NULL,
-    UNIQUE(concept)
-);
-
-CREATE TABLE IF NOT EXISTS redirects (
-    id               INTEGER PRIMARY KEY,
-    doc_set_id       INTEGER NOT NULL REFERENCES doc_sets(id) ON DELETE CASCADE,
-    old_uri          TEXT NOT NULL,
-    new_uri          TEXT NOT NULL,
-    UNIQUE(doc_set_id, old_uri)
-);
-
 CREATE TABLE IF NOT EXISTS ingestion_runs (
     id               INTEGER PRIMARY KEY,
     source           TEXT NOT NULL,
@@ -99,7 +82,6 @@ CREATE TABLE IF NOT EXISTS ingestion_runs (
     status           TEXT NOT NULL,
     started_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     finished_at      TEXT,
-    artifact_hash    TEXT,
     notes            TEXT
 );
 
@@ -134,3 +116,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS examples_fts USING fts5(
     content='examples', content_rowid='id',
     tokenize="unicode61 remove_diacritics 2 tokenchars '._'"
 );
+
+-- ────────────────────────────────────────────────────
+-- Index format stamp
+--
+-- Must equal storage.db.INDEX_FORMAT_VERSION. Bump both when a change
+-- needs every user to rebuild. Kept last so the stamp lands only after
+-- every CREATE has succeeded.
+-- ────────────────────────────────────────────────────
+
+PRAGMA user_version = 1;

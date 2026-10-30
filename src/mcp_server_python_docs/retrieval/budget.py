@@ -44,9 +44,9 @@ def apply_budget(
     # Truncate at max_chars boundary
     end = start_index + max_chars
 
-    # Back up past any combining marks (Unicode category M: Mn, Mc, Me)
-    # so we don't separate a base character from its diacritics
-    while end > start_index and unicodedata.category(text[end - 1]).startswith("M"):
+    # The next page must not start with a combining mark (category M*).
+    # shortcut: combining marks only, switch to unicodedata.iter_graphemes when the floor is 3.15
+    while end > start_index and unicodedata.category(text[end]).startswith("M"):
         end -= 1
 
     # If we backed up to start_index (edge case: all combining marks),

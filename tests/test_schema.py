@@ -332,6 +332,14 @@ def test_bootstrap_idempotent():
     conn.close()
 
 
+def test_bootstrap_schema_stamps_index_format_version():
+    """D2: every new index records the format this release reads."""
+    from mcp_server_python_docs.storage.db import INDEX_FORMAT_VERSION
+
+    conn = _make_db()
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == INDEX_FORMAT_VERSION == 1
+
+
 # ── Test 5: No hardcoded cache path (Success Criterion 5) ────────────
 
 
@@ -397,3 +405,39 @@ def test_no_hardcoded_cache_path():
             + "\n".join(violations)
             + "\nAll cache paths must use platformdirs.user_cache_dir()"
         )
+
+
+def test_unused_tables_are_not_created():
+    """Nothing read synonyms or redirects; new indexes no longer create them."""
+    conn = _make_db()
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '%fts%'"
+        )
+    }
+    conn.close()
+    assert tables == {
+        "doc_sets", "documents", "sections", "symbols", "examples", "ingestion_runs",
+    }
+
+
+def test_symbols_has_no_location_id_columns():
+    """Nothing wrote symbols.document_id or section_id; hits resolve by URI and anchor."""
+    conn = _make_db()
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(symbols)")]
+    conn.close()
+    assert columns == [
+        "id", "doc_set_id", "qualified_name", "normalized_name",
+        "module", "symbol_type", "uri", "anchor",
+    ]
+
+
+def test_ingestion_runs_has_no_artifact_hash():
+    """The hash was taken before the last writes, so it never matched the published file."""
+    conn = _make_db()
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(ingestion_runs)")]
+    conn.close()
+    assert columns == [
+        "id", "source", "version", "status", "started_at", "finished_at", "notes",
+    ]

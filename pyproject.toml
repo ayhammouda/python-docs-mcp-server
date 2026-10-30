@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "python-docs-mcp-server"
-version = "0.4.0"
+version = "0.4.1"
 description = "The canonical Python stdlib oracle for AI coding agents — exact symbols, exact sections, exact versions, offline, always free, always MIT, token-frugal."
 readme = "README.md"
 license = "MIT"
@@ -33,9 +33,6 @@ dependencies = [
     "beautifulsoup4>=4.12,<5.0",
     "zstandard>=0.23.0",
 ]
-
-[project.optional-dependencies]
-pysqlite3 = ["pysqlite3-binary>=0.5.4"]
 
 [dependency-groups]
 dev = [

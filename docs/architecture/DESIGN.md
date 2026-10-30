@@ -163,12 +163,11 @@ only during `build-index`, never during `serve`.
   heading-anchored sections, producing ordinal-ordered records (`uri`,
   `anchor`, `heading`, `level`, `content_text`, `char_count`) that map
   directly onto the `sections` table columns (§4).
-- `extract_code_blocks` (line 352) extracts code blocks from the same HTML
+- `extract_code_blocks` extracts code blocks from the same HTML
   body, classifies each as a doctest or plain example, and assigns each an
-  ordinal within the section it is attached to via `section_anchor`.
-- `populate_synonyms` (line 583) reads the packaged `data/synonyms.yaml` via
-  `importlib.resources` and inserts each concept/expansion pair into the
-  `synonyms` table with `INSERT OR REPLACE`, returning the count inserted.
+  ordinal within the section it is attached to via `section_anchor`. That
+  anchor is, in order: the id of the `dt` that heads the enclosing `dd`, then
+  the id of the enclosing `<section>`, then the previous heading with an id.
 - `rebuild_fts_indexes` (line 624) issues the FTS5 `rebuild` command against
   `sections_fts` and `examples_fts` after content ingestion, re-reading all
   content from the canonical tables into the external-content FTS5 index.
@@ -197,19 +196,26 @@ consumes indirectly — the tag/SHA/Sphinx-pin triple determines which
 ([`ingestion/publish.py`](../../src/mcp_server_python_docs/ingestion/publish.py))
 sits between ingestion and the storage layer becoming visible to `serve`:
 
-- `record_ingestion_run` (line 76) inserts a row into `ingestion_runs`
-  (`source`, `version`, `status`, `artifact_hash`, `notes`), used to audit
-  each build attempt regardless of outcome.
-- `atomic_swap` (line 344) renames an existing `index.db` to
-  `index.db.previous` (for rollback) and then `os.replace()`s the freshly
-  built database into place as the new `index.db`; both operations rely on
-  same-filesystem atomic rename semantics. `rollback()` reverses this by
-  restoring `index.db.previous`.
-- `publish_index` (line 419) orchestrates the sequence: compute the build
-  artifact's SHA256, record the ingestion run, run smoke tests against the
-  new database, and only call `atomic_swap` (plus print a restart-required
-  message to stderr) if the smoke tests pass; on failure it marks the run
-  failed and returns `False` without swapping anything into place.
+- `record_ingestion_run` (line 87) inserts a row into `ingestion_runs`
+  (`source`, `version`, `status`, `notes`), used to record each build that
+  reaches publishing; a rejected build is deleted with its row.
+- `atomic_swap` (line 353) keeps `index.db` present throughout. It
+  hard-links an existing `index.db` to `index.db.previous.<pid>.tmp`
+  (copying it where the filesystem has no hard links), `os.replace()`s that
+  onto `index.db.previous` and removes the temporary name, then
+  `os.replace()`s the build onto `index.db`. On Windows a running MCP client
+  holds `index.db` open, so a replace fails; it then logs that clients must
+  be stopped, names the kept build, and re-raises. `rollback()` restores
+  `index.db.previous`.
+- `publish_index` (line 472) orchestrates the sequence: record the ingestion
+  run, run smoke tests against the new database, and only call `atomic_swap`
+  (plus print a restart-required message to stderr) if the smoke tests pass;
+  on failure it logs every smoke
+  message and the build path at ERROR, deletes the build and returns `False`.
+  Before the `atomic_swap` call, its last read-write step switches the build
+  to `journal_mode = DELETE`, so read-only servers never create `-wal` or
+  `-shm` files; if the switch fails it keeps the build, logs its path and
+  returns `False`.
 
 ---
 
@@ -225,19 +231,18 @@ full schema lives in
 
 **Canonical tables** (source of truth, one `CREATE TABLE` each): `doc_sets`
 (line 21), `documents` (line 33), `sections` (line 44), `symbols` (line 57),
-`examples` (line 71), `synonyms` (line 80), `redirects` (line 87),
-`ingestion_runs` (line 95). Notable constraints recorded as comments in the
-schema itself: `sections.uri` has no standalone `UNIQUE` constraint, so
-cross-version URI overlap is safe (uniqueness is enforced only by
-`UNIQUE(document_id, anchor)`); `symbols` uses
+`examples` (line 69), `ingestion_runs` (line 78). Notable constraints
+recorded as comments in the schema itself: `sections.uri` has no standalone
+`UNIQUE` constraint, so cross-version URI overlap is safe (uniqueness is
+enforced only by `UNIQUE(document_id, anchor)`); `symbols` uses
 `UNIQUE(doc_set_id, qualified_name, symbol_type)` rather than
 `UNIQUE(doc_set_id, qualified_name)`, so the same name can appear as both a
 function and a method; `doc_sets.language` defaults to `'en'`, reserving
 space for future i18n without a migration.
 
 **FTS5 virtual tables** (derived, rebuildable from the canonical tables, not
-themselves a source of truth): `sections_fts` (line 120), `symbols_fts`
-(line 126), `examples_fts` (line 132). All three use external-content mode
+themselves a source of truth): `sections_fts` (line 102), `symbols_fts`
+(line 108), `examples_fts` (line 114). All three use external-content mode
 (`content='<table>', content_rowid='id'`) and the tokenizer
 `unicode61 remove_diacritics 2 tokenchars '._'`, which treats `.` and `_` as
 token characters rather than separators — so `asyncio.TaskGroup` indexes as
@@ -247,24 +252,24 @@ exact Python identifier search.
 **Connection management**
 ([`storage/db.py`](../../src/mcp_server_python_docs/storage/db.py)):
 
-- `get_readonly_connection` (line 48) opens the database with SQLite URI mode
+- `get_readonly_connection` (line 47) opens the database with SQLite URI mode
   `?mode=ro` (preventing accidental writes at the connection level),
   `check_same_thread=False`, and `row_factory = sqlite3.Row`. This is the
   connection type `serve` uses.
-- `get_readwrite_connection` (line 60) creates parent directories as needed,
+- `get_readwrite_connection` (line 59) creates parent directories as needed,
   opens a normal read-write connection, and additionally sets
   `PRAGMA journal_mode = WAL`. This is the connection type `build-index`
   uses.
-- `assert_fts5_available` (line 74) checks FTS5 support with a
-  platform-aware error message: on a read-write connection it attempts to
-  `CREATE`/`DROP` a temporary FTS5 table as a definitive check; on a
-  read-only connection, where that `CREATE` fails for the unrelated reason
-  that the connection is read-only, it falls back to checking
+- `assert_fts5_available` (line 73) checks FTS5 support with one actionable
+  error message: it attempts to `CREATE`/`DROP` a temporary FTS5 table as a
+  definitive check. That works on the server's read-only connection too,
+  because the table lives in the temp schema. Only if that `CREATE` fails
+  because the connection is read-only does it fall back to checking
   `PRAGMA compile_options` for `ENABLE_FTS5`. If FTS5 is genuinely
-  unavailable, it raises `FTS5UnavailableError` with a platform-specific
-  remediation hint (the `pysqlite3-binary` extra on Linux x86-64; a
-  `uv python install` or python.org build otherwise).
-- `bootstrap_schema` (line 116) drops and recreates the three FTS5 virtual
+  unavailable, it raises `FTS5UnavailableError` telling the user to install a
+  Python whose SQLite includes FTS5 (`uv python install` or python.org).
+  `doctor` runs the same check on an in-memory connection.
+- `bootstrap_schema` (line 104) drops and recreates the three FTS5 virtual
   tables unconditionally — because FTS5 has no `ALTER` for tokenizer
   configuration, `IF NOT EXISTS` alone cannot pick up a tokenizer change —
   then executes the full `schema.sql` DDL via `executescript()`. Every
@@ -367,9 +372,10 @@ no storage imports." Given `(text, max_chars, start_index)`, it returns
 `(truncated_text, is_truncated, next_start_index)`. If the remaining text
 (from `start_index` onward) fits within `max_chars`, it is returned unchanged
 with `is_truncated=False` and `next_start_index=None`. Otherwise the text is
-cut at the `max_chars` boundary and then walked backward past any Unicode
-combining marks (category `M*`) so a base character is never separated from
-its diacritics; in the degenerate case where backing up would collapse the
+cut at the `max_chars` boundary, and the cut point moves back while the
+character at the cut is a Unicode combining mark (category `M*`), so no page
+starts with one and a base character stays with its diacritics; in the
+degenerate case where backing up would collapse the
 slice to zero length, it instead walks forward from the base character
 through its combining marks. `next_start_index` is set to the resulting cut
 point whenever the text was truncated, which is what callers use to
@@ -383,10 +389,12 @@ codebase. Its sequence: resolve the version strictly via
 `resolve_version_strict` (an explicit unknown version raises
 `VersionNotFoundError`; `None` resolves to the doc set marked
 `is_default=1`, falling back to the highest version string if none is
-marked default); check
-the persistent cache (§6) and return immediately on a hit, bypassing storage,
-retrieval, and budget entirely; otherwise look up the document by slug and
-version; if an `anchor` was given, resolve exactly that section's text
+marked default); look up the page by slug and version, trying the slug as
+given and then without `.html`, and raise `PageNotFoundError` with an
+actionable message (the slug form, `#fragment` as `anchor`, `search_docs`) if
+neither matches; check the persistent cache (§6) under the canonical
+`documents.slug` and return immediately on a hit, bypassing retrieval and
+budget; otherwise, if an `anchor` was given, resolve exactly that section's text
 through an in-memory section cache, else concatenate every section for the
 page in `ordinal` order (each rendered as `## {heading}\n\n{content}`) into
 one `full_text`; call `apply_budget(full_text, max_chars, start_index)`;
@@ -458,7 +466,7 @@ invalidation signal.
 
 This document does not add to ADR-007's contract; see the ADR for the full
 Decision Drivers, Considered Options, and Layer Contract, including the
-codec registry details (`none`, `zstd`, `zstd-dict-v1`) and the operational
+codec registry details (`none`, `zstd`) and the operational
 risks recorded in its Consequences section.
 
 ---

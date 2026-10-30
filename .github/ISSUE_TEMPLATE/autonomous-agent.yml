@@ -16,7 +16,7 @@ body:
     id: context
     attributes:
       label: Context (self-containment)
-      description: Include working context here or link an existing context file, the pipeline, roadmap, relevant ADRs, and related issues (2026-10-01 ownership amendment).
+      description: Include working context here or link an existing context file, the pipeline, roadmap, relevant ADRs, and related issues (2026-10-30 ownership amendment).
       value: |
         - Working context or existing context-file link:
         - Pipeline: `AGENT-EXECUTION-PIPELINE.md`
@@ -107,7 +107,7 @@ body:
     attributes:
       label: Agent acknowledgements
       options:
-        - label: I will work on a branch; Vision may merge only after separate current-head verification and required checks.
+        - label: I will work on a branch; the Claude Code owner may merge only after independent current-head verification and required checks.
           required: true
         - label: I will stop and comment rather than silently expand scope or touch forbidden territory.
           required: true

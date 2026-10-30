@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import importlib.resources
 import logging
-import platform
 import sqlite3
 from pathlib import Path
 
@@ -12,6 +11,9 @@ import platformdirs
 from mcp_server_python_docs.errors import FTS5UnavailableError
 
 logger = logging.getLogger(__name__)
+
+# Must equal the PRAGMA user_version that schema.sql stamps.
+INDEX_FORMAT_VERSION = 1
 
 
 def get_cache_dir() -> Path:
@@ -72,16 +74,15 @@ def get_readwrite_connection(path: str | Path) -> sqlite3.Connection:
 
 
 def assert_fts5_available(conn: sqlite3.Connection) -> None:
-    """Check FTS5 availability with platform-aware error message (STOR-08).
+    """Check FTS5 availability with one actionable error message (STOR-08).
 
     Works on both read-only and read-write connections:
     - RW: attempts CREATE/DROP of a temp FTS5 table (definitive check)
     - RO: falls back to PRAGMA compile_options when CREATE fails due to
       readonly mode (not a missing-FTS5 error)
 
-    Raises FTS5UnavailableError with actionable guidance:
-    - Linux x86-64: suggests pysqlite3-binary
-    - macOS/Windows/ARM: suggests uv python install or python.org
+    Raises FTS5UnavailableError telling the user to install a Python whose
+    SQLite includes FTS5 (uv python install or python.org).
     """
     try:
         conn.execute("CREATE VIRTUAL TABLE temp._fts5_check USING fts5(x)")
@@ -94,22 +95,12 @@ def assert_fts5_available(conn: sqlite3.Connection) -> None:
             opts = [row[0] for row in conn.execute("PRAGMA compile_options")]
             if "ENABLE_FTS5" in opts:
                 return  # FTS5 is compiled in
-        # FTS5 genuinely unavailable -- build platform-specific hint
-        system = platform.system()
-        machine = platform.machine()
-        if system == "Linux" and machine == "x86_64":
-            hint = (
-                "Install the pysqlite3-binary fallback:\n"
-                "  pip install 'python-docs-mcp-server[pysqlite3]'"
-            )
-        else:
-            hint = (
-                "Install a Python build with FTS5 support:\n"
-                "  uv python install\n"
-                "Or install Python from python.org (includes FTS5)."
-            )
         raise FTS5UnavailableError(
-            f"SQLite FTS5 extension is not available in this Python build.\n{hint}"
+            "SQLite FTS5 extension is not available in this Python build.\n"
+            "Install a Python whose SQLite includes FTS5:\n"
+            "  uv python install\n"
+            "or use the installer from python.org. "
+            "Pythons from Linux distributions, Homebrew and conda include FTS5 too."
         ) from e
 
 

@@ -159,25 +159,27 @@ def build_index(versions: str, skip_content: bool) -> None:
     """Build the documentation index from objects.inv and Sphinx JSON."""
     import shutil
     import tempfile
-    import venv
     from pathlib import Path
 
+    from mcp_server_python_docs.errors import FTS5UnavailableError
     from mcp_server_python_docs.ingestion.cpython_versions import (
         CPYTHON_DOCS_BUILD_CONFIG,
     )
     from mcp_server_python_docs.ingestion.inventory import ingest_inventory
     from mcp_server_python_docs.ingestion.publish import (
         _version_sort_key,
+        delete_build,
         generate_build_path,
         parse_expected_versions,
         publish_index,
+        sweep_stale_builds,
     )
     from mcp_server_python_docs.ingestion.sphinx_json import (
         build_sphinx_bootstrap_requirements,
         build_sphinx_json_command,
+        create_sphinx_venv,
         ingest_sphinx_json_dir,
         make_sphinx_json_env,
-        populate_synonyms,
         rebuild_fts_indexes,
         write_json_build_requirements,
         write_sphinx_json_sitecustomize,
@@ -210,12 +212,20 @@ def build_index(versions: str, skip_content: bool) -> None:
 
     # Build into a timestamped artifact, not directly to index.db (PUBL-01)
     build_db_path = generate_build_path()
+    sweep_stale_builds(build_db_path.parent)
     logger.info("Building index at %s", build_db_path)
 
     conn = get_readwrite_connection(build_db_path)
+    built = False
     try:
+        # Before bootstrap_schema: its FTS5 tables would fail first, with a bare
+        # "no such module: fts5" instead of the check's hint (STOR-08).
+        try:
+            assert_fts5_available(conn)
+        except FTS5UnavailableError as e:
+            logger.error("%s", e)
+            raise SystemExit(1)
         bootstrap_schema(conn)
-        assert_fts5_available(conn)
 
         any_version_succeeded = False
 
@@ -267,7 +277,7 @@ def build_index(versions: str, skip_content: bool) -> None:
                     # Create dedicated Sphinx venv (INGR-C-02)
                     venv_dir = os.path.join(clone_dir, "_sphinx_venv")
                     logger.info("Creating Sphinx venv at %s...", venv_dir)
-                    venv.create(venv_dir, with_pip=True)
+                    create_sphinx_venv(venv_dir, with_pip=True)
                     # Use Scripts/ on Windows, bin/ elsewhere
                     scripts_dir = os.path.join(
                         venv_dir,
@@ -393,25 +403,22 @@ def build_index(versions: str, skip_content: bool) -> None:
 
         if not any_version_succeeded:
             logger.error("No versions were successfully ingested")
-            # Clean up the failed build artifact
-            if build_db_path.exists():
-                build_db_path.unlink()
             raise SystemExit(1)
-
-        # Populate synonyms from synonyms.yaml (INGR-C-09)
-        synonym_count = populate_synonyms(conn)
-        logger.info("Populated %d synonyms", synonym_count)
 
         # Rebuild FTS indexes (INGR-C-08)
         rebuild_fts_indexes(conn)
+        built = True
     finally:
+        # Close before deleting, or SQLite recreates the -wal/-shm sidecars.
         conn.close()
+        if not built:
+            delete_build(build_db_path)
 
     # Publish: smoke test + atomic swap (PUBL-01 through PUBL-05)
     versions_str = ",".join(version_list)
     success = publish_index(build_db_path, versions_str, require_content=not skip_content)
     if not success:
-        logger.error("Publishing failed — smoke tests did not pass")
+        logger.error("Publishing failed; see the errors above")
         raise SystemExit(1)
 
 
@@ -495,12 +502,20 @@ def validate_corpus(db_path: str | None) -> None:
 @main.command()
 def doctor() -> None:
     """Check environment health and report issues (CLI-02)."""
+    import contextlib
     import shutil
     import sqlite3
     from pathlib import Path
 
     from mcp_server_python_docs.diagnostics import check_build_venv_support
-    from mcp_server_python_docs.storage.db import get_cache_dir, get_index_path
+    from mcp_server_python_docs.errors import FTS5UnavailableError
+    from mcp_server_python_docs.storage.db import (
+        INDEX_FORMAT_VERSION,
+        assert_fts5_available,
+        get_cache_dir,
+        get_index_path,
+        get_readonly_connection,
+    )
 
     results: list[tuple[str, bool, str]] = []  # (probe_name, passed, detail)
 
@@ -517,23 +532,12 @@ def doctor() -> None:
     fts5_ok = False
     fts5_detail = ""
     try:
-        mem_conn = sqlite3.connect(":memory:")
-        mem_conn.execute("CREATE VIRTUAL TABLE _fts5_check USING fts5(x)")
-        mem_conn.execute("DROP TABLE _fts5_check")
-        mem_conn.close()
+        with contextlib.closing(sqlite3.connect(":memory:")) as mem_conn:
+            assert_fts5_available(mem_conn)
         fts5_ok = True
         fts5_detail = f"SQLite {sqlite3.sqlite_version}"
-    except sqlite3.OperationalError:
-        import platform as plat
-
-        if plat.system() == "Linux" and plat.machine() == "x86_64":
-            fts5_detail = (
-                "FTS5 unavailable -- pip install 'python-docs-mcp-server[pysqlite3]'"
-            )
-        else:
-            fts5_detail = (
-                "FTS5 unavailable -- install Python from python.org or uv python install"
-            )
+    except FTS5UnavailableError as e:
+        fts5_detail = str(e)
     results.append(("SQLite FTS5", fts5_ok, fts5_detail))
 
     # 3. Build-index Sphinx venv support
@@ -580,7 +584,52 @@ def doctor() -> None:
         index_detail += f" ({size_mb:.1f} MB)"
     results.append(("Index database", index_exists, index_detail))
 
-    # 6. Free disk space
+    # 6. Index format (PRAGMA user_version); a missing index is probe 5's job
+    if index_exists:
+        format_conn: sqlite3.Connection | None = None
+        format_error: sqlite3.Error | None = None
+        found_format = None
+        indexed_versions: list[str] = []
+        try:
+            format_conn = get_readonly_connection(index_path)
+            found_format = format_conn.execute("PRAGMA user_version").fetchone()[0]
+            # A newer format may lay out its tables differently: read nothing else.
+            if found_format <= INDEX_FORMAT_VERSION:
+                indexed_versions = [
+                    row[0]
+                    for row in format_conn.execute(
+                        "SELECT version FROM doc_sets ORDER BY version"
+                    )
+                ]
+        except sqlite3.Error as e:
+            format_error = e
+        finally:
+            if format_conn is not None:
+                format_conn.close()
+        rebuild = (
+            "run: python-docs-mcp-server build-index --versions "
+            f"{','.join(indexed_versions) or SUPPORTED_DOC_VERSIONS_CSV}"
+        )
+        if format_error is not None:
+            results.append(("Index format", False, f"unreadable ({format_error}) -- {rebuild}"))
+        elif found_format == INDEX_FORMAT_VERSION:
+            results.append(("Index format", True, f"version {found_format}"))
+        elif found_format is not None and found_format > INDEX_FORMAT_VERSION:
+            # No rebuild advice: a rebuild here would downgrade an index from a newer release.
+            results.append((
+                "Index format",
+                False,
+                f"version {found_format}, newer than this release "
+                f"(expected {INDEX_FORMAT_VERSION}) -- upgrade python-docs-mcp-server",
+            ))
+        else:
+            results.append((
+                "Index format",
+                False,
+                f"version {found_format}, expected {INDEX_FORMAT_VERSION} -- {rebuild}",
+            ))
+
+    # 7. Free disk space
     check_path = cache_dir if cache_exists else cache_dir.parent
     # Ensure path exists for disk_usage
     if not check_path.exists():

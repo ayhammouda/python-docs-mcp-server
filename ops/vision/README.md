@@ -1,5 +1,8 @@
 # Vision project operation
 
+> **Retired 2026-10-30, kept for reference, no authority.** Ownership moved to the
+> Claude Code owner; see the 2026-10-30 amendment in `AGENT-EXECUTION-PIPELINE.md`.
+
 Vision owns `ayhammouda/python-docs-mcp-server`: maintenance, issue replies,
 research-driven development, merges and releases. The existing owner job runs
 **every two hours at minute 17, Europe/Paris**. Account ownership stays with Aymen.
