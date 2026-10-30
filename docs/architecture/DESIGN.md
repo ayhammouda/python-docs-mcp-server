@@ -230,7 +230,7 @@ full schema lives in
 
 **Canonical tables** (source of truth, one `CREATE TABLE` each): `doc_sets`
 (line 21), `documents` (line 33), `sections` (line 44), `symbols` (line 57),
-`examples` (line 71), `ingestion_runs` (line 80). Notable constraints
+`examples` (line 69), `ingestion_runs` (line 78). Notable constraints
 recorded as comments in the schema itself: `sections.uri` has no standalone
 `UNIQUE` constraint, so cross-version URI overlap is safe (uniqueness is
 enforced only by `UNIQUE(document_id, anchor)`); `symbols` uses
@@ -240,8 +240,8 @@ function and a method; `doc_sets.language` defaults to `'en'`, reserving
 space for future i18n without a migration.
 
 **FTS5 virtual tables** (derived, rebuildable from the canonical tables, not
-themselves a source of truth): `sections_fts` (line 105), `symbols_fts`
-(line 111), `examples_fts` (line 117). All three use external-content mode
+themselves a source of truth): `sections_fts` (line 103), `symbols_fts`
+(line 109), `examples_fts` (line 115). All three use external-content mode
 (`content='<table>', content_rowid='id'`) and the tokenizer
 `unicode61 remove_diacritics 2 tokenchars '._'`, which treats `.` and `_` as
 token characters rather than separators — so `asyncio.TaskGroup` indexes as

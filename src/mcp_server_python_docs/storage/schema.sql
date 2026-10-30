@@ -61,8 +61,6 @@ CREATE TABLE IF NOT EXISTS symbols (
     normalized_name  TEXT NOT NULL,
     module           TEXT,
     symbol_type      TEXT,
-    document_id      INTEGER REFERENCES documents(id) ON DELETE SET NULL,
-    section_id       INTEGER REFERENCES sections(id) ON DELETE SET NULL,
     uri              TEXT NOT NULL,
     anchor           TEXT,
     UNIQUE(doc_set_id, qualified_name, symbol_type)

@@ -20,6 +20,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - New indexes no longer contain the unused `synonyms` and `redirects` tables.
   Search still expands synonyms from the packaged `synonyms.yaml`. Existing
   indexes keep working; no rebuild is needed.
+- New indexes no longer contain `symbols.document_id` and `symbols.section_id`.
+  Nothing wrote them; symbol hits still resolve through their URI and anchor.
+  Versions up to 0.4.0 still read these columns, so after a downgrade, rebuild
+  the index.
 
 ### Fixed
 

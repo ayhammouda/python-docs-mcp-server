@@ -412,3 +412,14 @@ def test_unused_tables_are_not_created():
     assert tables == {
         "doc_sets", "documents", "sections", "symbols", "examples", "ingestion_runs",
     }
+
+
+def test_symbols_has_no_location_id_columns():
+    """Nothing wrote symbols.document_id or section_id; hits resolve by URI and anchor."""
+    conn = _make_db()
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(symbols)")]
+    conn.close()
+    assert columns == [
+        "id", "doc_set_id", "qualified_name", "normalized_name",
+        "module", "symbol_type", "uri", "anchor",
+    ]
