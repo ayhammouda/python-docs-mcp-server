@@ -162,6 +162,7 @@ def build_index(versions: str, skip_content: bool) -> None:
     import venv
     from pathlib import Path
 
+    from mcp_server_python_docs.errors import FTS5UnavailableError
     from mcp_server_python_docs.ingestion.cpython_versions import (
         CPYTHON_DOCS_BUILD_CONFIG,
     )
@@ -218,8 +219,14 @@ def build_index(versions: str, skip_content: bool) -> None:
     conn = get_readwrite_connection(build_db_path)
     built = False
     try:
+        # Before bootstrap_schema: its FTS5 tables would fail first, with a bare
+        # "no such module: fts5" instead of the check's hint (STOR-08).
+        try:
+            assert_fts5_available(conn)
+        except FTS5UnavailableError as e:
+            logger.error("%s", e)
+            raise SystemExit(1)
         bootstrap_schema(conn)
-        assert_fts5_available(conn)
 
         any_version_succeeded = False
 

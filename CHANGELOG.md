@@ -44,6 +44,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   place by hand.
 - `build-index` now deletes `build-*.db*` files older than one day. Killed
   auto-builds used to leave them in the cache folder for good.
+- On a Python whose SQLite lacks FTS5, `build-index` now prints the FTS5 hint
+  and exits with code 1. It used to stop with a raw
+  `sqlite3.OperationalError: no such module: fts5` traceback, because it created
+  the index's FTS5 tables before checking for FTS5. The server's automatic
+  symbol-only build logs the same hint.
 
 ### Security
 
