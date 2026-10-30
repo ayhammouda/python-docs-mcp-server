@@ -95,6 +95,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   shows the slug form and points to `search_docs`. The `slug` description now
   reads "Page slug from a search_docs hit, e.g. 'library/asyncio-task'
   ('.html' suffix accepted)".
+- `compare_versions` now reads "Added in version" notes, which docs built with
+  Sphinx 7.3 or later use (Python 3.12 onwards), and keeps patch versions such
+  as 3.5.1. `changed_in` is now the newest "Changed in version" note that v2
+  adds over v1, and `new_in` the earliest "Added in version" note in the v2
+  section.
 
 ### Security
 

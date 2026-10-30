@@ -378,3 +378,56 @@ def test_section_diff_truncates_on_line_boundary_wr02(compare_db, monkeypatch):
         if line == "... (diff truncated)":
             continue
         assert line[:1] in {" ", "+", "-", "@"}, f"corrupt diff line: {line!r}"
+
+
+def _service_with_texts(db, monkeypatch, texts: dict[str, str]) -> CompareService:
+    """A CompareService that reads fixed section text per version."""
+    svc = _service(db)
+    monkeypatch.setattr(svc, "_section_text", lambda uri, anchor, version: texts[version])
+    return svc
+
+
+def test_compare_new_in_reads_added_in_version(compare_db, monkeypatch):
+    """Sphinx 7.3+ (the docs of Python 3.12 onwards) writes "Added in version"."""
+    texts = {"3.11": "Holds tasks.\n\nAdded in version 3.11."}
+    svc = _service_with_texts(compare_db, monkeypatch, texts)
+    assert svc.compare("asyncio.TaskGroup", "3.10", "3.11").new_in == "3.11"
+
+
+def test_compare_new_in_keeps_patch_version(compare_db, monkeypatch):
+    texts = {"3.11": "Holds tasks.\n\nAdded in version 3.5.1."}
+    svc = _service_with_texts(compare_db, monkeypatch, texts)
+    assert svc.compare("asyncio.TaskGroup", "3.10", "3.11").new_in == "3.5.1"
+
+
+def test_compare_new_in_takes_smallest_added_version(compare_db, monkeypatch):
+    """A class section also carries its members' notes; the class note is the oldest."""
+    texts = {"3.11": "create_task(coro)\n\nAdded in version 3.13.\n\nAdded in version 3.11."}
+    svc = _service_with_texts(compare_db, monkeypatch, texts)
+    assert svc.compare("asyncio.TaskGroup", "3.10", "3.11").new_in == "3.11"
+
+
+def test_compare_changed_in_is_newest_note_new_in_v2(compare_db, monkeypatch):
+    texts = {
+        "3.10": "Serialize obj.\n\nChanged in version 3.3: x.",
+        "3.11": "Serialize obj.\n\nChanged in version 3.3: x.\n\nChanged in version 3.11: y.",
+    }
+    svc = _service_with_texts(compare_db, monkeypatch, texts)
+    assert svc.compare("json.dumps", "3.10", "3.11").changed_in == "3.11"
+
+
+def test_compare_changed_in_is_none_when_v2_adds_no_note(compare_db, monkeypatch):
+    texts = {
+        "3.10": "Old prose.\n\nChanged in version 3.3: x.",
+        "3.11": "New prose.\n\nChanged in version 3.3: x.",
+    }
+    svc = _service_with_texts(compare_db, monkeypatch, texts)
+    result = svc.compare("json.dumps", "3.10", "3.11")
+    assert (result.change, result.changed_in) == ("changed", None)
+    assert result.section_diff is not None
+
+
+def test_compare_ignores_soft_deprecation(compare_db, monkeypatch):
+    texts = {"3.10": "Old API.", "3.11": "Old API.\n\nSoft deprecated since version 3.11."}
+    svc = _service_with_texts(compare_db, monkeypatch, texts)
+    assert svc.compare("json.dumps", "3.10", "3.11").deprecated_in is None
