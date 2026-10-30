@@ -166,9 +166,6 @@ only during `build-index`, never during `serve`.
 - `extract_code_blocks` (line 352) extracts code blocks from the same HTML
   body, classifies each as a doctest or plain example, and assigns each an
   ordinal within the section it is attached to via `section_anchor`.
-- `populate_synonyms` (line 583) reads the packaged `data/synonyms.yaml` via
-  `importlib.resources` and inserts each concept/expansion pair into the
-  `synonyms` table with `INSERT OR REPLACE`, returning the count inserted.
 - `rebuild_fts_indexes` (line 624) issues the FTS5 `rebuild` command against
   `sections_fts` and `examples_fts` after content ingestion, re-reading all
   content from the canonical tables into the external-content FTS5 index.
@@ -233,19 +230,18 @@ full schema lives in
 
 **Canonical tables** (source of truth, one `CREATE TABLE` each): `doc_sets`
 (line 21), `documents` (line 33), `sections` (line 44), `symbols` (line 57),
-`examples` (line 71), `synonyms` (line 80), `redirects` (line 87),
-`ingestion_runs` (line 95). Notable constraints recorded as comments in the
-schema itself: `sections.uri` has no standalone `UNIQUE` constraint, so
-cross-version URI overlap is safe (uniqueness is enforced only by
-`UNIQUE(document_id, anchor)`); `symbols` uses
+`examples` (line 71), `ingestion_runs` (line 80). Notable constraints
+recorded as comments in the schema itself: `sections.uri` has no standalone
+`UNIQUE` constraint, so cross-version URI overlap is safe (uniqueness is
+enforced only by `UNIQUE(document_id, anchor)`); `symbols` uses
 `UNIQUE(doc_set_id, qualified_name, symbol_type)` rather than
 `UNIQUE(doc_set_id, qualified_name)`, so the same name can appear as both a
 function and a method; `doc_sets.language` defaults to `'en'`, reserving
 space for future i18n without a migration.
 
 **FTS5 virtual tables** (derived, rebuildable from the canonical tables, not
-themselves a source of truth): `sections_fts` (line 120), `symbols_fts`
-(line 126), `examples_fts` (line 132). All three use external-content mode
+themselves a source of truth): `sections_fts` (line 105), `symbols_fts`
+(line 111), `examples_fts` (line 117). All three use external-content mode
 (`content='<table>', content_rowid='id'`) and the tokenizer
 `unicode61 remove_diacritics 2 tokenchars '._'`, which treats `.` and `_` as
 token characters rather than separators — so `asyncio.TaskGroup` indexes as

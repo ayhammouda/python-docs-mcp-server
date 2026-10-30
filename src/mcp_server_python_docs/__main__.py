@@ -179,7 +179,6 @@ def build_index(versions: str, skip_content: bool) -> None:
         build_sphinx_json_command,
         ingest_sphinx_json_dir,
         make_sphinx_json_env,
-        populate_synonyms,
         rebuild_fts_indexes,
         write_json_build_requirements,
         write_sphinx_json_sitecustomize,
@@ -398,10 +397,6 @@ def build_index(versions: str, skip_content: bool) -> None:
         if not any_version_succeeded:
             logger.error("No versions were successfully ingested")
             raise SystemExit(1)
-
-        # Populate synonyms from synonyms.yaml (INGR-C-09)
-        synonym_count = populate_synonyms(conn)
-        logger.info("Populated %d synonyms", synonym_count)
 
         # Rebuild FTS indexes (INGR-C-08)
         rebuild_fts_indexes(conn)

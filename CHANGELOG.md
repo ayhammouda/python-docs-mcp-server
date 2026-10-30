@@ -15,6 +15,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `serverInfo.version` instead of the SDK's. Tool names, parameters and
   results are unchanged.
 
+### Removed
+
+- New indexes no longer contain the unused `synonyms` and `redirects` tables.
+  Search still expands synonyms from the packaged `synonyms.yaml`. Existing
+  indexes keep working; no rebuild is needed.
+
 ### Fixed
 
 - The server now exits cleanly, with exit code 0 and no traceback, when a

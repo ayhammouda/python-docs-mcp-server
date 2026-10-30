@@ -77,21 +77,6 @@ CREATE TABLE IF NOT EXISTS examples (
     ordinal          INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS synonyms (
-    id               INTEGER PRIMARY KEY,
-    concept          TEXT NOT NULL,
-    expansion        TEXT NOT NULL,
-    UNIQUE(concept)
-);
-
-CREATE TABLE IF NOT EXISTS redirects (
-    id               INTEGER PRIMARY KEY,
-    doc_set_id       INTEGER NOT NULL REFERENCES doc_sets(id) ON DELETE CASCADE,
-    old_uri          TEXT NOT NULL,
-    new_uri          TEXT NOT NULL,
-    UNIQUE(doc_set_id, old_uri)
-);
-
 CREATE TABLE IF NOT EXISTS ingestion_runs (
     id               INTEGER PRIMARY KEY,
     source           TEXT NOT NULL,

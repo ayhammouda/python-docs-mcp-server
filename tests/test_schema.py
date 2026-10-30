@@ -397,3 +397,18 @@ def test_no_hardcoded_cache_path():
             + "\n".join(violations)
             + "\nAll cache paths must use platformdirs.user_cache_dir()"
         )
+
+
+def test_unused_tables_are_not_created():
+    """Nothing read synonyms or redirects; new indexes no longer create them."""
+    conn = _make_db()
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '%fts%'"
+        )
+    }
+    conn.close()
+    assert tables == {
+        "doc_sets", "documents", "sections", "symbols", "examples", "ingestion_runs",
+    }

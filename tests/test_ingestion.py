@@ -2,8 +2,7 @@
 
 Covers fjson parsing (INGR-C-04), HTML-to-markdown (INGR-C-05),
 per-document failure isolation (INGR-C-06), code block extraction
-(INGR-C-07), FTS population (INGR-C-08), and synonym population
-(INGR-C-09).
+(INGR-C-07), FTS population (INGR-C-08), and the symbol-only build path.
 """
 from __future__ import annotations
 
@@ -24,6 +23,7 @@ from mcp_server_python_docs.ingestion.cpython_versions import (
     SUPPORTED_DOC_VERSIONS,
     SUPPORTED_DOC_VERSIONS_CSV,
 )
+from mcp_server_python_docs.ingestion.publish import SMOKE_SENTINEL_SYMBOL
 from mcp_server_python_docs.ingestion.sphinx_json import (
     build_sphinx_bootstrap_requirements,
     build_sphinx_json_command,
@@ -34,12 +34,12 @@ from mcp_server_python_docs.ingestion.sphinx_json import (
     ingest_sphinx_json_dir,
     make_sphinx_json_env,
     parse_fjson,
-    populate_synonyms,
     rebuild_fts_indexes,
     sphinx_parallel_jobs,
     write_json_build_requirements,
     write_sphinx_json_sitecustomize,
 )
+from mcp_server_python_docs.storage.db import get_readonly_connection
 
 
 class TestCPythonVersionConfig:
@@ -508,21 +508,56 @@ class TestFTSPopulation:
         assert row is not None
 
 
-# ── Synonym population tests (INGR-C-09) ──
+# ── Symbol-only build (the server's auto-build path) ──
 
 
-class TestSynonymPopulation:
-    def test_synonyms_populated(self, test_db):
-        """populate_synonyms loads from synonyms.yaml into DB."""
-        count = populate_synonyms(test_db)
-        assert count >= 10
+def _fake_inventory(conn, version, *, is_default=False):
+    """Stand in for objects.inv: one doc set with the smoke-test minimum of symbols."""
+    conn.execute(
+        "INSERT INTO doc_sets (source, version, language, label, is_default) "
+        "VALUES ('python-docs', ?, 'en', ?, 1)",
+        (version, f"Python {version}"),
+    )
+    names = [SMOKE_SENTINEL_SYMBOL, *(f"mod{i}.func{i}" for i in range(1, 1000))]
+    conn.executemany(
+        "INSERT INTO symbols (doc_set_id, qualified_name, normalized_name, module, "
+        "symbol_type, uri, anchor) VALUES (1, ?, ?, ?, 'function', 'library/m.html#x', 'x')",
+        [(n, n.lower(), n.rsplit(".", 1)[0]) for n in names],
+    )
+    conn.execute("INSERT INTO symbols_fts(symbols_fts) VALUES('rebuild')")
+    conn.commit()
+    return len(names)
 
-        # Verify at least one known synonym exists
-        row = test_db.execute(
-            "SELECT expansion FROM synonyms LIMIT 1"
-        ).fetchone()
-        assert row is not None
-        assert row[0]  # Non-empty expansion
+
+class TestSymbolOnlyBuild:
+    def test_symbol_only_build_publishes_without_synonyms_table(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from mcp_server_python_docs.__main__ import main
+
+        # get_index_path() reads storage.db's binding; generate_build_path() reads publish's.
+        monkeypatch.setattr("mcp_server_python_docs.storage.db.get_cache_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "mcp_server_python_docs.ingestion.publish.get_cache_dir", lambda: tmp_path
+        )
+        monkeypatch.setattr(
+            "mcp_server_python_docs.ingestion.inventory.ingest_inventory", _fake_inventory
+        )
+
+        result = CliRunner().invoke(main, ["build-index", "--versions", "3.13", "--skip-content"])
+
+        assert result.exit_code == 0, result.output
+        conn = get_readonly_connection(tmp_path / "index.db")
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '%fts%'"
+            )
+        }
+        conn.close()
+        assert tables == {
+            "doc_sets", "documents", "sections", "symbols", "examples", "ingestion_runs",
+        }
 
 
 # ── Document content tests ──
