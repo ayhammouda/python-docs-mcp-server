@@ -55,7 +55,7 @@ Each claim has a pass/fail rule fixed before any data is seen (**Call**).
 |---|---|---|---|
 | C1 | At query time `python-docs-mcp-server` needs no API key and contacts no host other than the model provider's API. | Egress-proxy logs from every hosted run (section 7). | No allowed or attempted connection to any non-provider host, except calls the model made to `lookup_package_docs`, which are reported separately. |
 | C2 (headline) | For each model, `python-docs-mcp-server` uses fewer normalized tokens per correct answer than each peer docs system (round 1: `docs-fetch` only). | Token and scoring records (sections 8, 9). | The upper bound of the 95% paired-bootstrap CI of the ratio (python-docs ÷ peer) is below 1.0, for that model and that peer. |
-| C3 | With the internet unreachable, a local model plus `python-docs-mcp-server` answers the corpus better than the same model alone. | Air-gapped arm (section 7.4). | Proxy log shows zero internet hosts, the host-offline checks before and after the arm pass, and the 95% paired-bootstrap CI of the mean correctness difference (with docs − without) is entirely above 0. |
+| C3 | With the internet unreachable, a local model plus `python-docs-mcp-server` answers the corpus better than the same model alone. | Air-gapped arm (section 7.4). | Proxy log shows zero internet hosts, every host-offline check (7.4) passes, and the 95% paired-bootstrap CI of the mean correctness difference (with docs − without) is entirely above 0. |
 | S1 (secondary) | Correctness per system. Context7 and the other docs MCPs join in round 2. | Scoring records. | Reported as measured; no pass rule. |
 | S2 (secondary) | The local cache makes repeat lookups faster. | Tool-call latency, cold vs warm (section 10). | Reported as measured; framed as speed, never as tokens. |
 
@@ -163,8 +163,9 @@ the same MCP bridge as every other system.
   use; auto is the only common setting).
 - **Caps (Call):** at most 8 model calls and 12 tool calls per trajectory,
   30 s per tool call, and 300 s per trajectory (900 s in the air-gapped arm,
-  for both of its systems). Hitting one of these ends the trajectory as a
-  failure that stays in the denominator. Caps are identical across systems
+  for both of its systems), plus the per-trajectory cost reservation
+  (section 12). Hitting one of these ends the trajectory as a failure that
+  stays in the denominator. Caps are identical across systems
   within a model; comparisons are only ever made within a model.
 - **Result cap (Call):** each tool result is truncated at 100,000 characters
   with a marker, the hit is recorded, and the loop continues. It is a safety
@@ -334,7 +335,8 @@ for the evidence behind each choice.
   under test if one passes the probe gate G1 (first candidate:
   `gemini-3.1-flash-lite`, release status unverified). Otherwise
   `gemini-3.8-flash`, which then grades its own answers; disclose that.
-  Effort per judge: the lowest level that meets the G1 criteria on the
+  Effort per judge: the lowest level that meets G1's per-judge criteria
+  (overall accuracy and zero `INJ` credit) on the
   tuning probes (9.3), then frozen; G1 itself then runs once on the
   held-out probes. Use the
   providers' batch APIs, submitted from sandbox containers (7.3).
@@ -362,7 +364,7 @@ for the evidence behind each choice.
   used as a JSON key (`"attempted":`, `"p1_met":`, `"p2_met":`,
   `"contradicts_key":`, `"wrong_version":`). Suspect answers always go to
   the reference grader, and its grade replaces the panel's for every
-  metric and claim. They are excluded from the G3 agreement sample, like
+  metric and claim, including G4's single-judge reruns. They are excluded from the G3 agreement sample, like
   settled answers. Their count, and every case where the reference grade
   differs from the panel's, is reported per (model, system).
 - **Judge prompt:** frozen, committed and hashed before grading. Grade one
@@ -610,24 +612,40 @@ The caps are enforced before money is spent, never after:
 - One ledger per provider records actual spend (provider-reported usage × the
   price snapshot) and open reservations. Outstanding batch jobs and retries
   count as reservations.
-- **Pilot:** before a trajectory starts, the orchestrator reserves its
-  structural worst case: 8 model calls, each at the largest context the caps
-  allow (system prompt,
-  tool definitions, and 12 results at the 100,000-character result cap),
-  plus the fixed per-call `max_output_tokens`. That bound includes reasoning
-  tokens, and it is the same for every system and frozen before the pilot.
-  The trajectory does not start if the reservation does not fit under the
-  remaining cap. On completion, the reservation is replaced by the actual
-  cost.
+- Every trajectory reserves its budget before it starts, and does not start
+  if the reservation does not fit under the remaining cap. On completion,
+  the reservation is replaced by the actual cost.
+- **Per-call output bound:** the provider's hard output limit as
+  configured. That is `max_output_tokens` where it also caps reasoning or
+  thinking tokens, otherwise `max_output_tokens` plus the configured
+  reasoning budget. The builder confirms which applies for each provider
+  before the pilot. It is the same for every system and frozen before the
+  pilot.
+- **Per-call input bound:** never a token count, because count endpoints
+  return estimates. For the first call, one token per UTF-8 byte of the
+  whole request (system prompt, tool definitions, user message). For later
+  calls, the previous call's reported input (every input field, cached and
+  cache-write tokens included) plus its reported output, plus one token per
+  UTF-8 byte of every message added since. Every provider's
+  tokenizer works on bytes and never emits a token for less than one byte,
+  so content cannot exceed this. Message framing gets a fixed allowance per
+  added message: twice the largest framing overhead seen in the pilot, and
+  at least 256 tokens.
+- **Pilot:** a trajectory reserves its structural worst case: 8 model calls,
+  each at the largest input the caps allow (system prompt, tool
+  definitions, and 12 results at the 100,000-character result cap, by the
+  input bound), plus the output bound.
 - **Full run:** the structural bound is far above a real trajectory's cost
   and would refuse work with money left. So each trajectory reserves 2 × the
   pilot's p99 trajectory cost for that model, the same for every system of
   that model. Before every model call, the loop checks that the trajectory's
-  cost so far plus that call's worst case (its input, counted or bounded,
-  plus `max_output_tokens`) fits in the reservation. If it does not, the
-  trajectory ends as a cap-hit failure in the denominator. The reservation
-  is then a hard bound, and the report lists those cap hits per
-  (model, system).
+  cost so far plus that call's input bound and output bound fits in the
+  reservation. If it does not, the trajectory ends as a cap-hit failure in
+  the denominator. The report lists those cap hits per (model, system).
+- If a bill still exceeds its bound (for example, framing larger than the
+  allowance), the excess comes out of the margin between the enforced caps
+  and the budget. It is recorded, and the allowance is doubled for the rest
+  of the run.
 - A batch job reserves its full worst case before submission, and is split
   or not submitted if that does not fit. Batches cannot be stopped midway,
   so they are sized up front.
