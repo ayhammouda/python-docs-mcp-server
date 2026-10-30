@@ -995,7 +995,9 @@ def test_report_escapes_a_backslash_before_a_pipe_inside_a_table_cell(tmp_path: 
     ("path", "rendered"),
     [
         pytest.param(r"C:\py\python.exe", r"C\:\\py\\python\.exe", id="windows-path"),
-        pytest.param(r"\\server\share\python.exe", r"\\\\server\\share\\python\.exe", id="unc-path"),
+        pytest.param(
+            r"\\server\share\python.exe", r"\\\\server\\share\\python\.exe", id="unc-path"
+        ),
     ],
 )
 def test_report_renders_windows_paths_literally(tmp_path: Path, path: str, rendered: str) -> None:
