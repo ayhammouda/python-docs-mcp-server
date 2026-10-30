@@ -11,7 +11,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Releases publish only the exact files the build job produced. The PyPI and
   GitHub-release jobs download `dist` by artifact ID. They refuse to attest,
   upload or attach anything if the SHA-256 listing differs from the build's.
-  The release build pins `hatchling` and its dependencies by hash.
+  The release build job builds the project only with `hatchling` and its
+  dependencies pinned by hash, and runs its checks against the wheel it ships.
 
 ## [0.4.0] — Unreleased
 

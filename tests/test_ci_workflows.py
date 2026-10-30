@@ -188,3 +188,29 @@ def test_release_build_pins_hatchling_and_its_dependencies_by_hash() -> None:
     pinned = [line for line in text.splitlines() if "==" in line and not line.startswith("#")]
     assert "hatchling" in hashed
     assert len(hashed) == len(pinned) >= 6
+
+
+def test_release_build_job_never_builds_the_project_with_an_unpinned_backend() -> None:
+    steps = release_jobs()["build"]["steps"]
+    names = [s.get("name") for s in steps]
+    commands = [line.strip() for s in steps for line in s.get("run", "").splitlines()]
+    assert [c for c in commands if c.startswith("uv sync")] == [
+        "uv sync --locked --dev --no-install-project --no-build"
+    ]
+    uv_runs = [c for c in commands if "uv run" in c]
+    assert uv_runs and all("--no-sync" in c for c in uv_runs)  # a re-sync rebuilds editable
+    assert [c for c in commands if c.startswith("uv build")] == [
+        "uv build --build-constraint .github/build-constraints.txt --require-hashes"
+    ]
+    assert [c for c in commands if c.startswith("uv pip install")] == [
+        "uv pip install --no-deps dist/*.whl"
+    ]
+    build = names.index("Build package")
+    assert steps[build + 1]["run"] == "uv pip install --no-deps dist/*.whl"
+    tests = names.index("Run tests")
+    assert build < tests
+    # tests/test_packaging.py builds a wheel too; pin its backend the same way
+    assert steps[tests]["env"] == {
+        "UV_BUILD_CONSTRAINT": ".github/build-constraints.txt",
+        "UV_REQUIRE_HASHES": "1",
+    }

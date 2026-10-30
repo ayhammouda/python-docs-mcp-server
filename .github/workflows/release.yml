@@ -52,18 +52,18 @@ jobs:
         run: uv python install 3.13
 
       - name: Install dependencies
-        run: uv sync --locked --dev
+        run: uv sync --locked --dev --no-install-project --no-build
 
       - name: Verify tag matches package version
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
-          PKG_VERSION=$(uv run --locked python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          PKG_VERSION=$(uv run --locked --no-sync python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
           if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
             echo "::error::Tag ${GITHUB_REF_NAME} does not match pyproject.toml version ${PKG_VERSION}"
             exit 1
           fi
-          SERVER_VERSION=$(uv run --locked python -c "import json; print(json.load(open('server.json'))['version'])")
-          PACKAGE_VERSION=$(uv run --locked python -c "import json; print(json.load(open('server.json'))['packages'][0]['version'])")
+          SERVER_VERSION=$(uv run --locked --no-sync python -c "import json; print(json.load(open('server.json'))['version'])")
+          PACKAGE_VERSION=$(uv run --locked --no-sync python -c "import json; print(json.load(open('server.json'))['packages'][0]['version'])")
           if [ "$TAG_VERSION" != "$SERVER_VERSION" ]; then
             echo "::error::Tag ${GITHUB_REF_NAME} does not match server.json version ${SERVER_VERSION}"
             exit 1
@@ -74,29 +74,35 @@ jobs:
           fi
           echo "Version check passed: ${PKG_VERSION}"
 
+      - name: Build package
+        run: uv build --build-constraint .github/build-constraints.txt --require-hashes
+
+      - name: Install the built wheel
+        run: uv pip install --no-deps dist/*.whl
+
       - name: Run linter
-        run: uv run --locked ruff check src/ tests/ benchmarks/ ops/ .github/scripts/
+        run: uv run --locked --no-sync ruff check src/ tests/ benchmarks/ ops/ .github/scripts/
 
       - name: Run type checker
-        run: uv run --locked pyright src/ benchmarks/
+        run: uv run --locked --no-sync pyright src/ benchmarks/
 
       - name: Run tests
-        run: uv run --locked pytest --tb=short -q
+        env:
+          UV_BUILD_CONSTRAINT: .github/build-constraints.txt
+          UV_REQUIRE_HASHES: "1"
+        run: uv run --locked --no-sync pytest --tb=short -q
 
       - name: Validate frozen benchmark corpus
-        run: uv run --locked python -m benchmarks validate-corpus --corpus docs/benchmarks/corpus.yml --schema docs/benchmarks/corpus.schema.json
+        run: uv run --locked --no-sync python -m benchmarks validate-corpus --corpus docs/benchmarks/corpus.yml --schema docs/benchmarks/corpus.schema.json
 
       - name: Validate MCP manifest before publication
         run: |
           bash .github/scripts/install_publisher.sh
           "${RUNNER_TEMP}/mcp-publisher" validate server.json
 
-      - name: Build package
-        run: uv build --build-constraint .github/build-constraints.txt --require-hashes
-
       - name: Verify wheel contents
         run: |
-          uv run --locked python -c "
+          uv run --locked --no-sync python -c "
           import zipfile, glob, sys
           wheels = glob.glob('dist/*.whl')
           if not wheels:
