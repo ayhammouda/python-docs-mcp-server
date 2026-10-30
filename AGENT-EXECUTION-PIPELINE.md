@@ -524,23 +524,32 @@ is the path back to that control, and the owner escalates it to Aymen.
 The `main` ruleset requires branches to be up to date before merging, so every
 merge forces open PRs to update, which changes their head SHAs.
 
-Carry verification forward when the head changed only because the branch was
-updated from current `main`, by rebase or by merging `main` into it, with no
-conflicts. Before carrying it forward, the owner:
+Carry verification forward only when the head changed solely because the
+branch was updated from current `main` with no conflicts, and one of these
+holds:
 
-1. runs `git range-diff <old-base>..<old-head> <new-base>..<new-head>` and
-   confirms that none of the PR's own patches changed;
+- (a) the branch was rebased onto `main` and
+  `git range-diff <old-base>..<old-head> <new-base>..<new-head>` shows no patch
+  changes;
+- (b) `main` was merged into the branch and
+  `git show --remerge-diff <merge-commit>` prints no diff. A conflict-free merge
+  commit can still carry a change that `range-diff` does not show, so (a)'s
+  check is not enough for a merge.
+
+Before carrying it forward, the owner:
+
+1. runs the check for (a) or (b) and keeps its output as evidence;
 2. confirms that the required checks pass on the new head;
 3. posts a new record comment. Its first line is
    `Independent verification: PASS`, it names the new head on a `head:` line,
-   and it includes the range-diff evidence and a link to the original full
-   verification.
+   and it includes that evidence and a link to the original full verification.
 
 #### Re-verification
 
-When the PR gets new commits of its own, an update needed conflict resolution,
-or `git range-diff` shows a changed patch, re-verification covers the changed
-part with all three parts:
+Any other change of head needs all three delta reviews. That includes new
+commits of the PR's own, an update that needed conflict resolution, a changed
+patch in `git range-diff`, and a merge whose `--remerge-diff` is not empty.
+Re-verification covers the changed part with all three parts:
 
 1. a Fable reviewer;
 2. Codex `gpt-6-astra` at `xhigh`, in a read-only sandbox;

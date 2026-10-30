@@ -9,9 +9,10 @@ or disable checks.
    entry must agree. CI covers Python 3.12–3.14 on Ubuntu and macOS, the real
    benchmark corpus, offline full-index regression, and installed-wheel stdio.
    If an update from `main` changed the head, carry verification forward only
-   under the amendment's rule: a conflict-free update, no changed patch in
-   `git range-diff`, green required checks, and a new record for the new head.
-   Otherwise re-verify the changed part with all three parts (Fable reviewer,
+   under the amendment's rule: a conflict-free update, green required checks,
+   a new record for the new head, and either (a) a rebase whose
+   `git range-diff` shows no patch changes or (b) a merge of `main` whose
+   `git show --remerge-diff <merge-commit>` prints no diff. Otherwise re-verify the changed part with all three parts (Fable reviewer,
    Codex `gpt-6-astra` at `xhigh` in a read-only sandbox, `ponytail-review`),
    none run by the implementer. The partial record adds a
    `scope: delta <old-head>..<new-head>` line and a link to the full record it
