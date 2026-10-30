@@ -48,8 +48,6 @@ class TestBuildPath:
 
     def test_unique(self):
         """Two calls produce different paths (different timestamps)."""
-        import time
-
         p1 = generate_build_path()
         time.sleep(0.01)  # Ensure different second if needed
         p2 = generate_build_path()
@@ -389,8 +387,6 @@ class TestSmokeTests:
         This ensures validate-corpus can auto-detect the build mode and skip
         content checks (P2 fix for publish/validate consistency).
         """
-        from mcp_server_python_docs.ingestion.publish import publish_index
-
         monkeypatch.setattr(
             "mcp_server_python_docs.storage.db.get_cache_dir", lambda: tmp_path
         )
@@ -884,7 +880,12 @@ class TestBuildCleanup:
         fresh = tmp_path / "build-20261030-000000-000000.db"
         kept = [
             tmp_path / name
-            for name in ("index.db", "index.db.previous", "retrieved-docs-cache.sqlite3")
+            for name in (
+                "index.db",
+                "index.db.previous",
+                "index.db.previous.12345.tmp",
+                "retrieved-docs-cache.sqlite3",
+            )
         ]
         for path in [*stale, fresh, *kept]:
             path.write_bytes(b"x")
