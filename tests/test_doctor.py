@@ -348,6 +348,18 @@ class TestIndexFormatProbe:
         assert "Traceback" not in result.stderr
         assert result.returncode == 1
 
+    def test_doctor_reads_newer_format_before_any_table(self, tmp_path, monkeypatch):
+        newer = tmp_path / "newer.db"  # a future format: user_version 2, no doc_sets
+        conn = sqlite3.connect(newer)
+        conn.execute("PRAGMA user_version = 2")
+        conn.close()
+        result = _doctor_with_index(tmp_path, monkeypatch, raw=newer.read_bytes())
+        assert "FAIL: Index format -- version 2, newer than this release (expected 1)" in (
+            result.stderr
+        )
+        assert "unreadable" not in result.stderr
+        assert result.returncode == 1
+
     def test_doctor_skips_format_probe_without_index(self, tmp_path):
         result = subprocess.run(
             [sys.executable, "-m", "mcp_server_python_docs", "doctor"],

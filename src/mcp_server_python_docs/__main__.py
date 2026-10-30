@@ -591,12 +591,14 @@ def doctor() -> None:
         try:
             format_conn = get_readonly_connection(index_path)
             found_format = format_conn.execute("PRAGMA user_version").fetchone()[0]
-            indexed_versions = [
-                row[0]
-                for row in format_conn.execute(
-                    "SELECT version FROM doc_sets ORDER BY version"
-                )
-            ]
+            # A newer format may lay out its tables differently: read nothing else.
+            if found_format <= INDEX_FORMAT_VERSION:
+                indexed_versions = [
+                    row[0]
+                    for row in format_conn.execute(
+                        "SELECT version FROM doc_sets ORDER BY version"
+                    )
+                ]
         except sqlite3.Error as e:
             format_error = e
         finally:
