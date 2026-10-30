@@ -20,18 +20,25 @@ touch anything.** It defines the forbidden territory (don't-touch paths), the
 required issue structure, the canonical validation gate, the supervisor-review
 triggers, and the recovery procedure. The *what and why* lives in
 `STRATEGIC-ROADMAP-2026-05-29.md`; the *how, with what guardrails* lives in the
-pipeline doc. Read its **2026-10-01 ownership amendment first**: Aymen delegated
-full project stewardship to Vision (`pd-owner`), including roadmap decisions, issue
-replies, CI repairs, dependency upgrades, merges, and releases. No routine human
-approval is required. Vision is accountable for the project promise and quality.
+pipeline doc. Read its **2026-10-30 ownership amendment first**: Aymen cancelled
+Vision's authority and transferred project ownership to a Claude Code owner
+session that works for him under his GitHub account. The owner decides the
+roadmap and architecture, triages and replies to issues, repairs CI, upgrades
+dependencies, and merges and releases. No routine human approval is required.
+The owner is accountable for the project promise and quality. Vision, its
+workers, the `pdctl` broker and the Vision GitHub Apps have no authority;
+`ops/vision/` is kept for reference only.
 
-Agents work on branches. Vision may merge after independent verification of the
-current PR head, review triage, and required GitHub checks against current `main`.
-An implementer cannot act as its own independent verifier. Existing
-`human-led`, `maintainer-only`, or `needs-human-review` labels route to Vision;
-they do not require Aymen's approval. Context can live in the issue itself or a
-linked file that actually exists. The ownership amendment takes precedence over
-older conflicting approval, scheduling, and context-file requirements.
+Implementers are Claude Code sessions or subagents on branches in isolated
+worktrees, and never verify their own change. The owner merges only when the
+required checks are green on the current PR head, the newest owner record for
+that head is PASS (a separate Fable-model review, a Codex peer review and a
+`ponytail-review` pass), review conversations are resolved, and the merge is a
+squash merge bound to the head. Existing `human-led`, `maintainer-only`, or
+`needs-human-review` labels route to the owner; they do not require Aymen's
+approval. Context can live in the issue itself or a linked file that actually
+exists. The ownership amendment takes precedence over older conflicting
+approval, scheduling, and context-file requirements.
 
 ## Canonical Commands
 

@@ -1,8 +1,9 @@
 <!--
 Autonomous-agent PR template. Enforces AGENT-EXECUTION-PIPELINE.md §6.
 PR title MUST match the issue title verbatim. Implementers do not self-verify.
-Vision may merge after separate current-head verification and required checks
-under the 2026-10-01 ownership amendment; no human approval is required.
+The Claude Code owner may merge after independent current-head verification and
+required checks under the 2026-10-30 ownership amendment; no human approval is
+required.
 -->
 
 Closes #<issue-number>
@@ -39,8 +40,8 @@ Pending.
 
 ## Why this triggered supervisor review
 <!-- List any pipeline §7 triggers and explain each. If none, write "None."
-     If any fired: apply `supervisor-review` for Vision to decide. Vision can
-     resolve it and merge after separate verification; delegates cannot self-merge. -->
+     If any fired: apply `supervisor-review` for the owner to decide. The owner can
+     resolve it and merge after independent verification; implementers cannot self-merge. -->
 None.
 
 
@@ -52,7 +53,7 @@ None.
 - Baseline → target; acceptance evidence:
 - Non-goals; compatibility/security impact:
 - Outcome review date and revisit/removal condition (features):
-- Exact head/base SHA; independent verifier check; unresolved limitations:
+- Exact head/base SHA; owner verification record; unresolved limitations:
 
-<!-- Keep the corresponding pdctl decision JSON with this evidence. A label or
-     another agent's summary does not replace the independent check. -->
+<!-- The owner's `Independent verification: PASS` PR comment must name this exact
+     head. A label or another agent's summary does not replace it. -->

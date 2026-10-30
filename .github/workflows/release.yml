@@ -20,6 +20,7 @@ jobs:
     permissions:
       contents: read
       checks: read
+      # Also covers listing the PR's issue comments; no issues scope needed.
       pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -28,7 +29,6 @@ jobs:
       - name: Require verified main commit
         env:
           GH_TOKEN: ${{ github.token }}
-          VERIFIER_APP_ID: ${{ vars.VISION_VERIFIER_APP_ID }}
         run: python .github/scripts/release_gate.py
 
   build:
@@ -36,6 +36,9 @@ jobs:
     runs-on: ubuntu-latest
     name: Build & Test
     timeout-minutes: 15
+    outputs:
+      dist-id: ${{ steps.upload-dist.outputs.artifact-id }}
+      dist-sha256: ${{ steps.dist-sha256.outputs.dist-sha256 }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -49,18 +52,18 @@ jobs:
         run: uv python install 3.13
 
       - name: Install dependencies
-        run: uv sync --locked --dev
+        run: uv sync --locked --dev --no-install-project --no-build
 
       - name: Verify tag matches package version
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
-          PKG_VERSION=$(uv run --locked python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          PKG_VERSION=$(uv run --no-sync python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
           if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
             echo "::error::Tag ${GITHUB_REF_NAME} does not match pyproject.toml version ${PKG_VERSION}"
             exit 1
           fi
-          SERVER_VERSION=$(uv run --locked python -c "import json; print(json.load(open('server.json'))['version'])")
-          PACKAGE_VERSION=$(uv run --locked python -c "import json; print(json.load(open('server.json'))['packages'][0]['version'])")
+          SERVER_VERSION=$(uv run --no-sync python -c "import json; print(json.load(open('server.json'))['version'])")
+          PACKAGE_VERSION=$(uv run --no-sync python -c "import json; print(json.load(open('server.json'))['packages'][0]['version'])")
           if [ "$TAG_VERSION" != "$SERVER_VERSION" ]; then
             echo "::error::Tag ${GITHUB_REF_NAME} does not match server.json version ${SERVER_VERSION}"
             exit 1
@@ -71,29 +74,35 @@ jobs:
           fi
           echo "Version check passed: ${PKG_VERSION}"
 
+      - name: Build package
+        run: uv build --build-constraint .github/build-constraints.txt --require-hashes
+
+      - name: Install the built wheel
+        run: uv pip install --no-deps dist/*.whl
+
       - name: Run linter
-        run: uv run --locked ruff check src/ tests/ benchmarks/ ops/ .github/scripts/
+        run: uv run --no-sync ruff check src/ tests/ benchmarks/ ops/ .github/scripts/
 
       - name: Run type checker
-        run: uv run --locked pyright src/ benchmarks/
+        run: uv run --no-sync pyright src/ benchmarks/
 
       - name: Run tests
-        run: uv run --locked pytest --tb=short -q
+        env:
+          UV_BUILD_CONSTRAINT: .github/build-constraints.txt
+          UV_REQUIRE_HASHES: "1"
+        run: uv run --no-sync pytest --tb=short -q
 
       - name: Validate frozen benchmark corpus
-        run: uv run --locked python -m benchmarks validate-corpus --corpus docs/benchmarks/corpus.yml --schema docs/benchmarks/corpus.schema.json
+        run: uv run --no-sync python -m benchmarks validate-corpus --corpus docs/benchmarks/corpus.yml --schema docs/benchmarks/corpus.schema.json
 
       - name: Validate MCP manifest before publication
         run: |
           bash .github/scripts/install_publisher.sh
           "${RUNNER_TEMP}/mcp-publisher" validate server.json
 
-      - name: Build package
-        run: uv build
-
       - name: Verify wheel contents
         run: |
-          uv run --locked python -c "
+          uv run --no-sync python -c "
           import zipfile, glob, sys
           wheels = glob.glob('dist/*.whl')
           if not wheels:
@@ -107,11 +116,23 @@ jobs:
               print('Wheel contents OK')
           "
 
+      - name: Record dist checksums
+        id: dist-sha256
+        run: |
+          set -o pipefail
+          {
+            echo "dist-sha256<<DIST_SHA256_EOF"
+            sha256sum dist/* | LC_ALL=C sort
+            echo "DIST_SHA256_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Upload dist artifacts
+        id: upload-dist
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: dist
           path: dist/
+          if-no-files-found: error
 
   integration:
     needs: build
@@ -134,8 +155,21 @@ jobs:
       - name: Download dist artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: dist
+          artifact-ids: ${{ needs.build.outputs.dist-id }}
           path: dist/
+
+      - name: Verify dist matches the build job
+        env:
+          EXPECTED: ${{ needs.build.outputs.dist-sha256 }}
+        run: |
+          set -o pipefail
+          [ -n "$EXPECTED" ] || { echo "::error::build exported no checksums"; exit 1; }
+          ACTUAL="$(sha256sum dist/* | LC_ALL=C sort)"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::dist differs from the files the build job checksummed"
+            printf 'expected:\n%s\nactual:\n%s\n' "$EXPECTED" "$ACTUAL"
+            exit 1
+          fi
 
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
@@ -170,6 +204,7 @@ jobs:
 
   github-release:
     needs:
+      - build
       - publish
       - publish-mcp-registry
     runs-on: ubuntu-latest
@@ -182,8 +217,21 @@ jobs:
       - name: Download dist artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: dist
+          artifact-ids: ${{ needs.build.outputs.dist-id }}
           path: dist/
+
+      - name: Verify dist matches the build job
+        env:
+          EXPECTED: ${{ needs.build.outputs.dist-sha256 }}
+        run: |
+          set -o pipefail
+          [ -n "$EXPECTED" ] || { echo "::error::build exported no checksums"; exit 1; }
+          ACTUAL="$(sha256sum dist/* | LC_ALL=C sort)"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::dist differs from the files the build job checksummed"
+            printf 'expected:\n%s\nactual:\n%s\n' "$EXPECTED" "$ACTUAL"
+            exit 1
+          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
