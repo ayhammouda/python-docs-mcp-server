@@ -686,6 +686,42 @@ def test_token_record_redacts_the_api_key_from_a_failed_count_note(
     assert "fake-not-a-real-key" not in token_record["notes"]
 
 
+def test_cell_failure_records_redact_an_api_key_from_a_nested_adapter_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An MCP header error quotes the key two task groups deep; no record may keep it.
+    from benchmarks import runner
+    from benchmarks.adapters.guard import LIVE_PROVIDERS_ENABLED_ENV, PROVIDER_API_KEY_ENV
+
+    def _raises_nested_header_error(cell: Any) -> Any:
+        nested = ExceptionGroup(
+            "tg",
+            [ExceptionGroup("tg", [ValueError("Invalid header value b'fake-not-a-real-key\\n'")])],
+        )
+        raise cell_failure_from(nested, timeout_seconds=1, label="x") from None
+
+    monkeypatch.delenv(LIVE_PROVIDERS_ENABLED_ENV, raising=False)
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV["ref"], "fake-not-a-real-key")
+    monkeypatch.setitem(runner._ADAPTER_DISPATCH, "fake", _raises_nested_header_error)
+    out_dir = tmp_path / "results" / "nested-key-error"
+
+    summary = run_benchmark(
+        BenchmarkConfig(
+            corpus_path=_corpus(tmp_path),
+            manifest_path=_manifest(tmp_path),
+            out_dir=out_dir,
+            run_id="nested-key-error",
+        )
+    )
+
+    assert summary["failed_cells"] == 1
+    for kind in ("failures", "transcripts", "scoring"):
+        record = json.loads((out_dir / kind / "no-mcp" / "q001.json").read_text(encoding="utf-8"))
+        assert record["error"]["category"] == "mcp_protocol_crash"
+        assert "[redacted]" in record["error"]["message"]
+        assert "fake-not-a-real-key" not in record["error"]["message"]
+
+
 # --- cell_failure_from: the real reason behind an MCP task-group failure ----
 
 

@@ -152,6 +152,23 @@ def test_require_live_environment_rejects_unknown_provider(
         require_live_environment("not-a-registered-provider")
 
 
+@pytest.mark.parametrize(
+    "api_key", ["fake-not-a-real-key\n", "fake-not-a-real key", "fake-not-a-real-日key"]
+)
+def test_require_live_environment_refuses_a_malformed_key_without_leaking_it(
+    monkeypatch: pytest.MonkeyPatch, api_key: str
+) -> None:
+    # http.client would quote such a key (or one of its characters) in an error.
+    monkeypatch.setenv(LIVE_PROVIDERS_ENABLED_ENV, "1")
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV["ref"], api_key)
+
+    with pytest.raises(LiveProviderDisabledError) as exc_info:
+        require_live_environment("ref")
+
+    assert "fake-not-a-real" not in str(exc_info.value)
+    assert "日" not in str(exc_info.value)
+
+
 # --- Live adapter stubs: guard enforced, no network ever possible -----------
 
 

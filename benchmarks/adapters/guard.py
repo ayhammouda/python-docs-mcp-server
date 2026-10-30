@@ -100,8 +100,10 @@ def require_live_environment(provider: str) -> None:
     1. ``BENCHMARK_LIVE_PROVIDERS_ENABLED`` is set to a truthy value.
     2. The provider-specific API key environment variable (see
        :data:`PROVIDER_API_KEY_ENV`) is set and non-empty.
+    3. That variable's raw value is ASCII, with no whitespace or
+       non-printable character (an HTTP client error would quote such a key).
 
-    Both conditions must hold. Passing this check does not mean a live call
+    All conditions must hold. Passing this check does not mean a live call
     will be made -- see the module docstring.
     """
     flag = os.environ.get(LIVE_PROVIDERS_ENABLED_ENV, "").strip().lower()
@@ -115,11 +117,26 @@ def require_live_environment(provider: str) -> None:
     key_env = PROVIDER_API_KEY_ENV.get(provider)
     if key_env is None:
         raise LiveProviderDisabledError(f"unknown provider for live guard: {provider!r}")
-    if not os.environ.get(key_env, "").strip():
+    raw_key = os.environ.get(key_env, "")
+    if not raw_key.strip():
         raise LiveProviderDisabledError(
             f"live provider calls are disabled: missing required {key_env} for "
             f"provider {provider!r}"
         )
+    if not raw_key.isascii() or any(char.isspace() or not char.isprintable() for char in raw_key):
+        raise LiveProviderDisabledError(
+            f"live provider calls are disabled: {key_env} contains whitespace, control or "
+            "non-ASCII characters"
+        )
+
+
+def redact_api_keys(text: str) -> str:
+    """Replace every set :data:`PROVIDER_API_KEY_ENV` key in ``text`` with ``[redacted]``."""
+    for key_env in PROVIDER_API_KEY_ENV.values():
+        api_key = os.environ.get(key_env, "").strip()
+        if api_key:  # str.replace("", ...) would insert the marker between every character
+            text = text.replace(api_key, "[redacted]")
+    return text
 
 
 def require_live_competitor(name: str) -> None:

@@ -22,7 +22,6 @@ a maintainer-run live phase is active, and otherwise stays the honest
 from __future__ import annotations
 
 import json
-import os
 import platform
 import re
 import subprocess
@@ -298,6 +297,9 @@ def _required_safe_id(item: dict[str, Any], key: str, label: str) -> str:
 
 
 def _execute_cell(cell: BenchmarkCell) -> dict[str, Any]:
+    # Lazy: benchmarks.adapters.guard imports this module (see _build_token_record).
+    from benchmarks.adapters.guard import redact_api_keys
+
     started = time.perf_counter()
     started_at = _utc_now()
     status = "succeeded"
@@ -311,10 +313,18 @@ def _execute_cell(cell: BenchmarkCell) -> dict[str, Any]:
         tool_calls = dispatched.tool_calls
     except BenchmarkCellFailure as exc:
         status = "failed"
-        error = {"category": exc.category, "type": type(exc).__name__, "message": str(exc)}
+        error = {
+            "category": exc.category,
+            "type": type(exc).__name__,
+            "message": redact_api_keys(str(exc)),
+        }
     except Exception as exc:  # noqa: BLE001 - failures are benchmark artifacts
         status = "failed"
-        error = {"category": "tool_failure", "type": type(exc).__name__, "message": str(exc)}
+        error = {
+            "category": "tool_failure",
+            "type": type(exc).__name__,
+            "message": redact_api_keys(str(exc)),
+        }
 
     latency_ms = round((time.perf_counter() - started) * 1000, 3)
     completed_at = _utc_now()
@@ -397,12 +407,11 @@ def _build_token_record(
         ANTHROPIC_API_VERSION,
         DEFAULT_COUNT_MODEL,
         LiveClaudeTokenCounter,
-        _redact,
         count_cell_tokens,
     )
     from benchmarks.adapters.guard import (
-        PROVIDER_API_KEY_ENV,
         LiveProviderDisabledError,
+        redact_api_keys,
         require_live_environment,
     )
     from benchmarks.model_matrix import METHODOLOGY_TOKEN_LABEL
@@ -441,15 +450,14 @@ def _build_token_record(
         )
     except Exception as exc:
         # Defense in depth: no exception text may carry the key into a record.
-        api_key = os.environ.get(PROVIDER_API_KEY_ENV["anthropic"], "").strip()
         return {
             **base_fields,
             "status": "failed",
             "client_wrapped_tokens": None,
             "raw_payload_tokens": None,
             "approximation": False,
-            "notes": _redact(
-                f"Claude count-tokens call failed: {type(exc).__name__}: {exc}", api_key
+            "notes": redact_api_keys(
+                f"Claude count-tokens call failed: {type(exc).__name__}: {exc}"
             ),
         }
 
