@@ -681,12 +681,12 @@ def test_budget_flag_emoji_sequence():
 
 def test_budget_keeps_combining_mark_with_its_base():
     """Budget 1 cannot cut between 'e' and its accent; the cluster comes whole."""
-    assert apply_budget("éx", 1) == ("é", True, 2)
+    assert apply_budget("e\u0301x", 1) == ("e\u0301", True, 2)
 
 
 @pytest.mark.parametrize(
     "text",
-    ["éx", "caf́e", "näive", "ab́c", "ẹ́̂x́"],
+    ["e\u0301x", "caf\u0301e", "na\u0308ive", "ab\u0301c", "e\u0301\u0323\u0302x\u0301"],
 )
 def test_budget_pages_join_and_never_start_with_a_mark(text):
     """Paging at every budget rebuilds the text, and no page starts with a mark."""
@@ -709,7 +709,7 @@ def test_budget_pages_join_and_never_start_with_a_mark(text):
 
 def test_budget_progresses_from_a_stale_start_on_a_mark():
     """Pages cached before this fix can hand out a start index that points at a mark."""
-    assert apply_budget("caf́e", 1, 3) == ("́", True, 4)
+    assert apply_budget("caf\u0301e", 1, 3) == ("\u0301", True, 4)
 
 
 # ---------------------------------------------------------------------------
