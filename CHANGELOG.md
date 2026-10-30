@@ -19,6 +19,21 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - The server now exits cleanly, with exit code 0 and no traceback, when a
   client closes the connection mid-session.
+- A failed `build-index` run (no version ingested, an error, or Ctrl-C) no
+  longer leaves `build-*.db`, `-wal` or `-shm` files in the cache folder. The
+  test suite no longer runs `build-index` against the real cache folder.
+- When smoke tests reject a new index, `build-index` logs every smoke message
+  and the build path at ERROR and deletes the build.
+- The published `index.db` now uses SQLite's rollback journal
+  (`journal_mode=DELETE`), so servers that open it read-only no longer create
+  `index.db-wal` and `index.db-shm` files beside it.
+- `index.db` no longer disappears for a moment while a new index is published,
+  so a server that starts at that moment no longer starts an auto-build. When
+  a running MCP client blocks the publish on Windows, `build-index` now says to
+  stop the clients, keeps the new build and names it, so it can be moved into
+  place by hand.
+- `build-index` now deletes `build-*.db*` files older than one day. Killed
+  auto-builds used to leave them in the cache folder for good.
 
 ### Security
 
