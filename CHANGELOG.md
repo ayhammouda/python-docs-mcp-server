@@ -4,6 +4,15 @@ All notable changes to `python-docs-mcp-server` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- Releases publish only the exact files the build job produced. The PyPI and
+  GitHub-release jobs download `dist` by artifact ID. They refuse to attest,
+  upload or attach any file whose SHA-256 listing differs from the build's.
+  The release build pins `hatchling` and its dependencies by hash.
+
 ## [0.4.0] — Unreleased
 
 ### Added
