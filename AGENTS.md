@@ -30,11 +30,11 @@ workers, the `pdctl` broker and the Vision GitHub Apps have no authority;
 `ops/vision/` is kept for reference only.
 
 Implementers are Claude Code sessions or subagents on branches in isolated
-worktrees, and never verify their own change. The owner merges only with green
-required checks on the current PR head, an owner `Independent verification: PASS`
-record for that exact head (a separate Fable-model review, a Codex peer review
-and a `ponytail-review` pass), resolved review conversations, and a squash merge
-bound to the head. Existing `human-led`, `maintainer-only`, or
+worktrees, and never verify their own change. The owner merges only when the
+required checks are green on the current PR head, the newest owner record for
+that head is PASS (a separate Fable-model review, a Codex peer review and a
+`ponytail-review` pass), review conversations are resolved, and the merge is a
+squash merge bound to the head. Existing `human-led`, `maintainer-only`, or
 `needs-human-review` labels route to the owner; they do not require Aymen's
 approval. Context can live in the issue itself or a linked file that actually
 exists. The ownership amendment takes precedence over older conflicting
