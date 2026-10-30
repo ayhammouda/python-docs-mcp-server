@@ -390,3 +390,25 @@ def test_live_claude_token_counter_refuses_a_key_with_whitespace_without_leaking
 
     assert "fake-not-a-real-key" not in str(exc_info.value)
     assert "second-line" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("api_key", "non_ascii_char"),
+    [("fake-not-a-real-日key", "日"), ("fake-not-a-real-ékey", "é")],
+)
+def test_live_claude_token_counter_refuses_a_non_ascii_key_without_leaking_it(
+    monkeypatch: pytest.MonkeyPatch, api_key: str, non_ascii_char: str
+) -> None:
+    monkeypatch.setenv(LIVE_PROVIDERS_ENABLED_ENV, "1")
+    monkeypatch.setenv(ANTHROPIC_KEY_ENV, api_key)
+
+    def _network_must_not_be_called(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("urlopen must never be called with a non-ASCII key")
+
+    monkeypatch.setattr("urllib.request.urlopen", _network_must_not_be_called)
+
+    with pytest.raises(BenchmarkCellFailure) as exc_info:
+        LiveClaudeTokenCounter().count([{"role": "user", "content": "prompt"}])
+
+    assert "fake-not-a-real" not in str(exc_info.value)
+    assert non_ascii_char not in str(exc_info.value)

@@ -128,9 +128,10 @@ class LiveClaudeTokenCounter:
     ``ANTHROPIC_API_KEY`` set. Raises
     :class:`benchmarks.adapters.guard.LiveProviderDisabledError` (a
     ``BenchmarkCellFailure`` subclass) when the guard fails, and
-    ``BenchmarkCellFailure`` (category ``tool_failure``) on any HTTP or
-    response-shape failure, matching every other adapter's failure-capture
-    contract.
+    ``BenchmarkCellFailure`` (category ``tool_failure``) on an HTTP, network
+    or response-shape failure, matching every other adapter's failure-capture
+    contract. An ``http.client.IncompleteRead`` from ``response.read()`` is not
+    wrapped; it reaches the runner's catch-all, which records a failed count.
     """
 
     provider = PROVIDER
@@ -144,10 +145,12 @@ class LiveClaudeTokenCounter:
         require_live_environment(self.provider)
         key_env = PROVIDER_API_KEY_ENV[self.provider]
         api_key = os.environ.get(key_env, "").strip()
-        # http.client would reject such a key with a ValueError that quotes it.
-        if any(char.isspace() or not char.isprintable() for char in api_key):
+        # http.client errors would quote such a key, or one of its characters and its position.
+        if not api_key.isascii() or any(
+            char.isspace() or not char.isprintable() for char in api_key
+        ):
             raise BenchmarkCellFailure(
-                "tool_failure", f"{key_env} contains whitespace or control characters"
+                "tool_failure", f"{key_env} contains whitespace, control or non-ASCII characters"
             )
 
         request_body: dict[str, Any] = {"model": self._model, "messages": messages}
