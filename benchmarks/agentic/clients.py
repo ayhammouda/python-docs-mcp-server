@@ -7,27 +7,47 @@ A conversation without tools sends neither tools nor ``tool_choice``.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 from typing import Any
 
 import anthropic
+import httpx
 import httpx2
 import openai
 from anthropic.types import TextBlock, ToolUseBlock
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai import types as genai_types
 
-from benchmarks.agentic.schemas import to_anthropic, to_openai_responses
+from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV, require_live_environment
+from benchmarks.agentic.schemas import to_anthropic, to_gemini, to_openai_responses
 from benchmarks.agentic.types import (
     Conversation,
+    ModelClient,
     ModelTurn,
     ProviderCallError,
     ToolCall,
     ToolResults,
     UserText,
 )
-from benchmarks.agentic.usage import anthropic_buckets, openai_buckets
+from benchmarks.agentic.usage import anthropic_buckets, gemini_buckets, openai_buckets
+from benchmarks.model_matrix import ModelFamily
+from benchmarks.runner import BenchmarkValidationError, _load_yaml_mapping
+
+PAID_KEY_ENVS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY")
+
+#: Live API -> the one provider whose key it may carry.
+_LIVE_APIS = {
+    "anthropic-messages": "anthropic",
+    "openai-responses": "openai",
+    "gemini-generate-content": "google",
+}
 
 
 def tool_arguments(value: Any) -> tuple[dict[str, Any], str | None]:
@@ -257,3 +277,281 @@ class OpenAIResponsesClient:
             if response.status == "incomplete" and details is not None
             else response.status,
         )
+
+
+def gemini_sdk(
+    api_key: str, timeout_s: float, *, http_client: httpx.AsyncClient | None = None
+) -> genai.Client:
+    return genai.Client(
+        api_key=api_key,
+        vertexai=False,
+        http_options=genai_types.HttpOptions(
+            timeout=int(timeout_s * 1000),
+            retry_options=genai_types.HttpRetryOptions(attempts=1),
+            httpx_async_client=http_client,
+        ),
+    )
+
+
+class GeminiClient:
+    """Gemini ``generate_content``: AUTO mode, no automatic calling, no continuation."""
+
+    provider = "google"
+
+    def __init__(self, sdk: genai.Client, model_id: str, max_output_tokens: int):
+        self._sdk = sdk
+        self.model_id = model_id
+        self._max_output_tokens = max_output_tokens
+
+    def request_params(self) -> dict[str, Any]:
+        return {
+            "model": self.model_id,
+            "max_output_tokens": self._max_output_tokens,
+            "function_calling_mode": "AUTO",  # sent only with tools
+            "automatic_function_calling": {"disable": True},
+            "automatic_continuation": False,
+        }
+
+    def _contents(self, entries: Sequence[Any]) -> list[genai_types.Content]:
+        contents: list[genai_types.Content] = []
+        provider_ids: set[str] = set()
+        for entry in entries:
+            if isinstance(entry, UserText):
+                contents.append(
+                    genai_types.Content(role="user", parts=[genai_types.Part(text=entry.text)])
+                )
+            elif isinstance(entry, ToolResults):
+                # A call without a provider id pairs with its result by position: no id.
+                parts = [
+                    genai_types.Part(
+                        function_response=genai_types.FunctionResponse(
+                            id=r.call_id if r.call_id in provider_ids else None,
+                            name=r.name,
+                            response={"error": r.text} if r.is_error else {"output": r.text},
+                        )
+                    )
+                    for r in entry.results
+                ]
+                contents.append(genai_types.Content(role="user", parts=parts))
+            elif entry.replay is not None:
+                contents.append(entry.replay)
+                provider_ids = {
+                    p.function_call.id
+                    for p in entry.replay.parts or []
+                    if p.function_call and p.function_call.id
+                }
+        return contents
+
+    def _config(self, conv: Conversation) -> genai_types.GenerateContentConfig:
+        tools: genai_types.ToolListUnion | None = None
+        tool_config: genai_types.ToolConfig | None = None
+        if conv.tools:
+            declarations = [
+                genai_types.FunctionDeclaration.model_validate(d) for d in to_gemini(conv.tools)[0]
+            ]
+            tools = [genai_types.Tool(function_declarations=declarations)]
+            mode = genai_types.FunctionCallingConfigMode.AUTO
+            tool_config = genai_types.ToolConfig(
+                function_calling_config=genai_types.FunctionCallingConfig(mode=mode)
+            )
+        return genai_types.GenerateContentConfig(
+            system_instruction=conv.system,
+            tools=tools,
+            tool_config=tool_config,
+            automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(disable=True),
+            # google-genai follows a CONTINUATION stop with extra requests by default.
+            automatic_continuation=False,
+            max_output_tokens=self._max_output_tokens,
+        )
+
+    def rendered_bytes(self, conv: Conversation, start: int) -> int:
+        contents = [
+            c.model_dump(mode="json", exclude_none=True)
+            for c in self._contents(conv.entries[start:])
+        ]
+        if start:
+            return _utf8_len(contents)
+        tools = to_gemini(conv.tools)[0]
+        return _utf8_len({"systemInstruction": conv.system, "tools": tools, "contents": contents})
+
+    async def call(self, conv: Conversation) -> ModelTurn:
+        try:
+            response = await self._sdk.aio.models.generate_content(
+                model=self.model_id,
+                contents=self._contents(conv.entries),
+                config=self._config(conv),
+            )
+        except genai_errors.ClientError as exc:
+            if exc.code == 429:
+                headers = getattr(exc.response, "headers", None) or {}
+                raise _status_error(429, headers, str(exc)) from exc
+            raise ProviderCallError("rejected", str(exc), status=exc.code) from exc
+        except genai_errors.ServerError as exc:
+            raise ProviderCallError("server", str(exc), status=exc.code) from exc
+        except httpx.TimeoutException as exc:
+            raise ProviderCallError("timeout", str(exc)) from exc
+        except httpx.TransportError as exc:
+            raise ProviderCallError("connection", str(exc)) from exc
+        candidate = response.candidates[0] if response.candidates else None
+        content = candidate.content if candidate else None
+        parts = (content.parts or []) if content else []
+        calls = []
+        for position, part in enumerate((p for p in parts if p.function_call), 1):
+            call = part.function_call
+            assert call is not None
+            arguments, raw = tool_arguments(call.args if call.args is not None else {})
+            calls.append(ToolCall(call.id or f"call_{position}", call.name or "", arguments, raw))
+        usage = response.usage_metadata.model_dump(mode="json") if response.usage_metadata else None
+        reason = candidate.finish_reason if candidate else None
+        return ModelTurn(
+            text="".join(p.text for p in parts if p.text and not p.thought),
+            tool_calls=tuple(calls),
+            replay=content,  # thought signatures go back exactly as received
+            raw_response=response.model_dump(mode="json", exclude_none=True),
+            raw_usage=usage,
+            buckets=None if usage is None else gemini_buckets(usage),
+            reported_model=response.model_version,
+            stop_reason=None if reason is None else str(getattr(reason, "value", reason)),
+        )
+
+
+_SCRIPT_BUCKETS = {
+    "anthropic": anthropic_buckets,
+    "openai": openai_buckets,
+    "google": gemini_buckets,
+}
+_SCRIPT_STOP = {"anthropic": "end_turn", "openai": "completed", "google": "STOP"}
+
+
+def _fill_prompt(value: Any, prompt: str) -> Any:
+    if isinstance(value, str):
+        return value.replace("{prompt}", prompt)
+    if isinstance(value, list):
+        return [_fill_prompt(item, prompt) for item in value]
+    if isinstance(value, dict):
+        return {key: _fill_prompt(item, prompt) for key, item in value.items()}
+    return value
+
+
+class ScriptedClient:
+    """Plays a YAML script of turns, errors and usage: CI's stand-in for a provider.
+
+    Steps: ``{tools: [{name, arguments}], usage}``, ``{text, usage, stop_reason}`` or
+    ``{error: {kind, status, retry_after_s}}``; any step may set ``delay_s`` and
+    ``prompt_contains``. A tools step applies only when every tool it names was given.
+    """
+
+    def __init__(self, provider: str, model_id: str, steps: list[dict[str, Any]]):
+        self.provider = provider
+        self.model_id = model_id
+        self._steps = steps
+        # Keyed by the Conversation object, held strongly: a bare id(conv) can be reused
+        # by CPython once a conversation is freed (owner amendment on #184).
+        self._calls: dict[Conversation, int] = {}
+
+    def request_params(self) -> dict[str, Any]:
+        return {"model": self.model_id}
+
+    def rendered_bytes(self, conv: Conversation, start: int) -> int:
+        rendered: list[Any] = []
+        for entry in conv.entries[start:]:
+            if isinstance(entry, UserText):
+                rendered.append({"role": "user", "content": entry.text})
+            elif isinstance(entry, ToolResults):
+                rendered.append([[r.call_id, r.text, r.is_error] for r in entry.results])
+            else:
+                calls = [[c.id, c.name, c.arguments] for c in entry.tool_calls]
+                rendered.append({"role": "assistant", "text": entry.text, "calls": calls})
+        if start:
+            return _utf8_len(rendered)
+        tools = to_anthropic(conv.tools)
+        return _utf8_len({"system": conv.system, "tools": tools, "messages": rendered})
+
+    def _applies(self, step: dict[str, Any], conv: Conversation, prompt: str) -> bool:
+        if "prompt_contains" in step and str(step["prompt_contains"]) not in prompt:
+            return False
+        given = {t.name for t in conv.tools}
+        return all(tool["name"] in given for tool in step.get("tools") or [])
+
+    async def call(self, conv: Conversation) -> ModelTurn:
+        prompt = next((e.text for e in conv.entries if isinstance(e, UserText)), "")
+        steps = [s for s in self._steps if self._applies(s, conv, prompt)]
+        index = self._calls.get(conv, 0)
+        self._calls[conv] = index + 1
+        if index >= len(steps):
+            raise BenchmarkValidationError(
+                f"scripted model {self.model_id!r} has no step {index + 1} for this conversation"
+            )
+        step = steps[index]
+        if step.get("delay_s"):
+            await asyncio.sleep(float(step["delay_s"]))
+        if "error" in step:
+            error = step["error"]
+            raise ProviderCallError(
+                error["kind"],
+                f"scripted {error['kind']}",
+                status=error.get("status"),
+                retry_after_s=error.get("retry_after_s"),
+            )
+        calls = []
+        for position, tool in enumerate(step.get("tools") or [], 1):
+            arguments, raw = tool_arguments(_fill_prompt(tool.get("arguments", {}), prompt))
+            calls.append(ToolCall(f"call_{position}", tool["name"], arguments, raw))
+        usage = step.get("usage")
+        default_stop = "tool_use" if calls and self.provider == "anthropic" else None
+        return ModelTurn(
+            text="" if calls else str(step.get("text", "")),
+            tool_calls=tuple(calls),
+            replay=None,
+            raw_response={"scripted_step": step},
+            raw_usage=usage,
+            buckets=None if usage is None else _SCRIPT_BUCKETS[self.provider](usage),
+            reported_model=self.model_id,
+            stop_reason=step.get("stop_reason") or default_stop or _SCRIPT_STOP[self.provider],
+        )
+
+
+def make_client(
+    family: ModelFamily, *, timeout_s: float, http_client: Any | None = None
+) -> ModelClient:
+    """The only way production code builds a client; every live API passes the guard."""
+    if family.api == "scripted":
+        script = Path(str(family.raw.get("script", "")))
+        if not script.is_absolute():
+            raise BenchmarkValidationError(
+                f"scripted model family {family.id!r} needs an absolute 'script' path, "
+                f"got {str(script)!r}"
+            )
+        steps = _load_yaml_mapping(script, "model script").get("steps")
+        if not isinstance(steps, list) or not all(isinstance(s, dict) for s in steps):
+            raise BenchmarkValidationError(f"model script {script} must hold a 'steps' list")
+        return ScriptedClient(family.provider, family.model_id, steps)
+    provider = _LIVE_APIS.get(family.api or "")
+    if provider is None:
+        raise BenchmarkValidationError(
+            f"model family {family.id!r} uses api {family.api!r}, which has no client yet "
+            "(openai-chat-completions arrives with the Ollama client in PR 4)"
+        )
+    if family.provider != provider:
+        raise BenchmarkValidationError(
+            f"model family {family.id!r}: api {family.api!r} carries the {provider!r} key, "
+            f"not provider {family.provider!r}"
+        )
+    require_live_environment(provider)
+    own_key_env = PROVIDER_API_KEY_ENV[provider]
+    others = [name for name in PAID_KEY_ENVS if name != own_key_env and os.environ.get(name)]
+    if others:
+        raise BenchmarkValidationError(
+            f"a worker holds at most one paid key: {', '.join(others)} is set beside {own_key_env}"
+        )
+    if family.max_output_tokens is None:
+        raise BenchmarkValidationError(f"model family {family.id!r} must set max_output_tokens")
+    key = os.environ[own_key_env]
+    if provider == "anthropic":
+        sdk = anthropic_sdk(key, timeout_s, http_client=http_client)
+        return AnthropicClient(sdk, family.model_id, family.max_output_tokens)
+    if provider == "openai":
+        sdk = openai_sdk(key, timeout_s, http_client=http_client)
+        return OpenAIResponsesClient(sdk, family.model_id, family.max_output_tokens)
+    sdk = gemini_sdk(key, timeout_s, http_client=http_client)
+    return GeminiClient(sdk, family.model_id, family.max_output_tokens)
