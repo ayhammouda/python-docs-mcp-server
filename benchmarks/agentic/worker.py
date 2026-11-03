@@ -24,16 +24,8 @@ from typing import Any
 
 from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
 from benchmarks.agentic.bridge import Bridge, SystemSpec, open_bridge, system_spec_from_raw
-from benchmarks.agentic.clients import make_client
 from benchmarks.agentic.ledger import Outcome
-from benchmarks.agentic.loop import Caps, TrajectoryDiscarded, run_trajectory
 from benchmarks.agentic.protocol import KeyLeakError, encode_frame, read_frame
-from benchmarks.agentic.schemas import (
-    schemas_sha256,
-    to_anthropic,
-    to_gemini,
-    to_openai_responses,
-)
 from benchmarks.agentic.types import Buckets, ToolSpec
 from benchmarks.model_matrix import model_family_from_raw
 from benchmarks.runner import BenchmarkValidationError
@@ -179,6 +171,8 @@ class _HostLedger:
 
 
 def _converted(provider: str, tools: list[ToolSpec]) -> tuple[list[dict[str, Any]], list[str]]:
+    from benchmarks.agentic.schemas import to_anthropic, to_gemini, to_openai_responses
+
     if provider == "google":
         return to_gemini(tools)
     if provider == "openai":
@@ -197,6 +191,8 @@ def _index_sha256() -> str | None:
 
 
 def _system_info(system: SystemSpec, provider: str, bridge: Bridge | None) -> dict[str, Any]:
+    from benchmarks.agentic.schemas import schemas_sha256
+
     tools_raw = bridge.tools_raw if bridge else []
     converted, dropped = _converted(provider, bridge.tools if bridge else [])
     return {
@@ -231,6 +227,10 @@ async def _close(stack: AsyncExitStack) -> None:
 
 
 async def _run_job(channel: ProtocolChannel, reader: asyncio.StreamReader) -> int:
+    # Imported here, after protect_output: the provider SDKs load behind the redactor.
+    from benchmarks.agentic.clients import make_client
+    from benchmarks.agentic.loop import Caps, TrajectoryDiscarded, run_trajectory
+
     job = await read_frame(reader)
     if job is None or job.get("type") != "job":
         raise BenchmarkValidationError("the host sent no job")

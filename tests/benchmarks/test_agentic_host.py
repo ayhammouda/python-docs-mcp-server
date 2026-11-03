@@ -250,6 +250,18 @@ def test_protect_output_redacts_the_own_key_on_every_stream() -> None:
     assert _frames(proc.stdout) == [{"type": "done"}]  # the channel holds only the frame
 
 
+def test_a_worker_loads_no_provider_sdk_before_protecting_its_output() -> None:
+    # The modules a worker imports before main_worker calls protect_output.
+    code = (
+        "import sys\n"
+        "import benchmarks.__main__, benchmarks.agentic.worker\n"
+        "print(sorted(m for m in ('anthropic', 'openai', 'google.genai') if m in sys.modules))\n"
+    )
+    proc = _run_python(code)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.decode().strip() == "[]"
+
+
 def test_protocol_channel_refuses_a_frame_holding_the_own_key() -> None:
     code = (
         "from benchmarks.agentic.protocol import KeyLeakError\n"
