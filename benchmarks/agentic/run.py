@@ -164,14 +164,20 @@ def _select[T: _HasId](items: Sequence[T], wanted: tuple[str, ...] | None, label
 
 @dataclass
 class _FamilyStats:
-    records: list[dict[str, Any]] = field(default_factory=list)
+    # Running aggregates only: a record can be megabytes, and a run holds thousands.
+    first_started_at: str | None = None
+    last_completed_at: str | None = None
+    timing_ms: Counter[str] = field(default_factory=Counter)
     retries: Counter[str] = field(default_factory=Counter)
     reruns: int = 0
     answer_turns: int = 0
     output_cap_stops: int = 0
 
     def add(self, record: dict[str, Any]) -> None:
-        self.records.append(record)
+        self.first_started_at = min(filter(None, (self.first_started_at, record["started_at"])))
+        self.last_completed_at = max(filter(None, (self.last_completed_at, record["completed_at"])))
+        for name in _TIMING_SUMS:
+            self.timing_ms[name] += record["timing"][f"{name}_ms"]
         for call in record["model_calls"]:
             for attempt in call["attempts"][:-1]:  # every attempt but the last was retried
                 self.retries[attempt["outcome"]] += 1
@@ -180,18 +186,13 @@ class _FamilyStats:
                 self.output_cap_stops += call["stop_reason"] in OUTPUT_CAP_STOPS
 
     def summary(self) -> dict[str, Any]:
-        starts = [r["started_at"] for r in self.records]
-        ends = [r["completed_at"] for r in self.records]
-        first, last = (min(starts), max(ends)) if self.records else (None, None)
+        first, last = self.first_started_at, self.last_completed_at
         wall = (
             (datetime.fromisoformat(last) - datetime.fromisoformat(first)).total_seconds()
             if first and last
             else 0.0
         )
-        sums = {
-            f"{name}_s": round(sum(r["timing"][f"{name}_ms"] for r in self.records) / 1000, 3)
-            for name in _TIMING_SUMS
-        }
+        sums = {f"{name}_s": round(self.timing_ms[name] / 1000, 3) for name in _TIMING_SUMS}
         return {
             "retries": dict(self.retries),
             "reruns": self.reruns,
