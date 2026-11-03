@@ -11,37 +11,57 @@ spend ledger, a generic MCP bridge and a mocked end-to-end CI test.
   small loader change: the methodology amendment, the §7.1 model matrix
   and the §12 smoke-run row.
 - **PR B** (`feat/agentic-harness`, Tasks 3–11) adds the
-  `benchmarks/agentic/` package. A host orchestrator holds the ledger and
-  never a key. It spawns one worker process per (model, system) and talks
-  to it over JSON lines on stdin/stdout. Each worker runs the tool loop
-  with one model client and one MCP bridge. PR 4 only swaps the
-  local-process launcher for a container launcher.
+  `benchmarks/agentic/` package.
+  - A host orchestrator holds the ledger and never a key. It spawns one
+    worker process per (model, system).
+  - Host and worker exchange length-prefixed JSON frames on a dedicated
+    channel. Everything else the worker writes is redacted for its own
+    key.
+  - Each worker runs the tool loop with one model client and one MCP
+    bridge.
+  - PR 4 only swaps the local-process launcher for a container launcher,
+    and adds the Ollama client.
 - The run writes the existing artifact layout, so `score` and `report`
   read it unchanged. The five fixed-flow adapters and the provider stubs
   are deleted at the end.
 
 **Tech Stack:**
-- Python ≥ 3.12 (`asyncio.timeout`, `Timeout.reschedule`, `Timeout.expired`)
+- Python ≥ 3.12 (`asyncio.timeout`, `Timeout.expired`), POSIX only (`fcntl`, `os.dup2`)
 - `mcp` 2.3.0 (`MCPServer`, `ClientSession`, `stdio_client`, `MCPError`)
 - Dev group, new: `anthropic` 1.15.0, `openai` 3.32.0, `google-genai` 2.31.0.
   The first two use `httpx2`; `google-genai` uses `httpx`.
 - `decimal.Decimal` for money; PyYAML for config files
 - pytest with `asyncio_mode = "auto"`; Ruff (line length 100); Pyright (standard)
 
-**Spec:** `docs/benchmarks/AGENTIC-BENCHMARK-DESIGN.md` (merged in #161),
-§§2, 5–8, 10–15; issue #177 (retry settings and policy); the "Carried
-Into The New Benchmark Harness" list in
-`docs/plans/2026-10-30-audit-fixes-roadmap.md`. Executors read the design
-in full before Task 1.
+**Spec:**
+- `docs/benchmarks/AGENTIC-BENCHMARK-DESIGN.md` (merged in #161),
+  §§2, 5–8, 10–15;
+- issue #177 (retry settings and policy);
+- the "Carried Into The New Benchmark Harness" list in
+  `docs/plans/2026-10-30-audit-fixes-roadmap.md`;
+- the owner's two rulings comments on #184 (summarized under "Owner
+  rulings" at the end);
+- `docs/research/2026-10-31-benchmark-provider-limits.md` (the
+  "research note" below), the source of every model limit, price and
+  package date in this plan.
+
+Executors read the design and the research note in full before Task 1.
 
 ## Global Constraints
 
-- **Order:** PR A merges first. PR B starts only after #173 (benchmark integrity) and PR A are on `main`; it builds on #173's `cell_failure_from`, `guard.redact_api_keys`, `MalformedApiKeyError`, `benchmarks/urls.py` and count model `claude-sonnet-5-5`. Both #173 and PR A append to `PUBLIC-BENCHMARK-METHODOLOGY.md`; whichever lands second rebases.
+- **Order:** #173 is on `main` (`64d586d`). PR A builds on it and merges first. PR B starts after PR A is on `main`. It builds on #173's `cell_failure_from`, `guard.redact_api_keys`, `MalformedApiKeyError`, `benchmarks/urls.py` and count model `claude-sonnet-5-5`.
 - **No paid call in CI or tests.** Production code builds clients only through `make_client` (Task 7), which calls `require_live_environment` (`BENCHMARK_LIVE_PROVIDERS_ENABLED` plus the provider's key) for every live API. Tests use `httpx2.MockTransport` / `httpx.MockTransport` or the scripted client. No test reaches a network host.
-- **Keys:** `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`. The host orchestrator refuses to start when any of them is set in its environment (design §7.3). A worker holds at most one paid key. PR B's local launcher passes none, so no paid call is possible before PR 4's container launcher exists.
-- **Dependencies:** `anthropic==1.15.0` (uploaded 2026-10-15), `openai==3.32.0` (2026-10-16), `google-genai==2.31.0` (2026-10-14), exact pins in the `dev` group. All are at least 14 days old on 2026-10-31 (checked against PyPI). New transitive packages younger than 14 days are locked one release back: `jiter==0.17.0` (2026-09-12) instead of 0.18.0, and `pyasn1==0.6.4` (2026-07-09) instead of 0.6.5. No LiteLLM, no Inspect AI, nothing else.
+- **Keys:** `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`. The host orchestrator refuses to start when any of them is set in its environment (design §7.3). A worker holds at most one paid key. PR B's local launcher passes none, so no paid call is possible before PR 4's container launcher exists (owner ruling 8).
+- **One request per unit.** Every provider client sends exactly one HTTP request per reserved ledger unit: no SDK retries and no SDK continuation (#177 item 1, round-2 ruling B1).
+- **Dependencies** (research note §F):
+  - Exact pins in the `dev` group: `anthropic==1.15.0` (uploaded 2026-10-15), `openai==3.32.0` (2026-10-16), `google-genai==2.31.0` (2026-10-14). All are at least 14 days old on 2026-10-31.
+  - New transitive packages younger than 14 days on the day of locking are locked one release back: `jiter==0.17.0` (2026-09-12), not 0.18.0.
+  - **Security exception:** `pyasn1==0.6.5` (2026-10-27) is locked although it is younger than 14 days. It fixes four high-severity DoS advisories against 0.6.4: GHSA-fm9c-5rcf-2q5p, GHSA-9m75-vc3g-4x39, GHSA-2qm8-x737-gmw5 and GHSA-mm57-4v3p-rchx. OSV flags 0.6.4, so the required Dependency audit would fail on it (research note §E; owner ruling part 2, item 4).
+  - No LiteLLM, no Inspect AI, nothing else.
 - **Owner approval:** `pyproject.toml`, `uv.lock` and dependency changes are forbidden territory for autonomous agents (`AGENT-EXECUTION-PIPELINE.md` §2). Design §13 is the owner's approval for exactly the three SDKs above in the `dev` group, and nothing beyond them. No workflow change: CI's `uv sync --locked --dev` already installs the group.
 - **Budget (§12):** caps Anthropic $180, OpenAI $65, Google $180; margins $20, $10, $20; budget $200, $75, $200.
+- **Model limits** (research note §§A–D): output cap 32,768 tokens for all three hosted models. Thinking or reasoning counts inside that cap on all three. Max input: Sonnet 5.5 1,000,000; GPT-6.1 Sol 1,017,232 (its 1,050,000 context window minus the output cap); Gemini 3.8 Flash 1,048,576.
+- **Price snapshot** (research note §§A–C): it expires 2026-12-31, when Gemini 3.8 Flash's prices double. A live run refuses to start on or after 2026-12-31 UTC. The harness never requests extended prompt-cache retention.
 - **Loop caps (§6):** 8 model calls, 12 tool calls, 30 s per tool call, 300 s per trajectory (900 s air-gapped), 100,000 UTF-8 bytes per tool result, k = 3, `tool_choice` auto, OpenAI `strict: false`.
 - **Frozen inputs:** the corpus (`c52c3f2`, PR #130) does not change. Nothing under `src/` changes; the tool surface stays as is.
 - **Gate** (`AGENTS.md`), run fresh before each PR, and every pytest run with a throwaway cache so nothing touches `~/Library/Caches/mcp-python-docs`:
@@ -49,30 +69,78 @@ in full before Task 1.
   - `uv run --locked pyright src/ benchmarks/`
   - `ISO=$(mktemp -d); uv run --locked env XDG_CACHE_HOME="$ISO" pytest --tb=short -q`
 - **TDD** (superpowers:test-driven-development): every new behaviour has a failing test first.
-- **Existing tests:** none is weakened. The only deletions are the ones design §11.1 orders, listed in Task 11; the PR B body repeats that list.
+- **Existing tests:** none is weakened. Two kinds of change are allowed, and the PR bodies repeat both lists. Task 1 changes two report assertions to the new matrix ids. Task 11 makes the deletions that design §11.1 orders.
 - **Supervisor review:** PR B changes `pyproject.toml`, deletes tests and passes 500 lines. Label it `supervisor-review`.
 - **Commits and PRs:** conventional prefixes; every commit ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. PR bodies follow `.github/PULL_REQUEST_TEMPLATE/agent.md` and end with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`. Implementers never self-verify and never merge.
 
 ## Review Focus
 
-1. **The model calls a tool that does not exist, or passes arguments that fail the schema or are not valid JSON.** The model gets an `is_error` tool result and the loop continues. It must not end as a transport crash. Tests: Task 4 `test_bridge_returns_an_unknown_tool_as_an_error_result`, `test_bridge_returns_invalid_arguments_as_an_error_result`; Task 8 `test_unparseable_tool_arguments_are_returned_to_the_model`.
-2. **A tool result straddles the 100,000-byte cap with a multi-byte character, or has no text block.** The cut lands on a character boundary and carries the marker. A non-text block becomes a visible placeholder, never an empty string. Tests: Task 4 `test_truncate_utf8_cuts_on_a_character_boundary_and_marks_it`, `test_canonical_text_joins_text_blocks_and_marks_other_blocks`.
-3. **A worker dies while its provider unit is in flight** (OOM, killed container, crash). The host books that unit at twice its bound and frees the provider's slot, so the other workers of that provider continue. Test: Task 9 `test_host_settles_a_lost_workers_unit_at_twice_its_bound_and_frees_the_provider`.
-4. **The ledger directory is reused after a crash between reserve and settle, or by two runs at once.** Reopening books the unsettled unit at twice its bound, and a second concurrent open is refused. Tests: Task 3 `test_reopening_books_an_unsettled_unit_at_twice_its_bound`, `test_a_second_open_on_the_same_directory_is_refused`.
-5. **Gemini returns function calls without ids, or two calls to the same function in one turn.** Harness-assigned ids keep each result paired with its call, by position. Test: Task 7 `test_gemini_pairs_two_calls_of_the_same_function_by_position`.
+Items 1–7 are the round-2 rulings B1–B7. Items 8–10 carry over from round 1.
+
+1. **A provider SDK makes extra requests on its own,** through a retry or
+   Gemini's automatic continuation. Expected: exactly one HTTP request per
+   reserved unit, even on a 5xx or a `CONTINUATION` stop. Tests:
+   - Task 6 `test_each_client_sends_one_request_per_call`;
+   - Task 7 `test_gemini_sends_one_request_when_the_response_asks_to_continue`.
+2. **A key reaches a worker's output streams** through `print()`, a library
+   warning, a traceback, an MCP server's stderr or a raw `os.write(2, ...)`.
+   Expected: it is redacted before it leaves the worker, and never reaches
+   a host log or artifact. Tests (Task 9):
+   - `test_protect_output_redacts_the_own_key_on_every_stream`;
+   - `test_host_logs_and_artifacts_never_hold_a_workers_key`.
+3. **A trajectory record is large:** over 100,000 bytes, or over the frame
+   limit. Expected: a large record round-trips intact. A frame over the
+   limit stops the run as a harness error; it is never scored as a model
+   failure. Tests (Task 9):
+   - `test_a_trajectory_frame_over_100000_bytes_round_trips_through_a_worker`;
+   - `test_a_frame_over_the_limit_is_a_harness_error`.
+4. **Time not spent on successful work:** waiting for the ledger grant, a
+   slow failed attempt, retry backoff. Expected: none of it uses the
+   trajectory clock. It is recorded as `grant_wait_ms`,
+   `failed_attempt_ms` and `retry_wait_ms`. Tests (Task 8):
+   - `test_grant_wait_longer_than_the_trajectory_allowance_still_succeeds`;
+   - `test_failed_attempt_longer_than_the_remaining_allowance_is_retried`.
+5. **The process holding the ledger is killed** (SIGKILL, OOM) between
+   reserve and settle, or a second run opens the same ledger. Expected: the
+   OS releases the lock, a reopen books the unsettled unit at 2× its bound,
+   and a second open while the first holder lives is refused. Tests
+   (Task 3):
+   - `test_a_killed_ledger_holder_releases_the_lock_and_its_unit_is_booked_at_twice_its_bound`;
+   - `test_a_second_open_on_the_same_directory_is_refused`.
+6. **A call returns no usage object.** Expected: the next call's input bound
+   is a full-request bound, not the previous bound plus the added bytes.
+   Test: Task 8 `test_bound_after_a_call_without_usage_is_a_full_request_bound`.
+7. **Tool arguments that are not a JSON object:** an array, a scalar, `null`,
+   or invalid JSON. Expected: the model gets an `is_error` result, and the
+   bridge is never called. Tests:
+   - Task 6 `test_openai_non_object_arguments_are_kept_raw`;
+   - Task 8 `test_non_object_tool_arguments_are_returned_to_the_model`.
+8. **A tool result straddles the 100,000-byte cap with a multi-byte
+   character, or has no text block.** Expected: the cut lands on a character
+   boundary with the marker, and a non-text block becomes a visible
+   placeholder. Tests (Task 4):
+   - `test_truncate_utf8_cuts_on_a_character_boundary_and_marks_it`;
+   - `test_canonical_text_joins_text_blocks_and_marks_other_blocks`.
+9. **A worker dies with its provider unit in flight.** Expected: the host
+   books that unit at 2× its bound and frees the provider's slot. Test:
+   Task 9 `test_host_settles_a_lost_workers_unit_at_twice_its_bound_and_frees_the_provider`.
+10. **Gemini returns function calls without ids, or two calls to the same
+    function in one turn.** Expected: results pair with calls by position.
+    Test: Task 7 `test_gemini_pairs_two_calls_of_the_same_function_by_position`.
 
 ---
 
 # PR A — Methodology amendment and model matrix (design §12 step 2)
 
-Branch `docs/agentic-methodology-matrix` from `origin/main`. Refs #63, #177.
+Branch `docs/agentic-methodology-matrix` from `origin/main` (which has #173). Refs #63, #177.
 
 ### Task 1: Model matrix per design §7.1
 
 **Files:**
-- Modify: `benchmarks/model_matrix.py` (`ModelFamily`, `_load_model_families`)
+- Modify: `benchmarks/model_matrix.py` (`ModelFamily`, `_load_model_families`, new `model_family_from_raw`)
 - Modify: `docs/benchmarks/model-matrix.yml` (rewrite)
 - Test: `tests/benchmarks/test_model_matrix.py` (add tests only; reuse its `_family` and file-writing helpers)
+- Modify: `tests/benchmarks/test_report.py:148-149` (the two family-id assertions; see Step 5)
 
 **Interfaces:**
 - Produces (Tasks 3, 6–10 rely on these):
@@ -92,6 +160,10 @@ class ModelFamily:
     max_output_tokens: int | None = None
     output_cap_includes_reasoning: bool | None = None
     framing_allowance_tokens: int | None = None
+
+def model_family_from_raw(item: Mapping[str, Any], *, label: str = "model family") -> ModelFamily
+    # validates and builds one entry; _load_model_families calls it, then checks duplicate ids.
+    # The PR B worker rebuilds its family from the job's raw dict with this function.
 ```
 
 - [ ] **Step 1: Write the failing tests**
@@ -106,13 +178,15 @@ def test_real_model_matrix_matches_design_section_7_1() -> None:
         ("gemini-3.8-flash", "google", "gemini-3.8-flash", "gemini-generate-content", "hosted"),
         ("gemma4-12b", "ollama", "gemma4:12b", "openai-chat-completions", "air-gapped"),
     }
-    for family in matrix.model_families:
+    hosted = {f.id: f for f in matrix.model_families if f.arm == "hosted"}
+    assert {i: f.max_input_tokens for i, f in hosted.items()} == {
+        "claude-sonnet-5-5": 1_000_000, "gpt-6.1-sol": 1_017_232, "gemini-3.8-flash": 1_048_576}
+    for family in hosted.values():
         assert "client_wrapper" not in family.raw
-        if family.arm == "hosted":
-            assert family.max_output_tokens == 16384
-            assert family.max_input_tokens and family.max_input_tokens > 0
-            assert family.output_cap_includes_reasoning is True
-            assert family.framing_allowance_tokens == 256
+        assert family.max_output_tokens == 32_768
+        assert family.output_cap_includes_reasoning is True
+        assert family.framing_allowance_tokens == 256
+        assert family.raw["limits_source"].startswith("docs/research/2026-10-31-benchmark-provider-limits.md")
 
 def test_hosted_family_must_set_its_budget_fields(tmp_path) -> None:
     # a hosted entry without max_input_tokens -> BenchmarkValidationError naming "max_input_tokens"
@@ -129,6 +203,10 @@ def test_model_family_id_must_be_path_safe(tmp_path) -> None:
 
 def test_entries_without_agentic_fields_still_load(tmp_path) -> None:
     # the existing minimal fixture shape loads; api/arm/... are None
+
+def test_model_family_from_raw_round_trips_every_committed_entry() -> None:
+    for family in load_model_matrix(MODEL_MATRIX_PATH).model_families:
+        assert model_family_from_raw(family.raw) == family
 ```
 
 - [ ] **Step 2: Run them and watch them fail**
@@ -136,11 +214,16 @@ def test_entries_without_agentic_fields_still_load(tmp_path) -> None:
 Run: `ISO=$(mktemp -d); uv run --locked env XDG_CACHE_HOME="$ISO" pytest tests/benchmarks/test_model_matrix.py -q`
 Expected: the new tests FAIL (unknown attributes, old matrix rows).
 
-- [ ] **Step 3: Extend `_load_model_families`**
+- [ ] **Step 3: Add `model_family_from_raw` and the field checks**
 
-Validate each new field only when present: `api` in `KNOWN_APIS`, `arm` in
-`KNOWN_ARMS`, token fields positive `int` (not `bool`),
-`output_cap_includes_reasoning` a `bool`, `framing_allowance_tokens ≥ 256`.
+Move the per-entry body of `_load_model_families` into
+`model_family_from_raw`, with the same messages. Validate each new field
+only when present:
+- `api` in `KNOWN_APIS` and `arm` in `KNOWN_ARMS`;
+- token fields positive `int` (not `bool`);
+- `output_cap_includes_reasoning` a `bool`;
+- `framing_allowance_tokens ≥ 256`.
+
 An entry with `arm: hosted` must set `max_input_tokens`,
 `max_output_tokens`, `output_cap_includes_reasoning` and
 `framing_allowance_tokens`. The family `id` must match
@@ -149,40 +232,60 @@ An entry with `arm: hosted` must set `max_input_tokens`,
 - [ ] **Step 4: Rewrite `docs/benchmarks/model-matrix.yml`**
 
 Keep `schema_version: 1` and `methodology_token_label`. Rewrite the header
-comment to cite design §7.1, and drop the issue #73 stub and mock-adapter
-text. Four entries, ids as in the test. Each entry has:
-- `client`: `anthropic` (Anthropic) or `openai` (OpenAI and Ollama), or
+comment to cite design §7.1 and the research note, and drop the issue #73
+stub and mock-adapter text. Four entries, ids as in the test.
+
+Each entry has:
+- `client`: `anthropic` (Anthropic), `openai` (OpenAI and Ollama), or
   `google-genai` (Google);
 - `token_count_method: claude_normalized_payload`;
 - `provider_native_token_field`: `usage` (Anthropic, OpenAI, Ollama) or
   `usage_metadata` (Google);
 - `latency_scope: request_dispatch_to_final_answer`;
 - `headline_eligible: false`, with the existing decision-5.17 reason;
-- `settings`, a string with the §7.1 Settings text verbatim.
+- `settings`, a string holding the §7.1 Settings text verbatim plus the
+  documented default:
+  - Sonnet 5.5: adaptive thinking on, cannot be disabled, default effort
+    `high`;
+  - GPT-6.1 Sol: default effort `medium`;
+  - Gemini 3.8 Flash: default thinking level `medium`.
 
-Hosted entries also set:
-- `max_output_tokens: 16384` and `framing_allowance_tokens: 256`;
-- `max_input_tokens` from each provider's model card: 1,000,000 for
-  Sonnet 5.5, 1,048,576 for Gemini 3.8 Flash, and the published limit for
-  GPT-6.1 Sol;
-- `output_cap_includes_reasoning: true`;
-- a `limits_source_url` for each value.
+Hosted entries also set these values (research note §§A–D):
 
-Check each provider's docs that its output cap includes thinking or
-reasoning tokens. If Gemini's `max_output_tokens` does not, stop and
-escalate (Open question 2). The `gemma4-12b` entry has
-`arm: air-gapped`, no token limits, and its settings name
-`OLLAMA_CONTEXT_LENGTH=32768`.
+| id | `max_input_tokens` | why | `limits_source` |
+|---|---|---|---|
+| `claude-sonnet-5-5` | 1000000 | documented "1M tokens"; the exact integer needs the Models API, which PR 4's smoke run reads | `docs/research/2026-10-31-benchmark-provider-limits.md#a-claude-sonnet-5-5-anthropic-messages-api` |
+| `gpt-6.1-sol` | 1017232 | no separate input limit is published: the 1,050,000 context window minus the 32,768 output cap | `...#b-gpt-61-sol-openai-responses-api` |
+| `gemini-3.8-flash` | 1048576 | documented input token limit | `...#c-gemini-38-flash-through-google-genai-paid-tier` |
 
-- [ ] **Step 5: Run the whole benchmark suite**
+All three also set:
+- `max_output_tokens: 32768`, below the documented maximums of 128,000,
+  128,000 and 65,536;
+- `output_cap_includes_reasoning: true`, cited to the research note
+  sections quoted above;
+- `framing_allowance_tokens: 256`.
+
+The `gemma4-12b` entry has `arm: air-gapped`, no token limits, and its
+settings name `OLLAMA_CONTEXT_LENGTH=32768`.
+
+- [ ] **Step 5: Update the report test and run the whole benchmark suite**
+
+`tests/benchmarks/test_report.py:148-149` asserts the old ids
+`openai-gpt-4o-mini` and `google-gemini-1.5-flash`, which the real matrix
+no longer has. Change them to `claude-sonnet-5-5` and `gemini-3.8-flash`.
+This is a contract change, not a weakening: the test still checks that the
+report renders the real matrix's families. List it in the PR A body.
 
 Run: `ISO=$(mktemp -d); uv run --locked env XDG_CACHE_HOME="$ISO" pytest tests/benchmarks -q`
-Expected: PASS. `test_real_model_matrix_file_loads_and_covers_required_providers` and the report tests still pass on the new file.
+Expected: PASS after the two-line update. Before it,
+`test_generate_report_includes_all_required_sections` fails on
+`openai-gpt-4o-mini`; `test_real_model_matrix_file_loads_and_covers_required_providers`
+passes either way.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add benchmarks/model_matrix.py docs/benchmarks/model-matrix.yml tests/benchmarks/test_model_matrix.py
+git add benchmarks/model_matrix.py docs/benchmarks/model-matrix.yml tests/benchmarks/test_model_matrix.py tests/benchmarks/test_report.py
 git commit -m "feat(benchmarks): rewrite the model matrix for the agentic design"
 ```
 
@@ -194,11 +297,13 @@ git commit -m "feat(benchmarks): rewrite the model matrix for the agentic design
 
 **Interfaces:** none (docs).
 
-- [ ] **Step 1: Append `## Amendment 2026-10-29: Agentic Mode`**
+- [ ] **Step 1: Append `## Amendment <YYYY-MM-DD>: Agentic Mode`**
 
-The title is the one design §11.2 gives; place the section after any
-amendment already in the file. In the file's style (short sentences, one
-idea each), it states:
+The date is the day PR A merges (owner ruling 10). Amendments stay in
+chronological order, so the section goes after #173's
+`## Amendment 2026-10-30: How Fixed-Flow Results Are Computed`. Its first
+line cites design #161, approved 2026-10-29. In the file's style (short
+sentences, one idea each), it states:
 - **Scope.** It covers `python -m benchmarks agentic-run` runs. The
   fixed-flow `run` is no longer a public result (design §3).
 - **Parity.** Every system gets the same system prompt, the corpus prompt
@@ -227,6 +332,10 @@ idea each), it states:
   Provider usage serves only as cost. Neither is compared across models.
 - **Latency** (§10): a model, tool and overhead split, with cold and warm
   calls.
+- **Output cap:** 32,768 tokens for every hosted model, with thinking and
+  reasoning inside it. If more than 1% of pilot answers stop at the cap,
+  the cap is raised before the full run (owner rulings 3 and part 2,
+  item 3).
 - **Claims** (§2): the C1–C3 pass rules and every anti-claim. `no-docs` is
   never ranked on tokens. Round 1 supports only "fewer tokens than
   fetching the official docs pages".
@@ -237,7 +346,7 @@ idea each), it states:
     and listed in the report (§12, #177).
 - **Reproducibility:** each run records:
   - SDK versions and the model version each provider reports;
-  - the price snapshot;
+  - the price snapshot and its expiry;
   - the system prompt and tool-schema hashes;
   - the index sha256 and the order seed.
 
@@ -248,7 +357,7 @@ Insert as the first data row:
 
 - [ ] **Step 3: Verify**
 
-Run: `grep -c "^## Amendment 2026-10-29: Agentic Mode" docs/benchmarks/PUBLIC-BENCHMARK-METHODOLOGY.md; grep -c "Smoke run" docs/benchmarks/AGENTIC-BENCHMARK-DESIGN.md`
+Run: `grep -c "^## Amendment .*: Agentic Mode" docs/benchmarks/PUBLIC-BENCHMARK-METHODOLOGY.md; grep -c "Smoke run" docs/benchmarks/AGENTIC-BENCHMARK-DESIGN.md`
 Expected: `1` and `1`.
 
 - [ ] **Step 4: Commit**
@@ -263,13 +372,14 @@ git commit -m "docs(benchmarks): amend the methodology for agentic mode"
 Run the three gate commands; expect `All checks passed!`, `0 errors`, all
 tests passing. Push and open PR A with `gh pr create` against `main`:
 - **Title:** `docs: agentic methodology amendment and model matrix`.
-- **Body:** Refs #63 and #177 (item 3), plus the gate output.
+- **Body:** Refs #63 and #177 (item 3), the Task 1 report-assertion
+  change, and the gate output.
 
 ---
 
 # PR B — Agentic harness with mocked end-to-end CI (design §12 step 3)
 
-Branch `feat/agentic-harness` from `origin/main` after #173 and PR A merge.
+Branch `feat/agentic-harness` from `origin/main` after PR A merges.
 Closes #177 (items 1 and 2; item 3 landed in PR A). Refs #63.
 
 Package layout (design §15 leaves it to the builder):
@@ -277,15 +387,15 @@ Package layout (design §15 leaves it to the builder):
 | File | Responsibility |
 |---|---|
 | `benchmarks/agentic/types.py` | Neutral value types shared by every module |
-| `benchmarks/agentic/usage.py` | §8 usage buckets per provider |
+| `benchmarks/agentic/usage.py` | §8 usage buckets per hosted provider |
 | `benchmarks/agentic/ledger.py` | Price snapshot, bound pricing, persistent ledger, one-in-flight service |
 | `benchmarks/agentic/bridge.py` | Systems manifest, MCP stdio bridge, canonical results, truncation |
 | `benchmarks/agentic/schemas.py` | MCP tool → provider tool conversion |
 | `benchmarks/agentic/clients.py` | SDK construction, provider calls, error classification, scripted client, factory |
 | `benchmarks/agentic/prompt.py` | The frozen system prompt |
-| `benchmarks/agentic/loop.py` | One trajectory: caps, retries, bounds, records |
-| `benchmarks/agentic/protocol.py` | JSON-lines messages, key scans |
-| `benchmarks/agentic/worker.py` | Worker process: one (model, system) job |
+| `benchmarks/agentic/loop.py` | One trajectory: caps, clock, retries, bounds, records |
+| `benchmarks/agentic/protocol.py` | Length-prefixed frames, key scans |
+| `benchmarks/agentic/worker.py` | Worker process: output protection, one (model, system) job |
 | `benchmarks/agentic/host.py` | Launchers, worker supervision, ledger arbitration |
 | `benchmarks/agentic/run.py` | Plan, artifacts, run summary, `run_agentic` |
 
@@ -316,14 +426,12 @@ class Buckets:
 def anthropic_buckets(usage: Mapping[str, Any]) -> Buckets
 def openai_buckets(usage: Mapping[str, Any]) -> Buckets        # Responses API usage
 def gemini_buckets(usage: Mapping[str, Any]) -> Buckets
-def ollama_buckets(usage: Mapping[str, Any]) -> Buckets        # Chat Completions usage
 
 # ledger.py
 PROVIDER_CAPS: dict[str, Decimal]      # anthropic 180, openai 65, google 180
 PROVIDER_MARGINS: dict[str, Decimal]   # anthropic 20, openai 10, google 20
-UNMETERED_PROVIDERS = frozenset({"ollama"})
 Outcome = Literal["ok", "rejected", "rate_limited", "server", "timeout", "connection",
-                  "cut", "no_usage", "worker_lost", "unsettled_at_load"]
+                  "no_usage", "worker_lost", "unsettled_at_load"]
 
 @dataclass(frozen=True)
 class Rates:          # USD per million tokens
@@ -335,13 +443,19 @@ class Tier:
 @dataclass(frozen=True)
 class ModelPrice:
     model_id: str; provider: str; tiers: tuple[Tier, ...]; source_url: str
+@dataclass(frozen=True)
+class PriceSnapshot:
+    captured_on: date
+    expires_on: date | None
+    models: dict[str, ModelPrice]      # keyed by model_id
 
-def load_price_snapshot(path: Path) -> dict[str, ModelPrice]          # keyed by model_id
+def load_price_snapshot(path: Path) -> PriceSnapshot
+def refuse_stale_snapshot(snapshot: PriceSnapshot, *, today: date) -> None
+    # raises BenchmarkValidationError when expires_on is set and today >= expires_on
 def actual_cost(price: ModelPrice, buckets: Buckets) -> Decimal
 def bound_cost(price: ModelPrice, *, input_bound: int, output_bound: int) -> Decimal
 def clamp_input_bound(bound: int, max_input_tokens: int) -> int
 def booked_cost(outcome: Outcome, *, bound: Decimal, actual: Decimal | None) -> Decimal
-def split_batch(item_bounds: Sequence[Decimal], *, margin: Decimal, remaining: Decimal) -> list[list[int]]
 
 class Ledger:                                   # sync; one JSONL file per provider
     @classmethod
@@ -359,57 +473,68 @@ class Ledger:                                   # sync; one JSONL file per provi
 
 class LedgerService:                            # async; the host's arbiter
     def __init__(self, ledger: Ledger, prices: Mapping[str, ModelPrice],
-                 families: Mapping[str, ModelFamily]) -> None    # families keyed by model_id
+                 families: Mapping[str, ModelFamily]) -> None    # both keyed by model_id
     async def reserve(self, *, provider: str, model_id: str, input_bound: int,
                       output_bound: int, kind: str = "model_call") -> str | None
     async def settle(self, unit_id: str, *, outcome: Outcome, buckets: Buckets | None) -> None
 ```
 
 Rules the tests pin (design §8, §12):
-- **Buckets.** Anthropic: `input_tokens`, `cache_creation_input_tokens`,
-  `cache_read_input_tokens`, `output_tokens`. OpenAI: uncached is
-  `input_tokens − cached_tokens − cache_write_tokens`. Gemini: uncached is
-  `prompt − cached_content + tool_use_prompt`; output is
-  `candidates + thoughts`. A `None` count is 0. A negative uncached count
-  raises `BenchmarkValidationError`.
+- **Buckets.**
+  - Anthropic: `input_tokens`, `cache_creation_input_tokens`,
+    `cache_read_input_tokens`, `output_tokens`.
+  - OpenAI: uncached is `input_tokens − cached_tokens − cache_write_tokens`.
+  - Gemini: uncached is `prompt − cached_content + tool_use_prompt`;
+    output is `candidates + thoughts`.
+  - A `None` count is 0. A negative uncached count raises
+    `BenchmarkValidationError`.
 - **Actual cost.** Pick the tier from `buckets.total_input`: the first tier
   whose `up_to_input_tokens` is at least that, or the last tier. Each
   bucket is priced at that tier's own rate, and output at the tier's
   output rate.
 - **Bound cost.** Input is priced at `cache_write` for `openai` and
   `input` for every other provider. The tier comes from `input_bound`, for
-  input and output both.
+  input and output both: GPT-6.1 Sol is priced at its above-272K tier
+  whenever its input bound exceeds 272,000.
 - **Booked cost.** `ok` books the actual cost. `rejected` and
-  `rate_limited` book 0. Every other outcome books 2 × bound.
+  `rate_limited` book 0. Every other outcome books 2 × bound. The loop
+  never cuts a call in flight (Task 8), so no outcome means "cut".
 - **Reserve.**
   - Refused, and the provider stopped with `"cap"`, when `spent + bound`
     is over the cap. A stop is sticky.
   - Raises `RuntimeError` when a unit is already in flight for that
     provider.
-  - Raises `BenchmarkValidationError` for a provider in neither the caps
-    nor `UNMETERED_PROVIDERS`.
-  - An unmetered provider is never refused and books 0.
+  - Raises `BenchmarkValidationError` for a provider without a cap.
+  - The Ollama provider is unmetered and arrives in PR 4.
 - **Settle.** An `ok` whose actual cost is above its bound books the
   actual cost and stops the provider with `"overrun"`. Only
   `acknowledge_overrun` lifts that stop.
 - **Files.** Each provider has `<provider>.jsonl` with `reserve`,
   `settle`, `stop` and `resume` events. Money is written as decimal
-  strings.
+  strings. A `settle` event carries `input_bound_exceeded`.
 - **Open.**
   - `open` books every reserve that has no settle with
     `outcome="unsettled_at_load"`, at 2 × bound, and appends that event.
-  - `open` creates `<ledger_dir>/.lock` with `O_CREAT | O_EXCL` and
-    writes its pid into it. If the file exists, `open` raises
-    `BenchmarkValidationError` naming the lock file. `close()` removes it.
-- **Split.** `split_batch` greedily groups contiguous items while each
-  group's sum stays at or under `min(margin, remaining)`. An item above
-  that limit raises `BenchmarkValidationError`.
+  - `open` takes the lock first. It opens `<ledger_dir>/.lock`, keeps the
+    descriptor for the ledger's lifetime, and calls
+    `fcntl.flock(fd, LOCK_EX | LOCK_NB)`. The OS releases the lock when
+    the process dies. If the lock is held, `open` raises
+    `BenchmarkValidationError` naming the lock file. `close()` unlocks
+    and closes.
+  - Mark the lock with
+    `# shortcut: fcntl is POSIX only; the harness runs on macOS and Linux, add msvcrt.locking if Windows runs are ever needed`.
 - **LedgerService.**
   - Holds one `asyncio.Lock` per provider, from `reserve` until that
     unit's `settle`.
   - Clamps `input_bound` to the family's `max_input_tokens`, prices the
     bound, and passes `input_bound_exceeded = buckets.total_input >
     input_bound` to `settle`.
+- **Snapshot.** `load_price_snapshot` refuses:
+  - tiers that are not ascending;
+  - a last tier with a limit;
+  - a negative rate;
+  - a provider other than `anthropic`, `openai` and `google`;
+  - a duplicate `model_id`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -428,19 +553,24 @@ def test_gemini_buckets_add_tool_use_prompt_and_thoughts() -> None:
         "tool_use_prompt_token_count": 50, "candidates_token_count": 30,
         "thoughts_token_count": 20}) == Buckets(950, 0, 100, 50, 20)
 
-def test_ollama_buckets() -> None:
-    assert ollama_buckets({"prompt_tokens": 70, "completion_tokens": 9}) == Buckets(70, 0, 0, 9, 0)
-
 def test_buckets_refuse_a_negative_uncached_input() -> None   # openai cached 200 > input 100
 
-def test_committed_snapshot_has_the_design_prices() -> None:
-    prices = load_price_snapshot(PRICE_SNAPSHOT_PATH)
-    def base(m): return prices[m].tiers[0].rates
-    assert (base("claude-sonnet-5-5").input, base("claude-sonnet-5-5").output) == (Decimal("2"), Decimal("10"))
-    assert (base("gpt-6.1-sol").input, base("gpt-6.1-sol").output) == (Decimal("2"), Decimal("10"))
-    assert base("gpt-6.1-sol").cache_write == Decimal("2.5")
-    assert (base("gemini-3.8-flash").input, base("gemini-3.8-flash").output) == (Decimal("0.75"), Decimal("3.75"))
-    assert base("gemma4:12b") == Rates(Decimal(0), Decimal(0), Decimal(0), Decimal(0))
+def test_committed_snapshot_has_the_researched_prices() -> None:
+    snap = load_price_snapshot(PRICE_SNAPSHOT_PATH)    # values: research note §§A-C
+    def tiers(m): return [(t.up_to_input_tokens, t.rates) for t in snap.models[m].tiers]
+    D = Decimal
+    assert tiers("claude-sonnet-5-5") == [(None, Rates(D("2"), D("4"), D("0.10"), D("10")))]
+    assert tiers("gpt-6.1-sol") == [(272_000, Rates(D("2"), D("2.50"), D("0.10"), D("10"))),
+                                    (None, Rates(D("4"), D("5"), D("0.20"), D("15")))]
+    assert tiers("gemini-3.8-flash") == [(None, Rates(D("0.75"), D("0"), D("0.075"), D("3.75")))]
+    assert snap.expires_on == date(2026, 12, 31)
+    assert all(p.source_url.startswith("https://") for p in snap.models.values())
+
+def test_stale_snapshot_is_refused_from_its_expiry_day() -> None:
+    snap = load_price_snapshot(PRICE_SNAPSHOT_PATH)
+    refuse_stale_snapshot(snap, today=date(2026, 12, 30))           # no error
+    with pytest.raises(BenchmarkValidationError, match="2026-12-31"):
+        refuse_stale_snapshot(snap, today=date(2026, 12, 31))
 
 def test_actual_cost_prices_each_bucket_at_its_own_rate() -> None:
     price = _flat("2", "2.5", "0.2", "10")            # input, cache_write, cached, output
@@ -459,7 +589,7 @@ def test_input_bound_is_clamped_to_the_model_maximum() -> None:
     assert clamp_input_bound(2_000_000, 1_048_576) == 1_048_576
 
 @pytest.mark.parametrize("outcome,expected", [("ok", "1.2"), ("rejected", "0"), ("rate_limited", "0"),
-    ("server", "4"), ("timeout", "4"), ("connection", "4"), ("cut", "4"), ("no_usage", "4"),
+    ("server", "4"), ("timeout", "4"), ("connection", "4"), ("no_usage", "4"),
     ("worker_lost", "4"), ("unsettled_at_load", "4")])
 def test_booked_cost_by_outcome(outcome, expected) -> None:
     actual = Decimal("1.2") if outcome == "ok" else None
@@ -476,29 +606,36 @@ def test_actual_above_bound_stops_the_provider_until_acknowledged(tmp_path) -> N
 def test_reopening_books_an_unsettled_unit_at_twice_its_bound(tmp_path) -> None:
     # reserve bound 3, close without settle; reopen -> spent("anthropic") == Decimal("6")
 def test_a_second_open_on_the_same_directory_is_refused(tmp_path) -> None   # match=".lock"
-def test_unmetered_provider_needs_no_cap(tmp_path) -> None                   # ollama, spent 0
-def test_unknown_paid_provider_is_refused(tmp_path) -> None                  # "mistral"
-
-def test_split_batch_keeps_every_part_under_margin_and_remaining_cap() -> None:
-    assert split_batch([Decimal(4)] * 7, margin=Decimal(10), remaining=Decimal(9)) == [[0, 1], [2, 3], [4, 5], [6]]
-def test_split_batch_refuses_an_item_bigger_than_the_limit() -> None
+def test_a_killed_ledger_holder_releases_the_lock_and_its_unit_is_booked_at_twice_its_bound(tmp_path) -> None:
+    # subprocess: `python -c` opens the ledger, reserves bound 3, prints "reserved", sleeps;
+    # parent: after "reserved", Ledger.open(tmp_path) raises (lock held);
+    # proc.kill() (SIGKILL), proc.wait(); Ledger.open succeeds and spent("anthropic") == Decimal("6")
+def test_provider_without_a_cap_is_refused(tmp_path) -> None                  # "ollama", "mistral"
 
 async def test_service_allows_one_unit_in_flight_per_provider_and_runs_providers_in_parallel(tmp_path) -> None:
     # second anthropic reserve is still pending until the first settles; an openai reserve
     # completes meanwhile (asyncio.wait_for with a short timeout on each)
 
+async def test_service_prices_a_bound_above_the_tier_threshold_at_the_high_tier(tmp_path) -> None:
+    # openai family max_input 1_017_232; tiers up_to 272_000 (2, 2.5, 0.1, 10) / above (4, 5, 0.2, 15)
+    unit = await service.reserve(provider="openai", model_id="m", input_bound=300_000, output_bound=1_000)
+    assert _event(ledger, "reserve", unit)["bound"] == "1.515"          # 300_000*5 + 1_000*15, per 1M
+    await service.settle(unit, outcome="ok", buckets=Buckets(310_000, 0, 0, 10))
+    assert _event(ledger, "settle", unit)["input_bound_exceeded"] is True
+    assert ledger.spent("openai") == Decimal("1.24015")                 # actual, at the high tier
+
 def test_committed_matrix_largest_single_call_bound_is_below_every_margin() -> None:
-    matrix, prices = load_model_matrix(MODEL_MATRIX_PATH), load_price_snapshot(PRICE_SNAPSHOT_PATH)
+    matrix, snap = load_model_matrix(MODEL_MATRIX_PATH), load_price_snapshot(PRICE_SNAPSHOT_PATH)
     for f in (f for f in matrix.model_families if f.arm == "hosted"):
-        cost = bound_cost(prices[f.model_id], input_bound=f.max_input_tokens, output_bound=f.max_output_tokens)
-        assert cost < PROVIDER_MARGINS[f.provider]
+        cost = bound_cost(snap.models[f.model_id], input_bound=f.max_input_tokens, output_bound=f.max_output_tokens)
+        assert cost < PROVIDER_MARGINS[f.provider]       # about $2.33, $5.58 and $0.91
 
 def test_caps_and_margins_add_up_to_the_budget() -> None:
     assert {p: PROVIDER_CAPS[p] + PROVIDER_MARGINS[p] for p in PROVIDER_CAPS} == \
         {"anthropic": Decimal(200), "openai": Decimal(75), "google": Decimal(200)}
 ```
 
-`_flat` and `_tiered` are test-local `ModelPrice` builders.
+`_flat`, `_tiered` and `_event` are test-local helpers.
 
 - [ ] **Step 2: Run them and watch them fail**
 
@@ -507,27 +644,30 @@ Expected: FAIL with `ModuleNotFoundError: benchmarks.agentic`.
 
 - [ ] **Step 3: Write `docs/benchmarks/price-snapshot.yml`**
 
-Top-level keys: `schema_version: 1`, `captured_on`, `currency: USD`,
-`unit: per_million_tokens`, and `models`. Each model entry has
-`model_id`, `provider`, `source_url` and `tiers`. Each tier has
-`up_to_input_tokens` and rates `input`, `cache_write`, `cached_input` and
-`output`, written as strings.
+Top-level keys:
+- `schema_version: 1`, `currency: USD`, `unit: per_million_tokens`;
+- `captured_on: "2026-10-31"` and `expires_on: "2026-12-31"`;
+- `source`: the research note path;
+- `models`.
 
-Copy the rates for the three hosted models from each provider's pricing
-page on the day, including any long-context tier and the cached and
-cache-write rates. Record the page URL and the date. `gemma4:12b` gets one
-tier of zeros. If a page's base rate differs from the design's ($2/$10,
-$2/$10, $0.75/$3.75), stop and report: the §12 estimates assumed those
-rates.
+A comment above `expires_on` explains it: Gemini 3.8 Flash's prices
+double on 2027-01-01, and a live run refuses the snapshot from 2026-12-31
+UTC, a one-day margin across time zones.
+
+Each model entry has `model_id`, `provider`, `source_url` (the vendor
+page the research note quotes) and `tiers`. Each tier has
+`up_to_input_tokens` and rates `input`, `cache_write`, `cached_input` and
+`output`, written as strings, with exactly the values the test pins. A
+one-line comment beside each `cache_write` says why:
+- **Sonnet:** $4, the higher of the 5-minute and 1-hour write rates. The
+  harness sends no `cache_control`, so a write is unexpected and priced
+  high.
+- **GPT-6.1 Sol:** $2.50 and $5.00, the 30-minute rates. The harness never
+  requests 12-hour retention (Task 6 test).
+- **Gemini:** 0. Gemini has no cache-write bucket, and the harness creates
+  no cached content.
 
 - [ ] **Step 4: Implement `types.py`, `usage.py`, `ledger.py` to the rules above**
-
-`load_price_snapshot` refuses:
-- tiers that are not ascending;
-- a last tier with a limit;
-- a negative rate;
-- an unknown provider;
-- a duplicate `model_id`.
 
 - [ ] **Step 5: Run the tests**
 
@@ -592,6 +732,8 @@ class Bridge:                                # implements ToolBridge
     tools_raw: list[dict[str, Any]]          # every tools/list page, by_alias dump, unfiltered
     tools: list[ToolSpec]
 
+def system_spec_from_raw(raw: Mapping[str, Any]) -> SystemSpec
+    # one manifest entry -> SystemSpec; load_systems uses it, and the worker rebuilds its system with it
 def load_systems(manifest_path: Path) -> list[SystemSpec]
 @asynccontextmanager
 async def open_bridge(system: SystemSpec) -> AsyncIterator[Bridge]
@@ -609,7 +751,8 @@ Rules:
   limit, plus `TRUNCATION_MARKER`.
 - **Server environment.** The server gets `system.env` plus each
   `pass_env` variable present in the worker's environment, and nothing
-  else (the SDK adds its default set).
+  else (the SDK adds its default set). The server's stderr is the worker's
+  `sys.stderr`, which Task 9 redacts.
 - **`tools/list`.** Follow `next_cursor` until it is empty.
 - **`call`.**
   - An `MCPError` becomes `ToolOutcome(is_error=True)` with the error
@@ -620,8 +763,9 @@ Rules:
 
 - [ ] **Step 1: Write the fake server**
 
-The fixture is an `MCPServer("fake-fetch")` script over stdio. Its tool is
-`fetch(url: str, max_length: int = 5000, start_index: int = 0, raw: bool = False) -> str`,
+The fixture is an MCP stdio server built with
+`from mcp.server import MCPServer` and `MCPServer("fake-fetch")`. Its tool
+is `fetch(url: str, max_length: int = 5000, start_index: int = 0, raw: bool = False) -> str`,
 which returns `f"Contents of {url}: the json module encodes and decodes JSON."`.
 With `--edge` it also registers:
 - `env_names() -> list[str]`, the sorted names in `os.environ`;
@@ -653,6 +797,7 @@ def test_load_systems_reads_the_committed_manifest() -> None:
     assert systems["python-docs"].env == {"PYTHON_DOCS_MCP_DISABLE_AUTO_INDEX": "1"}
     assert systems["docs-fetch"].command == ("mcp-server-fetch",)
     assert systems["no-docs"].transport == "none"
+    assert all(system_spec_from_raw(s.raw) == s for s in systems.values())
 
 async def test_bridge_lists_the_real_server_tools_unfiltered(tmp_path, monkeypatch) -> None:
     # tests.test_stdio_smoke._isolated_cache_env + tests.test_mcp_get_docs_cache_smoke
@@ -725,10 +870,11 @@ git commit -m "feat(benchmarks): add the agentic MCP bridge and systems manifest
 GEMINI_SCHEMA_KEYS: frozenset[str]     # JSON names of google.genai.types.Schema fields (pydantic aliases)
 def to_anthropic(tools: Sequence[ToolSpec]) -> list[dict[str, Any]]        # name, description, input_schema
 def to_openai_responses(tools: Sequence[ToolSpec]) -> list[dict[str, Any]] # type function, name, description, parameters, strict False
-def to_openai_chat(tools: Sequence[ToolSpec]) -> list[dict[str, Any]]      # type function, function{name, description, parameters, strict False}
 def to_gemini(tools: Sequence[ToolSpec]) -> tuple[list[dict[str, Any]], list[str]]  # declarations, dropped paths
 def schemas_sha256(converted: Any) -> str   # sha256 of json.dumps(converted, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 ```
+
+`to_openai_chat`, used only by the Ollama client, arrives in PR 4.
 
 Gemini reduction:
 - Walk the schema recursively, keeping only keys in `GEMINI_SCHEMA_KEYS`.
@@ -742,17 +888,22 @@ Gemini reduction:
 
 ```bash
 uv add --dev "anthropic==1.15.0" "openai==3.32.0" "google-genai==2.31.0"
-uv lock --upgrade-package "jiter==0.17.0" --upgrade-package "pyasn1==0.6.4"
+uv lock --upgrade-package "jiter==0.17.0" --upgrade-package "pyasn1==0.6.5"
 uv lock --check && uv sync --locked --dev
 ```
 
 Then compare `uv.lock` with the base commit. The only added packages may
 be the three SDKs and their transitive dependencies, and no existing
-package may change version. Check that no added package was uploaded
-after 2026-10-17; pyasn1 and jiter are already handled above. Keep the
-list of added packages and their dates for the PR body. If a new package
-is younger than 14 days, lock its previous release the same way and
-record it.
+package may change version.
+
+Check every added package's PyPI upload date. Only `pyasn1` 0.6.5 may be
+younger than 14 days on the day of locking; it is the security exception
+in Global Constraints. Lock any other young package one release back the
+same way, and record it.
+
+Keep the table of added packages and their dates for the PR body. Copy
+the `pyasn1` reason into it: the four GHSA ids and the OSV finding against
+0.6.4, from research note §E.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -766,7 +917,6 @@ def test_anthropic_tools_keep_name_description_and_input_schema_verbatim() -> No
 
 def test_openai_tools_set_strict_false_explicitly() -> None:
     assert all(t["type"] == "function" and t["strict"] is False for t in to_openai_responses(TOOLS))
-    assert all(t["function"]["strict"] is False for t in to_openai_chat(TOOLS))
 
 def test_gemini_reduction_drops_unsupported_keywords_and_records_them() -> None:
     spec = ToolSpec("fetch", "d", {"type": "object", "properties": {"max_length": {"type": "integer",
@@ -811,16 +961,15 @@ git add pyproject.toml uv.lock benchmarks/agentic/schemas.py tests/benchmarks/te
 git commit -m "feat(benchmarks): add the provider SDKs and tool schema conversion"
 ```
 
-### Task 6: Anthropic, OpenAI Responses and Ollama clients
+### Task 6: Anthropic and OpenAI Responses clients
 
 **Files:**
 - Create: `benchmarks/agentic/clients.py`
 - Modify: `benchmarks/agentic/types.py` (turn types)
-- Modify: `benchmarks/adapters/guard.py` (add the `ollama` latch)
 - Test: `tests/benchmarks/test_agentic_clients.py`
 
 **Interfaces:**
-- Consumes: `Buckets`, `anthropic_buckets`, `openai_buckets`, `ollama_buckets` (Task 3); `ToolSpec` (Task 4); `to_anthropic`, `to_openai_responses`, `to_openai_chat` (Task 5).
+- Consumes: `Buckets`, `anthropic_buckets`, `openai_buckets` (Task 3); `ToolSpec` (Task 4); `to_anthropic`, `to_openai_responses` (Task 5).
 - Produces:
 
 ```python
@@ -830,7 +979,7 @@ class ToolCall:
     id: str                      # provider id, or "call_<n>" (1-based within the turn) when missing
     name: str
     arguments: dict[str, Any]
-    raw_arguments: str | None = None   # set only when the arguments were not valid JSON
+    raw_arguments: str | None = None   # set only when the arguments were not a JSON object
 @dataclass(frozen=True)
 class ToolResult:
     call_id: str; name: str; text: str; is_error: bool   # text as sent, after truncation
@@ -866,62 +1015,72 @@ class ModelClient(Protocol):
     def rendered_bytes(self, conv: Conversation, start: int) -> int
         # UTF-8 bytes of the provider-rendered request: system + tools + entries[start:] when
         # start == 0, else entries[start:] only
-    async def call(self, conv: Conversation) -> ModelTurn   # raises ProviderCallError
+    async def call(self, conv: Conversation) -> ModelTurn   # one HTTP request; raises ProviderCallError
 
 # clients.py
-def parse_retry_after(headers: Mapping[str, str]) -> float | None   # retry-after-ms, retry-after seconds or HTTP date
+def tool_arguments(value: Any) -> tuple[dict[str, Any], str | None]
+    # a str is parsed with json.loads; a dict result passes; anything else (array, scalar, null,
+    # invalid JSON) returns ({}, raw), where raw is the original string or json.dumps(value)
+def parse_retry_after(headers: Mapping[str, str]) -> float | None
+    # retry-after-ms (ms); retry-after as seconds, or as an HTTP date via
+    # email.utils.parsedate_to_datetime (seconds until that time, at least 0)
 def anthropic_sdk(api_key: str, timeout_s: float, *, http_client: httpx2.AsyncClient | None = None) -> AsyncAnthropic
 def openai_sdk(api_key: str, timeout_s: float, *, base_url: str | None = None,
                http_client: httpx2.AsyncClient | None = None) -> AsyncOpenAI
 class AnthropicClient:      # ModelClient; __init__(self, sdk, model_id, max_output_tokens)
 class OpenAIResponsesClient:  # ModelClient; __init__(self, sdk, model_id, max_output_tokens)
-class OllamaChatClient:     # ModelClient; __init__(self, sdk, model_id)
 ```
+
+The Ollama client (`OllamaChatClient`), `ollama_buckets` and the Ollama
+guard entry arrive in PR 4, where they can be smoke-run.
 
 Request rules:
 - **Anthropic.** Send `model`, `max_tokens`, `system`, `tools`
   (`to_anthropic`), `tool_choice={"type": "auto"}` and `messages`. No
-  sampling parameters. Replay the response `content` blocks unchanged,
-  thinking blocks and their signatures included. Each tool result is a
-  `tool_result` block with `is_error`.
+  sampling parameters and no `cache_control`. Replay the response
+  `content` blocks unchanged, thinking blocks and their signatures
+  included. Each tool result is a `tool_result` block with `is_error`.
+  `tool_use.input` goes through `tool_arguments`.
 - **OpenAI Responses.**
   - Send `model`, `instructions` (the system prompt), `input`, `tools`,
     `tool_choice="auto"`, `max_output_tokens`, `store=False` and
     `include=["reasoning.encrypted_content"]`.
+  - Send no prompt-cache option (`prompt_cache_options`,
+    `prompt_cache_retention`). The default 30-minute retention is the one
+    the snapshot prices.
   - Replay every output item unchanged. A tool result is
     `{"type": "function_call_output", "call_id": ..., "output": text}`.
-  - `arguments` is parsed with `json.loads`. On failure the call gets
-    `arguments={}` and `raw_arguments` set.
-- **Ollama (Chat Completions).** Send `model`, `messages` (system, user,
-  assistant with `tool_calls`, and `tool` messages), `tools`
-  (`to_openai_chat`) and `tool_choice="auto"`. Send no `max_tokens` and
-  no sampling parameters (§7.1: Ollama defaults).
+  - `arguments` goes through `tool_arguments`.
 - **Errors.**
   - 429 is `rate_limited`, with `parse_retry_after` applied to the
     response headers.
   - Status 500 and above is `server`. Any other 4xx is `rejected`.
   - `APITimeoutError` is `timeout`; `APIConnectionError` is `connection`.
-- **SDK construction.** `max_retries=0` and `timeout=timeout_s` (#177
-  item 1).
-- **Guard.** Add `"ollama": "OLLAMA_BASE_URL"` to `PROVIDER_API_KEY_ENV`,
-  with a one-line comment: it is not a secret; it is the per-target
-  opt-in, like `LIVE_COMPETITORS_ENV`.
+- **SDK construction.** `max_retries=0` and `timeout=timeout_s`, so each
+  `call` is exactly one HTTP request (#177 item 1, ruling B1).
 
 - [ ] **Step 1: Write the failing tests**
 
-All HTTP goes through `httpx2.AsyncClient(transport=httpx2.MockTransport(handler))`.
-The handler records each request and returns a canned JSON body written
-inline in the test.
+All HTTP goes through
+`httpx2.AsyncClient(transport=httpx2.MockTransport(handler))`. The handler
+records each request and returns a canned JSON body written inline in the
+test.
 
 ```python
 def test_sdk_clients_have_their_retries_off() -> None:
     assert anthropic_sdk("test-key", 30).max_retries == 0
     assert openai_sdk("test-key", 30).max_retries == 0
 
+@pytest.mark.parametrize("provider", ["anthropic", "openai"])
+@pytest.mark.parametrize("status", [200, 500, 529])
+async def test_each_client_sends_one_request_per_call(provider, status) -> None:
+    # counting MockTransport; a 200 returns a valid body, 5xx an error body
+    # call once (catch ProviderCallError on 5xx) -> len(seen) == 1
+
 async def test_anthropic_request_has_auto_tool_choice_and_no_sampling_parameters() -> None:
     body = json.loads(seen[0].content)
-    assert body["tool_choice"] == {"type": "auto"} and body["max_tokens"] == 16384
-    assert not {"temperature", "top_p", "top_k"} & set(body)
+    assert body["tool_choice"] == {"type": "auto"} and body["max_tokens"] == 32768
+    assert not {"temperature", "top_p", "top_k", "cache_control"} & set(body)
     assert turn.tool_calls == (ToolCall("toolu_1", "search_docs", {"query": "json"}),)
     assert turn.buckets == Buckets(100, 0, 20, 30, 0) and turn.reported_model == "claude-sonnet-5-5"
 
@@ -939,19 +1098,22 @@ async def test_openai_timeout_and_connection_errors_are_classified() -> None:
 
 async def test_openai_responses_request_and_usage() -> None:
     assert body["tool_choice"] == "auto" and body["store"] is False
-    assert body["include"] == ["reasoning.encrypted_content"] and body["max_output_tokens"] == 16384
+    assert body["include"] == ["reasoning.encrypted_content"] and body["max_output_tokens"] == 32768
     assert all(t["strict"] is False for t in body["tools"]) and "temperature" not in body
     assert turn.buckets == Buckets(500, 300, 200, 50, 40)
 
+async def test_openai_request_never_asks_for_extended_cache_retention() -> None:
+    # a tool turn, then a follow-up call; for both captured request bodies and request_params():
+    assert not {"prompt_cache_options", "prompt_cache_retention"} & set(body)
+
 async def test_openai_replays_output_items_and_sends_function_call_output() -> None
-async def test_openai_unparseable_arguments_are_kept_raw() -> None:
-    assert turn.tool_calls[0].arguments == {} and turn.tool_calls[0].raw_arguments == "{not json"
 
-async def test_ollama_chat_request_sends_auto_tool_choice_and_no_max_tokens() -> None:
-    assert body["tool_choice"] == "auto" and "max_tokens" not in body and "temperature" not in body
-    assert turn.buckets == Buckets(70, 0, 0, 9, 0)
+@pytest.mark.parametrize("raw", ["{not json", "[1, 2]", "3", "\"x\"", "null", "true"])
+async def test_openai_non_object_arguments_are_kept_raw(raw) -> None:
+    assert turn.tool_calls[0].arguments == {} and turn.tool_calls[0].raw_arguments == raw
 
-def test_parse_retry_after_accepts_an_http_date() -> None   # a date 30 s ahead -> 29 < value <= 30
+def test_parse_retry_after_accepts_an_http_date() -> None
+    # format a date 30 s ahead with email.utils.format_datetime(usegmt=True); 29 < value <= 30
 def test_rendered_bytes_grows_with_each_entry() -> None
 ```
 
@@ -960,7 +1122,7 @@ def test_rendered_bytes_grows_with_each_entry() -> None
 Run: `ISO=$(mktemp -d); uv run --locked env XDG_CACHE_HOME="$ISO" pytest tests/benchmarks/test_agentic_clients.py -q`
 Expected: FAIL with `ImportError`.
 
-- [ ] **Step 3: Implement the turn types, the three clients and the guard entry**
+- [ ] **Step 3: Implement the turn types and the two clients**
 
 - [ ] **Step 4: Run the tests**
 
@@ -969,19 +1131,24 @@ Expected: PASS. The existing guard tests in `tests/benchmarks/test_adapters.py` 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add benchmarks/agentic/ benchmarks/adapters/guard.py tests/benchmarks/test_agentic_clients.py
-git commit -m "feat(benchmarks): add Anthropic, OpenAI and Ollama agentic clients"
+git add benchmarks/agentic/ tests/benchmarks/test_agentic_clients.py
+git commit -m "feat(benchmarks): add Anthropic and OpenAI agentic clients"
 ```
 
 ### Task 7: Gemini client, scripted client and the client factory
 
 **Files:**
 - Modify: `benchmarks/agentic/clients.py`
-- Create: `tests/benchmarks/fixtures/agentic/script.yml`
+- Create: `tests/benchmarks/fixtures/agentic/script-anthropic.yml`, `script-openai.yml`, `script-google.yml`
 - Test: `tests/benchmarks/test_agentic_clients.py` (append)
 
 **Interfaces:**
-- Consumes: Task 6 types; `gemini_buckets`, the bucket functions (Task 3); `to_gemini` (Task 5); `require_live_environment`, `PROVIDER_API_KEY_ENV` (guard); `ModelFamily` (Task 1).
+- Consumes:
+  - Task 6 types and `tool_arguments`;
+  - the bucket functions (Task 3);
+  - `to_gemini` (Task 5);
+  - `require_live_environment` and `PROVIDER_API_KEY_ENV` (guard);
+  - `ModelFamily` (Task 1).
 - Produces:
 
 ```python
@@ -993,35 +1160,47 @@ class GeminiClient:      # ModelClient; __init__(self, sdk, model_id, max_output
 class ScriptedClient:    # ModelClient; __init__(self, provider, model_id, steps: list[dict[str, Any]])
 def make_client(family: ModelFamily, *, timeout_s: float,
                 http_client: Any | None = None) -> ModelClient
+    # for api "scripted", family.raw["script"] is an absolute path: Task 10's plan_jobs resolves it
 ```
 
 Gemini:
-- Call `sdk.aio.models.generate_content` with
+- **Request.** Call `sdk.aio.models.generate_content` with
   `GenerateContentConfig(system_instruction, tools=[Tool(function_declarations=...)],
   tool_config=ToolConfig(function_calling_config=FunctionCallingConfig(mode="AUTO")),
   automatic_function_calling=AutomaticFunctionCallingConfig(disable=True),
-  max_output_tokens)`.
-- Replay `candidate.content` unchanged, thought signatures included.
-- A function call without an `id` gets `call_<n>` by position in the
-  turn. A result is `Part.from_function_response(name=..., response=...)`,
-  where `response` is `{"output": text}` or `{"error": text}`. It carries
-  the provider id when there was one.
+  automatic_continuation=False, max_output_tokens)`.
+- **No continuation.** google-genai 2.31.0 follows `finish_reason ==
+  CONTINUATION` with extra requests by default (`models.py`, async
+  `generate_content` docstring near line 8388 and
+  `_generate_content_with_continuation`). `automatic_continuation=False`
+  stops that, so each `call` is one request (ruling B1).
+- **A `CONTINUATION` stop** comes back as a turn with
+  `stop_reason="CONTINUATION"` and is not followed. When it has no tool
+  calls, its text is the answer. The run summary counts these stops (Task
+  10), and the pilot reviews them with the cap hits.
+- **Replay** `candidate.content` unchanged, thought signatures included.
+- **Function calls.** A call without an `id` gets `call_<n>` by position
+  in the turn. `args` goes through `tool_arguments`.
+- **Function results** are built as
+  `Part(function_response=FunctionResponse(id=<provider id or None>, name=..., response=...))`,
+  where `response` is `{"output": text}` or `{"error": text}`.
 - `reported_model` is `response.model_version`.
-- Errors: `errors.ClientError` with code 429 is `rate_limited`, any other
-  `ClientError` is `rejected`, and `errors.ServerError` is `server`.
-  `httpx.TimeoutException` is `timeout`; `httpx.TransportError` is
-  `connection`.
+- **Errors.**
+  - `errors.ClientError` with code 429 is `rate_limited`; any other
+    `ClientError` is `rejected`; `errors.ServerError` is `server`.
+  - `httpx.TimeoutException` is `timeout`; `httpx.TransportError` is
+    `connection`.
 
-Scripted script (`family.raw["script"]`, a YAML path relative to the
-matrix file):
+Scripted script (`family.raw["script"]`, a YAML path):
 - The file is `steps:`, a list. Each step is one of three kinds:
   - `{tools: [{name, arguments}], usage}`: a turn that calls those
     tools;
   - `{text, usage}`: a final answer;
   - `{error: {kind, status, retry_after_s}}`.
-- `usage` is the provider-native snake_case dict, and buckets come from
-  the matching Task 3 function. `"{prompt}"` in a string argument becomes
-  the first user message.
+- `usage` is the provider-native snake_case dict, or `null` for no usage.
+  Buckets come from the matching Task 3 function. `arguments` may be any
+  YAML value and goes through `tool_arguments`. `"{prompt}"` in a string
+  argument becomes the first user message.
 - The client counts its calls per `Conversation` object (by `id(conv)`).
   The n-th call plays the n-th step that applies.
 - A `tools` step applies only when every tool it names is in
@@ -1029,14 +1208,16 @@ matrix file):
   `delay_s` on any step sleeps first.
 
 Factory:
-- `api == "scripted"`: return a `ScriptedClient`. No guard and no key.
-- Otherwise:
+- `api == "scripted"`: return a `ScriptedClient` that reads the absolute
+  `family.raw["script"]`. No guard and no key.
+- `api` in `anthropic-messages`, `openai-responses` or
+  `gemini-generate-content`:
   1. Call `require_live_environment(family.provider)`.
   2. If any `PAID_KEY_ENVS` variable other than this provider's is set,
      raise `BenchmarkValidationError` naming it.
-  3. Build the SDK for `family.api` with the key from
-     `PROVIDER_API_KEY_ENV`. Ollama uses `OLLAMA_BASE_URL` and the
-     placeholder key `"ollama"`.
+  3. Build the SDK with the key from `PROVIDER_API_KEY_ENV`.
+- Any other `api` raises `BenchmarkValidationError`. That includes
+  `openai-chat-completions`, which arrives in PR 4.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1048,16 +1229,23 @@ def test_gemini_client_makes_one_attempt_and_aiohttp_is_absent() -> None:
     # options say (_api_client.py); keep that transport out of the environment
     assert importlib.util.find_spec("aiohttp") is None
 
+async def test_gemini_sends_one_request_when_the_response_asks_to_continue() -> None:
+    # counting httpx.MockTransport returns candidates[0] with finishReason "CONTINUATION",
+    # continuationToken "dG9r" and partial text
+    assert len(seen) == 1 and turn.stop_reason == "CONTINUATION"
+
+async def test_gemini_sends_one_request_on_a_server_error() -> None    # 500 -> ProviderCallError, 1 request
+
 async def test_gemini_request_uses_auto_mode_and_disables_automatic_calling() -> None:
     assert body["toolConfig"]["functionCallingConfig"]["mode"] == "AUTO"
-    assert body["generationConfig"]["maxOutputTokens"] == 16384
+    assert body["generationConfig"]["maxOutputTokens"] == 32768
     assert turn.buckets == Buckets(950, 0, 100, 50, 20) and turn.reported_model == "gemini-3.8-flash-001"
 
 async def test_gemini_pairs_two_calls_of_the_same_function_by_position() -> None:
     # response parts: two functionCall "search_docs" without ids
     assert [c.id for c in turn.tool_calls] == ["call_1", "call_2"]
     # the next request ends with two functionResponse parts, in that order, each named
-    # "search_docs" with response {"output": <its text>}
+    # "search_docs" with response {"output": <its text>} and no id
 
 @pytest.mark.parametrize("status,kind", [(429, "rate_limited"), (400, "rejected"), (500, "server")])
 async def test_gemini_status_errors_are_classified(status, kind) -> None
@@ -1066,6 +1254,7 @@ def test_make_client_refuses_a_live_api_without_the_guard(monkeypatch) -> None  
 def test_make_client_refuses_a_second_paid_key(monkeypatch) -> None:
     # flag on, ANTHROPIC_API_KEY and OPENAI_API_KEY set -> make_client(anthropic family) raises,
     # message names OPENAI_API_KEY and holds neither value
+def test_make_client_refuses_the_ollama_api_until_pr_4(monkeypatch) -> None
 def test_make_client_builds_a_scripted_client_without_any_key(monkeypatch) -> None
 async def test_scripted_client_skips_tool_steps_for_tools_it_was_not_given() -> None
 async def test_scripted_client_raises_a_scripted_provider_error() -> None:
@@ -1076,17 +1265,14 @@ async def test_scripted_client_raises_a_scripted_provider_error() -> None:
 
 Expected: FAIL (`gemini_sdk`, `ScriptedClient`, `make_client` undefined).
 
-- [ ] **Step 3: Implement, and write `fixtures/agentic/script.yml`**
+- [ ] **Step 3: Implement, and write the three scripts**
 
-The script has three steps:
+Each script has three steps:
 1. `tools: [{name: search_docs, arguments: {query: json}}]`;
 2. `tools: [{name: fetch, arguments: {url: "https://docs.python.org/3/library/json.html"}}]`;
 3. `text: "Scripted answer."`.
 
-Each step has `usage` in the shape of the provider that uses the script.
-Write one script per provider (`script-anthropic.yml`,
-`script-openai.yml`, `script-google.yml`) if one shape cannot serve all
-three.
+Each step carries `usage` in its provider's shape.
 
 - [ ] **Step 4: Run the tests**
 
@@ -1106,7 +1292,13 @@ git commit -m "feat(benchmarks): add the Gemini and scripted clients and the cli
 - Test: `tests/benchmarks/test_agentic_loop.py`
 
 **Interfaces:**
-- Consumes: `ModelClient`, `Conversation`, turn types, `ProviderCallError` (Task 6); `ScriptedClient` (Task 7, used in tests); `ToolBridge`, `ToolOutcome`, `BridgeCrash`, `truncate_utf8` (Task 4); `Buckets`, `Outcome`, `LedgerService` (Task 3, satisfies `LedgerPort`); `ModelFamily` (Task 1).
+- Consumes:
+  - `ModelClient`, `Conversation`, the turn types and `ProviderCallError` (Task 6);
+  - `ScriptedClient` (Task 7, used in tests);
+  - `ToolBridge`, `ToolOutcome`, `BridgeCrash` and `truncate_utf8` (Task 4);
+  - `Buckets`, `Outcome` and `LedgerService` (Task 3; `LedgerService`
+    satisfies `LedgerPort`);
+  - `ModelFamily` (Task 1).
 - Produces:
 
 ```python
@@ -1139,14 +1331,13 @@ class LedgerPort(Protocol):
     async def reserve(self, *, provider: str, model_id: str, input_bound: int,
                       output_bound: int, kind: str = "model_call") -> str | None: ...
     async def settle(self, unit_id: str, *, outcome: Outcome, buckets: Buckets | None) -> None: ...
-    # Outcome is imported from ledger.py, so LedgerService satisfies this protocol exactly
 
 class TrajectoryDiscarded(Exception):
     def __init__(self, reason: Literal["budget_stop", "retries_exhausted"],
                  record: dict[str, Any]) -> None: ...   # record: the partial record, for audit only
 
-def first_input_bound(client: ModelClient, conv: Conversation, framing: int) -> int
-    # client.rendered_bytes(conv, 0) + framing * 2   (system/tools block + user message)
+def full_input_bound(client: ModelClient, conv: Conversation, framing: int) -> int
+    # client.rendered_bytes(conv, 0) + framing * (len(conv.entries) + 1)   (+1: system/tools block)
 def next_input_bound(previous: Buckets, *, added_bytes: int, added_entries: int, framing: int) -> int
     # previous.total_input + previous.output + added_bytes + framing * added_entries
 def backoff_s(retry: int, retry_after_s: float | None) -> float | None
@@ -1162,31 +1353,50 @@ async def run_trajectory(*, client: ModelClient, bridge: ToolBridge | None, fami
 Loop rules:
 - **Conversation.** Start with `SYSTEM_PROMPT`, the bridge's tools (none
   without a bridge) and the prompt verbatim.
-- **Clock.** Wrap the whole trajectory in `asyncio.timeout(caps.trajectory_s)`.
-  Classify a fire with `cm.expired()`. After a failed attempt, call
-  `cm.reschedule(cm.when() + attempt_s + wait_s)`, so failed attempts and
-  retry waits do not use the trajectory clock.
-- **Each model call.**
-  1. Compute the input bound: `first_input_bound` for call 1, else
-     `next_input_bound` over the entries added since the last call.
-  2. The output bound is `family.max_output_tokens or 0`, and framing is
-     `family.framing_allowance_tokens or 256`.
-  3. For each attempt: `reserve`, where `None` raises
-     `TrajectoryDiscarded("budget_stop")`; then `client.call`; then
-     `settle`. A success settles `"ok"` with its buckets, or
-     `"no_usage"` when buckets are `None`. A `ProviderCallError` settles
-     with its `kind`.
+- **Clock** (owner ruling 6, round-2 ruling B4). The trajectory clock is
+  a counter of successful work.
+  - After each successful model attempt and each completed tool call,
+    add that unit's duration to `used_s`. When `used_s >
+    caps.trajectory_s`, the trajectory ends as failed with
+    `cap_trajectory_time`, before the next unit starts.
+  - Time in `ledger.reserve` (`grant_wait_ms`), failed attempts
+    (`failed_attempt_ms`) and retry backoff (`retry_wait_ms`) is recorded,
+    never counted.
+  - No call is cut in flight, so the worst-case wall time is
+    `trajectory_s` plus one `model_call_timeout_s`.
+- **Per-attempt timeout**, enforced apart from the clock: each attempt
+  runs inside `asyncio.timeout(caps.model_call_timeout_s)`. A fire, read
+  with `cm.expired()`, is outcome `"timeout"`: retryable, booked at 2×
+  bound. The SDK's own timeout is set to the same value.
+- **Bounds** (ruling B10). The output bound is `family.max_output_tokens`,
+  and framing is `family.framing_allowance_tokens`.
+  - Call 0 uses `full_input_bound`.
+  - A call after one with buckets uses `next_input_bound` with those
+    buckets, over the entries added since. Its `added_bytes` is
+    `client.rendered_bytes(conv, previous_entry_count)`.
+  - A call after one that reported no usage uses `full_input_bound`
+    again (ruling B6).
+  - A retry reuses the failed attempt's bound.
+- **Each attempt.**
+  1. `reserve`. `None` raises `TrajectoryDiscarded("budget_stop", ...)`.
+  2. `client.call` under the per-attempt timeout.
+  3. `settle`. A success settles `"ok"` with its buckets, or `"no_usage"`
+     when buckets are `None`. A `ProviderCallError` settles with its
+     `kind`.
   4. A retryable kind waits `backoff_s` with the injected `sleep`. After
      `MAX_RETRIES` retries, or when `backoff_s` returns `None`, raise
-     `TrajectoryDiscarded("retries_exhausted")`.
+     `TrajectoryDiscarded("retries_exhausted", ...)`.
   5. `rejected` ends the trajectory as failed, with category
      `provider_rejected`.
   6. Retries never count toward `caps.model_calls`.
 - **Tool calls.**
   - Run them in turn order.
-  - A call with `raw_arguments` set is not sent. It returns `is_error`
-    text `"invalid JSON arguments: <raw>"`.
-  - Each call runs inside `asyncio.timeout(caps.tool_call_s)`.
+  - A call with `raw_arguments` set is not sent to the bridge. Its
+    `is_error` text is `"tool arguments must be a JSON object: <raw>"`
+    (ruling B7).
+  - Each sent call runs inside `asyncio.timeout(caps.tool_call_s)`; a
+    fire, read with `expired()`, fails the trajectory with
+    `cap_tool_timeout`.
   - The result sent is `truncate_utf8(outcome.text, caps.result_bytes)`.
   - A call is `warm` when its key
     `f"{name}:{json.dumps(arguments, sort_keys=True, ensure_ascii=False)}"`
@@ -1197,8 +1407,6 @@ Loop rules:
   `cap_tool_timeout` or `cap_trajectory_time`.
   - A turn with tool calls after the 8th call fails `cap_model_calls`.
   - The 13th tool call fails `cap_tool_calls` before it runs.
-  - A trajectory cut while a model call is in flight settles that unit
-    `"cut"`.
 - **Answer.** The first turn without tool calls is the answer: its
   `text`, which may be empty.
 - **Record keys:**
@@ -1212,15 +1420,19 @@ Loop rules:
     raw_arguments, result, result_sha256, is_error, truncated, warm,
     wall_ms}`. `result` is the full canonical text, a name kept so the
     existing scorer's grounding check reads it;
-  - `timing`: `{wall_ms, model_ms, tool_ms, retry_wait_ms,
-    failed_attempt_ms, overhead_ms}`;
+  - `timing`: `{wall_ms, used_ms, model_ms, tool_ms, grant_wait_ms,
+    failed_attempt_ms, retry_wait_ms, overhead_ms}`;
   - `started_at`, `completed_at`.
 
 - [ ] **Step 1: Write the failing tests**
 
-They run in-process with `ScriptedClient`, a test-local `FakeBridge` with
-canned outcomes and delays, a `LedgerService` over a `tmp_path` ledger,
-and a `sleep` that records its argument and returns at once.
+They run in-process with:
+- `ScriptedClient`, or `RecordingClient`, a test-local subclass that
+  stores `rendered_bytes(conv, 0)` and the added-entry bytes at every
+  `call`;
+- `FakeBridge`, a test-local bridge with canned outcomes and delays;
+- a `LedgerService` over a `tmp_path` ledger;
+- a `sleep` that records its argument and returns at once.
 
 ```python
 async def test_trajectory_calls_a_tool_then_answers_and_records_every_call() -> None:
@@ -1232,19 +1444,44 @@ async def test_trajectory_calls_a_tool_then_answers_and_records_every_call() -> 
         "tool_use_id": record["canonical_messages"][1]["content"][0]["id"],
         "content": FAKE_TEXT, "is_error": False}
 
+async def test_bounds_are_wired_per_call_and_reused_on_retry() -> None:
+    # RecordingClient; script: tool step (usage U0), 500 error, text step
+    calls = record["model_calls"]
+    assert calls[0]["input_bound"] == client.full_bytes[0] + 256 * 2
+    assert calls[1]["input_bound"] == next_input_bound(Buckets(**calls[0]["buckets"]),
+        added_bytes=client.added_bytes[1], added_entries=2, framing=256)
+    reserves = [e for e in ledger.events(RUN_ID) if e["event"] == "reserve"]
+    assert reserves[1]["input_bound"] == reserves[2]["input_bound"]   # the retry reuses its bound
+
+async def test_bound_after_a_call_without_usage_is_a_full_request_bound() -> None:
+    # RecordingClient; script: tool step with usage null, then text
+    assert record["model_calls"][1]["input_bound"] == client.full_bytes[1] + 256 * 4
+
 async def test_ninth_model_call_is_a_cap_failure() -> None:
     assert record["error"]["category"] == "cap_model_calls" and len(record["model_calls"]) == 8
 async def test_thirteenth_tool_call_is_a_cap_failure() -> None:
     assert record["error"]["category"] == "cap_tool_calls" and len(record["tool_calls"]) == 12
 async def test_slow_tool_call_ends_the_trajectory() -> None          # Caps(tool_call_s=0.05)
-async def test_trajectory_time_cap_books_the_cut_call_at_twice_its_bound() -> None:
-    # Caps(trajectory_s=0.05), scripted step delay_s 1 -> "cap_trajectory_time"; ledger settle event
-    # outcome "cut", booked == 2 * bound
+async def test_successful_work_over_the_allowance_is_a_cap_failure() -> None:
+    # Caps(trajectory_s=0.1), tool step delay_s 0.25 -> "cap_trajectory_time", one model call, one reserve
+async def test_grant_wait_longer_than_the_trajectory_allowance_still_succeeds() -> None:
+    # Caps(trajectory_s=0.2); a LedgerPort wrapper whose reserve sleeps 0.3 s first
+    assert record["status"] == "succeeded" and record["timing"]["grant_wait_ms"] >= 300
+async def test_failed_attempt_longer_than_the_remaining_allowance_is_retried() -> None:
+    # Caps(trajectory_s=0.3): step delay_s 0.5 + error server, then text
+    assert record["status"] == "succeeded"
+    assert [a["outcome"] for a in record["model_calls"][0]["attempts"]] == ["server", "ok"]
+    assert record["timing"]["failed_attempt_ms"] >= 500
+async def test_attempt_over_its_own_timeout_is_a_retried_timeout() -> None:
+    # Caps(model_call_timeout_s=0.1): step delay_s 1, then text -> attempts ["timeout", "ok"];
+    # the timed-out unit is booked at 2x its bound
 async def test_result_over_the_cap_is_truncated_and_the_loop_continues() -> None:
     assert record["tool_calls"][0]["truncated"] is True and record["status"] == "succeeded"
 async def test_unknown_tool_call_is_returned_to_the_model_and_the_loop_continues() -> None
-async def test_unparseable_tool_arguments_are_returned_to_the_model() -> None:
+@pytest.mark.parametrize("arguments", [[1, 2], "x", 3, None, True])
+async def test_non_object_tool_arguments_are_returned_to_the_model(arguments) -> None:
     assert record["tool_calls"][0]["is_error"] is True and bridge.calls == []
+    assert record["tool_calls"][0]["result"].startswith("tool arguments must be a JSON object")
 async def test_rate_limit_is_retried_honouring_retry_after_and_not_counted_as_a_model_call() -> None:
     assert sleeps == [7.0] and len(record["model_calls"]) == 1
     assert [a["outcome"] for a in record["model_calls"][0]["attempts"]] == ["rate_limited", "ok"]
@@ -1254,9 +1491,6 @@ async def test_retries_exhausted_discards_the_trajectory() -> None:
     # five 500s -> TrajectoryDiscarded("retries_exhausted"); sleeps == [2, 4, 8, 16]
 async def test_rejected_request_is_a_scored_failure_booked_at_zero() -> None
 async def test_budget_stop_discards_the_trajectory() -> None          # caps {"anthropic": Decimal("0")}
-async def test_failed_attempts_do_not_consume_the_trajectory_clock() -> None:
-    # Caps(trajectory_s=1.0): a step with delay_s 0.8 then error server, then delay_s 0.4 + text
-    # -> succeeded (1.2 s of wall time, 0.4 s on the clock)
 async def test_repeated_tool_arguments_are_marked_warm() -> None     # shared set, two trajectories
 async def test_empty_final_text_is_an_empty_answer() -> None
 async def test_bridge_crash_fails_the_trajectory_as_a_protocol_crash() -> None
@@ -1283,7 +1517,8 @@ Expected: FAIL with `ImportError`.
 - [ ] **Step 4: Run the tests three times**
 
 Run the test command three times in a row. Expected: PASS each time. The
-clock tests use wide margins, so a flaky result means a bug, not noise.
+timing tests keep at least 0.1 s between the threshold and the delay, so
+a flaky result means a bug, not noise.
 
 - [ ] **Step 5: Commit**
 
@@ -1292,37 +1527,52 @@ git add benchmarks/agentic/prompt.py benchmarks/agentic/loop.py tests/benchmarks
 git commit -m "feat(benchmarks): add the agentic trajectory loop with caps and retries"
 ```
 
-### Task 9: Worker and host over JSON lines
+### Task 9: Worker and host over length-prefixed frames
 
 **Files:**
 - Create: `benchmarks/agentic/protocol.py`, `benchmarks/agentic/worker.py`, `benchmarks/agentic/host.py`
+- Modify: `benchmarks/__main__.py` (`agentic-worker`)
 - Test: `tests/benchmarks/test_agentic_host.py`
 
 **Interfaces:**
-- Consumes: `run_trajectory`, `TrajectoryDiscarded`, `Caps`, `LedgerPort` (Task 8); `make_client`, `PAID_KEY_ENVS` (Task 7); `open_bridge`, `SystemSpec` (Task 4); `to_*`, `schemas_sha256` (Task 5); `LedgerService` (Task 3).
+- Consumes:
+  - `run_trajectory`, `TrajectoryDiscarded`, `Caps` and `LedgerPort` (Task 8);
+  - `make_client` and `PAID_KEY_ENVS` (Task 7);
+  - `open_bridge`, `SystemSpec` and `system_spec_from_raw` (Task 4);
+  - the `to_*` converters and `schemas_sha256` (Task 5);
+  - `LedgerService` (Task 3);
+  - `model_family_from_raw` (Task 1).
 - Produces:
 
 ```python
 # protocol.py
+MAX_FRAME_BYTES = 64 * 1024 * 1024
 KEY_SHAPED = re.compile(r"(?<![A-Za-z0-9])(?:sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}"
                         r"|AIza[0-9A-Za-z_-]{30,})")
 class KeyLeakError(BenchmarkValidationError): ...
-def encode(message: dict[str, Any]) -> bytes            # compact JSON + b"\n"
-def decode(line: bytes) -> dict[str, Any]
+class FrameTooLarge(BenchmarkValidationError): ...
+def encode_frame(message: dict[str, Any], *, limit: int = MAX_FRAME_BYTES) -> bytes
+    # 8-byte big-endian length + compact UTF-8 JSON; raises FrameTooLarge above `limit`
+async def read_frame(reader: asyncio.StreamReader, *, limit: int = MAX_FRAME_BYTES) -> dict[str, Any] | None
+    # None at a clean EOF or a partial frame (the writer died); FrameTooLarge when the declared
+    # length is above `limit`, before reading the body
 def assert_no_key_shaped(text: str, *, where: str) -> None   # message names `where`, never the match
 def contains_own_key(text: str, provider: str) -> bool
 
 # worker.py
 MAX_RERUNS = 2
-async def run_worker(reader: asyncio.StreamReader,
-                     write: Callable[[bytes], Awaitable[None]]) -> int
+class ProtocolChannel:
+    def send(self, message: dict[str, Any]) -> None   # refuses a frame holding the own key
+    def close(self) -> None                           # drains the redactor, restores nothing
+def protect_output(own_key: str | None) -> ProtocolChannel
+async def run_worker(channel: ProtocolChannel, reader: asyncio.StreamReader) -> int
 def main_worker() -> int     # `python -m benchmarks agentic-worker`
 
 # host.py
 @dataclass(frozen=True)
 class WorkerJob:
     job_id: str                          # f"{family.id}--{system.id}"
-    family: ModelFamily
+    family: ModelFamily                  # family.raw["script"] is absolute for scripted families
     system: SystemSpec
     trajectories: tuple[dict[str, Any], ...]   # {"corpus_id", "prompt", "repeat"}, in run order
     caps: Caps
@@ -1334,15 +1584,15 @@ class LocalLauncher:     # supports only api == "scripted"; PR 4 adds a containe
 def refuse_host_keys(environ: Mapping[str, str]) -> None
 async def run_jobs(jobs: Sequence[WorkerJob], *, launcher: Launcher, ledger: LedgerService,
                    on_message: Callable[[WorkerJob, dict[str, Any]], Awaitable[None]],
-                   log_dir: Path, cwd: Path) -> None
+                   log_dir: Path, cwd: Path, max_frame_bytes: int = MAX_FRAME_BYTES) -> None
 ```
 
-Protocol (one JSON object per line):
-- **Host to worker.** The first line is
+Protocol (length-prefixed JSON frames, ruling B3):
+- **Host to worker,** on the worker's stdin. The first frame is
   `{"type": "job", "job_id", "family": <raw>, "system": <raw>,
   "trajectories", "caps"}`. Replies are `{"type": "grant", "unit_id"}`,
   `{"type": "deny"}` and `{"type": "ack"}`.
-- **Worker to host:**
+- **Worker to host,** on the dedicated protocol channel:
   - `system_info`: `{server_info, tools_raw, tools_raw_sha256,
     tools_converted, tools_converted_sha256, gemini_dropped,
     index_sha256, client_versions}`. `index_sha256` is set for the
@@ -1357,11 +1607,40 @@ Protocol (one JSON object per line):
   - `error {reason}` and `done`.
 
   `reserve`, `settle`, `trajectory` and `discarded` wait for a reply.
+- **Size.** A frame of any size up to `MAX_FRAME_BYTES` round-trips. A
+  larger frame raises `FrameTooLarge` on the side that meets it.
+  - On the worker, it sends `error` and exits with status 2.
+  - On the host, it kills every worker and raises.
+  - Either way the run stops as a harness error (CLI exit 2). It is never
+    scored as a model failure.
 
 Worker rules:
-- **Protocol channel.** Before anything else, keep `os.dup(1)` for
-  protocol writes and point fd 1 at stderr, so a stray print cannot
-  corrupt the channel.
+- **`protect_output(own_key)` runs before anything else** (ruling B2).
+  1. Keep `os.dup(1)` as the protocol channel.
+  2. Keep `os.dup(2)` as the diagnostics sink.
+  3. Create a pipe, then `os.dup2` its write end onto fd 1 and fd 2.
+  4. Start a daemon thread that reads the pipe, replaces every occurrence
+     of `own_key` with `[redacted]`, and writes to the diagnostics sink.
+     It holds back the last `len(own_key) - 1` bytes until more data or
+     EOF, so a key split across two writes is still caught.
+  5. Reset `sys.stdout` and `sys.stderr` to fresh text wrappers over fd 1
+     and fd 2.
+
+  So `print()`, `sys.stderr.write`, `os.write(2, ...)`, tracebacks and the
+  MCP servers' inherited stderr all pass the redactor. Only
+  `ProtocolChannel.send` writes the protocol fd.
+- **Own key.** `own_key` is the worker's provider key from
+  `PROVIDER_API_KEY_ENV`, or `None`.
+- **Sending.** `send` raises when `contains_own_key(frame_text, provider)`
+  is true. The worker then sends `error` with reason
+  `"own key found in output"`, and exits with status 3.
+- **Close.** `close` points fds 1 and 2 at `/dev/null`, closes the pipe's
+  write end, and joins the thread, so every byte is drained before exit.
+- **Mark** `protect_output` with
+  `# shortcut: fd redirection is POSIX only; the harness runs on macOS and Linux`.
+- **Rebuild.** The worker rebuilds its family with
+  `model_family_from_raw(job["family"])` and its system with
+  `system_spec_from_raw(job["system"])`.
 - **Session.** Build the client once per job with
   `make_client(family, timeout_s=job.caps.model_call_timeout_s)`. Open one
   bridge per job (none for `no-docs`), and reopen it after a
@@ -1371,19 +1650,18 @@ Worker rules:
 - **Exhausted retries.** On `retries_exhausted`, send `discarded` and
   requeue the trajectory at the end, at most `MAX_RERUNS` times. After
   that, send `not_run` with that reason.
-- **Own key.** Before each write, if `contains_own_key(line, provider)`,
-  send `error` with reason `"own key found in output"` instead and exit
-  with status 3.
 
 Host rules:
 - **Startup.** `refuse_host_keys(os.environ)` before anything else. Any
   family the launcher does not support is refused before any process
   starts.
 - **Workers.** Spawn each with `asyncio.create_subprocess_exec(*argv,
-  env=env, cwd=cwd, stdin=PIPE, stdout=PIPE, stderr=<log file>)`.
-- **Key scans.** Run `assert_no_key_shaped` on every received line, and
-  on every log file when its worker exits. On `KeyLeakError`, kill every
-  worker and re-raise.
+  env=env, cwd=cwd, stdin=PIPE, stdout=PIPE, stderr=<log file>)`. The
+  worker's stdout is the protocol channel, because it is the fd the
+  worker kept as `os.dup(1)`.
+- **Key scans.** Run `assert_no_key_shaped` on every received frame's
+  text, and on every log file when its worker exits. On `KeyLeakError`,
+  kill every worker and re-raise.
 - **Lost worker.** On EOF without `done`, settle the worker's in-flight
   unit as `"worker_lost"`. Report each of its unreported trajectories to
   `on_message` as `not_run` with reason `"worker_lost"`.
@@ -1410,11 +1688,35 @@ def test_local_launcher_passes_no_provider_key_and_runs_only_scripted_models(mon
     ("sk-proj-" + "c" * 40, True), ("a disk-based cache", False), ("task-runner-" + "d" * 40, False)])
 def test_key_shaped_scan(text, leaks) -> None
 
-def test_worker_detects_its_own_key(monkeypatch) -> None    # contains_own_key, with redact-safe message
+def test_protect_output_redacts_the_own_key_on_every_stream() -> None:
+    # subprocess `python -c`: ch = protect_output(KEY); print(KEY); sys.stderr.write(KEY + "\n");
+    # os.write(2, KEY[:10].encode()); os.write(2, KEY[10:].encode() + b"\n"); ch.send({"type": "done"});
+    # ch.close()  with KEY = "sk-ant-synthetic-" + "k" * 40
+    assert KEY.encode() not in proc_stderr and proc_stderr.count(b"[redacted]") == 3
+    assert _frames(proc_stdout) == [{"type": "done"}]    # test helper; the channel holds only the frame
 
-async def test_worker_runs_its_job_over_the_pipe_and_reports_done(tmp_path) -> None:
+def test_protocol_channel_refuses_a_frame_holding_the_own_key() -> None
+
+async def test_host_logs_and_artifacts_never_hold_a_workers_key(tmp_path) -> None:
+    # a test launcher passes ANTHROPIC_API_KEY=KEY to a worker started as
+    # `python -c` that wraps worker.run_worker so it print()s, sys.stderr.writes and
+    # os.write(2, ...)s KEY before running a scripted job normally
+    logs = "".join(p.read_text() for p in (tmp_path / "logs").iterdir())
+    assert KEY not in logs and logs.count("[redacted]") == 3
+    assert all(KEY not in json.dumps(m) for m in received)
+
+async def test_worker_runs_its_job_over_the_channel_and_reports_done(tmp_path) -> None:
     # real subprocess via LocalLauncher; scripted family + no-docs system, two trajectories
     assert [m["type"] for m in received] == ["system_info", "trajectory", "trajectory", "done"]
+
+async def test_a_trajectory_frame_over_100000_bytes_round_trips_through_a_worker(tmp_path) -> None:
+    # script whose text step is "x" * 150_000
+    assert received_trajectory["record"]["answer"] == "x" * 150_000
+
+async def test_a_frame_over_the_limit_is_a_harness_error(tmp_path) -> None:
+    with pytest.raises(FrameTooLarge):
+        await run_jobs([job], ..., max_frame_bytes=1_000)
+    # nothing for that trajectory reached on_message as a trajectory or a failure
 
 async def test_host_settles_a_lost_workers_unit_at_twice_its_bound_and_frees_the_provider(tmp_path) -> None:
     # a test launcher runs a `python -c` fake worker that reads the job, sends reserve, reads
@@ -1422,7 +1724,7 @@ async def test_host_settles_a_lost_workers_unit_at_twice_its_bound_and_frees_the
     assert ledger.spent("anthropic") == 2 * first_bound + second_job_actual
     assert {(m["type"], m["reason"]) for m in lost_job_messages} == {("not_run", "worker_lost")}
 
-async def test_host_aborts_the_run_when_a_worker_line_holds_a_key_shaped_string(tmp_path) -> None
+async def test_host_aborts_the_run_when_a_worker_frame_holds_a_key_shaped_string(tmp_path) -> None
 async def test_budget_stop_marks_the_rest_of_the_job_not_run(tmp_path) -> None:
     # LedgerService over Ledger(caps={"anthropic": Decimal("0")}): one discarded(budget_stop),
     # then not_run(budget_stop) for the other trajectories, then done
@@ -1436,9 +1738,10 @@ async def test_retries_exhausted_trajectory_is_rerun_at_most_twice(tmp_path) -> 
 Run: `ISO=$(mktemp -d); uv run --locked env XDG_CACHE_HOME="$ISO" pytest tests/benchmarks/test_agentic_host.py -q`
 Expected: FAIL with `ImportError`.
 
-- [ ] **Step 3: Implement `protocol.py`, `worker.py`, `host.py`, and add the `agentic-worker` subcommand to `benchmarks/__main__.py`**
+- [ ] **Step 3: Implement `protocol.py`, `worker.py`, `host.py`, and add the `agentic-worker` subcommand**
 
-The subcommand has no options and returns `main_worker()`.
+The subcommand has no options. It calls `main_worker()`, which calls
+`protect_output` first.
 
 - [ ] **Step 4: Run the tests**
 
@@ -1448,7 +1751,7 @@ Expected: PASS.
 
 ```bash
 git add benchmarks/agentic/ benchmarks/__main__.py tests/benchmarks/test_agentic_host.py
-git commit -m "feat(benchmarks): run agentic jobs in keyless worker processes"
+git commit -m "feat(benchmarks): run agentic jobs in keyless, redacted worker processes"
 ```
 
 ### Task 10: Run orchestration, artifacts, CLI and the mocked end-to-end test
@@ -1460,7 +1763,13 @@ git commit -m "feat(benchmarks): run agentic jobs in keyless worker processes"
 - Test: `tests/benchmarks/test_agentic_run.py`
 
 **Interfaces:**
-- Consumes: everything above; from `benchmarks.runner`: `_load_yaml_mapping`, `_load_questions`, `_write_json`, `_write_snapshot`, `_environment_metadata`, `_default_run_id`, `_utc_now`, `_scoring_record`, `BenchmarkCell`, `Competitor`, `Question`; `METHODOLOGY_TOKEN_LABEL`; `DEFAULT_COUNT_MODEL`.
+- Consumes:
+  - everything above;
+  - from `benchmarks.runner`: `_load_yaml_mapping`, `_load_questions`,
+    `_write_json`, `_write_snapshot`, `_environment_metadata`,
+    `_default_run_id`, `_utc_now`, `_scoring_record`, `BenchmarkCell`,
+    `Competitor` and `Question`;
+  - `METHODOLOGY_TOKEN_LABEL` and `DEFAULT_COUNT_MODEL`.
 - Produces:
 
 ```python
@@ -1484,11 +1793,16 @@ class AgenticConfig:
 def cell_id(system_id: str, family_id: str, repeat: int) -> str          # f"{system_id}--{family_id}--r{repeat}"
 def tool_model_key(system_id: str, provider: str, model_id: str) -> str  # f"{system_id}:{provider}/{model_id}"
 def plan_jobs(questions: Sequence[Question], families: Sequence[ModelFamily],
-              systems: Sequence[SystemSpec], *, repeats: int, seed: int) -> list[WorkerJob]
-    # per job: [(q, r) for q in questions for r in 1..repeats], shuffled with
-    # random.Random(f"{seed}/{family.id}/{system.id}"); caps AIR_GAPPED_CAPS when arm == "air-gapped"
+              systems: Sequence[SystemSpec], *, repeats: int, seed: int,
+              matrix_dir: Path) -> list[WorkerJob]
+    # Before building a job, a scripted family's raw["script"] is made absolute
+    # ((matrix_dir / script).resolve()) with dataclasses.replace, so make_client in the worker
+    # sees an absolute path (ruling B9).
+    # Per job: [(q, r) for q in questions for r in 1..repeats], shuffled with
+    # random.Random(f"{seed}/{family.id}/{system.id}"); caps AIR_GAPPED_CAPS when arm == "air-gapped".
 def run_agentic(config: AgenticConfig, *, launcher: Launcher | None = None,
-                caps: Mapping[str, Decimal] = PROVIDER_CAPS) -> dict[str, Any]
+                caps: Mapping[str, Decimal] = PROVIDER_CAPS,
+                today: date | None = None) -> dict[str, Any]     # today defaults to the UTC date
 ```
 
 Run rules:
@@ -1501,8 +1815,10 @@ Run rules:
     launcher;
   - every metered family needs a price entry and its hosted budget
     fields;
-  - `output_cap_includes_reasoning: false` is refused with "set a
-    reasoning budget first (design §12)".
+  - `output_cap_includes_reasoning: false` is refused, because the
+    research note shows thinking inside the cap on every hosted model;
+  - when any selected family is not `scripted`, `refuse_stale_snapshot`
+    runs with `today` (owner ruling part 2, item 2).
 - **Dry run.** Write `environment.json`, `planned-cells.json` and the
   snapshots, then stop. A dry run never opens the ledger.
 - **Ledger.** `Ledger.open(ledger_dir, run_id, caps)`, then
@@ -1537,9 +1853,16 @@ Run rules:
     failed. `correctness_denominator_cells`: `scored_cells`.
     `competitors`: the cell ids that were written.
   - `mode`, `seed`, `repeats`, `models` and `systems`.
-  - `discarded` and `not_run`: lists of `{cell, corpus_id, reason}`.
+  - `discarded` and `not_run`: lists of `{cell, corpus_id, reason,
+    attempt}`. Every rerun appears with its attempt number (owner ruling
+    5).
+  - Per family:
+    - `retries`: the count of retried attempts, by outcome;
+    - `continuation_stops`;
+    - `wall_s`, with retries included (owner ruling 6);
+    - `{first_started_at, last_completed_at}`.
   - `ledger`: per provider, `{spent_before, spent_after, cap, stopped}`.
-  - `model_windows`: per family, `{first_started_at, last_completed_at}`.
+  - `price_snapshot`: `{captured_on, expires_on}`.
 - **CLI.**
 
 ```
@@ -1549,20 +1872,26 @@ python -m benchmarks agentic-run --corpus PATH --out DIR --ledger-dir DIR
     [--repeats 3] [--seed N] [--run-id ID] [--dry-run] [--acknowledge-overrun PROVIDER]...
 ```
 
-IDS are comma-separated. It prints the summary JSON. Exit codes: 0 on
-success, 2 on `BenchmarkValidationError`, 3 on `KeyLeakError`.
+IDS are comma-separated. It prints the summary JSON. Exit codes:
+- 0 on success;
+- 3 on `KeyLeakError`. Catch it before `BenchmarkValidationError`, its
+  base class;
+- 2 on any other `BenchmarkValidationError`, `FrameTooLarge` included.
 
 - [ ] **Step 1: Write the fixtures**
 
 `model-matrix.yml` holds three scripted families: `scripted-anthropic`,
 `scripted-openai` and `scripted-google`, with providers `anthropic`,
 `openai` and `google`. Each is `arm: hosted` with model ids
-`scripted-1/2/3`, the Task 7 script for its provider, `max_input_tokens:
-200000`, `max_output_tokens: 1024`, `output_cap_includes_reasoning: true`
-and `framing_allowance_tokens: 256`.
+`scripted-1/2/3` and these fields:
+- `script`, the matching Task 7 script, relative to the fixture
+  directory;
+- `max_input_tokens: 200000` and `max_output_tokens: 1024`;
+- `output_cap_includes_reasoning: true` and
+  `framing_allowance_tokens: 256`.
 
-`prices.yml` prices `scripted-1/2/3` with flat round rates, so the test
-can compute the expected spend by hand.
+`prices.yml` prices `scripted-1/2/3` with flat round rates and no
+`expires_on`, so the test can compute the expected spend by hand.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -1574,6 +1903,7 @@ def test_agentic_run_end_to_end_with_scripted_models(tmp_path, monkeypatch) -> N
     _create_contentful_json_index(cache_dir)                # tests.test_mcp_get_docs_cache_smoke
     monkeypatch.setenv("XDG_CACHE_HOME", env["XDG_CACHE_HOME"]); monkeypatch.setenv("HOME", env["HOME"])
     manifest = _write_manifest(tmp_path)   # python-docs (committed entry), docs-fetch -> fake_fetch_server.py, no-docs
+    monkeypatch.chdir(tmp_path)            # the relative script paths must not depend on the cwd
     summary = run_agentic(AgenticConfig(corpus_path=SAMPLE_CORPUS, matrix_path=FIX / "model-matrix.yml",
         manifest_path=manifest, prices_path=FIX / "prices.yml", ledger_dir=tmp_path / "ledger",
         out_dir=tmp_path / "run", questions=("SYN-EX-001", "SYN-EX-002"), repeats=2, seed=7))
@@ -1595,9 +1925,11 @@ def test_agentic_run_end_to_end_with_scripted_models(tmp_path, monkeypatch) -> N
         if path.is_file():
             assert KEY_SHAPED.search(path.read_text(errors="replace")) is None
 
-def test_plan_jobs_order_is_seeded_per_job() -> None:
-    # equals random.Random(f"7/{family.id}/{system.id}").shuffle of the canonical order,
-    # and two calls with seed 7 give identical jobs
+def test_plan_jobs_makes_script_paths_absolute_and_orders_each_job_by_seed(tmp_path) -> None:
+    jobs = plan_jobs(questions, families, systems, repeats=2, seed=7, matrix_dir=FIX)
+    assert all(Path(j.family.raw["script"]).is_absolute() for j in jobs)
+    # order equals random.Random(f"7/{family.id}/{system.id}").shuffle of the canonical order,
+    # and a second call with seed 7 gives identical jobs
 
 def test_agentic_run_budget_stop_discards_and_lists_cells_not_run(tmp_path, monkeypatch) -> None:
     # same setup, caps={"anthropic": Decimal("0"), "openai": Decimal(65), "google": Decimal(180)}
@@ -1605,9 +1937,15 @@ def test_agentic_run_budget_stop_discards_and_lists_cells_not_run(tmp_path, monk
     assert summary["succeeded_cells"] == 24
     assert not any((run / "scoring").glob("*--scripted-anthropic--*"))
 
+def test_a_live_run_refuses_an_expired_price_snapshot(tmp_path, monkeypatch) -> None:
+    # a launcher stub that supports every family; committed prices; today=date(2026, 12, 31)
+    # -> BenchmarkValidationError naming 2026-12-31, before any process starts
+
 def test_agentic_run_refuses_a_non_empty_out_dir(tmp_path) -> None
 def test_agentic_run_dry_run_writes_the_plan_without_a_ledger(tmp_path) -> None
 def test_cli_agentic_run_exits_2_with_a_provider_key_set(tmp_path, monkeypatch) -> None
+def test_cli_agentic_run_exits_3_on_a_key_leak(tmp_path, monkeypatch) -> None
+    # monkeypatch run_agentic to raise KeyLeakError -> main([...]) exits 3
 ```
 
 - [ ] **Step 3: Run them and watch them fail**
@@ -1638,9 +1976,13 @@ git commit -m "feat(benchmarks): add agentic-run with a mocked end-to-end test"
   - `tests/benchmarks/test_python_docs_mcp_adapter.py` and
     `tests/benchmarks/test_competitor_adapters.py`.
 - Modify:
-  - `benchmarks/runner.py`: the dispatch keeps only `"fake"`; delete the
-    five dispatch helpers and `_tool_call_records_to_dicts`; update the
-    module docstring.
+  - `benchmarks/runner.py`: remove only the five fixed-flow dispatch
+    entries, their helpers and `_tool_call_records_to_dicts`.
+    - Keep `"fake"`, and keep the baseline-alias behaviour exactly as on
+      `main`. #173 already removed the `no-mcp-baseline` dispatch
+      aliases, and `test_removed_baseline_alias_is_an_unknown_adapter`
+      pins that.
+    - Update the module docstring.
   - `benchmarks/adapters/__init__.py`: exports.
   - `benchmarks/adapters/guard.py`: remove `LiveExecutionNotImplementedError`
     and its docstring text.
@@ -1682,6 +2024,7 @@ Expected: no output.
 Under `## [Unreleased]`:
 - **Added:** the agentic benchmark harness (`python -m benchmarks
   agentic-run`) and the three SDKs in the dev group, with versions.
+- **Security:** `pyasn1` locked at 0.6.5, with the four GHSA ids.
 - **Removed:** the five fixed-flow adapters and the OpenAI and Google
   provider stubs, replaced by the agentic bridge and clients.
 
@@ -1714,7 +2057,8 @@ Open PR B with `gh pr create` against `main`:
 - **Body:**
   - `Closes #177` and `Refs #63`;
   - each Global Constraint, checked;
-  - the added-packages table with upload dates (Task 5);
+  - the added-packages table with upload dates and the `pyasn1` security
+    reason (Task 5);
   - the intended-deletions table (Step 1);
   - the gate output;
   - a "Why this triggered supervisor review" section citing design §13
@@ -1729,55 +2073,72 @@ Open PR B with `gh pr create` against `main`:
     container, `--read-only`, tmpfs, `--cap-drop ALL`);
   - the per-worker egress proxy and its logs;
   - the isolation probe and the run script;
+  - the Ollama client (`OllamaChatClient`), `to_openai_chat`,
+    `ollama_buckets`, the unmetered `ollama` ledger provider and the
+    `OLLAMA_BASE_URL` guard latch (owner ruling 9), all smoke-run there;
+  - reading Sonnet 5.5's exact token limits from the Models API in the
+    smoke run, then correcting the matrix if they differ;
   - the `mcp-server-fetch` pin (2026.10.10 is the newest that is at least
     14 days old on 2026-10-31; re-check at run time) and its extraction
     path record;
   - the air-gapped runbook and host checks;
   - the full-run cost and time gate from the pilot.
 - **PR 5:**
-  - the criteria file, the probes, the judge panel and its batch units
-    (using `split_batch`), and the reference grader;
+  - the criteria file, the probes, the judge panel and the reference
+    grader;
+  - batch units, with `split_batch` (groups contiguous items while each
+    group's sum stays at or under `min(margin, remaining)`), landing with
+    its caller;
   - `scoring.py` provenance;
   - post-hoc token counting from `canonical_messages` with `system` and
     `tools`;
   - grounding through `benchmarks/urls.py`;
-  - report sections, including regrouping the per-repeat cell ids by
-    `tool_model_key`.
+  - report sections: per-repeat cell ids regrouped by `tool_model_key`,
+    the count of answers stopped at the output cap (the 1% pilot rule),
+    and the `CONTINUATION` stops.
 - **Round 2:** the Streamable HTTP transport in the bridge (with
   `httpx2.AsyncClient` opened through `async with`) and the competitor
   systems.
 
-## Open questions
+## Owner rulings
 
-1. **Price and limit facts the design does not give.** These are GPT-6.1
-   Sol's `max_input_tokens`, any long-context tiers, and the cached and
-   cache-write rates for Sonnet 5.5 and Gemini 3.8 Flash. Tasks 1 and 3
-   read them from provider pages on the day.
-2. **Gemini's output cap.** Does `max_output_tokens` include thinking
-   tokens on `gemini-3.8-flash`? If not, §12's output bound needs a
-   non-default thinking setting, which conflicts with "provider default
-   thinking level". That is an owner decision.
-3. **The output bound value.** This plan picks 16,384 for every hosted
-   model. A lower value risks truncated answers; a higher one, larger
-   bounds. Confirm it before the pilot.
-4. **Young transitive packages.** The plan locks `pyasn1` 0.6.4 rather
-   than 0.6.5 (2026-10-27). If 0.6.5 is a security fix, the owner may
-   prefer it.
-5. **Retry numbers.** #177 leaves N open. This plan picks 4 retries,
-   backoff of 2, 4, 8 and 16 s, `retry-after` honoured up to 120 s, and 2
-   reruns of a discarded trajectory.
-6. **Model-call timeouts and the trajectory clock.** This plan sets the
-   per-call SDK timeout to 120 s hosted and 600 s local, and stops failed
-   attempts from using the trajectory clock. The design does not say
-   either.
-7. **Per-repeat cell ids.** Cells are named `<system>--<model>--r<k>` so
-   that `score` and `report` read agentic runs without change until
-   PR 5. The owner may prefer a layout change now.
-8. **No live call before PR 4.** The host refuses keys, and the local
-   launcher runs only scripted models, so PR B cannot make a live call at
-   all. The design's "every paid call runs in a sandbox" then holds by
-   construction. Confirm that no PR 3 live check is wanted.
-9. **The Ollama latch.** This plan uses `OLLAMA_BASE_URL` as Ollama's
-   second guard latch, in place of a key.
-10. **The amendment date.** The design names the amendment "2026-10-29",
-    but it lands after #173's "2026-10-30" amendment in the same file.
+The two rulings comments on #184 settle the first round's ten open
+questions:
+
+| # | Ruling | Applied in |
+|---|---|---|
+| 1 | GPT-6.1 Sol limits and prices from OpenAI's pages | Task 1 matrix, Task 3 snapshot (research note §B) |
+| 2 | Gemini thinking counts inside `max_output_tokens`; default level kept, no deviation | Task 1 `output_cap_includes_reasoning`, Task 2 (research note §C) |
+| 3 | Output cap 32,768 for all hosted models; raise it if more than 1% of pilot answers stop at it | Global Constraints, Task 1, Task 2, PR 5 report |
+| 4 | `pyasn1` 0.6.5 locked for its four security fixes | Global Constraints, Task 5, Task 11 CHANGELOG |
+| 5 | Retry policy: 4 retries, 2/4/8/16 s, `retry-after` up to 120 s, 2 reruns, every retry and rerun in the run summary | Tasks 8, 9 and 10 |
+| 6 | 120 s / 600 s per call; failed attempts and waits off the clock; wall time with retries reported | Tasks 8 and 10 |
+| 7 | Cell id per repeat | Task 10 |
+| 8 | No live call in PR B | Global Constraints, Task 9 `LocalLauncher` |
+| 9 | `OLLAMA_BASE_URL` as Ollama's second check | PR 4 |
+| 10 | Amendment dated the day it merges, in chronological order, citing #161 | Task 2 |
+
+Round 2 also ruled on the reviews:
+- **B1–B15** are applied in the tasks named in Review Focus, plus:
+  - B8: Task 1 Step 5;
+  - B9: Task 7 factory and Task 10 `plan_jobs`;
+  - B10: Tasks 3 and 8;
+  - B11: Task 7;
+  - B12: Tasks 2, 4, 10 and 11;
+  - B13: PR 5;
+  - B14: PR 4;
+  - B15: Task 6.
+- **C (declined):** `reasoning_budget_tokens` is not added. Thinking
+  counts inside the output cap on all three hosted models, so Task 10
+  keeps refusing `output_cap_includes_reasoning: false`.
+
+## Remaining questions
+
+1. **A `CONTINUATION` stop from Gemini** is recorded and its text is used
+   as the answer; the harness does not follow it. The run summary counts
+   these stops. Should the pilot find any, the owner decides whether the
+   harness follows them as separate billed units.
+2. **The `no-mcp-baseline` aliases.** The round-2 nit said to keep them,
+   but `main` no longer has them: #173 removed them, and
+   `test_removed_baseline_alias_is_an_unknown_adapter` pins that. Task 11
+   therefore leaves the alias behaviour exactly as on `main`.
