@@ -40,6 +40,9 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.4",
     "pyright>=1.1",
+    "anthropic==1.15.0",
+    "openai==3.32.0",
+    "google-genai==2.31.0",
 ]
 
 [project.scripts]
