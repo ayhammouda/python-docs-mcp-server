@@ -6,6 +6,15 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- Agentic benchmark harness (development tooling, not part of the package):
+  `python -m benchmarks agentic-run` runs real models in a tool loop over the
+  systems under test, with a per-provider spend ledger and keyless, redacted
+  worker processes. CI runs it end to end with scripted models and no network.
+  The provider SDKs join the `dev` dependency group at exact pins:
+  `anthropic` 1.15.0, `openai` 3.32.0 and `google-genai` 2.31.0.
+
 ### Changed
 
 - The benchmark harness (development tooling, not part of the package) now
@@ -21,6 +30,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Benchmark harness: the `no-mcp-baseline` adapter alias, which only echoed the
   prompt, and the `external_provider_calls` field, a constant rather than a
   measurement.
+- Benchmark harness: the five fixed-flow adapters (python-docs, Context7,
+  GitMCP, DeepWiki, Ref.tools) and the OpenAI and Google provider stubs. The
+  agentic harness's MCP bridge and SDK clients replace them; the competitor
+  eligibility gates stay.
 
 ### Security
 
@@ -31,6 +44,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   GHSA-955g-x97g-8mcp). Platformdirs 4.14.0 fixes six low-severity advisories
   in its site and runtime directories; the server uses only the user cache
   directory, which still honours `XDG_CACHE_HOME` on macOS.
+- Development lock: `pyasn1` 0.6.5, pulled in by `google-genai`, is locked
+  although it is younger than the 14-day rule allows. It fixes four
+  high-severity denial-of-service advisories that affect 0.6.4
+  (GHSA-fm9c-5rcf-2q5p, GHSA-9m75-vc3g-4x39, GHSA-2qm8-x737-gmw5,
+  GHSA-mm57-4v3p-rchx).
 - The MCP servers that the benchmark harness starts now get the MCP SDK's
   default variables plus only: `CONTEXT7_API_KEY` for the Context7 server (npm
   code), and only in key mode; `PYTHON_DOCS_MCP_DISABLE_AUTO_INDEX` and, when

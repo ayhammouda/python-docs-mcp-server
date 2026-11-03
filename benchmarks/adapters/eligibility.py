@@ -31,11 +31,12 @@ Convention (manifest authoring, see
   moved to ``exclusions:`` -- and is rejected with a message pointing there.
 
 Only entries whose ``adapter`` is one of the four competitor adapter ids are
-validated. This is deliberate: the existing ``fake`` and
-``python-docs-mcp-stdio`` adapters (issues #72/#86) carry no pin/terms
-metadata and merged fixtures in ``tests/benchmarks/test_runner.py`` build
-manifests without it -- scoping validation to the new competitor ids keeps
-this change additive and those merged tests untouched.
+validated. This is deliberate: the ``fake`` adapter (issue #72) and the
+agentic manifest's own systems (``mcp-stdio``, ``none``) carry no pin/terms
+metadata, and fixtures in ``tests/benchmarks/test_runner.py`` build
+manifests without it. The fixed-flow competitor adapters themselves are
+gone; round 2 runs the competitors through the agentic bridge, behind
+these same gates.
 """
 
 from __future__ import annotations

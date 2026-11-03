@@ -1,16 +1,13 @@
 """Benchmark runner artifact plumbing.
 
 Dispatches each competitor/question cell to an adapter looked up by the
-competitor manifest's ``adapter`` id (see ``_ADAPTER_DISPATCH``): the local
-fake adapter (issue #72; tests only), or the offline stdio adapter that runs
-python-docs-mcp-server itself as a system under test (issue #86, see
-``benchmarks.adapters.python_docs_mcp_adapter``). Live LLM provider
-adapters (``benchmarks.adapters.openai_adapter`` / ``google_adapter``,
-issue #73) and report generation (issue #74/#90) live in separate modules.
-Wiring a manifest's model-matrix pairing into this module's per-cell
-dispatch remains out of scope -- cell composition stays competitor x
-question (see the ``benchmarks.model_matrix`` module docstring for the
-confirmed composition decision).
+competitor manifest's ``adapter`` id (see ``_ADAPTER_DISPATCH``). Only the
+local fake adapter (issue #72; tests only) remains: the fixed-flow
+retrieval adapters were replaced by the agentic harness
+(``benchmarks.agentic``, ``python -m benchmarks agentic-run``), whose MCP
+bridge serves every system and whose artifacts this module's helpers and
+the report still share. Report generation (issue #74/#90) lives in a
+separate module.
 
 Each cell's token record (``_build_token_record``, issue #89) is the one
 exception to "no network I/O": it fills real counts via the guarded
@@ -273,8 +270,7 @@ def _validate_manifest_eligibility(manifest_data: dict[str, Any]) -> None:
     a per-cell failure). Raises ``BenchmarkValidationError``, which the CLI
     (``benchmarks/__main__.py``) already maps to exit code 2.
 
-    Imported lazily for the same reason ``_python_docs_mcp_stdio_answer``
-    imports its adapter lazily: ``benchmarks.adapters.eligibility`` imports
+    Imported lazily: ``benchmarks.adapters.eligibility`` imports
     ``BenchmarkValidationError`` from this module, so this module cannot
     import from ``benchmarks.adapters`` at module scope without a circular
     import.
@@ -340,8 +336,7 @@ def _execute_cell(cell: BenchmarkCell) -> dict[str, Any]:
         "messages": [{"role": "user", "content": cell.question.prompt}],
         "answer": answer,
         # Raw tool call/response payloads for adapters that make them
-        # available (e.g. the python-docs-mcp-stdio adapter, issue #86).
-        # None for adapters that do not record raw payloads.
+        # available. None for adapters that do not record raw payloads.
         "tool_calls": tool_calls,
         "error": error,
     }
@@ -398,8 +393,7 @@ def _build_token_record(
     results for the same cell. A malformed ``ANTHROPIC_API_KEY`` (the guard's
     ``MalformedApiKeyError``) is a failed count too, never a pending one.
 
-    Imported lazily, for the same reason ``_python_docs_mcp_stdio_answer``
-    imports its adapter lazily: ``benchmarks.adapters.guard`` and
+    Imported lazily: ``benchmarks.adapters.guard`` and
     ``benchmarks.model_matrix`` both import from this module at their own
     module scope, so this module cannot import from them at module scope
     without a circular import.
@@ -484,10 +478,9 @@ def _build_token_record(
 class _CellDispatchResult:
     """Return value of one adapter dispatch call (see ``_ADAPTER_DISPATCH``).
 
-    ``tool_calls`` is optional raw tool call/response metadata (e.g. the
-    python-docs-mcp-stdio adapter's ``search_docs``/``get_docs`` payloads,
-    issue #86) merged into the cell's transcript record. Adapters with
-    nothing extra to record (the fake adapter) leave it ``None``.
+    ``tool_calls`` is optional raw tool call/response metadata merged into
+    the cell's transcript record. Adapters with nothing extra to record (the
+    fake adapter) leave it ``None``.
     """
 
     answer: str
@@ -506,186 +499,15 @@ def _fake_adapter_answer(cell: BenchmarkCell) -> _CellDispatchResult:
     return _CellDispatchResult(answer=f"[fake:{cell.competitor.id}] {cell.question.prompt}")
 
 
-def _python_docs_mcp_stdio_answer(cell: BenchmarkCell) -> _CellDispatchResult:
-    """Dispatch to the offline python-docs-mcp-server stdio adapter (issue #86).
-
-    Imported lazily to avoid a module-level import cycle: adapter modules
-    import ``BenchmarkCellFailure`` from this module, so this module cannot
-    import from ``benchmarks.adapters`` at module scope.
-    """
-    from benchmarks.adapters.python_docs_mcp_adapter import PythonDocsMcpAdapter
-
-    result = PythonDocsMcpAdapter().run(cell.question.prompt)
-    return _CellDispatchResult(
-        answer=result.answer,
-        tool_calls=[
-            {
-                "tool": call.tool,
-                "arguments": call.arguments,
-                "result": call.result,
-                "is_error": call.is_error,
-            }
-            for call in result.tool_calls
-        ],
-    )
-
-
-def _tool_call_records_to_dicts(tool_calls: Any) -> list[dict[str, Any]]:
-    """Convert a list of adapter ``ToolCallRecord``s to transcript dicts.
-
-    Shared by the four competitor dispatch functions below (issue #87);
-    each competitor adapter module defines its own frozen ``ToolCallRecord``
-    dataclass (same ``tool``/``arguments``/``result``/``is_error`` shape as
-    ``python_docs_mcp_adapter.ToolCallRecord``), so this converts any of
-    them structurally without importing a specific one.
-    """
-    return [
-        {
-            "tool": call.tool,
-            "arguments": call.arguments,
-            "result": call.result,
-            "is_error": call.is_error,
-        }
-        for call in tool_calls
-    ]
-
-
-def _context7_answer(cell: BenchmarkCell) -> _CellDispatchResult:
-    """Dispatch to the Context7 competitor adapter (issue #87).
-
-    Imported lazily to avoid a module-level import cycle (see
-    ``_python_docs_mcp_stdio_answer``). Reads endpoint/mode/key-mode/timeout
-    overrides from the manifest entry's raw config (``cell.competitor.raw``);
-    the adapter itself reads the actual API key value from
-    ``CONTEXT7_API_KEY`` (see
-    ``benchmarks.adapters.context7_adapter.Context7Adapter``).
-
-    Re-validates eligibility (plan §2.4 defense in depth): unreachable for
-    an excluded competitor by construction, since ``_validate_manifest_eligibility``
-    already refused at manifest-load time before any cell was built.
-    """
-    from benchmarks.adapters.context7_adapter import Context7Adapter
-    from benchmarks.adapters.eligibility import validate_competitor_eligibility
-
-    raw = cell.competitor.raw
-    validate_competitor_eligibility(raw)
-    kwargs: dict[str, Any] = {}
-    if isinstance(raw.get("mode"), str):
-        kwargs["mode"] = raw["mode"]
-    if isinstance(raw.get("endpoint"), str):
-        kwargs["endpoint"] = raw["endpoint"]
-    if isinstance(raw.get("key_mode"), bool):
-        kwargs["key_mode"] = raw["key_mode"]
-    if isinstance(raw.get("timeout_seconds"), (int, float)):
-        kwargs["timeout_seconds"] = float(raw["timeout_seconds"])
-
-    result = Context7Adapter(**kwargs).run(cell.question.prompt)
-    return _CellDispatchResult(
-        answer=result.answer, tool_calls=_tool_call_records_to_dicts(result.tool_calls)
-    )
-
-
-def _gitmcp_answer(cell: BenchmarkCell) -> _CellDispatchResult:
-    """Dispatch to the GitMCP competitor adapter (issue #87).
-
-    Imported lazily to avoid a module-level import cycle (see
-    ``_python_docs_mcp_stdio_answer``).
-
-    Re-validates eligibility (plan §2.4 defense in depth): unreachable for
-    an excluded competitor by construction, since ``_validate_manifest_eligibility``
-    already refused at manifest-load time before any cell was built.
-    """
-    from benchmarks.adapters.eligibility import validate_competitor_eligibility
-    from benchmarks.adapters.gitmcp_adapter import GitMcpAdapter
-
-    raw = cell.competitor.raw
-    validate_competitor_eligibility(raw)
-    kwargs: dict[str, Any] = {}
-    if isinstance(raw.get("endpoint"), str):
-        kwargs["endpoint"] = raw["endpoint"]
-    if isinstance(raw.get("timeout_seconds"), (int, float)):
-        kwargs["timeout_seconds"] = float(raw["timeout_seconds"])
-
-    result = GitMcpAdapter(**kwargs).run(cell.question.prompt)
-    return _CellDispatchResult(
-        answer=result.answer, tool_calls=_tool_call_records_to_dicts(result.tool_calls)
-    )
-
-
-def _deepwiki_answer(cell: BenchmarkCell) -> _CellDispatchResult:
-    """Dispatch to the DeepWiki competitor adapter (issue #87).
-
-    Imported lazily to avoid a module-level import cycle (see
-    ``_python_docs_mcp_stdio_answer``).
-
-    Re-validates eligibility (plan §2.4 defense in depth): unreachable for
-    an excluded competitor by construction, since ``_validate_manifest_eligibility``
-    already refused at manifest-load time before any cell was built.
-    """
-    from benchmarks.adapters.deepwiki_adapter import DeepWikiAdapter
-    from benchmarks.adapters.eligibility import validate_competitor_eligibility
-
-    raw = cell.competitor.raw
-    validate_competitor_eligibility(raw)
-    kwargs: dict[str, Any] = {}
-    if isinstance(raw.get("endpoint"), str):
-        kwargs["endpoint"] = raw["endpoint"]
-    if isinstance(raw.get("repo_name"), str):
-        kwargs["repo_name"] = raw["repo_name"]
-    if isinstance(raw.get("timeout_seconds"), (int, float)):
-        kwargs["timeout_seconds"] = float(raw["timeout_seconds"])
-
-    result = DeepWikiAdapter(**kwargs).run(cell.question.prompt)
-    return _CellDispatchResult(
-        answer=result.answer, tool_calls=_tool_call_records_to_dicts(result.tool_calls)
-    )
-
-
-def _ref_tools_answer(cell: BenchmarkCell) -> _CellDispatchResult:
-    """Dispatch to the Ref.tools competitor adapter (issue #87).
-
-    Imported lazily to avoid a module-level import cycle (see
-    ``_python_docs_mcp_stdio_answer``). Reads endpoint/timeout overrides
-    from the manifest entry's raw config; the adapter itself reads the
-    required API key value from ``REF_API_KEY`` (see
-    ``benchmarks.adapters.ref_tools_adapter.RefToolsAdapter``).
-
-    Re-validates eligibility (plan §2.4 defense in depth): unreachable for
-    an excluded competitor by construction, since ``_validate_manifest_eligibility``
-    already refused at manifest-load time before any cell was built.
-    """
-    from benchmarks.adapters.eligibility import validate_competitor_eligibility
-    from benchmarks.adapters.ref_tools_adapter import RefToolsAdapter
-
-    raw = cell.competitor.raw
-    validate_competitor_eligibility(raw)
-    kwargs: dict[str, Any] = {}
-    if isinstance(raw.get("endpoint"), str):
-        kwargs["endpoint"] = raw["endpoint"]
-    if isinstance(raw.get("timeout_seconds"), (int, float)):
-        kwargs["timeout_seconds"] = float(raw["timeout_seconds"])
-
-    result = RefToolsAdapter(**kwargs).run(cell.question.prompt)
-    return _CellDispatchResult(
-        answer=result.answer, tool_calls=_tool_call_records_to_dicts(result.tool_calls)
-    )
-
-
 #: Adapter-id -> dispatch function registry (issue #86), replacing the
 #: prior hardcoded ``_EXECUTABLE_ADAPTERS`` allowlist membership check.
 #: Adding a new dispatchable adapter means adding one entry here; an
 #: unrecognized adapter id still fails cleanly with a ``tool_failure``
 #: (see ``_dispatch_adapter``), matching the prior allowlist's behavior.
-#: The four competitor entries (issue #87) are additionally screened at
-#: manifest-load time by ``_validate_manifest_eligibility`` before any cell
-#: (and therefore any of these dispatch functions) ever runs.
+#: Competitor entries (issue #87) are still screened at manifest-load time by
+#: ``_validate_manifest_eligibility`` before any cell runs.
 _ADAPTER_DISPATCH: dict[str, Callable[[BenchmarkCell], _CellDispatchResult]] = {
     "fake": _fake_adapter_answer,
-    "python-docs-mcp-stdio": _python_docs_mcp_stdio_answer,
-    "context7": _context7_answer,
-    "gitmcp": _gitmcp_answer,
-    "deepwiki": _deepwiki_answer,
-    "ref-tools": _ref_tools_answer,
 }
 
 

@@ -2,23 +2,17 @@
 
 Issue #73 requires that this implementation refuse to run live providers
 unless explicit environment variables/config are present. This module is
-that guardrail: any live adapter (see ``openai_adapter.LiveOpenAIAdapter`` /
-``google_adapter.LiveGoogleAdapter``) must call
-:func:`require_live_environment` before doing anything else.
+that guardrail: every live call must pass :func:`require_live_environment`
+first. The agentic harness builds every live client through
+``benchmarks.agentic.clients.make_client``, which calls it; tests use
+scripted clients and mock transports, and never set the flag and a key.
 
-The OpenAI/Google adapters in this package never make a live or paid API
-call, with or without the guard passing -- they are stubs that, after the
-guard passes, still refuse via ``LiveExecutionNotImplementedError``.
-Actually implementing a live call for those providers is out of scope for
-issue #73's mocked plumbing and is reserved for a maintainer-run,
-human-supervised phase (see PLAN.md Amendment 2026-07-08).
-
-Issue #89 is the one exception: ``benchmarks.adapters.claude_tokens``'s
-Anthropic count-tokens caller *does* perform a real HTTP call once this
-guard passes, because the maintainer-run live phase is exactly what that
-call is for (Claude token counting after client-side rewrap, roadmap
-decision 5.8). It still never runs in CI or unit tests -- tests use a fake
-counter -- and it is structurally incapable of running without both
+``benchmarks.adapters.claude_tokens``'s Anthropic count-tokens caller
+(issue #89) performs a real HTTP call once this guard passes, because the
+maintainer-run live phase is exactly what that call is for (Claude token
+counting after client-side rewrap, roadmap decision 5.8). It still never
+runs in CI or unit tests -- tests use a fake counter -- and it is
+structurally incapable of running without both
 ``BENCHMARK_LIVE_PROVIDERS_ENABLED`` and ``ANTHROPIC_API_KEY`` set, exactly
 like every other provider gated here.
 
@@ -48,12 +42,10 @@ LIVE_PROVIDERS_ENABLED_ENV = "BENCHMARK_LIVE_PROVIDERS_ENABLED"
 #: it gates the Claude count-tokens methodology caller in
 #: ``benchmarks.adapters.claude_tokens``, not a competitor answer adapter.
 #:
-#: ``ref`` and ``context7`` (issue #87) gate the keyed competitor docs MCP
-#: adapters: ``benchmarks.adapters.ref_tools_adapter.RefToolsAdapter``
-#: (always keyed -- Ref.tools requires an API key) and
-#: ``benchmarks.adapters.context7_adapter.Context7Adapter`` when its
-#: manifest entry declares key mode (Context7 also has a keyless mode; see
-#: :func:`require_live_competitor`).
+#: ``ref`` and ``context7`` (issue #87) gate the keyed competitor docs MCPs:
+#: Ref.tools (always keyed) and Context7 when its manifest entry declares key
+#: mode (Context7 also has a keyless mode; see :func:`require_live_competitor`).
+#: Round 2 runs them through the agentic bridge.
 PROVIDER_API_KEY_ENV = {
     "openai": "OPENAI_API_KEY",
     "google": "GOOGLE_API_KEY",
@@ -83,17 +75,6 @@ class LiveProviderDisabledError(BenchmarkCellFailure):
 
 class MalformedApiKeyError(LiveProviderDisabledError):
     """Raised when a provider API key is set but holds characters no HTTP header may carry."""
-
-
-class LiveExecutionNotImplementedError(BenchmarkCellFailure):
-    """Raised after the guard passes: live execution itself is not implemented.
-
-    This package ships mocked plumbing only; it is structurally incapable of
-    a live call regardless of environment configuration.
-    """
-
-    def __init__(self, message: str) -> None:
-        super().__init__("tool_failure", message)
 
 
 def require_live_environment(provider: str) -> None:
@@ -173,10 +154,8 @@ def require_live_competitor(name: str) -> None:
     2. ``name`` appears in the comma-separated :data:`LIVE_COMPETITORS_ENV`
        allowlist (case-insensitive, whitespace-tolerant).
 
-    Both conditions must hold. Passing this check does not mean a live call
-    will be made -- competitor adapters that pass this guard still route all
-    transport construction through their own ``_transport_factory`` seam,
-    which nothing in this module or the guard itself invokes.
+    Both conditions must hold. Passing this check does not by itself make a
+    live call: nothing in this module opens a transport.
     """
     flag = os.environ.get(LIVE_PROVIDERS_ENABLED_ENV, "").strip().lower()
     if flag not in _TRUTHY:

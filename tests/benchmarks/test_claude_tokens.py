@@ -79,8 +79,8 @@ def test_envelope_wraps_tool_call_results_as_tool_result_blocks() -> None:
 
 
 def test_envelope_is_approximation_when_built_from_a_provider_mock_payload() -> None:
-    # MockOpenAIAdapter/MockGoogleAdapter (and their live-stub counterparts)
-    # never call a real client SDK, so there is no real wrapped envelope to
+    # A provider mock (a payload marked "mock": True)
+    # never calls a real client SDK, so there is no real wrapped envelope to
     # recover -- the methodology requires marking that gap, not guessing.
     envelope, approximation = build_client_wrapped_envelope(
         "prompt", provider_mock_payload={"provider": "openai", "mock": True}
