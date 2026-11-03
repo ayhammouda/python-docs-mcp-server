@@ -143,7 +143,10 @@ async def _supervise(
                         provider=job.family.provider,
                         model_id=job.family.model_id,
                         input_bound=int(message["input_bound"]),
-                        output_bound=int(message["output_bound"]),
+                        # Never below the cap the family sends: a worker cannot shrink its bound.
+                        output_bound=max(
+                            int(message["output_bound"]), job.family.max_output_tokens or 0
+                        ),
                         kind=str(message.get("kind", "model_call")),
                     )
                     reply = (

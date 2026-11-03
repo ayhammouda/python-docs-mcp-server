@@ -407,10 +407,9 @@ async def test_a_frame_over_the_limit_is_a_harness_error(host: Host, tmp_path: P
     assert types == ["system_info"]  # nothing for that trajectory reached on_message
 
 
-async def test_host_settles_a_lost_workers_unit_at_twice_its_bound_and_frees_the_provider(
-    host: Host, tmp_path: Path
-) -> None:
-    fake_worker = (
+def _fake_worker(*frames: dict[str, Any]) -> str:
+    """A worker that reads its job, sends ``frames`` (reading each reply), then exits 1."""
+    return (
         "import json, sys\n"
         "inp, out = sys.stdin.buffer, sys.stdout.buffer\n"
         "def read():\n"
@@ -421,27 +420,58 @@ async def test_host_settles_a_lost_workers_unit_at_twice_its_bound_and_frees_the
         "    out.write(len(body).to_bytes(8, 'big') + body)\n"
         "    out.flush()\n"
         "read()\n"
-        "send({'type': 'reserve', 'provider': 'anthropic', 'model_id': 'scripted-1',\n"
-        "      'input_bound': 1000, 'output_bound': 1000, 'kind': 'model_call'})\n"
-        "read()\n"
+        f"for frame in {frames!r}:\n"
+        "    send(frame)\n"
+        "    read()\n"
         "sys.exit(1)\n"
     )
 
-    class LostLauncher(LocalLauncher):
-        def command(self, job: WorkerJob) -> tuple[list[str], dict[str, str]]:
-            argv, env = super().command(job)
-            return ([sys.executable, "-c", fake_worker] if job.job_id == "lost" else argv), env
 
+def _reserve_frame(output_bound: int) -> dict[str, Any]:
+    return {
+        "type": "reserve",
+        "provider": "anthropic",
+        "model_id": "scripted-1",
+        "input_bound": 1000,
+        "output_bound": output_bound,
+        "kind": "model_call",
+    }
+
+
+class LostLauncher(LocalLauncher):
+    """Runs ``code`` for the job named "lost" and a real worker for every other job."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+
+    def command(self, job: WorkerJob) -> tuple[list[str], dict[str, str]]:
+        argv, env = super().command(job)
+        return ([sys.executable, "-c", self.code] if job.job_id == "lost" else argv), env
+
+
+async def test_host_settles_a_lost_workers_unit_at_twice_its_bound_and_frees_the_provider(
+    host: Host, tmp_path: Path
+) -> None:
     lost = _job(tmp_path, [ANSWER], job_id="lost")
     normal = _job(tmp_path, [ANSWER], count=1, job_id="normal")
-    await host.run([lost, normal], launcher=LostLauncher())
-    first_bound = D("0.002")  # (1000 + 1000) * $1 / 1M
+    await host.run([lost, normal], launcher=LostLauncher(_fake_worker(_reserve_frame(1024))))
+    first_bound = D("0.002024")  # (1000 + 1024) * $1 / 1M
     second_job_actual = D("0.0011")
     assert host.ledger.spent("anthropic") == 2 * first_bound + second_job_actual
     lost_job_messages = host.messages("lost")
     assert {(m["type"], m["reason"]) for m in lost_job_messages} == {("not_run", "worker_lost")}
     assert len(lost_job_messages) == 2
     assert [m["type"] for m in host.messages("normal")][-1] == "done"
+
+
+async def test_host_never_reserves_less_than_the_familys_output_cap(
+    host: Host, tmp_path: Path
+) -> None:
+    lost = _job(tmp_path, [ANSWER], job_id="lost")
+    await host.run([lost], launcher=LostLauncher(_fake_worker(_reserve_frame(0))))
+    (reserve,) = [e for e in host.ledger.events("host-test") if e["event"] == "reserve"]
+    assert reserve["output_bound"] == 1024  # the family's max_output_tokens, not the worker's 0
+    assert host.ledger.spent("anthropic") == 2 * D("0.002024")
 
 
 async def test_a_worker_that_stalls_mid_frame_is_a_lost_worker(
