@@ -268,6 +268,16 @@ async def test_reservations_carry_independently_computed_bounds(harness: Harness
     assert third["outcome"] == "no_usage" and D(third["booked"]) == 2 * D("0.332335")
 
 
+async def test_all_zero_usage_counts_as_no_usage(harness: Harness) -> None:
+    zero = {"input_tokens": 0, "output_tokens": 0}
+    steps = [{"tools": [SEARCH], "usage": zero}, ANSWER]
+    client = FixedBytesClient({(0, 1): 500, (0, 3): 2_000}, "anthropic", "scripted-1", steps)
+    record = await harness.run(client=client)
+    assert _outcomes(record, 0) == ["no_usage"]
+    # The next bound is the full request again (2_000 + 256 * 4), not 0 + 0 + added bytes.
+    assert [r["input_bound"] for r in harness.recording.reserves] == [1_012, 3_024]
+
+
 async def test_ninth_model_call_is_a_cap_failure(harness: Harness) -> None:
     record = await harness.run([TOOL] * 9 + [ANSWER])
     assert record["status"] == "failed"

@@ -136,6 +136,11 @@ def canonical_messages(conv: Conversation) -> list[dict[str, Any]]:
     return messages
 
 
+def _usage(turn: ModelTurn) -> Buckets | None:
+    """The turn's usage, or None when none, or only zeros, was reported."""
+    return None if turn.buckets is None or turn.buckets.is_empty else turn.buckets
+
+
 def _ms(seconds: float) -> float:
     return round(seconds * 1000, 3)
 
@@ -226,7 +231,7 @@ class _Trajectory:
                 )
             previous_count = len(self.conv.entries)
             turn = await self.model_call(bound)
-            previous = turn.buckets
+            previous = _usage(turn)  # None: the next bound is the full request again
             if not turn.tool_calls:
                 return turn.text
             if len(self.model_calls) >= self.caps.model_calls:
@@ -286,9 +291,9 @@ class _Trajectory:
             attempt = {"wall_ms": _ms(wall), "wait_ms": _ms(waited), "unit_id": unit}
             entry["attempts"].append(attempt)
             if turn is not None:
-                outcome: Outcome = "ok" if turn.buckets is not None else "no_usage"
+                outcome: Outcome = "ok" if _usage(turn) else "no_usage"
                 attempt |= {"outcome": outcome, "status": None}
-                await self.ledger.settle(unit, outcome=outcome, buckets=turn.buckets)
+                await self.ledger.settle(unit, outcome=outcome, buckets=_usage(turn))
                 entry |= {
                     "raw_response": turn.raw_response,
                     "raw_usage": turn.raw_usage,

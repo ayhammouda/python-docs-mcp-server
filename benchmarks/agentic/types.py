@@ -29,6 +29,11 @@ class Buckets:
     def total_input(self) -> int:
         return self.uncached_input + self.cache_write_input + self.cached_input
 
+    @property
+    def is_empty(self) -> bool:
+        """All zero: no usage was really reported."""
+        return self.total_input == 0 and self.output == 0
+
 
 @dataclass(frozen=True)
 class ToolCall:

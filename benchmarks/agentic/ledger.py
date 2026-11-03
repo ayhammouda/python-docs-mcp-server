@@ -461,7 +461,7 @@ class LedgerService:
     async def settle(self, unit_id: str, *, outcome: Outcome, buckets: Buckets | None) -> None:
         provider, price, input_bound = self._units.pop(unit_id)
         try:
-            if outcome == "ok" and buckets is None:
+            if outcome == "ok" and (buckets is None or buckets.is_empty):
                 outcome = "no_usage"
             self._ledger.settle(
                 unit_id,
