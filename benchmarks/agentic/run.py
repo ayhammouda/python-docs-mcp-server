@@ -507,7 +507,12 @@ def _write_outcome(
     snapshot: PriceSnapshot,
 ) -> None:
     """ledger-events.jsonl and run-summary.json, for a completed or an aborted run."""
-    events = "".join(json.dumps(e, sort_keys=True) + "\n" for e in ledger.events(run_id))
+    run_events = ledger.events(run_id)
+    events = "".join(json.dumps(e, sort_keys=True) + "\n" for e in run_events)
+    # The pilot reads how often reported input passed its bound (design §12).
+    exceeded = Counter(
+        e["provider"] for e in run_events if e["event"] == "settle" and e["input_bound_exceeded"]
+    )
     assert_no_key_shaped(events, where="ledger-events.jsonl")
     (out / "ledger-events.jsonl").write_text(events, encoding="utf-8")
     scored = collector.succeeded + collector.failed
@@ -530,6 +535,7 @@ def _write_outcome(
                 "spent_after": str(ledger.spent(provider)),
                 "cap": str(caps[provider]),
                 "stopped": ledger.stopped(provider),
+                "input_bound_exceeded": exceeded[provider],
             }
             for provider in caps
         },

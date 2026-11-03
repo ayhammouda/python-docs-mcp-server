@@ -293,6 +293,25 @@ def test_run_summary_wall_time_includes_failed_attempts_backoff_and_grant_waits(
     assert sum(f["grant_wait_s"] for f in summary["families"].values()) > 0
 
 
+def test_run_summary_counts_input_bounds_exceeded_per_provider(tmp_path: Path) -> None:
+    # 8,000 reported input tokens exceed the first call's input bound (about 1,000), while
+    # the dollars stay under the bound, so there is no overrun stop.
+    big_input = {"text": "ok", "usage": {"input_tokens": 8000, "output_tokens": 0}}
+    matrix = _matrix_with(tmp_path, {"scripted-anthropic": [big_input]})
+    config = _config(
+        tmp_path,
+        matrix_path=matrix,
+        models=("scripted-anthropic",),
+        systems=("no-docs",),
+        questions=("SYN-EX-001",),
+        repeats=1,
+    )
+    summary = run_agentic(config)
+    assert summary["ledger"]["anthropic"]["input_bound_exceeded"] == 1
+    assert summary["ledger"]["openai"]["input_bound_exceeded"] == 0
+    assert summary["ledger"]["anthropic"]["stopped"] is None
+
+
 def test_latency_counts_successful_work_and_overhead_only(tmp_path: Path) -> None:
     script = [
         {"error": {"kind": "rate_limited", "status": 429, "retry_after_s": 0.3}, "delay_s": 0.2},
