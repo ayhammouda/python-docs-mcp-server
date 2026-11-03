@@ -227,7 +227,6 @@ class _Trajectory:
             previous_count = len(self.conv.entries)
             turn = await self.model_call(bound)
             previous = turn.buckets
-            self.conv.entries.append(turn)
             if not turn.tool_calls:
                 return turn.text
             if len(self.model_calls) >= self.caps.model_calls:
@@ -252,6 +251,7 @@ class _Trajectory:
             "reported_model": None,
             "stop_reason": None,
             "wall_ms": None,
+            "tool_calls_requested": None,  # 0 marks an answer turn
         }
         self.model_calls.append(entry)
         retries = 0
@@ -296,7 +296,9 @@ class _Trajectory:
                     "reported_model": turn.reported_model,
                     "stop_reason": turn.stop_reason,
                     "wall_ms": _ms(wall),
+                    "tool_calls_requested": len(turn.tool_calls),
                 }
+                self.conv.entries.append(turn)  # kept even when the clock now ends the trajectory
                 self.use(wall, "model")
                 return turn
             assert error is not None
@@ -317,6 +319,13 @@ class _Trajectory:
 
     async def run_tools(self, turn: ModelTurn) -> None:
         results: list[ToolResult] = []
+        try:
+            await self._run_tools(turn, results)
+        finally:  # results that came back stay in the record, even when a cap ends the turn
+            if results:
+                self.conv.entries.append(ToolResults(tuple(results)))
+
+    async def _run_tools(self, turn: ModelTurn, results: list[ToolResult]) -> None:
         for call in turn.tool_calls:
             if len(self.tool_calls) >= self.caps.tool_calls:
                 raise _Failed(
@@ -369,7 +378,6 @@ class _Trajectory:
             }
             results.append(ToolResult(call.id, call.name, sent, is_error))
             self.use(wall, "tool")
-        self.conv.entries.append(ToolResults(tuple(results)))
 
 
 async def run_trajectory(

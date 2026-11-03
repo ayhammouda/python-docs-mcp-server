@@ -164,6 +164,9 @@ class _FamilyStats:
         for call in record["model_calls"]:
             for attempt in call["attempts"][:-1]:  # every attempt but the last was retried
                 self.retries[attempt["outcome"]] += 1
+            if call["tool_calls_requested"] == 0:  # an answer turn, whatever the outcome
+                self.answer_turns += 1
+                self.output_cap_stops += call["stop_reason"] in OUTPUT_CAP_STOPS
 
     def summary(self) -> dict[str, Any]:
         starts = [r["started_at"] for r in self.records]
@@ -320,9 +323,6 @@ class _Collector:
             )
         else:
             self.succeeded += 1
-            stats.answer_turns += 1
-            if record["model_calls"][-1]["stop_reason"] in OUTPUT_CAP_STOPS:
-                stats.output_cap_stops += 1
         self.cells.add(cell)
 
 

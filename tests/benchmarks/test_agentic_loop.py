@@ -289,6 +289,26 @@ async def test_successful_work_over_the_allowance_is_a_cap_failure(harness: Harn
     assert len(record["model_calls"]) == 1 and len(harness.recording.reserves) == 1
 
 
+async def test_a_late_answer_is_still_recorded(harness: Harness) -> None:
+    late = {"text": "late", "delay_s": 0.25, "stop_reason": "max_tokens", "usage": USAGE}
+    record = await harness.run([late], caps=Caps(trajectory_s=0.1))
+    assert record["error"]["category"] == "cap_trajectory_time"
+    assert record["canonical_messages"][-1] == {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "late"}],
+    }
+    assert record["model_calls"][0]["tool_calls_requested"] == 0
+
+
+async def test_late_tool_results_are_still_recorded(harness: Harness) -> None:
+    record = await harness.run(
+        [TOOL, ANSWER], bridge=FakeBridge(delay=0.25), caps=Caps(trajectory_s=0.1)
+    )
+    assert record["error"]["category"] == "cap_trajectory_time"
+    assert record["canonical_messages"][-1]["content"][0]["content"] == FAKE_TEXT
+    assert record["model_calls"][0]["tool_calls_requested"] == 1
+
+
 async def test_grant_wait_longer_than_the_trajectory_allowance_still_succeeds(
     harness: Harness,
 ) -> None:

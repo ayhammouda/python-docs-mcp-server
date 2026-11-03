@@ -20,7 +20,7 @@ from benchmarks.__main__ import main
 from benchmarks.agentic.bridge import load_systems
 from benchmarks.agentic.clients import PAID_KEY_ENVS
 from benchmarks.agentic.host import LocalLauncher
-from benchmarks.agentic.loop import MAX_RETRIES
+from benchmarks.agentic.loop import MAX_RETRIES, Caps
 from benchmarks.agentic.protocol import KEY_SHAPED, KeyLeakError
 from benchmarks.agentic.run import (
     OUTPUT_CAP_STOPS,
@@ -312,6 +312,38 @@ def test_continuation_answers_count_as_output_cap_stops(tmp_path: Path) -> None:
     summary = run_agentic(config)
     fam = summary["families"]["scripted-google"]
     assert (fam["output_cap_stops"], fam["answer_turns"]) == (2, 100)  # 2%
+
+
+def test_late_max_tokens_answers_count_as_answer_turns_and_cap_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Codex's case: 98 normal answers plus 2 answers that arrive after the trajectory allowance
+    # and stopped at the output cap. Both late ones fail the trajectory; both still count.
+    monkeypatch.setattr("benchmarks.agentic.run.HOSTED_CAPS", Caps(trajectory_s=0.2))
+    usage = {"prompt_token_count": 1000, "candidates_token_count": 100}
+    script = [
+        {
+            "text": "cut",
+            "stop_reason": "MAX_TOKENS",
+            "delay_s": 0.4,
+            "prompt_contains": EX1,
+            "usage": usage,
+        },
+        {"text": "Scripted answer.", "usage": usage},
+    ]
+    matrix = _matrix_with(tmp_path, {"scripted-google": script})
+    config = _config(
+        tmp_path,
+        matrix_path=matrix,
+        models=("scripted-google",),
+        systems=("no-docs",),
+        questions=None,
+        repeats=2,
+    )
+    summary = run_agentic(config)
+    fam = summary["families"]["scripted-google"]
+    assert summary["failed_cells"] == 2
+    assert (fam["output_cap_stops"], fam["answer_turns"]) == (2, 100)
 
 
 def test_a_key_shape_in_an_input_file_is_refused_before_any_snapshot(tmp_path: Path) -> None:
