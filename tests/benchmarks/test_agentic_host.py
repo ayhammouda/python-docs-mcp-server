@@ -311,6 +311,31 @@ async def test_worker_exits_with_its_mcp_server_child_still_alive_at_shutdown(
         os.kill(server_pid, 0)
 
 
+async def test_a_crashed_mcp_server_is_reopened_for_the_next_trajectory(
+    host: Host, tmp_path: Path
+) -> None:
+    script = [
+        {
+            "tools": [{"name": "die", "arguments": {}}],
+            "usage": USAGE,
+            "prompt_contains": "question 1",
+        },
+        {
+            "tools": [{"name": "pid", "arguments": {}}],
+            "usage": USAGE,
+            "prompt_contains": "question 2",
+        },
+        ANSWER,
+    ]
+    await host.run([_job(tmp_path, script, system=FAKE_FETCH, count=2)])
+    messages = host.messages()
+    assert [m["type"] for m in messages] == ["system_info", "trajectory", "trajectory", "done"]
+    first, second = (m["record"] for m in messages[1:3])
+    assert (messages[1]["corpus_id"], first["status"]) == ("Q1", "failed")
+    assert first["error"]["category"] == "mcp_protocol_crash"
+    assert (messages[2]["corpus_id"], second["status"]) == ("Q2", "succeeded")
+
+
 async def test_a_trajectory_frame_over_100000_bytes_round_trips_through_a_worker(
     host: Host, tmp_path: Path
 ) -> None:
