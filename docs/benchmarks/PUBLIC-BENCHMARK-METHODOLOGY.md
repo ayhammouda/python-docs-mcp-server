@@ -245,3 +245,56 @@ not comparable with numbers made after it.
   The agentic harness adds `no-docs` (design §5).
 - **Provider-call flag.** Result files no longer carry
   `external_provider_calls`; it was a constant, not a measurement.
+
+## Amendment 2026-11-03: Agentic Mode
+
+Adopts the agentic benchmark design (#161, approved 2026-10-29,
+`docs/benchmarks/AGENTIC-BENCHMARK-DESIGN.md`). Section numbers below refer to
+that design.
+
+- **Scope.** This amendment covers `python -m benchmarks agentic-run` runs.
+  The fixed-flow `run` is no longer a public result (§3).
+- **Parity.** Every system gets the same system prompt, the corpus prompt
+  verbatim, the same loop, the same caps and `tool_choice` auto. Only the tool
+  set differs. For agentic runs, this replaces the "Prompting Rules" rule that
+  the only allowed difference is the documentation context.
+- **Systems** (round 1, §5):
+  - `python-docs`, this server;
+  - `docs-fetch`, the `mcp-server-fetch` server, limited to docs.python.org by
+    the egress proxy;
+  - `no-docs`, with no tools.
+
+  Every MCP system exposes its full tool list, unfiltered. Context7, GitMCP,
+  DeepWiki and Ref.tools come in round 2, behind their terms gates.
+- **Correctness** (§9):
+  - The grade covers content only. It comes from a three-judge LLM panel.
+  - Citations are measured separately, as grounding. This replaces the
+    missing-citation clause of the `0.5` level.
+  - No human grades or calibrates anything. Validity rests on gates G1–G4 and
+    the outcome tiers.
+  - The required wording is "LLM-graded, validated against synthetic probes
+    and inter-model agreement".
+- **Tokens** (§8). The metric is normalized tokens per trajectory, counted
+  after the run with `claude-sonnet-5-5`, per correct answer, with a
+  paired-bootstrap CI. Provider usage serves only as cost. Neither is compared
+  across models.
+- **Latency** (§10). Each trajectory is split into model, tool and overhead
+  time. `python-docs` tool calls are reported cold and warm.
+- **Output cap.** Every hosted model gets 32,768 output tokens, with thinking
+  and reasoning inside that cap. If more than 1% of pilot answers stop at the
+  cap, the cap is raised before the full run (owner rulings on #184: part 1,
+  item 3; part 2, item 3). A Gemini `CONTINUATION` stop is not followed, and it
+  counts as an output-cap stop.
+- **Claims** (§2). The C1–C3 pass rules and every anti-claim apply as written
+  there. `no-docs` is never ranked on tokens. Round 1 supports only "fewer
+  tokens than fetching the official docs pages".
+- **Denominators:**
+  - A loop-cap hit (§6) is a failure scored 0.0.
+  - A trajectory cut off by a budget stop is discarded, not scored. So is one
+    cut off by exhausted retries after a 429, a 5xx, a timeout or a dropped
+    connection. The report lists every discarded trajectory (§12, #177).
+- **Reproducibility.** Each run records:
+  - the SDK versions and the model version each provider reports;
+  - the price snapshot and its expiry;
+  - the system prompt and tool-schema hashes;
+  - the index sha256 and the order seed.

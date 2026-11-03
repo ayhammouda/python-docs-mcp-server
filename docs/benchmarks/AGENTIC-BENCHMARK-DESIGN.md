@@ -611,6 +611,7 @@ input/output tokens, Gemini 3.8 Flash $0.75 / $3.75.
 
 | Step | Trajectories | Estimated cost |
 |---|---|---|
+| Smoke run: every (provider, system) pair, before the pilot (section 14) | — | ~$1 |
 | Probe gate G1 (tuning and held-out probes, all judges, before the pilot) | — | ~$4 batch |
 | Pilot: 10 fixed questions (2 per category, chosen before running) × 3 hosted models × 3 systems × k=3 | 270 | ~$15 + ~$1 grading |
 | Full hosted run: 50 × 3 × 3 × 3 | 1,350 | ~$75–95 |
