@@ -177,7 +177,7 @@ async def _supervise(
                     break
                 else:
                     await on_message(job, message)
-                    if kind in ("trajectory", "not_run"):
+                    if kind in ("trajectory", "not_run", "discarded"):  # never listed twice
                         reported.add((message["corpus_id"], message["repeat"]))
                     done = done or kind == "done"
                     if kind in ("trajectory", "discarded"):
