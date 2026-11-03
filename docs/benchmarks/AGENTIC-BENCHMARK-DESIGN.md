@@ -549,7 +549,7 @@ change.
 
 ### 11.2 Methodology and matrix
 
-- Add "Amendment 2026-10-29: agentic mode" to
+- Add an "Amendment <merge date>: Agentic Mode" to
   `PUBLIC-BENCHMARK-METHODOLOGY.md`, covering: parity now means "same prompt,
   same loop and caps, only the tool set differs"; the systems in section 5;
   sections 8–10 of this document, including the content-only grade (9.1);

@@ -145,8 +145,10 @@ def test_generate_report_includes_all_required_sections(tmp_path: Path) -> None:
 
     # Model/client matrix (from the real docs/benchmarks/model-matrix.yml).
     assert "Model / Client Matrix" in text
-    assert "claude-sonnet-5-5" in text
-    assert "gemini-3.8-flash" in text
+    # Row prefix (family id | provider | model id): each id equals its model id, so a
+    # bare substring check would pass with the family id column blank.
+    assert "| claude-sonnet-5-5 | anthropic | claude-sonnet-5-5 |" in text
+    assert "| gemini-3.8-flash | google | gemini-3.8-flash |" in text
 
     # Competitor manifest.
     assert "Competitor Manifest" in text

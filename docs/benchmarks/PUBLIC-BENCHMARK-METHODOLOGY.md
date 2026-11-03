@@ -283,13 +283,15 @@ that design.
 - **Output cap.** Every hosted model gets 32,768 output tokens, with thinking
   and reasoning inside that cap. If more than 1% of pilot answers stop at the
   cap, the cap is raised before the full run (owner rulings on #184: part 1,
-  item 3; part 2, item 3). A Gemini `CONTINUATION` stop is not followed, and it
-  counts as an output-cap stop.
+  item 3; part 2, item 3). A Gemini `CONTINUATION` stop is not followed. The
+  stopped text is graded as the answer, and the stop counts as an output-cap
+  stop.
 - **Claims** (§2). The C1–C3 pass rules and every anti-claim apply as written
   there. `no-docs` is never ranked on tokens. Round 1 supports only "fewer
   tokens than fetching the official docs pages".
 - **Denominators:**
-  - A loop-cap hit (§6) is a failure scored 0.0.
+  - A hit on a §6 model-call, tool-call or time cap is a failure scored 0.0.
+    The §6 result cap is not a failure.
   - A trajectory cut off by a budget stop is discarded, not scored. So is one
     cut off by exhausted retries after a 429, a 5xx, a timeout or a dropped
     connection. The report lists every discarded trajectory (§12, #177).
