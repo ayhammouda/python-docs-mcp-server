@@ -166,7 +166,9 @@ def _build_parser() -> argparse.ArgumentParser:
     agentic.add_argument("--corpus", required=True, type=Path, help="Corpus YAML file.")
     agentic.add_argument("--out", required=True, type=Path, help="Empty artifact directory.")
     agentic.add_argument(
-        "--ledger-dir", required=True, type=Path, help="Persistent spend ledger directory."
+        "--ledger-dir",
+        type=Path,
+        help="Spend ledger directory (default: one durable per-user path, shared by every run).",
     )
     agentic.add_argument("--matrix", type=Path, default=_DEFAULT_MODEL_MATRIX)
     agentic.add_argument("--manifest", type=Path, default=_DEFAULT_AGENTIC_MANIFEST)
@@ -212,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
             matrix_path=args.matrix,
             manifest_path=args.manifest,
             prices_path=args.prices,
-            ledger_dir=args.ledger_dir,
+            ledger_dir=args.ledger_dir or agentic_run.default_ledger_dir(),
             out_dir=args.out,
             models=args.models,
             systems=args.systems,

@@ -493,6 +493,50 @@ def test_cli_agentic_run_dry_run_prints_the_plan(
     assert printed["planned_cells"] == 18 and printed["run_id"] == "cli"
 
 
+def test_runs_share_one_durable_ledger_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import platformdirs
+
+    from benchmarks.agentic.run import default_ledger_dir
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "home" / "data"))
+    expected = Path(platformdirs.user_data_dir("mcp-python-docs-benchmarks")) / "ledger"
+    assert default_ledger_dir() == expected and str(tmp_path) in str(expected)
+    spent = []
+    for run in ("first", "second"):
+        args = [
+            "agentic-run",
+            "--corpus",
+            str(SAMPLE_CORPUS),
+            "--out",
+            str(tmp_path / run),
+            "--matrix",
+            str(FIX / "model-matrix.yml"),
+            "--manifest",
+            str(COMMITTED_MANIFEST),
+            "--prices",
+            str(FIX / "prices.yml"),
+            "--models",
+            "scripted-anthropic",
+            "--systems",
+            "no-docs",
+            "--questions",
+            "SYN-EX-001",
+            "--repeats",
+            "1",
+        ]
+        assert main(args) == 0
+        captured = capsys.readouterr()
+        ledger = json.loads(captured.out)["ledger"]["anthropic"]
+        spent.append((Decimal(ledger["spent_before"]), Decimal(ledger["spent_after"])))
+        assert "anthropic" in captured.err and "cap 180" in captured.err
+    (first_before, first_after), (second_before, second_after) = spent
+    assert first_before == 0 and second_before == first_after > 0
+    assert (expected / "anthropic.jsonl").is_file()
+
+
 def _cli_args(tmp_path: Path) -> list[str]:
     return [
         "agentic-run",

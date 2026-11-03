@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import random
+import sys
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -21,6 +22,8 @@ from decimal import Decimal
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any, Protocol
+
+import platformdirs
 
 import benchmarks
 from benchmarks.adapters.claude_tokens import ANTHROPIC_API_VERSION, DEFAULT_COUNT_MODEL
@@ -58,6 +61,13 @@ from benchmarks.runner import (
 OUTPUT_CAP_STOPS = frozenset({"max_tokens", "max_output_tokens", "MAX_TOKENS", "CONTINUATION"})
 
 _REPO_ROOT = Path(benchmarks.__file__).resolve().parent.parent
+
+
+def default_ledger_dir() -> Path:
+    """One durable per-user ledger, so every run's spend counts against the same caps."""
+    return Path(platformdirs.user_data_dir("mcp-python-docs-benchmarks")) / "ledger"
+
+
 _CLIENT_PACKAGES = ("anthropic", "openai", "google-genai", "mcp")
 _HOSTED_FIELDS = (
     "max_input_tokens",
@@ -462,6 +472,12 @@ def run_agentic(
                 "then rerun with --acknowledge-overrun"
             )
         spent_before = {provider: ledger.spent(provider) for provider in caps}
+        for provider, cap in caps.items():  # stderr: stdout carries the summary JSON
+            print(
+                f"ledger {config.ledger_dir}: {provider} "
+                f"spent {spent_before[provider]} of cap {cap}",
+                file=sys.stderr,
+            )
         prices = {f.model_id: snapshot.models[f.model_id] for f in families if f.provider in caps}
         service = LedgerService(ledger, prices, {f.model_id: f for f in families})
         collector = _Collector(out, {q.id: q for q in questions}, families)
