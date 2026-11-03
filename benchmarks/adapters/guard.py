@@ -23,6 +23,7 @@ adapters that called it; round 2 brings it back together with its caller.
 from __future__ import annotations
 
 import os
+import re
 
 from benchmarks.runner import BenchmarkCellFailure
 
@@ -48,6 +49,8 @@ PROVIDER_API_KEY_ENV = {
 }
 
 _TRUTHY = {"1", "true", "yes"}
+#: Every provider key is made of these; anything else could be quoted by an HTTP error.
+_KEY_CHARACTERS = re.compile(r"[A-Za-z0-9_.-]+")
 
 
 class LiveProviderDisabledError(BenchmarkCellFailure):
@@ -69,8 +72,8 @@ def require_live_environment(provider: str) -> None:
     1. ``BENCHMARK_LIVE_PROVIDERS_ENABLED`` is set to a truthy value.
     2. The provider-specific API key environment variable (see
        :data:`PROVIDER_API_KEY_ENV`) is set and non-empty.
-    3. That variable's raw value is ASCII, with no whitespace or
-       non-printable character (an HTTP client error would quote such a key).
+    3. That variable's raw value uses only ``[A-Za-z0-9_.-]`` (an HTTP client error
+       would quote any other character).
 
     All conditions must hold. Passing this check does not mean a live call
     will be made -- see the module docstring.
@@ -92,10 +95,10 @@ def require_live_environment(provider: str) -> None:
             f"live provider calls are disabled: missing required {key_env} for "
             f"provider {provider!r}"
         )
-    if not raw_key.isascii() or any(char.isspace() or not char.isprintable() for char in raw_key):
+    if not _KEY_CHARACTERS.fullmatch(raw_key):
         raise MalformedApiKeyError(
-            f"live provider calls are disabled: {key_env} contains whitespace, control or "
-            "non-ASCII characters"
+            f"live provider calls are disabled: {key_env} holds a character outside "
+            "[A-Za-z0-9_.-]"
         )
 
 

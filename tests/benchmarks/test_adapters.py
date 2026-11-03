@@ -81,6 +81,19 @@ def test_require_live_environment_refuses_a_malformed_key_without_leaking_it(
     assert "日" not in str(exc_info.value)
 
 
+@pytest.mark.parametrize("api_key", ["fake+key", "fake/key", "fake=key", 'fake"key', "fake%20key"])
+def test_require_live_environment_accepts_only_key_characters(
+    monkeypatch: pytest.MonkeyPatch, api_key: str
+) -> None:
+    monkeypatch.setenv(LIVE_PROVIDERS_ENABLED_ENV, "1")
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV["openai"], api_key)
+
+    with pytest.raises(LiveProviderDisabledError):
+        require_live_environment("openai")
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV["openai"], "sk-proj-AZaz09_.-")
+    require_live_environment("openai")  # letters, digits, "_", "." and "-" pass
+
+
 def test_redact_api_keys_removes_a_key_that_contains_another_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
