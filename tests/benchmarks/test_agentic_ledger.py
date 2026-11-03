@@ -180,6 +180,18 @@ def test_stale_snapshot_is_refused_from_its_expiry_day() -> None:
         refuse_stale_snapshot(snap, today=date(2026, 12, 31))
 
 
+def test_an_unquoted_datetime_expiry_is_read_as_its_date(tmp_path: Path) -> None:
+    path = tmp_path / "prices.yml"
+    path.write_text(
+        "captured_on: 2026-10-31\nexpires_on: 2026-12-31 00:00:00\nmodels:\n" + _GOOD_MODEL,
+        encoding="utf-8",
+    )
+    snap = load_price_snapshot(path)  # YAML reads the unquoted value as a datetime
+    assert (snap.captured_on, snap.expires_on) == (date(2026, 10, 31), date(2026, 12, 31))
+    with pytest.raises(BenchmarkValidationError, match="2026-12-31"):
+        refuse_stale_snapshot(snap, today=date(2026, 12, 31))
+
+
 _GOOD_MODEL = (
     "  - model_id: m\n"
     "    provider: anthropic\n"

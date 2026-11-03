@@ -105,6 +105,8 @@ def load_price_snapshot(path: Path) -> PriceSnapshot:
 
 
 def _date(value: Any, field: str) -> date | None:
+    if isinstance(value, datetime):  # YAML reads an unquoted "2026-12-31 00:00:00" this way
+        return value.date()
     if value is None or isinstance(value, date):
         return value
     try:
