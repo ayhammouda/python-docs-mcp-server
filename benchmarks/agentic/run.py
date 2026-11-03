@@ -308,7 +308,10 @@ class _Collector:
                 **base,
                 "status": status,
                 "error_category": None if error is None else error["category"],
-                "latency_ms": record["timing"]["wall_ms"],
+                # Successful work plus overhead: no grant wait, failed attempt or backoff.
+                "latency_ms": round(
+                    record["timing"]["used_ms"] + record["timing"]["overhead_ms"], 3
+                ),
                 "started_at": record["started_at"],
                 "completed_at": record["completed_at"],
                 "timing": record["timing"],

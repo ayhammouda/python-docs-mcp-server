@@ -293,6 +293,29 @@ def test_run_summary_wall_time_includes_failed_attempts_backoff_and_grant_waits(
     assert sum(f["grant_wait_s"] for f in summary["families"].values()) > 0
 
 
+def test_latency_counts_successful_work_and_overhead_only(tmp_path: Path) -> None:
+    script = [
+        {"error": {"kind": "rate_limited", "status": 429, "retry_after_s": 0.3}, "delay_s": 0.2},
+        {"text": "ok", "usage": {"input_tokens": 1000, "output_tokens": 100}},
+    ]
+    matrix = _matrix_with(tmp_path, {"scripted-anthropic": script})
+    config = _config(
+        tmp_path,
+        matrix_path=matrix,
+        models=("scripted-anthropic",),
+        systems=("no-docs",),
+        questions=("SYN-EX-001",),
+        repeats=1,
+    )
+    run_agentic(config)
+    cell = tmp_path / "run" / "latency" / "no-docs--scripted-anthropic--r1" / "SYN-EX-001.json"
+    latency = json.loads(cell.read_text())
+    timing = latency["timing"]
+    assert latency["latency_ms"] == round(timing["used_ms"] + timing["overhead_ms"], 3)
+    assert latency["latency_ms"] < timing["wall_ms"] - 400  # no failed attempt, no backoff
+    assert set(timing) >= {"grant_wait_ms", "failed_attempt_ms", "retry_wait_ms"}
+
+
 def test_continuation_answers_count_as_output_cap_stops(tmp_path: Path) -> None:
     # One scripted google family, no-docs, all 50 sample questions, repeats 2 = 100 answers.
     usage = {"prompt_token_count": 1000, "candidates_token_count": 100}
