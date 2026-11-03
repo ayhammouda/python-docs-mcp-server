@@ -152,12 +152,23 @@ def _build_parser() -> argparse.ArgumentParser:
         default=_DEFAULT_CORPUS_SCHEMA,
         help=f"Path to the corpus JSON schema file (default: {_DEFAULT_CORPUS_SCHEMA}).",
     )
+
+    # Spawned by the agentic host, never by hand: it reads its job as frames on stdin.
+    subparsers.add_parser(
+        "agentic-worker", help="Internal: run one agentic (model, system) job for the host."
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    if args.command == "agentic-worker":
+        # Lazy: the provider SDKs load only in a worker. main_worker protects output first.
+        from benchmarks.agentic.worker import main_worker
+
+        return main_worker()
 
     if args.command == "run":
         config = BenchmarkConfig(
