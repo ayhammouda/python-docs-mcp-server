@@ -503,6 +503,18 @@ async def test_service_clamps_the_input_bound_to_the_family_maximum(tmp_path: Pa
     ledger.close()
 
 
+async def test_service_books_an_ok_without_usage_as_no_usage(tmp_path: Path) -> None:
+    ledger, service = _service(tmp_path, anthropic="10", openai="10")
+    unit = await service.reserve(
+        provider="anthropic", model_id="a", input_bound=500, output_bound=500
+    )
+    assert unit is not None
+    await service.settle(unit, outcome="ok", buckets=None)
+    settle = _event(ledger, "settle", unit)
+    assert settle["outcome"] == "no_usage" and D(settle["booked"]) == 2 * D("0.001")
+    ledger.close()
+
+
 def test_committed_matrix_largest_single_call_bound_is_below_every_margin() -> None:
     matrix, snap = load_model_matrix(MODEL_MATRIX_PATH), load_price_snapshot(PRICE_SNAPSHOT_PATH)
     hosted = [f for f in matrix.model_families if f.arm == "hosted"]

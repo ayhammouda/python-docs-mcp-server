@@ -262,6 +262,10 @@ async def test_reservations_carry_independently_computed_bounds(harness: Harness
     assert [r["output_bound"] for r in harness.recording.reserves] == [32_768] * 4
     assert harness.reserve_bounds() == [D("0.33021"), D("0.332335"), D("0.332335"), D("0.33652")]
     # a fake that reserved a fixed 200_000 input tokens would book 0.82768 for call 0 and fail here
+    # The call without usage is recorded and booked as no_usage, at twice its bound.
+    assert _outcomes(record, 1) == ["server", "no_usage"]
+    third = harness.settles()[2]
+    assert third["outcome"] == "no_usage" and D(third["booked"]) == 2 * D("0.332335")
 
 
 async def test_ninth_model_call_is_a_cap_failure(harness: Harness) -> None:
