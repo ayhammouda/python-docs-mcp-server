@@ -1,14 +1,12 @@
-"""Tests for the competitor guard latch and manifest eligibility gates (issue #87).
+"""Tests for the competitor manifest eligibility gates (issue #87).
 
 The four fixed-flow competitor adapters and their tests are gone (design
-§11.1): round 2 runs the competitors through the agentic MCP bridge. What
-stays, and is covered here unchanged:
-
-1. ``require_live_competitor`` latch semantics in isolation.
-2. Eligibility/exclusion: per-entry and manifest-level validation, the
-   runner's manifest-load-time refusal (including the CLI exit-2 path),
-   the ``exclusions:`` block's byte-for-byte snapshot survival, and the
-   committed template manifest.
+§11.1): round 2 runs the competitors through the agentic MCP bridge, and
+brings the keyless competitors' allowlist latch back with its caller. What
+stays, and is covered here: per-entry and manifest-level validation (by
+adapter or id), the runner's manifest-load-time refusal (including the CLI
+exit-2 path), the ``exclusions:`` block's byte-for-byte snapshot survival,
+and the committed template manifest.
 
 Zero network calls anywhere in this file, by construction.
 """
@@ -28,13 +26,6 @@ from benchmarks.adapters.eligibility import (
     validate_competitor_eligibility,
     validate_manifest_eligibility,
 )
-from benchmarks.adapters.guard import (
-    LIVE_COMPETITORS_ENV,
-    LIVE_PROVIDERS_ENABLED_ENV,
-    PROVIDER_API_KEY_ENV,
-    LiveProviderDisabledError,
-    require_live_competitor,
-)
 from benchmarks.runner import (
     BenchmarkConfig,
     BenchmarkValidationError,
@@ -48,71 +39,7 @@ _TEMPLATE_MANIFEST_PATH = (
 
 
 # =============================================================================
-# 1. require_live_competitor latch semantics in isolation
-# =============================================================================
-
-
-def test_require_live_competitor_refuses_without_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv(LIVE_PROVIDERS_ENABLED_ENV, raising=False)
-    monkeypatch.delenv(LIVE_COMPETITORS_ENV, raising=False)
-
-    with pytest.raises(LiveProviderDisabledError, match=LIVE_PROVIDERS_ENABLED_ENV):
-        require_live_competitor("gitmcp")
-
-
-def test_require_live_competitor_refuses_with_flag_but_name_absent_from_allowlist(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(LIVE_PROVIDERS_ENABLED_ENV, "1")
-    monkeypatch.setenv(LIVE_COMPETITORS_ENV, "deepwiki")
-
-    with pytest.raises(LiveProviderDisabledError, match=LIVE_COMPETITORS_ENV):
-        require_live_competitor("gitmcp")
-
-
-def test_require_live_competitor_refuses_with_allowlist_but_no_flag(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv(LIVE_PROVIDERS_ENABLED_ENV, raising=False)
-    monkeypatch.setenv(LIVE_COMPETITORS_ENV, "gitmcp")
-
-    with pytest.raises(LiveProviderDisabledError, match=LIVE_PROVIDERS_ENABLED_ENV):
-        require_live_competitor("gitmcp")
-
-
-def test_require_live_competitor_passes_only_with_both_latches(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(LIVE_PROVIDERS_ENABLED_ENV, "1")
-    monkeypatch.setenv(LIVE_COMPETITORS_ENV, "gitmcp")
-
-    require_live_competitor("gitmcp")  # must not raise
-
-
-def test_require_live_competitor_is_key_independent(monkeypatch: pytest.MonkeyPatch) -> None:
-    # No PROVIDER_API_KEY_ENV entry is consulted for a keyless competitor --
-    # the allowlist is the second latch, not a key.
-    monkeypatch.setenv(LIVE_PROVIDERS_ENABLED_ENV, "1")
-    monkeypatch.setenv(LIVE_COMPETITORS_ENV, "gitmcp")
-    monkeypatch.delenv(PROVIDER_API_KEY_ENV["ref"], raising=False)
-    monkeypatch.delenv(PROVIDER_API_KEY_ENV["context7"], raising=False)
-
-    require_live_competitor("gitmcp")  # must not raise despite no key env set anywhere
-
-
-def test_require_live_competitor_allowlist_parsing_tolerant_of_spaces_and_case(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(LIVE_PROVIDERS_ENABLED_ENV, "1")
-    monkeypatch.setenv(LIVE_COMPETITORS_ENV, " GitMCP , DeepWiki ")
-
-    require_live_competitor("gitmcp")  # must not raise
-    require_live_competitor("deepwiki")  # must not raise
-    require_live_competitor("GITMCP")  # must not raise -- case-insensitive on both sides
-
-
-# =============================================================================
-# 2. Eligibility / exclusion screening
+# Eligibility / exclusion screening
 # =============================================================================
 
 
@@ -224,6 +151,15 @@ def test_validate_manifest_eligibility_raises_for_excluded_competitor_entry() ->
     }
 
     with pytest.raises(BenchmarkValidationError, match="gitmcp"):
+        validate_manifest_eligibility(manifest)
+
+
+def test_validate_manifest_eligibility_screens_a_competitor_by_its_id_too() -> None:
+    # Round 2 runs competitors through the agentic bridge (adapter mcp-stdio), so the id alone
+    # must bring the pin and terms gate.
+    manifest = {"competitors": [{"id": "context7", "adapter": "mcp-stdio", "command": ["x"]}]}
+
+    with pytest.raises(BenchmarkValidationError, match="context7"):
         validate_manifest_eligibility(manifest)
 
 

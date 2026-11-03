@@ -34,7 +34,6 @@ from benchmarks.adapters.eligibility import (
 )
 from benchmarks.adapters.guard import (
     LiveProviderDisabledError,
-    require_live_competitor,
     require_live_environment,
 )
 from benchmarks.runner import BenchmarkCellFailure
@@ -43,7 +42,6 @@ __all__ = [
     "BenchmarkCellFailure",
     "LiveProviderDisabledError",
     "require_live_environment",
-    "require_live_competitor",
     "TokenCounter",
     "FakeTokenCounter",
     "LiveClaudeTokenCounter",

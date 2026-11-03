@@ -141,9 +141,10 @@ def validate_manifest_eligibility(manifest_data: dict[str, Any]) -> None:
     Called once, on the raw parsed manifest ``dict`` (before
     ``benchmarks.runner._load_competitors`` builds :class:`Competitor`
     instances and before any cell executes) by
-    ``benchmarks.runner.run_benchmark``. Entries whose ``adapter`` is not one
-    of :data:`COMPETITOR_ADAPTER_IDS` are skipped -- this validator only
-    applies to the four competitor docs-MCP adapters (see module docstring).
+    ``benchmarks.runner.run_benchmark``. Entries whose ``adapter`` and ``id``
+    are both outside :data:`COMPETITOR_ADAPTER_IDS` are skipped -- this
+    validator only applies to the four competitor docs MCPs (see module
+    docstring).
     Malformed entries in other respects (missing ``id``, missing
     ``adapter``, non-mapping items) are left to
     ``benchmarks.runner._load_competitors``'s own validation, which runs
@@ -155,5 +156,9 @@ def validate_manifest_eligibility(manifest_data: dict[str, Any]) -> None:
     for item in competitors:
         if not isinstance(item, dict):
             continue
-        if item.get("adapter") in COMPETITOR_ADAPTER_IDS:
+        # By id too: round 2 runs a competitor through the agentic bridge (adapter mcp-stdio).
+        if (
+            item.get("adapter") in COMPETITOR_ADAPTER_IDS
+            or item.get("id") in COMPETITOR_ADAPTER_IDS
+        ):
             validate_competitor_eligibility(item)

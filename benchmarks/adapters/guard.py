@@ -16,14 +16,8 @@ structurally incapable of running without both
 ``BENCHMARK_LIVE_PROVIDERS_ENABLED`` and ``ANTHROPIC_API_KEY`` set, exactly
 like every other provider gated here.
 
-Issue #87 adds :func:`require_live_competitor` for the keyless competitor
-docs MCPs (GitMCP, DeepWiki, and Context7 in its default keyless mode): they
-have no per-provider API key to gate on, so a second non-secret latch
-(:data:`LIVE_COMPETITORS_ENV`, a comma-separated allowlist) stands in for
-the key, keeping the same two-latch shape (global flag + per-target opt-in)
-as the keyed providers above. Keyed competitors (Context7 in key mode,
-Ref.tools) still go through :func:`require_live_environment` via their own
-``PROVIDER_API_KEY_ENV`` entries.
+The keyless competitors' allowlist latch is gone with the fixed-flow
+adapters that called it; round 2 brings it back together with its caller.
 """
 
 from __future__ import annotations
@@ -44,8 +38,7 @@ LIVE_PROVIDERS_ENABLED_ENV = "BENCHMARK_LIVE_PROVIDERS_ENABLED"
 #:
 #: ``ref`` and ``context7`` (issue #87) gate the keyed competitor docs MCPs:
 #: Ref.tools (always keyed) and Context7 when its manifest entry declares key
-#: mode (Context7 also has a keyless mode; see :func:`require_live_competitor`).
-#: Round 2 runs them through the agentic bridge.
+#: mode. Round 2 runs them through the agentic bridge.
 PROVIDER_API_KEY_ENV = {
     "openai": "OPENAI_API_KEY",
     "google": "GOOGLE_API_KEY",
@@ -53,15 +46,6 @@ PROVIDER_API_KEY_ENV = {
     "ref": "REF_API_KEY",
     "context7": "CONTEXT7_API_KEY",
 }
-
-#: Comma-separated allowlist of keyless competitor names permitted to run
-#: live (issue #87). Parsed case-insensitively with surrounding whitespace
-#: stripped from each item -- e.g. ``"gitmcp, DeepWiki"`` allows both
-#: ``gitmcp`` and ``deepwiki``. This is the second latch for
-#: :func:`require_live_competitor`; it deliberately holds no secret, so a
-#: keyless competitor still requires two explicit, independent opt-ins
-#: (the shared global flag plus this per-target allowlist) rather than one.
-LIVE_COMPETITORS_ENV = "BENCHMARK_LIVE_COMPETITORS"
 
 _TRUTHY = {"1", "true", "yes"}
 
@@ -140,39 +124,3 @@ def redact_api_keys(text: str) -> str:
         position = end
     parts.append(text[position:])
     return "".join(parts)
-
-
-def require_live_competitor(name: str) -> None:
-    """Raise :class:`LiveProviderDisabledError` unless a keyless competitor is explicitly enabled.
-
-    Two non-secret latches, both required (issue #87, Codex round-1 finding
-    3: flag-only gating would weaken the guard posture below the keyed
-    providers' two-condition shape):
-
-    1. ``BENCHMARK_LIVE_PROVIDERS_ENABLED`` is set to a truthy value (same
-       flag, same check, as :func:`require_live_environment`).
-    2. ``name`` appears in the comma-separated :data:`LIVE_COMPETITORS_ENV`
-       allowlist (case-insensitive, whitespace-tolerant).
-
-    Both conditions must hold. Passing this check does not by itself make a
-    live call: nothing in this module opens a transport.
-    """
-    flag = os.environ.get(LIVE_PROVIDERS_ENABLED_ENV, "").strip().lower()
-    if flag not in _TRUTHY:
-        raise LiveProviderDisabledError(
-            "live competitor calls are disabled: set "
-            f"{LIVE_PROVIDERS_ENABLED_ENV}=1 to pass the live-competitor guardrail check "
-            f"for competitor {name!r} (this does not by itself enable live calls; "
-            "see benchmarks/adapters/guard.py)"
-        )
-    allowlist = {
-        item.strip().lower()
-        for item in os.environ.get(LIVE_COMPETITORS_ENV, "").split(",")
-        if item.strip()
-    }
-    if name.strip().lower() not in allowlist:
-        raise LiveProviderDisabledError(
-            f"live competitor calls are disabled: {name!r} is not present in "
-            f"{LIVE_COMPETITORS_ENV} (comma-separated allowlist); set "
-            f"{LIVE_COMPETITORS_ENV}={name},... to enable it"
-        )
