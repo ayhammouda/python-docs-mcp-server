@@ -1,4 +1,7 @@
-"""Offline retrieval regression gate over the frozen public corpus (no LLM calls)."""
+"""Offline retrieval regression gate over the frozen public corpus (no LLM calls).
+
+The audit hook is a tripwire, not a sandbox (PEP 578): it reports use rather than restricts it.
+"""
 
 from __future__ import annotations
 
@@ -106,9 +109,39 @@ def regressions(actual: dict[str, Any], baseline: dict[str, Any]) -> list[str]:
     return errors
 
 
+# A child process starts without this hook, so process creation is blocked as well.
+FORBIDDEN_AUDIT_EVENTS = frozenset(
+    {
+        "socket.bind",
+        "socket.connect",
+        "socket.getaddrinfo",
+        "socket.gethostbyaddr",
+        "socket.gethostbyname",
+        "socket.getnameinfo",
+        "socket.sendmsg",
+        "socket.sendto",
+        "subprocess.Popen",
+        "os.exec",
+        "os.fork",
+        "os.forkpty",
+        "os.posix_spawn",
+        "os.spawn",
+        "os.startfile",
+        "os.system",
+        "pty.spawn",
+        "webbrowser.open",
+    }
+)
+# Library code may swallow the RuntimeError, so main() also checks this record.
+blocked_attempts: list[str] = []
+
+
 def deny_network(event: str, args: tuple[object, ...]) -> None:
-    if event in {"socket.connect", "socket.connect_ex", "socket.getaddrinfo"}:
-        raise RuntimeError("Network access is forbidden during offline evaluation")
+    if event in FORBIDDEN_AUDIT_EVENTS:
+        blocked_attempts.append(event)
+        raise RuntimeError(
+            f"Network and process access is forbidden during offline evaluation: {event}"
+        )
 
 
 def main() -> int:
@@ -123,8 +156,13 @@ def main() -> int:
     parser.add_argument("--record", action="store_true", help="Record evidence; never approves it")
     args = parser.parse_args()
     sys.addaudithook(deny_network)
+    blocked_attempts.clear()
     try:
         result = evaluate(args.index, args.corpus, args.schema)
+        if blocked_attempts:
+            raise RuntimeError(
+                f"blocked network or process access: {', '.join(sorted(set(blocked_attempts)))}"
+            )
         args.output.write_text(json.dumps(result, indent=2) + "\n")
         if args.record:
             print("Recorded evaluation; baseline changes require independent review.")

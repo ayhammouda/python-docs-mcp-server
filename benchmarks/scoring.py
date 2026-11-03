@@ -58,6 +58,7 @@ from typing import Any
 import yaml
 
 from benchmarks.corpus import CorpusQuestion, validate_corpus
+from benchmarks.report import _sha256_of
 from benchmarks.runner import BenchmarkValidationError
 
 #: The methodology's closed correctness score vocabulary
@@ -107,13 +108,16 @@ class _AutomaticDecision:
     reason: str
 
 
-def score_run(run_dir: Path, *, corpus_path: Path, schema_path: Path) -> dict[str, Any]:
+def score_run(
+    run_dir: Path, *, corpus_path: Path | None = None, schema_path: Path
+) -> dict[str, Any]:
     """Apply the automatic correctness-scoring pass to one run directory.
 
     Reads every ``scoring/<competitor_id>/<corpus_id>.json`` placeholder
     plus the matching ``transcripts/`` record, and the answer-key corpus
-    (validated via :func:`benchmarks.corpus.validate_corpus`). For each
-    cell:
+    from the run's own ``snapshots/corpus.yml`` (validated via
+    :func:`benchmarks.corpus.validate_corpus`). A ``corpus_path`` is only
+    accepted when its sha256 matches that snapshot. For each cell:
 
     - A record already carrying a human verdict (``scoring_method:
       "human"``) is left untouched.
@@ -126,18 +130,19 @@ def score_run(run_dir: Path, *, corpus_path: Path, schema_path: Path) -> dict[st
       queue file for a human (:func:`ingest_adjudication_verdicts`).
 
     Writes the (possibly updated) scoring records back in place, the
-    adjudication queue file, and a per-category/per-tool-model rollup file.
+    adjudication queue file, and a per-category/per-tool-model rollup file
+    that records the snapshot's ``corpus_sha256``.
     Raises ``BenchmarkValidationError`` (clean message, no traceback) if the
-    run has no scoring files yet, a scoring record has no matching
-    transcript, or a scoring record references a corpus id absent from the
-    answer-key corpus (the issue #88 recovery clause: this never invents a
-    missing answer key, it refuses instead).
+    run has no scoring files yet, the run has no corpus snapshot, a given
+    ``corpus_path`` differs from the snapshot, a scoring record has no
+    matching transcript, or a scoring record references a corpus id absent
+    from the answer-key corpus (the issue #88 recovery clause: this never
+    invents a missing answer key, it refuses instead).
 
     Idempotent: re-running after a partial adjudication ingest recomputes
     the same automatic decisions and leaves every human-scored record
     exactly as ingested.
     """
-    answer_keys = _load_answer_keys(corpus_path, schema_path)
     paths = ScoringPaths(run_dir)
 
     scoring_records = _load_cell_dir(paths.scoring_dir, _SCORING_REQUIRED_FIELDS, "scoring")
@@ -146,6 +151,8 @@ def score_run(run_dir: Path, *, corpus_path: Path, schema_path: Path) -> dict[st
             f"no scoring placeholder files found under {paths.scoring_dir}; run the "
             "benchmark runner first (`python -m benchmarks run`)"
         )
+    corpus_snapshot, corpus_sha256 = _run_corpus(run_dir, corpus_path)
+    answer_keys = _load_answer_keys(corpus_snapshot, schema_path)
     transcript_records = _load_cell_dir(
         paths.transcripts_dir, _TRANSCRIPT_REQUIRED_FIELDS, "transcript"
     )
@@ -185,10 +192,10 @@ def score_run(run_dir: Path, *, corpus_path: Path, schema_path: Path) -> dict[st
         if corpus_id not in answer_keys:
             raise BenchmarkValidationError(
                 f"scoring record {path} references corpus id {corpus_id!r}, which is not "
-                f"present in the answer-key corpus {corpus_path} -- if the corpus schema "
+                f"present in the answer-key corpus {corpus_snapshot} -- if the corpus schema "
                 "is missing a field the rubric needs, stop and comment on issue #88 rather "
-                "than inventing one (see the issue's recovery clause); otherwise re-run "
-                "against the correct answer-key corpus file"
+                "than inventing one (see the issue's recovery clause); otherwise rerun "
+                "the benchmark against the correct answer-key corpus file"
             )
 
         decision = _automatic_decision(answer)
@@ -215,6 +222,7 @@ def score_run(run_dir: Path, *, corpus_path: Path, schema_path: Path) -> dict[st
         {"run_dir": str(run_dir), "generated_at": _utc_now(), "cells": queue_entries},
     )
     rollups = _compute_rollups(finalized, answer_keys)
+    rollups["corpus_sha256"] = corpus_sha256
     _write_json(paths.rollups_path, rollups)
 
     return {
@@ -230,7 +238,7 @@ def score_run(run_dir: Path, *, corpus_path: Path, schema_path: Path) -> dict[st
 
 
 def ingest_adjudication_verdicts(
-    run_dir: Path, verdicts_path: Path, *, corpus_path: Path, schema_path: Path
+    run_dir: Path, verdicts_path: Path, *, corpus_path: Path | None = None, schema_path: Path
 ) -> dict[str, Any]:
     """Ingest human verdicts for queued cells and re-emit final scoring records.
 
@@ -253,13 +261,19 @@ def ingest_adjudication_verdicts(
     cell (failed cells are already fixed at ``0.0`` by the runner and are
     not adjudicated).
 
+    The answer keys come from the run's own ``snapshots/corpus.yml``, as in
+    :func:`score_run`. A run without that snapshot, or a ``corpus_path``
+    whose sha256 differs from it, is refused before any verdict is written.
+
     After applying every verdict, recomputes and rewrites the adjudication
-    queue file (dropping now-resolved cells) and the rollup file, so both
-    stay consistent with the latest finalized records.
+    queue file (dropping now-resolved cells) and the rollup file (with the
+    snapshot's ``corpus_sha256``), so both stay consistent with the latest
+    finalized records.
     """
-    answer_keys = _load_answer_keys(corpus_path, schema_path)
     paths = ScoringPaths(run_dir)
     verdicts = _load_verdicts(verdicts_path)
+    corpus_snapshot, corpus_sha256 = _run_corpus(run_dir, corpus_path)
+    answer_keys = _load_answer_keys(corpus_snapshot, schema_path)
 
     applied = 0
     for verdict in verdicts:
@@ -327,6 +341,7 @@ def ingest_adjudication_verdicts(
     )
 
     rollups = _compute_rollups(finalized, answer_keys)
+    rollups["corpus_sha256"] = corpus_sha256
     _write_json(paths.rollups_path, rollups)
 
     return {
@@ -506,6 +521,28 @@ def _rollup_stats(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 # --- Loading and I/O helpers ---------------------------------------------------
+
+
+def _run_corpus(run_dir: Path, corpus_path: Path | None) -> tuple[Path, str]:
+    """Return the run's corpus snapshot and its sha256; refuse any other corpus."""
+    snapshot = run_dir / "snapshots" / "corpus.yml"
+    if not snapshot.is_file():
+        raise BenchmarkValidationError(
+            f"run directory has no corpus snapshot at {snapshot}; score only run "
+            "directories written by 'python -m benchmarks run'"
+        )
+    expected = _sha256_of(snapshot)
+    if corpus_path is not None:
+        if not corpus_path.is_file():
+            raise BenchmarkValidationError(f"corpus file does not exist: {corpus_path}")
+        given = _sha256_of(corpus_path)
+        if given != expected:
+            raise BenchmarkValidationError(
+                f"--corpus {corpus_path} does not match this run's corpus snapshot "
+                f"{snapshot} (sha256 {given} != {expected}); score against the snapshot, "
+                "or rerun the benchmark with the changed corpus"
+            )
+    return snapshot, expected
 
 
 def _load_answer_keys(corpus_path: Path, schema_path: Path) -> dict[str, CorpusQuestion]:

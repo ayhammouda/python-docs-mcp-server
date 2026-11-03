@@ -81,6 +81,10 @@ class LiveProviderDisabledError(BenchmarkCellFailure):
         super().__init__("tool_failure", message)
 
 
+class MalformedApiKeyError(LiveProviderDisabledError):
+    """Raised when a provider API key is set but holds characters no HTTP header may carry."""
+
+
 class LiveExecutionNotImplementedError(BenchmarkCellFailure):
     """Raised after the guard passes: live execution itself is not implemented.
 
@@ -100,8 +104,10 @@ def require_live_environment(provider: str) -> None:
     1. ``BENCHMARK_LIVE_PROVIDERS_ENABLED`` is set to a truthy value.
     2. The provider-specific API key environment variable (see
        :data:`PROVIDER_API_KEY_ENV`) is set and non-empty.
+    3. That variable's raw value is ASCII, with no whitespace or
+       non-printable character (an HTTP client error would quote such a key).
 
-    Both conditions must hold. Passing this check does not mean a live call
+    All conditions must hold. Passing this check does not mean a live call
     will be made -- see the module docstring.
     """
     flag = os.environ.get(LIVE_PROVIDERS_ENABLED_ENV, "").strip().lower()
@@ -115,11 +121,44 @@ def require_live_environment(provider: str) -> None:
     key_env = PROVIDER_API_KEY_ENV.get(provider)
     if key_env is None:
         raise LiveProviderDisabledError(f"unknown provider for live guard: {provider!r}")
-    if not os.environ.get(key_env, "").strip():
+    raw_key = os.environ.get(key_env, "")
+    if not raw_key.strip():
         raise LiveProviderDisabledError(
             f"live provider calls are disabled: missing required {key_env} for "
             f"provider {provider!r}"
         )
+    if not raw_key.isascii() or any(char.isspace() or not char.isprintable() for char in raw_key):
+        raise MalformedApiKeyError(
+            f"live provider calls are disabled: {key_env} contains whitespace, control or "
+            "non-ASCII characters"
+        )
+
+
+def redact_api_keys(text: str) -> str:
+    """Replace every set :data:`PROVIDER_API_KEY_ENV` key in ``text`` with ``[redacted]``."""
+    # Find every match of every key in the original text (overlaps included), merge
+    # overlapping or adjacent spans, then redact each merged span once, so keys that
+    # contain or overlap each other leave no fragment. Empty values are skipped.
+    api_keys = {os.environ.get(key_env, "").strip() for key_env in PROVIDER_API_KEY_ENV.values()}
+    spans: list[tuple[int, int]] = []
+    for api_key in filter(None, api_keys):
+        start = text.find(api_key)
+        while start != -1:
+            spans.append((start, start + len(api_key)))
+            start = text.find(api_key, start + 1)
+    merged: list[list[int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    parts: list[str] = []
+    position = 0
+    for start, end in merged:  # one pass: copying the tail per match is quadratic
+        parts += (text[position:start], "[redacted]")
+        position = end
+    parts.append(text[position:])
+    return "".join(parts)
 
 
 def require_live_competitor(name: str) -> None:

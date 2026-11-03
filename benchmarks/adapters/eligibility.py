@@ -31,7 +31,7 @@ Convention (manifest authoring, see
   moved to ``exclusions:`` -- and is rejected with a message pointing there.
 
 Only entries whose ``adapter`` is one of the four competitor adapter ids are
-validated. This is deliberate: the existing ``fake``/``no-mcp-baseline`` and
+validated. This is deliberate: the existing ``fake`` and
 ``python-docs-mcp-stdio`` adapters (issues #72/#86) carry no pin/terms
 metadata and merged fixtures in ``tests/benchmarks/test_runner.py`` build
 manifests without it -- scoping validation to the new competitor ids keeps

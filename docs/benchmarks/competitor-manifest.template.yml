@@ -18,12 +18,13 @@
 # fetch of its own (see the run's forbidden-territory list: zero live
 # network calls anywhere in this task).
 #
-# The `no-mcp-baseline` and `python-docs-mcp-server` (adapter:
-# python-docs-mcp-stdio) entries from the methodology's candidate matrix are
-# NOT repeated here -- they carry no pin/terms_check metadata (issues
-# #72/#86) and belong in a full run manifest assembled separately; this
-# template covers only the four competitor docs-MCP adapters added by
-# issue #87.
+# The `python-docs-mcp-server` (adapter: python-docs-mcp-stdio) entry from
+# the methodology's candidate matrix is NOT repeated here -- it carries no
+# pin/terms_check metadata (issue #86) and belongs in a full run manifest
+# assembled separately; this template covers only the four competitor
+# docs-MCP adapters added by issue #87. The fixed flow has no no-MCP
+# baseline adapter; the agentic harness adds a `no-docs` arm instead
+# (AGENTIC-BENCHMARK-DESIGN.md section 5).
 
 competitors:
   # --- Context7 (Upstash) -----------------------------------------------

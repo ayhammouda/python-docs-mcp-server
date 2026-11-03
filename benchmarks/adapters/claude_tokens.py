@@ -4,8 +4,8 @@ Implements the "Token Measurement" section of
 ``docs/benchmarks/PUBLIC-BENCHMARK-METHODOLOGY.md`` (roadmap decision 5.8):
 count the client-rewrapped message envelope with Claude token counting,
 record raw payload tokens separately as diagnostic data, and mark a result
-``approximation: true`` when the exact client-wrapped envelope cannot be
-recovered.
+``approximation: true``. Every fixed-flow count is one: the envelope has no
+real tool definitions or system prompt (see "Envelope exactness" below).
 
 **Binding pre-flight amendment (issue #89, 2026-07-08):** no third-party
 dependency may be added for this -- not the ``anthropic`` SDK, not an
@@ -21,18 +21,16 @@ network call unless ``BENCHMARK_LIVE_PROVIDERS_ENABLED`` and
 ``ANTHROPIC_API_KEY`` are both set. CI and unit tests never set those, so
 they never reach the network; tests use :class:`FakeTokenCounter` instead.
 
-**Envelope exactness:** :func:`build_client_wrapped_envelope` returns
-``approximation=True`` only when handed a provider-adapter mock/live-stub
-payload (``benchmarks.adapters.base.AdapterResponse.raw`` from
-``MockOpenAIAdapter`` / ``MockGoogleAdapter`` / their live-stub
-counterparts). Those adapters never call a real ``openai-python`` /
-``google-genai`` client, so there is no real wrapped request body to
-recover -- the methodology requires marking that gap honestly rather than
-guessing. Cells produced by adapters that do not go through a provider SDK
-at all (the no-MCP baseline, or the offline
-``benchmarks.adapters.python_docs_mcp_adapter`` retrieval adapter) hand this
-module real prompt/tool-call data directly, so this module's own
-fixed wrapping of that data is exact, not an approximation.
+**Envelope exactness:** every count here is an approximation, and
+:func:`build_client_wrapped_envelope` always returns ``approximation=True``.
+The fixed-flow envelope carries the corpus prompt and the recorded tool
+calls, but no real client's tool definitions or system prompt; with tool
+calls it sends name-only tool stubs, so the count includes the API's
+tool-use preamble. A provider-adapter mock/live-stub payload
+(``MockOpenAIAdapter`` / ``MockGoogleAdapter`` and their live-stub
+counterparts) wraps the prompt alone, since no real client SDK call was
+made. Exact post-run counting of a real client's request is the new
+harness's job (design §8), not this module's.
 """
 
 from __future__ import annotations
@@ -45,7 +43,11 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV, require_live_environment
+from benchmarks.adapters.guard import (
+    PROVIDER_API_KEY_ENV,
+    redact_api_keys,
+    require_live_environment,
+)
 from benchmarks.runner import BenchmarkCellFailure
 
 #: Anthropic Messages API count-tokens endpoint. Counts a message envelope
@@ -60,7 +62,7 @@ ANTHROPIC_API_VERSION = "2023-06-01"
 #: Model id used solely to select a tokenizer for the count-tokens call.
 #: This never generates text and is never billed as a completion -- it only
 #: selects which Claude tokenizer counts the envelope.
-DEFAULT_COUNT_MODEL = "claude-3-5-sonnet-20241022"
+DEFAULT_COUNT_MODEL = "claude-sonnet-5-5"
 
 #: Per-call HTTP timeout for the live count-tokens request.
 REQUEST_TIMEOUT_SECONDS = 30.0
@@ -88,8 +90,11 @@ class TokenCounter(Protocol):
     or :class:`LiveClaudeTokenCounter` (the guarded maintainer-run phase).
     """
 
-    def count(self, messages: list[dict[str, Any]]) -> int:
-        """Return the token count for ``messages`` (an Anthropic-shaped envelope)."""
+    def count(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
+    ) -> int:
+        """Return the token count for ``messages`` (an Anthropic-shaped envelope),
+        counted with ``tools`` when given."""
         raise NotImplementedError
 
 
@@ -108,7 +113,9 @@ class FakeTokenCounter:
     tokens_per_call: int | None = None
     calls: list[list[dict[str, Any]]] = field(default_factory=list)
 
-    def count(self, messages: list[dict[str, Any]]) -> int:
+    def count(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
+    ) -> int:
         self.calls.append(messages)
         if self.tokens_per_call is not None:
             return self.tokens_per_call
@@ -125,9 +132,10 @@ class LiveClaudeTokenCounter:
     ``ANTHROPIC_API_KEY`` set. Raises
     :class:`benchmarks.adapters.guard.LiveProviderDisabledError` (a
     ``BenchmarkCellFailure`` subclass) when the guard fails, and
-    ``BenchmarkCellFailure`` (category ``tool_failure``) on any HTTP or
-    response-shape failure, matching every other adapter's failure-capture
-    contract.
+    ``BenchmarkCellFailure`` (category ``tool_failure``) on an HTTP, network
+    or response-shape failure, matching every other adapter's failure-capture
+    contract. An ``http.client.IncompleteRead`` from ``response.read()`` is not
+    wrapped; it reaches the runner's catch-all, which records a failed count.
     """
 
     provider = PROVIDER
@@ -135,11 +143,17 @@ class LiveClaudeTokenCounter:
     def __init__(self, *, model: str = DEFAULT_COUNT_MODEL) -> None:
         self._model = model
 
-    def count(self, messages: list[dict[str, Any]]) -> int:
+    def count(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
+    ) -> int:
         require_live_environment(self.provider)
-        api_key = os.environ.get(PROVIDER_API_KEY_ENV[self.provider], "").strip()
+        key_env = PROVIDER_API_KEY_ENV[self.provider]
+        api_key = os.environ.get(key_env, "").strip()
 
-        body = json.dumps({"model": self._model, "messages": messages}).encode("utf-8")
+        request_body: dict[str, Any] = {"model": self._model, "messages": messages}
+        if tools:
+            request_body["tools"] = tools
+        body = json.dumps(request_body).encode("utf-8")
         request = urllib.request.Request(
             COUNT_TOKENS_URL,
             data=body,
@@ -152,10 +166,27 @@ class LiveClaudeTokenCounter:
         )
         try:
             with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-                payload = json.loads(response.read().decode("utf-8"))
+                raw = response.read()
+        except urllib.error.HTTPError as exc:
+            try:
+                error_raw = exc.read()
+            except Exception:  # a failing read must not hide the status code
+                error_raw = b""
+            raise BenchmarkCellFailure(
+                "tool_failure",
+                "Anthropic count-tokens call failed: "
+                f"HTTP {exc.code}: {_error_body(error_raw)}",
+            ) from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise BenchmarkCellFailure(
                 "tool_failure", f"Anthropic count-tokens call failed: {exc}"
+            ) from exc
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except ValueError as exc:
+            raise BenchmarkCellFailure(
+                "tool_failure",
+                f"Anthropic count-tokens response is not JSON: {_error_body(raw)}",
             ) from exc
         input_tokens = payload.get("input_tokens") if isinstance(payload, dict) else None
         if not isinstance(input_tokens, int):
@@ -164,6 +195,13 @@ class LiveClaudeTokenCounter:
                 f"Anthropic count-tokens response missing integer 'input_tokens': {payload!r}",
             )
         return input_tokens
+
+
+def _error_body(raw: bytes) -> str:
+    """Make a response body safe to record: decoded, API keys redacted, whitespace
+    collapsed, cut to 300 characters."""
+    text = redact_api_keys(raw.decode("utf-8", "replace"))
+    return " ".join(text.split())[:300]
 
 
 @dataclass(frozen=True)
@@ -189,37 +227,67 @@ def build_client_wrapped_envelope(
 
     Implements methodology "Token Measurement" steps 1-3: capture the MCP
     tool response or baseline prompt context, pass it through this
-    benchmark's client-side wrapping (a user message carrying the corpus
-    prompt, plus one ``tool_result`` content block per recorded tool call),
-    and return the resulting envelope for counting.
+    benchmark's client-side wrapping, and return the resulting envelope for
+    counting. With tool calls the envelope is valid for the API: the user
+    prompt, one assistant message of ``tool_use`` blocks, and one user
+    message of only the matching ``tool_result`` blocks.
 
     ``provider_mock_payload`` is the raw payload from a provider-adapter
     mock/live-stub (``benchmarks.adapters.base.AdapterResponse.raw`` for
     ``MockOpenAIAdapter`` / ``MockGoogleAdapter`` and their live-stub
     counterparts, identifiable by their ``"mock": True`` marker). Those
     adapters never call a real client SDK, so there is no real wrapped
-    request body to recover; per the methodology, this function then wraps
-    only the prompt text and reports ``approximation=True`` rather than
-    guessing at a shape the real SDK would have produced.
+    request body to recover; this function then wraps only the prompt text.
 
-    Returns ``(envelope, approximation)``.
+    Returns ``(envelope, approximation)``; ``approximation`` is always
+    ``True`` (see the module docstring, "Envelope exactness").
     """
-    if provider_mock_payload is not None:
-        return [{"role": "user", "content": prompt}], True
-
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
-    if tool_calls:
-        content_blocks = [
+    if provider_mock_payload is not None or not tool_calls:
+        return messages, True
+
+    tool_uses: list[dict[str, Any]] = []
+    tool_results: list[dict[str, Any]] = []
+    for index, call in enumerate(tool_calls):
+        tool = call.get("tool", "tool")
+        tool_use_id = f"benchmark-cell-{index}-{tool}"
+        arguments = call.get("arguments")
+        tool_uses.append(
+            {
+                "type": "tool_use",
+                "id": tool_use_id,
+                "name": tool,
+                "input": arguments if isinstance(arguments, dict) else {},
+            }
+        )
+        tool_results.append(
             {
                 "type": "tool_result",
-                "tool_use_id": f"benchmark-cell-{index}-{call.get('tool', 'tool')}",
+                "tool_use_id": tool_use_id,
                 "content": json.dumps(call.get("result"), sort_keys=True, default=str),
                 "is_error": bool(call.get("is_error", False)),
             }
-            for index, call in enumerate(tool_calls)
-        ]
-        messages.append({"role": "user", "content": content_blocks})
-    return messages, False
+        )
+    messages.append({"role": "assistant", "content": tool_uses})
+    messages.append({"role": "user", "content": tool_results})
+    return messages, True
+
+
+def _tool_stubs(envelope: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+    """One name-only tool definition per distinct ``tool_use`` name, in
+    first-seen order, or ``None`` when the envelope holds no ``tool_use`` block.
+
+    A real client that sends tool blocks always sends tool definitions, and
+    the count endpoint may reject tool blocks without them.
+    """
+    names: dict[str, None] = {}
+    for message in envelope:
+        content = message.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if block.get("type") == "tool_use":
+                    names.setdefault(block["name"], None)
+    return [{"name": name, "input_schema": {"type": "object"}} for name in names] or None
 
 
 def _raw_payload_envelope(
@@ -256,17 +324,19 @@ def count_cell_tokens(
     envelope, approximation = build_client_wrapped_envelope(
         prompt, tool_calls=tool_calls, provider_mock_payload=provider_mock_payload
     )
-    client_wrapped_tokens = counter.count(envelope)
+    tools = _tool_stubs(envelope)
+    client_wrapped_tokens = counter.count(envelope, tools=tools)
     raw_envelope = _raw_payload_envelope(prompt, tool_calls)
     raw_payload_tokens = counter.count(raw_envelope)
     serialization_latency_ms = round((time.perf_counter() - started) * 1000, 3)
 
     notes = (
-        "approximation: provider-adapter mock/live-stub cannot expose its exact "
-        "client-wrapped envelope (no real client SDK call was made); wrapping the "
-        "raw prompt only, per PUBLIC-BENCHMARK-METHODOLOGY.md 'Token Measurement'"
-        if approximation
-        else "counted from this benchmark's client-side wrapped message envelope"
+        "approximation: fixed-flow envelope with name-only tool stubs (the count "
+        "includes the API's tool-use preamble) and no real tool definitions or system "
+        "prompt (PUBLIC-BENCHMARK-METHODOLOGY.md 'Token Measurement')"
+        if tools
+        else "approximation: fixed-flow envelope with no real tool definitions or system "
+        "prompt (PUBLIC-BENCHMARK-METHODOLOGY.md 'Token Measurement')"
     )
     return TokenCountResult(
         client_wrapped_tokens=client_wrapped_tokens,

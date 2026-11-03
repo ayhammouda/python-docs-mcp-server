@@ -2,7 +2,7 @@
 
 Dispatches each competitor/question cell to an adapter looked up by the
 competitor manifest's ``adapter`` id (see ``_ADAPTER_DISPATCH``): the local
-fake/baseline adapter (issue #72), or the offline stdio adapter that runs
+fake adapter (issue #72; tests only), or the offline stdio adapter that runs
 python-docs-mcp-server itself as a system under test (issue #86, see
 ``benchmarks.adapters.python_docs_mcp_adapter``). Live LLM provider
 adapters (``benchmarks.adapters.openai_adapter`` / ``google_adapter``,
@@ -48,6 +48,49 @@ class BenchmarkCellFailure(RuntimeError):
     def __init__(self, category: str, message: str) -> None:
         super().__init__(message)
         self.category = category
+
+
+def cell_failure_from(
+    exc: BaseException, *, timeout_seconds: float, label: str
+) -> BenchmarkCellFailure:
+    """Map an adapter's failure to one recorded cell failure with its real reason.
+
+    mcp 2.3.0 nests a failure raised inside a session two task groups deep
+    (``ExceptionGroup > ExceptionGroup > leaf``), and the group's own text
+    ("unhandled errors in a TaskGroup") hides the reason, so this walks the
+    leaves depth first. Category: the first leaf ``BenchmarkCellFailure``'s
+    category, else ``timeout`` if any leaf is a ``TimeoutError``, else
+    ``mcp_protocol_crash``. A leaf with empty text is named by its type.
+    """
+
+    def leaves(error: BaseException) -> list[BaseException]:
+        if isinstance(error, BaseExceptionGroup):
+            return [leaf for sub in error.exceptions for leaf in leaves(sub)]
+        return [error]
+
+    def text(leaf: BaseException) -> str:
+        if isinstance(leaf, TimeoutError) and not str(leaf):
+            return f"{label} did not complete within {timeout_seconds}s"
+        return str(leaf)
+
+    found = leaves(exc)
+    failures = [leaf for leaf in found if isinstance(leaf, BenchmarkCellFailure)]
+    if failures:
+        category = failures[0].category
+    elif any(isinstance(leaf, TimeoutError) for leaf in found):
+        category = "timeout"
+    else:
+        category = "mcp_protocol_crash"
+
+    if len(found) == 1:
+        message = text(found[0]) or type(found[0]).__name__
+    else:
+        parts = []
+        for leaf in found:
+            name, leaf_text = type(leaf).__name__, text(leaf)
+            parts.append(f"{name}: {leaf_text}" if leaf_text else name)
+        message = "; ".join(parts)
+    return BenchmarkCellFailure(category, message)
 
 
 @dataclass(frozen=True)
@@ -150,7 +193,6 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
         "manifest_path": str(config.manifest_path),
         "artifact_root": str(run_dir),
         "repo_commit": environment["repo_commit"],
-        "external_provider_calls": False,
         "planned_cells": len(cells),
         "correctness_denominator_cells": len(cells),
         "scored_cells": scored_cells,
@@ -255,6 +297,9 @@ def _required_safe_id(item: dict[str, Any], key: str, label: str) -> str:
 
 
 def _execute_cell(cell: BenchmarkCell) -> dict[str, Any]:
+    # Lazy: benchmarks.adapters.guard imports this module (see _build_token_record).
+    from benchmarks.adapters.guard import redact_api_keys
+
     started = time.perf_counter()
     started_at = _utc_now()
     status = "succeeded"
@@ -268,10 +313,18 @@ def _execute_cell(cell: BenchmarkCell) -> dict[str, Any]:
         tool_calls = dispatched.tool_calls
     except BenchmarkCellFailure as exc:
         status = "failed"
-        error = {"category": exc.category, "type": type(exc).__name__, "message": str(exc)}
+        error = {
+            "category": exc.category,
+            "type": type(exc).__name__,
+            "message": redact_api_keys(str(exc)),
+        }
     except Exception as exc:  # noqa: BLE001 - failures are benchmark artifacts
         status = "failed"
-        error = {"category": "tool_failure", "type": type(exc).__name__, "message": str(exc)}
+        error = {
+            "category": "tool_failure",
+            "type": type(exc).__name__,
+            "message": redact_api_keys(str(exc)),
+        }
 
     latency_ms = round((time.perf_counter() - started) * 1000, 3)
     completed_at = _utc_now()
@@ -291,7 +344,6 @@ def _execute_cell(cell: BenchmarkCell) -> dict[str, Any]:
         # None for adapters that do not record raw payloads.
         "tool_calls": tool_calls,
         "error": error,
-        "external_provider_calls": False,
     }
     token_record = _build_token_record(cell, tool_model_key, answer, tool_calls)
     latency_record = {
@@ -338,11 +390,13 @@ def _build_token_record(
     ``tests/benchmarks/test_runner.py``, which only asserts the tokens file
     exists, not its content).
 
-    A count-tokens call failure (e.g. a live-phase network error) is
-    recorded as this cell's own ``failed`` token status rather than
+    A count-tokens call failure of any kind (e.g. a live-phase network error,
+    or a truncated response read) is recorded as this cell's own ``failed``
+    token status, named by its exception type, rather than
     propagated -- a token-counting problem must never crash the whole
     benchmark run or mask a competitor's actual answer/latency/scoring
-    results for the same cell.
+    results for the same cell. A malformed ``ANTHROPIC_API_KEY`` (the guard's
+    ``MalformedApiKeyError``) is a failed count too, never a pending one.
 
     Imported lazily, for the same reason ``_python_docs_mcp_stdio_answer``
     imports its adapter lazily: ``benchmarks.adapters.guard`` and
@@ -350,8 +404,18 @@ def _build_token_record(
     module scope, so this module cannot import from them at module scope
     without a circular import.
     """
-    from benchmarks.adapters.claude_tokens import LiveClaudeTokenCounter, count_cell_tokens
-    from benchmarks.adapters.guard import LiveProviderDisabledError, require_live_environment
+    from benchmarks.adapters.claude_tokens import (
+        ANTHROPIC_API_VERSION,
+        DEFAULT_COUNT_MODEL,
+        LiveClaudeTokenCounter,
+        count_cell_tokens,
+    )
+    from benchmarks.adapters.guard import (
+        LiveProviderDisabledError,
+        MalformedApiKeyError,
+        redact_api_keys,
+        require_live_environment,
+    )
     from benchmarks.model_matrix import METHODOLOGY_TOKEN_LABEL
 
     base_fields = {
@@ -361,9 +425,27 @@ def _build_token_record(
         "token_label": METHODOLOGY_TOKEN_LABEL,
         "input_characters": len(cell.question.prompt),
         "output_characters": len(answer),
+        "count_model": DEFAULT_COUNT_MODEL,
+        "anthropic_version": ANTHROPIC_API_VERSION,
     }
+
+    def failed_record(exc: Exception) -> dict[str, Any]:
+        # Defense in depth: no exception text may carry the key into a record.
+        return {
+            **base_fields,
+            "status": "failed",
+            "client_wrapped_tokens": None,
+            "raw_payload_tokens": None,
+            "approximation": False,
+            "notes": redact_api_keys(
+                f"Claude count-tokens call failed: {type(exc).__name__}: {exc}"
+            ),
+        }
+
     try:
         require_live_environment("anthropic")
+    except MalformedApiKeyError as exc:
+        return failed_record(exc)
     except LiveProviderDisabledError as exc:
         return {
             **base_fields,
@@ -384,15 +466,8 @@ def _build_token_record(
             tool_calls=tool_calls,
             counter=LiveClaudeTokenCounter(),
         )
-    except BenchmarkCellFailure as exc:
-        return {
-            **base_fields,
-            "status": "failed",
-            "client_wrapped_tokens": None,
-            "raw_payload_tokens": None,
-            "approximation": False,
-            "notes": f"Claude count-tokens call failed: {exc}",
-        }
+    except Exception as exc:
+        return failed_record(exc)
 
     return {
         **base_fields,
@@ -412,7 +487,7 @@ class _CellDispatchResult:
     ``tool_calls`` is optional raw tool call/response metadata (e.g. the
     python-docs-mcp-stdio adapter's ``search_docs``/``get_docs`` payloads,
     issue #86) merged into the cell's transcript record. Adapters with
-    nothing extra to record (the fake/baseline adapter) leave it ``None``.
+    nothing extra to record (the fake adapter) leave it ``None``.
     """
 
     answer: str
@@ -420,7 +495,7 @@ class _CellDispatchResult:
 
 
 def _fake_adapter_answer(cell: BenchmarkCell) -> _CellDispatchResult:
-    """The mocked-plumbing fake/no-mcp-baseline adapter (issue #72)."""
+    """The mocked-plumbing fake adapter (issue #72), for tests only."""
     forced_failure = cell.competitor.raw.get("force_failure")
     if forced_failure:
         category = _forced_failure_category(forced_failure)
@@ -606,8 +681,6 @@ def _ref_tools_answer(cell: BenchmarkCell) -> _CellDispatchResult:
 #: (and therefore any of these dispatch functions) ever runs.
 _ADAPTER_DISPATCH: dict[str, Callable[[BenchmarkCell], _CellDispatchResult]] = {
     "fake": _fake_adapter_answer,
-    "no-mcp-baseline": _fake_adapter_answer,
-    "no_mcp_baseline": _fake_adapter_answer,
     "python-docs-mcp-stdio": _python_docs_mcp_stdio_answer,
     "context7": _context7_answer,
     "gitmcp": _gitmcp_answer,
@@ -714,7 +787,6 @@ def _environment_metadata(*, run_id: str, dry_run: bool) -> dict[str, Any]:
         "system": platform.system(),
         "machine": platform.machine(),
         "benchmark_runner": "benchmarks",
-        "external_provider_calls": False,
     }
 
 
