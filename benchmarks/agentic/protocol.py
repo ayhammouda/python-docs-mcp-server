@@ -61,7 +61,3 @@ def assert_no_key_shaped(text: str, *, where: str) -> None:
     if match := KEY_SHAPED.search(text):
         # Names the place and the pattern, never the match.
         raise KeyLeakError(f"a key-shaped string ({match.lastgroup} pattern) was found in {where}")
-
-
-def contains_own_key(text: str, own_key: str | None) -> bool:
-    return bool(own_key) and own_key in text

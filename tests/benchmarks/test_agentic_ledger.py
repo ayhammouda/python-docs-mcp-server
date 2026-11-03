@@ -24,7 +24,6 @@ from benchmarks.agentic.ledger import (
     actual_cost,
     booked_cost,
     bound_cost,
-    clamp_input_bound,
     load_price_snapshot,
     refuse_stale_snapshot,
 )
@@ -248,11 +247,6 @@ def test_bound_cost_uses_openai_cache_write_rate_and_uncached_rate_elsewhere() -
     anthropic = _flat("2", "2.5", "0.2", "10", provider="anthropic")
     assert bound_cost(openai, input_bound=1_000_000, output_bound=0) == D("2.5")
     assert bound_cost(anthropic, input_bound=1_000_000, output_bound=0) == D("2")
-
-
-def test_input_bound_is_clamped_to_the_model_maximum() -> None:
-    assert clamp_input_bound(2_000_000, 1_048_576) == 1_048_576
-    assert clamp_input_bound(10, 1_048_576) == 10
 
 
 @pytest.mark.parametrize(

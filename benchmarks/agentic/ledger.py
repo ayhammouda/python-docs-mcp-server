@@ -211,10 +211,6 @@ def bound_cost(price: ModelPrice, *, input_bound: int, output_bound: int) -> Dec
     return (input_bound * input_rate + output_bound * rates.output) / _MILLION
 
 
-def clamp_input_bound(bound: int, max_input_tokens: int) -> int:
-    return min(bound, max_input_tokens)
-
-
 def booked_cost(outcome: Outcome, *, bound: Decimal, actual: Decimal | None) -> Decimal:
     if outcome == "ok":
         if actual is None:
@@ -437,7 +433,7 @@ class LedgerService:
             raise BenchmarkValidationError(f"no price snapshot entry for model {model_id!r}")
         family = self._families.get(model_id)
         if family is not None and family.max_input_tokens is not None:
-            input_bound = clamp_input_bound(input_bound, family.max_input_tokens)
+            input_bound = min(input_bound, family.max_input_tokens)  # a larger request is refused
         bound = bound_cost(price, input_bound=input_bound, output_bound=output_bound)
         lock = self._locks.setdefault(provider, asyncio.Lock())
         await lock.acquire()  # held until this unit's settle

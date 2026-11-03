@@ -19,7 +19,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from importlib.metadata import version
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -40,8 +39,13 @@ from benchmarks.agentic.ledger import (
 from benchmarks.agentic.loop import AIR_GAPPED_CAPS, HOSTED_CAPS
 from benchmarks.agentic.prompt import SYSTEM_PROMPT
 from benchmarks.agentic.protocol import assert_no_key_shaped
-from benchmarks.agentic.worker import MAX_RERUNS
-from benchmarks.model_matrix import METHODOLOGY_TOKEN_LABEL, ModelFamily, load_model_matrix
+from benchmarks.agentic.worker import MAX_RERUNS, _client_versions
+from benchmarks.model_matrix import (
+    _HOSTED_REQUIRED_FIELDS,
+    METHODOLOGY_TOKEN_LABEL,
+    ModelFamily,
+    load_model_matrix,
+)
 from benchmarks.runner import (
     BenchmarkCell,
     BenchmarkValidationError,
@@ -68,13 +72,6 @@ def default_ledger_dir() -> Path:
     return Path(platformdirs.user_data_dir("mcp-python-docs-benchmarks")) / "ledger"
 
 
-_CLIENT_PACKAGES = ("anthropic", "openai", "google-genai", "mcp")
-_HOSTED_FIELDS = (
-    "max_input_tokens",
-    "max_output_tokens",
-    "output_cap_includes_reasoning",
-    "framing_allowance_tokens",
-)
 _TIMING_SUMS = ("grant_wait", "failed_attempt", "retry_wait")
 
 
@@ -139,10 +136,6 @@ def plan_jobs(
 def _write(path: Path, data: dict[str, Any]) -> None:
     assert_no_key_shaped(json.dumps(data, sort_keys=True), where=str(path))
     _write_json(path, data)
-
-
-def _client_versions() -> dict[str, str]:
-    return {name: version(name) for name in _CLIENT_PACKAGES}
 
 
 class _HasId(Protocol):
@@ -389,7 +382,7 @@ def run_agentic(
         if family.provider in caps:  # metered
             if family.model_id not in snapshot.models:
                 raise BenchmarkValidationError(f"no price snapshot entry for {family.model_id!r}")
-            missing = [name for name in _HOSTED_FIELDS if getattr(family, name) is None]
+            missing = [name for name in _HOSTED_REQUIRED_FIELDS if getattr(family, name) is None]
             if missing:
                 raise BenchmarkValidationError(f"model family {family.id!r} must set {missing}")
     if any(family.api != "scripted" for family in families):

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 import pytest
@@ -71,7 +70,9 @@ def test_canonical_text_joins_text_blocks_and_marks_other_blocks() -> None:
 
 def test_truncate_utf8_cuts_on_a_character_boundary_and_marks_it() -> None:
     text = "a" * 99_999 + "é" + "tail"  # "é" is 2 bytes and straddles byte 100,000
-    assert truncate_utf8(text, 100_000) == ("a" * 99_999 + TRUNCATION_MARKER, True)
+    marker = TRUNCATION_MARKER.format(limit=100_000)
+    assert truncate_utf8(text, 100_000) == ("a" * 99_999 + marker, True)
+    assert "truncated at 100000 UTF-8 bytes" in marker
 
 
 def test_truncate_utf8_leaves_a_result_at_the_limit_untouched() -> None:
@@ -145,8 +146,6 @@ async def test_bridge_lists_the_real_server_tools_unfiltered(python_docs: System
         assert all("inputSchema" in t for t in bridge.tools_raw)
         outcome = await bridge.call("get_docs", {"slug": "library/json.html", "version": "3.13"})
         assert outcome.is_error is False and "json module" in outcome.text
-        assert outcome.sha256 == hashlib.sha256(outcome.text.encode()).hexdigest()
-        assert outcome.wall_ms > 0
 
 
 async def test_bridge_returns_an_unknown_tool_as_an_error_result(python_docs: SystemSpec) -> None:

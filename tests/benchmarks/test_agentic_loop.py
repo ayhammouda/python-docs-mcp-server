@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from benchmarks.agentic.bridge import TRUNCATION_MARKER, BridgeCrash, ToolOutcome
+from benchmarks.agentic.bridge import BridgeCrash, ToolOutcome
 from benchmarks.agentic.clients import ScriptedClient
 from benchmarks.agentic.ledger import (
     Ledger,
@@ -91,7 +91,7 @@ class FakeBridge:
         text, is_error = (
             (f"Unknown tool: {name}", True) if name == "no_such_tool" else (self.text, False)
         )
-        return ToolOutcome(text, hashlib.sha256(text.encode()).hexdigest(), is_error, 1.0)
+        return ToolOutcome(text, is_error)
 
 
 class RecordingLedger:
@@ -343,7 +343,7 @@ async def test_result_over_the_cap_is_truncated_and_the_loop_continues(harness: 
     assert call["truncated"] is True and record["status"] == "succeeded"
     assert call["result"] == FAKE_TEXT  # the full canonical text is kept
     sent = record["canonical_messages"][2]["content"][0]["content"]
-    assert sent == FAKE_TEXT[:10] + TRUNCATION_MARKER
+    assert sent == FAKE_TEXT[:10] + "\n[benchmark harness: tool result truncated at 10 UTF-8 bytes]"
 
 
 async def test_unknown_tool_call_is_returned_to_the_model_and_the_loop_continues(

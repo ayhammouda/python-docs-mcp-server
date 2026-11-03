@@ -7,11 +7,9 @@ canonical text string by the same rule.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import sys
-import time
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -33,8 +31,7 @@ from benchmarks.runner import (
     cell_failure_from,
 )
 
-RESULT_CAP_BYTES = 100_000
-TRUNCATION_MARKER = "\n[benchmark harness: tool result truncated at 100000 UTF-8 bytes]"
+TRUNCATION_MARKER = "\n[benchmark harness: tool result truncated at {limit} UTF-8 bytes]"
 
 _TRANSPORTS: dict[str, Literal["stdio", "none"]] = {"mcp-stdio": "stdio", "none": "none"}
 
@@ -52,9 +49,7 @@ class SystemSpec:
 @dataclass(frozen=True)
 class ToolOutcome:
     text: str  # full canonical text, before truncation
-    sha256: str  # sha256 of `text` as UTF-8
     is_error: bool
-    wall_ms: float
 
 
 class BridgeCrash(Exception):
@@ -123,13 +118,14 @@ def canonical_text(result: CallToolResult) -> str:
     )
 
 
-def truncate_utf8(text: str, limit: int = RESULT_CAP_BYTES) -> tuple[str, bool]:
-    """Cut to the longest prefix whose UTF-8 fits ``limit``, plus the marker."""
+def truncate_utf8(text: str, limit: int) -> tuple[str, bool]:
+    """Cut to the longest prefix whose UTF-8 fits ``limit``, plus the marker naming the cap."""
     data = text.encode("utf-8")
     if len(data) <= limit:
         return text, False
     # The prefix is valid UTF-8 except for a character the cut split; "ignore" drops it.
-    return data[:limit].decode("utf-8", errors="ignore") + TRUNCATION_MARKER, True
+    prefix = data[:limit].decode("utf-8", errors="ignore")
+    return prefix + TRUNCATION_MARKER.format(limit=limit), True
 
 
 class Bridge:
@@ -149,24 +145,16 @@ class Bridge:
         ]
 
     async def call(self, name: str, arguments: dict[str, Any]) -> ToolOutcome:
-        started = time.perf_counter()
         try:
             result = await self._session.call_tool(name, arguments)
         except MCPError as exc:
             if exc.code == CONNECTION_CLOSED:
                 raise BridgeCrash(f"MCP connection closed during {name}: {exc}") from exc
-            text, is_error = str(exc.message), True
+            return ToolOutcome(text=str(exc.message), is_error=True)
         except Exception as exc:  # noqa: BLE001 - any other failure means the session is gone
             failure = cell_failure_from(exc, timeout_seconds=0.0, label=f"MCP tool {name}")
             raise BridgeCrash(str(failure)) from exc
-        else:
-            text, is_error = canonical_text(result), bool(result.is_error)
-        return ToolOutcome(
-            text=text,
-            sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
-            is_error=is_error,
-            wall_ms=(time.perf_counter() - started) * 1000,
-        )
+        return ToolOutcome(text=canonical_text(result), is_error=bool(result.is_error))
 
 
 @asynccontextmanager

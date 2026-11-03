@@ -201,10 +201,13 @@ def _system_info(system: SystemSpec, provider: str, bridge: Bridge | None) -> di
         "tools_converted_sha256": schemas_sha256(converted),
         "gemini_dropped": dropped,
         "index_sha256": _index_sha256() if system.id == "python-docs" else None,
-        "client_versions": {
-            name: version(name) for name in ("anthropic", "openai", "google-genai", "mcp")
-        },
+        "client_versions": _client_versions(),
     }
+
+
+def _client_versions() -> dict[str, str]:
+    """Installed versions, read from metadata: no SDK is imported."""
+    return {name: version(name) for name in ("anthropic", "openai", "google-genai", "mcp")}
 
 
 async def _open(stack: AsyncExitStack, system: SystemSpec) -> Bridge | None:
