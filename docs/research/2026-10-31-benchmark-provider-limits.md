@@ -140,6 +140,8 @@ The cap is legal on all three. Thinking shares it on all three, so it can still 
 - OpenAI: the docs recommend "reserving at least 25,000 tokens for reasoning and outputs" (section B), which is more than 16,384.
 - Google: a hit on the cap while reasoning returns `MAX_TOKENS` with "truncated or empty output" (section C).
 
+Owner ruling raised the cap to 32,768: 25.6%, 25.6% and 50% of the documented maxima.
+
 ## E. `pyasn1` 0.6.5: security fix?
 
 **Yes. Release 0.6.5 fixes four high-severity denial-of-service advisories that all affect 0.6.4.**

@@ -39,8 +39,9 @@ spend ledger, a generic MCP bridge and a mocked end-to-end CI test.
 - issue #177 (retry settings and policy);
 - the "Carried Into The New Benchmark Harness" list in
   `docs/plans/2026-10-30-audit-fixes-roadmap.md`;
-- the owner's two rulings comments on #184 (summarized under "Owner
-  rulings" at the end);
+- the owner's rulings comments on #184: part 1 (the ten first-round
+  questions), part 2 (the research results), and the round-2 and round-3
+  review rulings relayed on the PR;
 - `docs/research/2026-10-31-benchmark-provider-limits.md` (the
   "research note" below), the source of every model limit, price and
   package date in this plan.
@@ -75,58 +76,16 @@ Executors read the design and the research note in full before Task 1.
 
 ## Review Focus
 
-Items 1–7 are the round-2 rulings B1–B7. Items 8–10 carry over from round 1.
-
-1. **A provider SDK makes extra requests on its own,** through a retry or
-   Gemini's automatic continuation. Expected: exactly one HTTP request per
-   reserved unit, even on a 5xx or a `CONTINUATION` stop. Tests:
-   - Task 6 `test_each_client_sends_one_request_per_call`;
-   - Task 7 `test_gemini_sends_one_request_when_the_response_asks_to_continue`.
-2. **A key reaches a worker's output streams** through `print()`, a library
-   warning, a traceback, an MCP server's stderr or a raw `os.write(2, ...)`.
-   Expected: it is redacted before it leaves the worker, and never reaches
-   a host log or artifact. Tests (Task 9):
-   - `test_protect_output_redacts_the_own_key_on_every_stream`;
-   - `test_host_logs_and_artifacts_never_hold_a_workers_key`.
-3. **A trajectory record is large:** over 100,000 bytes, or over the frame
-   limit. Expected: a large record round-trips intact. A frame over the
-   limit stops the run as a harness error; it is never scored as a model
-   failure. Tests (Task 9):
-   - `test_a_trajectory_frame_over_100000_bytes_round_trips_through_a_worker`;
-   - `test_a_frame_over_the_limit_is_a_harness_error`.
-4. **Time not spent on successful work:** waiting for the ledger grant, a
-   slow failed attempt, retry backoff. Expected: none of it uses the
-   trajectory clock. It is recorded as `grant_wait_ms`,
-   `failed_attempt_ms` and `retry_wait_ms`. Tests (Task 8):
-   - `test_grant_wait_longer_than_the_trajectory_allowance_still_succeeds`;
-   - `test_failed_attempt_longer_than_the_remaining_allowance_is_retried`.
-5. **The process holding the ledger is killed** (SIGKILL, OOM) between
-   reserve and settle, or a second run opens the same ledger. Expected: the
-   OS releases the lock, a reopen books the unsettled unit at 2× its bound,
-   and a second open while the first holder lives is refused. Tests
-   (Task 3):
-   - `test_a_killed_ledger_holder_releases_the_lock_and_its_unit_is_booked_at_twice_its_bound`;
-   - `test_a_second_open_on_the_same_directory_is_refused`.
-6. **A call returns no usage object.** Expected: the next call's input bound
-   is a full-request bound, not the previous bound plus the added bytes.
-   Test: Task 8 `test_bound_after_a_call_without_usage_is_a_full_request_bound`.
-7. **Tool arguments that are not a JSON object:** an array, a scalar, `null`,
-   or invalid JSON. Expected: the model gets an `is_error` result, and the
-   bridge is never called. Tests:
-   - Task 6 `test_openai_non_object_arguments_are_kept_raw`;
-   - Task 8 `test_non_object_tool_arguments_are_returned_to_the_model`.
-8. **A tool result straddles the 100,000-byte cap with a multi-byte
-   character, or has no text block.** Expected: the cut lands on a character
-   boundary with the marker, and a non-text block becomes a visible
-   placeholder. Tests (Task 4):
-   - `test_truncate_utf8_cuts_on_a_character_boundary_and_marks_it`;
-   - `test_canonical_text_joins_text_blocks_and_marks_other_blocks`.
-9. **A worker dies with its provider unit in flight.** Expected: the host
-   books that unit at 2× its bound and frees the provider's slot. Test:
-   Task 9 `test_host_settles_a_lost_workers_unit_at_twice_its_bound_and_frees_the_provider`.
-10. **Gemini returns function calls without ids, or two calls to the same
-    function in one turn.** Expected: results pair with calls by position.
-    Test: Task 7 `test_gemini_pairs_two_calls_of_the_same_function_by_position`.
+1. An SDK retry or Gemini continuation must not add a request: one HTTP request per reserved unit. Tests: Task 6 `test_each_client_sends_one_request_per_call`; Task 7 `test_gemini_sends_one_request_when_the_response_asks_to_continue`.
+2. A worker key written by `print()`, `sys.stderr` or `os.write(2, ...)` is redacted before it leaves the worker. Tests: Task 9 `test_protect_output_redacts_the_own_key_on_every_stream`, `test_host_logs_and_artifacts_never_hold_a_workers_key`.
+3. A trajectory frame over 100,000 bytes round-trips; one over the limit is a harness error. Tests: Task 9 `test_a_trajectory_frame_over_100000_bytes_round_trips_through_a_worker`, `test_a_frame_over_the_limit_is_a_harness_error`.
+4. Grant waits, failed attempts and backoff never use the trajectory clock. Tests: Task 8 `test_grant_wait_longer_than_the_trajectory_allowance_still_succeeds`, `test_failed_attempt_longer_than_the_remaining_allowance_is_retried`.
+5. A ledger holder killed mid-reserve releases the lock, and its unit is booked at 2× its bound. Tests: Task 3 `test_a_killed_ledger_holder_releases_the_lock_and_its_unit_is_booked_at_twice_its_bound`, `test_a_second_open_on_the_same_directory_is_refused`.
+6. What reaches the ledger is the right input bound, output bound and dollar bound for each call, retry and post-no-usage call. Test: Task 8 `test_reservations_carry_independently_computed_bounds`.
+7. Tool arguments that are not a JSON object become an `is_error` result and never reach the bridge. Tests: Task 6 `test_openai_non_object_arguments_are_kept_raw`; Task 8 `test_non_object_tool_arguments_are_returned_to_the_model`.
+8. A tool result straddling the 100,000-byte cap is cut on a character boundary with the marker. Tests: Task 4 `test_truncate_utf8_cuts_on_a_character_boundary_and_marks_it`, `test_canonical_text_joins_text_blocks_and_marks_other_blocks`.
+9. A worker that dies with a unit in flight has that unit booked at 2×, and the provider slot is freed. Test: Task 9 `test_host_settles_a_lost_workers_unit_at_twice_its_bound_and_frees_the_provider`.
+10. Gemini calls without ids, including two calls to the same function, pair with their results by position. Test: Task 7 `test_gemini_pairs_two_calls_of_the_same_function_by_position`.
 
 ---
 
@@ -186,7 +145,17 @@ def test_real_model_matrix_matches_design_section_7_1() -> None:
         assert family.max_output_tokens == 32_768
         assert family.output_cap_includes_reasoning is True
         assert family.framing_allowance_tokens == 256
-        assert family.raw["limits_source"].startswith("docs/research/2026-10-31-benchmark-provider-limits.md")
+        assert family.raw["limits_source"].startswith("docs/research/2026-10-31-benchmark-provider-limits.md#")
+
+def test_every_limits_source_anchor_is_a_research_note_heading() -> None:
+    note = (REPO_ROOT / "docs/research/2026-10-31-benchmark-provider-limits.md").read_text()
+    # GitHub slug: lowercase, drop every character except letters, digits, spaces, "-" and "_",
+    # then spaces -> "-"
+    slugs = {re.sub(r"[^\w\- ]", "", line.lstrip("#").strip().lower()).replace(" ", "-")
+             for line in note.splitlines() if line.startswith("#")}
+    for family in load_model_matrix(MODEL_MATRIX_PATH).model_families:
+        if family.arm == "hosted":
+            assert family.raw["limits_source"].split("#", 1)[1] in slugs
 
 def test_hosted_family_must_set_its_budget_fields(tmp_path) -> None:
     # a hosted entry without max_input_tokens -> BenchmarkValidationError naming "max_input_tokens"
@@ -256,7 +225,7 @@ Hosted entries also set these values (research note §§A–D):
 |---|---|---|---|
 | `claude-sonnet-5-5` | 1000000 | documented "1M tokens"; the exact integer needs the Models API, which PR 4's smoke run reads | `docs/research/2026-10-31-benchmark-provider-limits.md#a-claude-sonnet-5-5-anthropic-messages-api` |
 | `gpt-6.1-sol` | 1017232 | no separate input limit is published: the 1,050,000 context window minus the 32,768 output cap | `...#b-gpt-61-sol-openai-responses-api` |
-| `gemini-3.8-flash` | 1048576 | documented input token limit | `...#c-gemini-38-flash-through-google-genai-paid-tier` |
+| `gemini-3.8-flash` | 1048576 | documented input token limit | `...#c-gemini-38-flash-gemini-api-google-genai-paid-tier` |
 
 All three also set:
 - `max_output_tokens: 32768`, below the documented maximums of 128,000,
@@ -335,7 +304,8 @@ sentences, one idea each), it states:
 - **Output cap:** 32,768 tokens for every hosted model, with thinking and
   reasoning inside it. If more than 1% of pilot answers stop at the cap,
   the cap is raised before the full run (owner rulings 3 and part 2,
-  item 3).
+  item 3). A Gemini `CONTINUATION` stop is not followed, and it counts as
+  an output-cap stop.
 - **Claims** (§2): the C1–C3 pass rules and every anti-claim. `no-docs` is
   never ranked on tokens. Round 1 supports only "fewer tokens than
   fetching the official docs pages".
@@ -607,7 +577,7 @@ def test_reopening_books_an_unsettled_unit_at_twice_its_bound(tmp_path) -> None:
     # reserve bound 3, close without settle; reopen -> spent("anthropic") == Decimal("6")
 def test_a_second_open_on_the_same_directory_is_refused(tmp_path) -> None   # match=".lock"
 def test_a_killed_ledger_holder_releases_the_lock_and_its_unit_is_booked_at_twice_its_bound(tmp_path) -> None:
-    # subprocess: `python -c` opens the ledger, reserves bound 3, prints "reserved", sleeps;
+    # subprocess: `python -c` opens the ledger, reserves bound 3, print("reserved", flush=True), sleeps;
     # parent: after "reserved", Ledger.open(tmp_path) raises (lock held);
     # proc.kill() (SIGKILL), proc.wait(); Ledger.open succeeds and spent("anthropic") == Decimal("6")
 def test_provider_without_a_cap_is_refused(tmp_path) -> None                  # "ollama", "mistral"
@@ -769,7 +739,8 @@ is `fetch(url: str, max_length: int = 5000, start_index: int = 0, raw: bool = Fa
 which returns `f"Contents of {url}: the json module encodes and decodes JSON."`.
 With `--edge` it also registers:
 - `env_names() -> list[str]`, the sorted names in `os.environ`;
-- `die() -> str`, which calls `os._exit(1)`.
+- `die() -> str`, which calls `os._exit(1)`;
+- `pid() -> int`, which returns `os.getpid()` (Task 9's shutdown test).
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -998,7 +969,7 @@ class ModelTurn:
     raw_usage: dict[str, Any] | None
     buckets: Buckets | None
     reported_model: str | None
-    stop_reason: str | None
+    stop_reason: str | None      # normalized per provider; see the request rules below
 @dataclass
 class Conversation:
     system: str
@@ -1051,6 +1022,8 @@ Request rules:
   - Replay every output item unchanged. A tool result is
     `{"type": "function_call_output", "call_id": ..., "output": text}`.
   - `arguments` goes through `tool_arguments`.
+- **Stop reason.** Anthropic: `response.stop_reason`. OpenAI:
+  `incomplete_details.reason if status == "incomplete" else status`.
 - **Errors.**
   - 429 is `rate_limited`, with `parse_retry_after` applied to the
     response headers.
@@ -1101,6 +1074,11 @@ async def test_openai_responses_request_and_usage() -> None:
     assert body["include"] == ["reasoning.encrypted_content"] and body["max_output_tokens"] == 32768
     assert all(t["strict"] is False for t in body["tools"]) and "temperature" not in body
     assert turn.buckets == Buckets(500, 300, 200, 50, 40)
+
+@pytest.mark.parametrize("status,details,expected", [
+    ("incomplete", {"reason": "max_output_tokens"}, "max_output_tokens"), ("completed", None, "completed")])
+async def test_openai_stop_reason_is_normalized(status, details, expected) -> None:
+    assert turn.stop_reason == expected
 
 async def test_openai_request_never_asks_for_extended_cache_retention() -> None:
     # a tool turn, then a follow-up call; for both captured request bodies and request_params():
@@ -1174,10 +1152,12 @@ Gemini:
   `generate_content` docstring near line 8388 and
   `_generate_content_with_continuation`). `automatic_continuation=False`
   stops that, so each `call` is one request (ruling B1).
+- **Stop reason** is `candidates[0].finish_reason` (`STOP`, `MAX_TOKENS`,
+  `CONTINUATION`, ...).
 - **A `CONTINUATION` stop** comes back as a turn with
   `stop_reason="CONTINUATION"` and is not followed. When it has no tool
-  calls, its text is the answer. The run summary counts these stops (Task
-  10), and the pilot reviews them with the cap hits.
+  calls, its text is the answer. The owner ruled (round 3) that it counts
+  as an output-cap stop (Task 10).
 - **Replay** `candidate.content` unchanged, thought signatures included.
 - **Function calls.** A call without an `id` gets `call_<n>` by position
   in the turn. `args` goes through `tool_arguments`.
@@ -1197,6 +1177,9 @@ Scripted script (`family.raw["script"]`, a YAML path):
     tools;
   - `{text, usage}`: a final answer;
   - `{error: {kind, status, retry_after_s}}`.
+- A `text` step may set `stop_reason` (default: `end_turn`, `completed`
+  or `STOP`, by provider). A step with `prompt_contains: <text>` applies
+  only when the first user message contains that text.
 - `usage` is the provider-native snake_case dict, or `null` for no usage.
   Buckets come from the matching Task 3 function. `arguments` may be any
   YAML value and goes through `tool_arguments`. `"{prompt}"` in a string
@@ -1359,11 +1342,11 @@ Loop rules:
     add that unit's duration to `used_s`. When `used_s >
     caps.trajectory_s`, the trajectory ends as failed with
     `cap_trajectory_time`, before the next unit starts.
-  - Time in `ledger.reserve` (`grant_wait_ms`), failed attempts
-    (`failed_attempt_ms`) and retry backoff (`retry_wait_ms`) is recorded,
-    never counted.
-  - No call is cut in flight, so the worst-case wall time is
-    `trajectory_s` plus one `model_call_timeout_s`.
+  - `trajectory_s` bounds successful work only. Time in `ledger.reserve`
+    (`grant_wait_ms`), failed attempts (`failed_attempt_ms`) and retry
+    backoff (`retry_wait_ms`) is excluded from it, recorded per
+    trajectory, and reported in the run summary (Task 10). No call is cut
+    in flight.
 - **Per-attempt timeout**, enforced apart from the clock: each attempt
   runs inside `asyncio.timeout(caps.model_call_timeout_s)`. A fire, read
   with `cm.expired()`, is outcome `"timeout"`: retryable, booked at 2×
@@ -1427,9 +1410,12 @@ Loop rules:
 - [ ] **Step 1: Write the failing tests**
 
 They run in-process with:
-- `ScriptedClient`, or `RecordingClient`, a test-local subclass that
-  stores `rendered_bytes(conv, 0)` and the added-entry bytes at every
-  `call`;
+- `ScriptedClient`, or `FixedBytesClient`, a test-local subclass whose
+  `rendered_bytes(conv, start)` returns fixed numbers keyed by
+  `(start, len(conv.entries))`;
+- `RecordingLedger`, a test-local `LedgerPort` that records every
+  `reserve` call's keyword arguments, then forwards it to the real
+  `LedgerService`;
 - `FakeBridge`, a test-local bridge with canned outcomes and delays;
 - a `LedgerService` over a `tmp_path` ledger;
 - a `sleep` that records its argument and returns at once.
@@ -1444,18 +1430,22 @@ async def test_trajectory_calls_a_tool_then_answers_and_records_every_call() -> 
         "tool_use_id": record["canonical_messages"][1]["content"][0]["id"],
         "content": FAKE_TEXT, "is_error": False}
 
-async def test_bounds_are_wired_per_call_and_reused_on_retry() -> None:
-    # RecordingClient; script: tool step (usage U0), 500 error, text step
-    calls = record["model_calls"]
-    assert calls[0]["input_bound"] == client.full_bytes[0] + 256 * 2
-    assert calls[1]["input_bound"] == next_input_bound(Buckets(**calls[0]["buckets"]),
-        added_bytes=client.added_bytes[1], added_entries=2, framing=256)
-    reserves = [e for e in ledger.events(RUN_ID) if e["event"] == "reserve"]
-    assert reserves[1]["input_bound"] == reserves[2]["input_bound"]   # the retry reuses its bound
-
-async def test_bound_after_a_call_without_usage_is_a_full_request_bound() -> None:
-    # RecordingClient; script: tool step with usage null, then text
-    assert record["model_calls"][1]["input_bound"] == client.full_bytes[1] + 256 * 4
+async def test_reservations_carry_independently_computed_bounds() -> None:
+    # OpenAI family: max_output 32_768, max_input 1_017_232, the committed gpt-6.1-sol rates.
+    # FixedBytesClient: (0, 1) -> 500, (1, 3) -> 300, (0, 5) -> 2_000.
+    # Script: tool step, usage {input_tokens: 1000, output_tokens: 50, no cache} -> call 0;
+    #         500 error -> call 1, attempt 1; tool step with usage null -> call 1, retry;
+    #         text -> call 2, after the call without usage.
+    # Every expected value is plain arithmetic here, not a call to the loop's helpers:
+    #   call 0:  500 + 256 * 2                       = 1_012
+    #   call 1:  1_000 + 50 + 300 + 256 * 2          = 1_862   (the retry reserves the same)
+    #   call 2:  2_000 + 256 * (5 + 1)               = 3_536   (full request after no usage)
+    #   dollars: input * $2.50 / 1M (cache-write rate, short tier) + 32_768 * $10 / 1M
+    assert [r["input_bound"] for r in recording.reserves] == [1_012, 1_862, 1_862, 3_536]
+    assert [r["output_bound"] for r in recording.reserves] == [32_768] * 4
+    bounds = [Decimal(e["bound"]) for e in ledger.events(RUN_ID) if e["event"] == "reserve"]
+    assert bounds == [Decimal("0.33021"), Decimal("0.332335"), Decimal("0.332335"), Decimal("0.33652")]
+    # a fake that reserved a fixed 200_000 input tokens would book 0.82768 for call 0 and fail here
 
 async def test_ninth_model_call_is_a_cap_failure() -> None:
     assert record["error"]["category"] == "cap_model_calls" and len(record["model_calls"]) == 8
@@ -1557,7 +1547,7 @@ async def read_frame(reader: asyncio.StreamReader, *, limit: int = MAX_FRAME_BYT
     # None at a clean EOF or a partial frame (the writer died); FrameTooLarge when the declared
     # length is above `limit`, before reading the body
 def assert_no_key_shaped(text: str, *, where: str) -> None   # message names `where`, never the match
-def contains_own_key(text: str, provider: str) -> bool
+def contains_own_key(text: str, own_key: str | None) -> bool   # False when own_key is None
 
 # worker.py
 MAX_RERUNS = 2
@@ -1631,11 +1621,20 @@ Worker rules:
   `ProtocolChannel.send` writes the protocol fd.
 - **Own key.** `own_key` is the worker's provider key from
   `PROVIDER_API_KEY_ENV`, or `None`.
-- **Sending.** `send` raises when `contains_own_key(frame_text, provider)`
+- **Sending.** `send` raises when `contains_own_key(frame_text, own_key)`
   is true. The worker then sends `error` with reason
   `"own key found in output"`, and exits with status 3.
-- **Close.** `close` points fds 1 and 2 at `/dev/null`, closes the pipe's
-  write end, and joins the thread, so every byte is drained before exit.
+- **Shutdown order.**
+  1. Close the bridge, so the MCP server child exits and drops its copy
+     of fd 2.
+  2. Send `done`.
+  3. `ProtocolChannel.close()`: point fds 1 and 2 at `/dev/null`, close
+     the pipe's write end, and join the redactor thread with a 5 s
+     timeout, so every byte is drained before exit.
+
+  The thread is a daemon, so a grandchild that still holds the pipe
+  cannot keep the worker alive. Its bytes are dropped, never written
+  unredacted.
 - **Mark** `protect_output` with
   `# shortcut: fd redirection is POSIX only; the harness runs on macOS and Linux`.
 - **Rebuild.** The worker rebuilds its family with
@@ -1708,6 +1707,11 @@ async def test_host_logs_and_artifacts_never_hold_a_workers_key(tmp_path) -> Non
 async def test_worker_runs_its_job_over_the_channel_and_reports_done(tmp_path) -> None:
     # real subprocess via LocalLauncher; scripted family + no-docs system, two trajectories
     assert [m["type"] for m in received] == ["system_info", "trajectory", "trajectory", "done"]
+
+async def test_worker_exits_with_its_mcp_server_child_still_alive_at_shutdown(tmp_path) -> None:
+    # scripted job against the fake server with --edge; the script calls its pid() tool, so the
+    # server child is alive and serving when the job ends
+    # the worker exits 0 within 10 s, and os.kill(server_pid, 0) then raises ProcessLookupError
 
 async def test_a_trajectory_frame_over_100000_bytes_round_trips_through_a_worker(tmp_path) -> None:
     # script whose text step is "x" * 150_000
@@ -1792,6 +1796,7 @@ class AgenticConfig:
 
 def cell_id(system_id: str, family_id: str, repeat: int) -> str          # f"{system_id}--{family_id}--r{repeat}"
 def tool_model_key(system_id: str, provider: str, model_id: str) -> str  # f"{system_id}:{provider}/{model_id}"
+OUTPUT_CAP_STOPS = frozenset({"max_tokens", "max_output_tokens", "MAX_TOKENS", "CONTINUATION"})
 def plan_jobs(questions: Sequence[Question], families: Sequence[ModelFamily],
               systems: Sequence[SystemSpec], *, repeats: int, seed: int,
               matrix_dir: Path) -> list[WorkerJob]
@@ -1856,11 +1861,19 @@ Run rules:
   - `discarded` and `not_run`: lists of `{cell, corpus_id, reason,
     attempt}`. Every rerun appears with its attempt number (owner ruling
     5).
-  - Per family:
+  - `families`, per family id:
     - `retries`: the count of retried attempts, by outcome;
-    - `continuation_stops`;
-    - `wall_s`, with retries included (owner ruling 6);
-    - `{first_started_at, last_completed_at}`.
+    - `reruns`: the count of discarded trajectories that were requeued;
+    - `answer_turns`: the count of answer turns, one per trajectory that
+      reached an answer;
+    - `output_cap_stops`: the answer turns whose `stop_reason` is in
+      `OUTPUT_CAP_STOPS = {"max_tokens", "max_output_tokens", "MAX_TOKENS",
+      "CONTINUATION"}`. This is the count the pilot's 1% rule reads.
+    - `wall_s`: from the first start to the last completion, with retries
+      included (owner ruling 6);
+    - `grant_wait_s`, `failed_attempt_s` and `retry_wait_s`: the sums of
+      the trajectory timings;
+    - `first_started_at` and `last_completed_at`.
   - `ledger`: per provider, `{spent_before, spent_after, cap, stopped}`.
   - `price_snapshot`: `{captured_on, expires_on}`.
 - **CLI.**
@@ -1941,6 +1954,30 @@ def test_a_live_run_refuses_an_expired_price_snapshot(tmp_path, monkeypatch) -> 
     # a launcher stub that supports every family; committed prices; today=date(2026, 12, 31)
     # -> BenchmarkValidationError naming 2026-12-31, before any process starts
 
+def test_run_summary_counts_retries_and_reruns(tmp_path, monkeypatch) -> None:
+    # one scripted family, no-docs, two questions, repeats 1. The script for the first question:
+    # 429 (retry_after_s 0) then text. For the second: 429 on every call, so its trajectory is
+    # discarded three times, then not run.
+    fam = summary["families"]["scripted-anthropic"]
+    assert fam["retries"]["rate_limited"] == 1 + 3 * MAX_RETRIES and fam["reruns"] == 2
+    assert [d["attempt"] for d in summary["discarded"]] == [1, 2, 3] and len(summary["not_run"]) == 1
+
+def test_run_summary_wall_time_includes_failed_attempts_backoff_and_grant_waits(tmp_path, monkeypatch) -> None:
+    # a tmp matrix with two scripted families of provider anthropic, one no-docs job each, so
+    # their units contend for the grant. Each script: 429 with retry_after_s 0.3 and delay_s 0.2
+    # (a 0.2 s failed attempt, then 0.3 s of backoff), then text with delay_s 0.1.
+    for fam in summary["families"].values():
+        assert fam["failed_attempt_s"] >= 0.2 and fam["retry_wait_s"] >= 0.3
+        assert fam["wall_s"] >= 0.6
+    assert sum(f["grant_wait_s"] for f in summary["families"].values()) > 0
+
+def test_continuation_answers_count_as_output_cap_stops(tmp_path, monkeypatch) -> None:
+    # one scripted google family, no-docs, all 50 sample questions, repeats 2 = 100 answers.
+    # The script's first text step has stop_reason CONTINUATION and prompt_contains holding a
+    # phrase from SYN-EX-001's prompt; the second text step answers everything else.
+    fam = summary["families"]["scripted-google"]
+    assert (fam["output_cap_stops"], fam["answer_turns"]) == (2, 100)        # 2%
+
 def test_agentic_run_refuses_a_non_empty_out_dir(tmp_path) -> None
 def test_agentic_run_dry_run_writes_the_plan_without_a_ledger(tmp_path) -> None
 def test_cli_agentic_run_exits_2_with_a_provider_key_set(tmp_path, monkeypatch) -> None
@@ -1978,10 +2015,10 @@ git commit -m "feat(benchmarks): add agentic-run with a mocked end-to-end test"
 - Modify:
   - `benchmarks/runner.py`: remove only the five fixed-flow dispatch
     entries, their helpers and `_tool_call_records_to_dicts`.
-    - Keep `"fake"`, and keep the baseline-alias behaviour exactly as on
-      `main`. #173 already removed the `no-mcp-baseline` dispatch
-      aliases, and `test_removed_baseline_alias_is_an_unknown_adapter`
-      pins that.
+    - Keep `"fake"`, and leave the baseline-alias behaviour exactly as on
+      `main`. #173 removed the `no-mcp-baseline` dispatch aliases, the
+      owner ruled (round 3) that they stay removed, and
+      `test_removed_baseline_alias_is_an_unknown_adapter` stays unchanged.
     - Update the module docstring.
   - `benchmarks/adapters/__init__.py`: exports.
   - `benchmarks/adapters/guard.py`: remove `LiveExecutionNotImplementedError`
@@ -2094,51 +2131,7 @@ Open PR B with `gh pr create` against `main`:
     `tools`;
   - grounding through `benchmarks/urls.py`;
   - report sections: per-repeat cell ids regrouped by `tool_model_key`,
-    the count of answers stopped at the output cap (the 1% pilot rule),
-    and the `CONTINUATION` stops.
+    and the `output_cap_stops` share per family (the 1% pilot rule).
 - **Round 2:** the Streamable HTTP transport in the bridge (with
   `httpx2.AsyncClient` opened through `async with`) and the competitor
   systems.
-
-## Owner rulings
-
-The two rulings comments on #184 settle the first round's ten open
-questions:
-
-| # | Ruling | Applied in |
-|---|---|---|
-| 1 | GPT-6.1 Sol limits and prices from OpenAI's pages | Task 1 matrix, Task 3 snapshot (research note §B) |
-| 2 | Gemini thinking counts inside `max_output_tokens`; default level kept, no deviation | Task 1 `output_cap_includes_reasoning`, Task 2 (research note §C) |
-| 3 | Output cap 32,768 for all hosted models; raise it if more than 1% of pilot answers stop at it | Global Constraints, Task 1, Task 2, PR 5 report |
-| 4 | `pyasn1` 0.6.5 locked for its four security fixes | Global Constraints, Task 5, Task 11 CHANGELOG |
-| 5 | Retry policy: 4 retries, 2/4/8/16 s, `retry-after` up to 120 s, 2 reruns, every retry and rerun in the run summary | Tasks 8, 9 and 10 |
-| 6 | 120 s / 600 s per call; failed attempts and waits off the clock; wall time with retries reported | Tasks 8 and 10 |
-| 7 | Cell id per repeat | Task 10 |
-| 8 | No live call in PR B | Global Constraints, Task 9 `LocalLauncher` |
-| 9 | `OLLAMA_BASE_URL` as Ollama's second check | PR 4 |
-| 10 | Amendment dated the day it merges, in chronological order, citing #161 | Task 2 |
-
-Round 2 also ruled on the reviews:
-- **B1–B15** are applied in the tasks named in Review Focus, plus:
-  - B8: Task 1 Step 5;
-  - B9: Task 7 factory and Task 10 `plan_jobs`;
-  - B10: Tasks 3 and 8;
-  - B11: Task 7;
-  - B12: Tasks 2, 4, 10 and 11;
-  - B13: PR 5;
-  - B14: PR 4;
-  - B15: Task 6.
-- **C (declined):** `reasoning_budget_tokens` is not added. Thinking
-  counts inside the output cap on all three hosted models, so Task 10
-  keeps refusing `output_cap_includes_reasoning: false`.
-
-## Remaining questions
-
-1. **A `CONTINUATION` stop from Gemini** is recorded and its text is used
-   as the answer; the harness does not follow it. The run summary counts
-   these stops. Should the pilot find any, the owner decides whether the
-   harness follows them as separate billed units.
-2. **The `no-mcp-baseline` aliases.** The round-2 nit said to keep them,
-   but `main` no longer has them: #173 removed them, and
-   `test_removed_baseline_alias_is_an_unknown_adapter` pins that. Task 11
-   therefore leaves the alias behaviour exactly as on `main`.
