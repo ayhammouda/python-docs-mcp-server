@@ -274,6 +274,9 @@ class OpenAIResponsesClient:
             raise ProviderCallError("timeout", str(exc)) from exc
         except openai.APIConnectionError as exc:
             raise ProviderCallError("connection", str(exc)) from exc
+        if response.status == "failed":  # a 200 that carries a server-side failure
+            detail = response.error.message if response.error else "no error detail"
+            raise ProviderCallError("server", f"response failed: {detail}")
         calls, texts = [], []
         for item in response.output:
             if item.type == "function_call":

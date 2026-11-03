@@ -305,6 +305,15 @@ async def test_openai_stop_reason_is_normalized(status: str, details: Any, expec
     assert turn.stop_reason == expected
 
 
+async def test_openai_failed_response_is_a_server_error() -> None:
+    body = _openai_response([], status="failed")
+    body["error"] = {"code": "server_error", "message": "the model failed"}
+    recorder = Recorder(_ok(body))
+    with pytest.raises(ProviderCallError) as caught:
+        await _openai(recorder).call(_conv())
+    assert caught.value.kind == "server" and "the model failed" in str(caught.value)
+
+
 async def test_openai_request_never_asks_for_extended_cache_retention() -> None:
     recorder = Recorder(
         _ok(_openai_response([OPENAI_CALL])), _ok(_openai_response([OPENAI_MESSAGE]))
