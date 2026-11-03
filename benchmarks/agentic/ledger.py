@@ -302,6 +302,10 @@ class Ledger:
             self._units[event["unit_id"]] = (provider, Decimal(event["bound"]))
         elif kind == "settle":
             self._spent[provider] = self.spent(provider) + Decimal(event["booked"])
+            _, bound = self._units[event["unit_id"]]
+            if event["outcome"] == "ok" and Decimal(event["booked"]) > bound:
+                # Rebuilt from the settle itself: a crash may have lost the stop event.
+                self._stops[provider] = "overrun"
         elif kind == "stop" and event["reason"] == "overrun":
             # Only an overrun stop survives a reopen: a cap stop is re-checked against the
             # caps of the new run, so a raised cap lets the provider run again.

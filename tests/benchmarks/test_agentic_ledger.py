@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 import sys
 from datetime import date
@@ -298,6 +299,22 @@ def test_reserve_raises_when_a_unit_is_already_in_flight(tmp_path: Path) -> None
     assert _reserve(ledger, "anthropic", "1") is not None
     with pytest.raises(RuntimeError, match="in flight"):
         _reserve(ledger, "anthropic", "1")
+    ledger.close()
+
+
+def test_an_overrun_whose_stop_event_was_lost_still_stops_the_provider(tmp_path: Path) -> None:
+    # A crash between the settle and its stop event: reserve $1, settle ok at $2, no stop.
+    ledger = _open(tmp_path, anthropic="10")
+    unit = _reserve(ledger, "anthropic", "1")
+    assert unit is not None
+    ledger.settle(unit, outcome="ok", actual=D("2"), buckets=Buckets(1, 0, 0, 1))
+    ledger.close()
+    path = tmp_path / "anthropic.jsonl"
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    assert [json.loads(line)["event"] for line in lines] == ["reserve", "settle", "stop"]
+    path.write_text("".join(lines[:2]), encoding="utf-8")
+    ledger = _open(tmp_path, anthropic="10")
+    assert ledger.stopped("anthropic") == "overrun"
     ledger.close()
 
 
