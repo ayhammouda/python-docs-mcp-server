@@ -43,7 +43,7 @@ class Caps:
     tool_call_s: float = 30.0
     trajectory_s: float = 300.0
     result_bytes: int = 100_000
-    model_call_timeout_s: float = 120.0
+    model_call_timeout_s: float = 300.0  # = trajectory_s: a long legitimate answer is never cut
 
 
 HOSTED_CAPS = Caps()

@@ -1305,7 +1305,7 @@ class Caps:
     tool_call_s: float = 30.0
     trajectory_s: float = 300.0
     result_bytes: int = 100_000
-    model_call_timeout_s: float = 120.0
+    model_call_timeout_s: float = 300.0   # = trajectory_s (owner ruling, #197 round 2)
 HOSTED_CAPS = Caps()
 AIR_GAPPED_CAPS = Caps(trajectory_s=900.0, model_call_timeout_s=600.0)
 MAX_RETRIES = 4

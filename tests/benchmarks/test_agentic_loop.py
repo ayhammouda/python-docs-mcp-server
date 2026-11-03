@@ -21,6 +21,8 @@ from benchmarks.agentic.ledger import (
     load_price_snapshot,
 )
 from benchmarks.agentic.loop import (
+    AIR_GAPPED_CAPS,
+    HOSTED_CAPS,
     Caps,
     TrajectoryDiscarded,
     backoff_s,
@@ -476,6 +478,13 @@ def test_input_bounds() -> None:
         next_input_bound(Buckets(100, 0, 20, 30), added_bytes=500, added_entries=2, framing=256)
         == 1162
     )
+
+
+def test_a_hosted_model_call_may_run_as_long_as_its_trajectory() -> None:
+    # Owner ruling (#197 round 2): a legitimate 32,768-token answer must not be cut off,
+    # billed and retried. The local arm keeps 600 s.
+    assert HOSTED_CAPS.model_call_timeout_s == HOSTED_CAPS.trajectory_s == 300.0
+    assert AIR_GAPPED_CAPS.model_call_timeout_s == 600.0
 
 
 def test_backoff() -> None:

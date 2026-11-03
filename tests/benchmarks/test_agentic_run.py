@@ -312,6 +312,26 @@ def test_run_summary_counts_input_bounds_exceeded_per_provider(tmp_path: Path) -
     assert summary["ledger"]["anthropic"]["stopped"] is None
 
 
+def test_run_summary_counts_model_call_timeouts_per_family(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("benchmarks.agentic.run.HOSTED_CAPS", Caps(model_call_timeout_s=0.1))
+    usage = {"input_tokens": 1000, "output_tokens": 100}
+    script = [{"text": "slow", "delay_s": 0.5, "usage": usage}, {"text": "ok", "usage": usage}]
+    matrix = _matrix_with(tmp_path, {"scripted-anthropic": script})
+    config = _config(
+        tmp_path,
+        matrix_path=matrix,
+        models=("scripted-anthropic",),
+        systems=("no-docs",),
+        questions=("SYN-EX-001",),
+        repeats=1,
+    )
+    summary = run_agentic(config)
+    assert summary["families"]["scripted-anthropic"]["timeouts"] == 1
+    assert summary["succeeded_cells"] == 1
+
+
 def test_latency_counts_successful_work_and_overhead_only(tmp_path: Path) -> None:
     script = [
         {"error": {"kind": "rate_limited", "status": 429, "retry_after_s": 0.3}, "delay_s": 0.2},

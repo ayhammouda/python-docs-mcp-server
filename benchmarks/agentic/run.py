@@ -162,6 +162,7 @@ class _FamilyStats:
     last_completed_at: str | None = None
     timing_ms: Counter[str] = field(default_factory=Counter)
     retries: Counter[str] = field(default_factory=Counter)
+    timeouts: int = 0  # every model attempt that hit its own timeout
     reruns: int = 0
     answer_turns: int = 0
     output_cap_stops: int = 0
@@ -174,6 +175,7 @@ class _FamilyStats:
         for call in record["model_calls"]:
             for attempt in call["attempts"][:-1]:  # every attempt but the last was retried
                 self.retries[attempt["outcome"]] += 1
+            self.timeouts += sum(a["outcome"] == "timeout" for a in call["attempts"])
             if call["tool_calls_requested"] == 0:  # an answer turn, whatever the outcome
                 self.answer_turns += 1
                 self.output_cap_stops += call["stop_reason"] in OUTPUT_CAP_STOPS
@@ -188,6 +190,7 @@ class _FamilyStats:
         sums = {f"{name}_s": round(self.timing_ms[name] / 1000, 3) for name in _TIMING_SUMS}
         return {
             "retries": dict(self.retries),
+            "timeouts": self.timeouts,
             "reruns": self.reruns,
             "answer_turns": self.answer_turns,
             "output_cap_stops": self.output_cap_stops,
