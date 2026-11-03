@@ -106,6 +106,30 @@ def test_system_spec_from_raw_refuses_a_bad_entry(raw: dict) -> None:
         system_spec_from_raw(raw)
 
 
+_KEY_SHAPE = "sk-ant-api03-" + "A" * 90
+
+
+@pytest.mark.parametrize(
+    "env,pass_env,match",
+    [
+        ({}, ["HOME", "ANTHROPIC_API_KEY"], "ANTHROPIC_API_KEY"),
+        ({}, ["CONTEXT7_API_KEY"], "CONTEXT7_API_KEY"),
+        ({"OPENAI_API_KEY": "x"}, [], "OPENAI_API_KEY"),
+        ({"REF_API_KEY": "x"}, [], "REF_API_KEY"),
+        ({"TOKEN": _KEY_SHAPE}, [], "key-shaped"),
+    ],
+)
+def test_a_system_never_receives_a_provider_key(
+    env: dict[str, str], pass_env: list[str], match: str
+) -> None:
+    from benchmarks.runner import BenchmarkValidationError
+
+    raw = {"id": "x", "adapter": "mcp-stdio", "command": ["a"], "env": env, "pass_env": pass_env}
+    with pytest.raises(BenchmarkValidationError, match=match) as caught:
+        system_spec_from_raw(raw)
+    assert _KEY_SHAPE not in str(caught.value)
+
+
 async def test_bridge_lists_the_real_server_tools_unfiltered(python_docs: SystemSpec) -> None:
     async with open_bridge(python_docs) as bridge:
         assert {t.name for t in bridge.tools} == {

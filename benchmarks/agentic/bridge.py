@@ -21,6 +21,8 @@ from typing import Any, Literal, Protocol
 from mcp import ClientSession, MCPError, StdioServerParameters, stdio_client
 from mcp.types import CONNECTION_CLOSED, CallToolResult, PaginatedRequestParams, TextContent
 
+from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
+from benchmarks.agentic.protocol import assert_no_key_shaped
 from benchmarks.agentic.types import ToolSpec
 from benchmarks.runner import (
     _SAFE_ID,
@@ -95,6 +97,13 @@ def system_spec_from_raw(raw: Mapping[str, Any]) -> SystemSpec:
     ):
         raise BenchmarkValidationError(f"system {system_id!r} 'env' must map strings to strings")
     pass_env = _strings(raw.get("pass_env") or [], f"system {system_id!r} 'pass_env'")
+    keys = sorted(set(PROVIDER_API_KEY_ENV.values()) & (set(pass_env) | set(env)))
+    if keys:
+        raise BenchmarkValidationError(
+            f"system {system_id!r} must not receive provider keys {keys} through env or pass_env"
+        )
+    for name, value in env.items():
+        assert_no_key_shaped(value, where=f"system {system_id!r} env {name!r}")
     return SystemSpec(system_id, transport, command, dict(env), pass_env, dict(raw))
 
 
