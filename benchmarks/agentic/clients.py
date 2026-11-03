@@ -93,27 +93,41 @@ def _utf8_len(payload: Any) -> int:
     return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
 
+#: Pinned, so no *_BASE_URL variable can send a key to another host.
+ANTHROPIC_BASE_URL = "https://api.anthropic.com"
+OPENAI_BASE_URL = "https://api.openai.com/v1"
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/"
+
+
+def _client_args(transport: Any | None) -> dict[str, Any]:
+    """Never follow a redirect: it would be a second request, possibly carrying the key away.
+
+    Tests inject only a transport; every other client setting is the production one.
+    """
+    return {"follow_redirects": False, **({} if transport is None else {"transport": transport})}
+
+
 def anthropic_sdk(
-    api_key: str, timeout_s: float, *, http_client: httpx2.AsyncClient | None = None
+    api_key: str, timeout_s: float, *, transport: httpx2.AsyncBaseTransport | None = None
 ) -> anthropic.AsyncAnthropic:
     return anthropic.AsyncAnthropic(
-        api_key=api_key, max_retries=0, timeout=timeout_s, http_client=http_client
+        api_key=api_key,
+        base_url=ANTHROPIC_BASE_URL,
+        max_retries=0,
+        timeout=timeout_s,
+        http_client=anthropic.DefaultAsyncHttpxClient(**_client_args(transport)),
     )
 
 
 def openai_sdk(
-    api_key: str,
-    timeout_s: float,
-    *,
-    base_url: str | None = None,
-    http_client: httpx2.AsyncClient | None = None,
+    api_key: str, timeout_s: float, *, transport: httpx2.AsyncBaseTransport | None = None
 ) -> openai.AsyncOpenAI:
     return openai.AsyncOpenAI(
         api_key=api_key,
-        base_url=base_url,
+        base_url=OPENAI_BASE_URL,
         max_retries=0,
         timeout=timeout_s,
-        http_client=http_client,
+        http_client=openai.DefaultAsyncHttpxClient(**_client_args(transport)),
     )
 
 
@@ -280,15 +294,16 @@ class OpenAIResponsesClient:
 
 
 def gemini_sdk(
-    api_key: str, timeout_s: float, *, http_client: httpx.AsyncClient | None = None
+    api_key: str, timeout_s: float, *, transport: httpx.AsyncBaseTransport | None = None
 ) -> genai.Client:
     return genai.Client(
         api_key=api_key,
         vertexai=False,
         http_options=genai_types.HttpOptions(
+            base_url=GEMINI_BASE_URL,
             timeout=int(timeout_s * 1000),
             retry_options=genai_types.HttpRetryOptions(attempts=1),
-            httpx_async_client=http_client,
+            httpx_async_client=httpx.AsyncClient(**_client_args(transport)),
         ),
     )
 
@@ -388,6 +403,8 @@ class GeminiClient:
             raise ProviderCallError("rejected", str(exc), status=exc.code) from exc
         except genai_errors.ServerError as exc:
             raise ProviderCallError("server", str(exc), status=exc.code) from exc
+        except genai_errors.APIError as exc:  # any other status, a redirect included
+            raise ProviderCallError("rejected", str(exc), status=exc.code) from exc
         except httpx.TimeoutException as exc:
             raise ProviderCallError("timeout", str(exc)) from exc
         except httpx.TransportError as exc:
@@ -512,7 +529,7 @@ class ScriptedClient:
 
 
 def make_client(
-    family: ModelFamily, *, timeout_s: float, http_client: Any | None = None
+    family: ModelFamily, *, timeout_s: float, transport: Any | None = None
 ) -> ModelClient:
     """The only way production code builds a client; every live API passes the guard."""
     if family.api == "scripted":
@@ -548,10 +565,10 @@ def make_client(
         raise BenchmarkValidationError(f"model family {family.id!r} must set max_output_tokens")
     key = os.environ[own_key_env]
     if provider == "anthropic":
-        sdk = anthropic_sdk(key, timeout_s, http_client=http_client)
+        sdk = anthropic_sdk(key, timeout_s, transport=transport)
         return AnthropicClient(sdk, family.model_id, family.max_output_tokens)
     if provider == "openai":
-        sdk = openai_sdk(key, timeout_s, http_client=http_client)
+        sdk = openai_sdk(key, timeout_s, transport=transport)
         return OpenAIResponsesClient(sdk, family.model_id, family.max_output_tokens)
-    sdk = gemini_sdk(key, timeout_s, http_client=http_client)
+    sdk = gemini_sdk(key, timeout_s, transport=transport)
     return GeminiClient(sdk, family.model_id, family.max_output_tokens)

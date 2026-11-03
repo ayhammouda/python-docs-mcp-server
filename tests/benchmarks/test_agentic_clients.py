@@ -146,8 +146,8 @@ class Recorder:
             return response(request)
         return response
 
-    def client(self) -> httpx2.AsyncClient:
-        return httpx2.AsyncClient(transport=httpx2.MockTransport(self))
+    def transport(self) -> Any:
+        return httpx2.MockTransport(self)
 
     def body(self, index: int) -> dict[str, Any]:
         return json.loads(self.seen[index].content)
@@ -158,12 +158,12 @@ def _ok(body: dict[str, Any], status: int = 200, headers: dict[str, str] | None 
 
 
 def _anthropic(recorder: Recorder) -> AnthropicClient:
-    sdk = anthropic_sdk("test-key", 30, http_client=recorder.client())
+    sdk = anthropic_sdk("test-key", 30, transport=recorder.transport())
     return AnthropicClient(sdk, "claude-sonnet-5-5", 32_768)
 
 
 def _openai(recorder: Recorder) -> OpenAIResponsesClient:
-    sdk = openai_sdk("test-key", 30, http_client=recorder.client())
+    sdk = openai_sdk("test-key", 30, transport=recorder.transport())
     return OpenAIResponsesClient(sdk, "gpt-6.1-sol", 32_768)
 
 
@@ -416,8 +416,8 @@ def _gemini_response(parts: list[dict[str, Any]], finish: str = "STOP", **extra:
 
 
 class GeminiRecorder(Recorder):
-    def client(self) -> Any:  # an httpx (not httpx2) client: google-genai uses httpx
-        return httpx.AsyncClient(transport=httpx.MockTransport(self))
+    def transport(self) -> Any:  # an httpx (not httpx2) transport: google-genai uses httpx
+        return httpx.MockTransport(self)
 
 
 def _gemini_ok(body: dict[str, Any], status: int = 200, headers: dict[str, str] | None = None):
@@ -425,7 +425,7 @@ def _gemini_ok(body: dict[str, Any], status: int = 200, headers: dict[str, str] 
 
 
 def _gemini(recorder: GeminiRecorder) -> GeminiClient:
-    sdk = gemini_sdk("test-key", 30, http_client=recorder.client())
+    sdk = gemini_sdk("test-key", 30, transport=recorder.transport())
     return GeminiClient(sdk, "gemini-3.8-flash", 32_768)
 
 
@@ -708,3 +708,68 @@ async def test_committed_scripts_play_tools_then_the_answer(provider: str) -> No
     turns = [await client.call(conv) for _ in range(3)]
     assert [c.name for t in turns for c in t.tool_calls] == ["search_docs", "fetch"]
     assert turns[-1].text == "Scripted answer." and all(t.buckets for t in turns)
+
+
+# --- Round 2: redirects, pinned endpoints ------------------------------------------------------
+
+ELSEWHERE = "https://elsewhere.invalid/collect"
+OK_BODIES = {
+    "anthropic": ANTHROPIC_ANSWER,
+    "openai": _openai_response([OPENAI_MESSAGE]),
+    "google": _gemini_response([{"text": "ok"}]),
+}
+
+
+def _live_client(provider: str, recorder: Recorder) -> Any:
+    return {"anthropic": _anthropic, "openai": _openai, "google": _gemini}[provider](recorder)  # type: ignore[operator]
+
+
+def _recorder(provider: str, *responses: Any) -> Recorder:
+    return GeminiRecorder(*responses) if provider == "google" else Recorder(*responses)
+
+
+def _response(provider: str, status: int, body: Any = None, headers: Any = None) -> Any:
+    kind = httpx if provider == "google" else httpx2
+    return kind.Response(status, json=body or {}, headers=headers or {})
+
+
+@pytest.mark.parametrize("status", [307, 308])
+@pytest.mark.parametrize("provider", ["anthropic", "openai", "google"])
+async def test_a_redirect_is_never_followed_and_is_a_rejected_call(
+    provider: str, status: int
+) -> None:
+    # Production client construction; the test injects only the transport.
+    recorder = _recorder(
+        provider,
+        _response(provider, status, headers={"location": ELSEWHERE}),
+        _response(provider, 200, OK_BODIES[provider]),
+    )
+    with pytest.raises(ProviderCallError) as caught:
+        await _live_client(provider, recorder).call(_conv())
+    assert (caught.value.kind, caught.value.status) == ("rejected", status)
+    assert [r.method for r in recorder.seen] == ["POST"]
+    assert "elsewhere.invalid" not in {r.url.host for r in recorder.seen}
+
+
+@pytest.mark.parametrize(
+    "family_id,env,host",
+    [
+        ("claude-sonnet-5-5", "ANTHROPIC_BASE_URL", "api.anthropic.com"),
+        ("gpt-6.1-sol", "OPENAI_BASE_URL", "api.openai.com"),
+        ("gemini-3.8-flash", "GOOGLE_GEMINI_BASE_URL", "generativelanguage.googleapis.com"),
+    ],
+)
+async def test_a_base_url_variable_cannot_redirect_a_key(
+    monkeypatch: pytest.MonkeyPatch, family_id: str, env: str, host: str
+) -> None:
+    _clear_keys(monkeypatch)
+    family = _matrix_family(family_id)
+    monkeypatch.setenv("BENCHMARK_LIVE_PROVIDERS_ENABLED", "1")
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV[family.provider], "not-a-real-key")
+    monkeypatch.setenv(env, "https://attacker.invalid/v1")
+    recorder = _recorder(
+        family.provider, _response(family.provider, 200, OK_BODIES[family.provider])
+    )
+    client = make_client(family, timeout_s=30, transport=recorder.transport())
+    await client.call(_conv())
+    assert [r.url.host for r in recorder.seen] == [host]
