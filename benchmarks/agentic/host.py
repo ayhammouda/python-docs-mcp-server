@@ -28,6 +28,7 @@ from benchmarks.agentic.protocol import (
     assert_no_key_shaped,
     encode_frame,
     read_frame,
+    redact_key_shaped,
 )
 from benchmarks.agentic.types import Buckets
 from benchmarks.model_matrix import ModelFamily
@@ -190,8 +191,12 @@ async def _supervise(
             await proc.wait()
         if in_flight is not None:  # may have been billed: booked at twice its bound
             await ledger.settle(in_flight, outcome="worker_lost", buckets=None)
-    log_text = log_path.read_text(encoding="utf-8", errors="replace")
-    assert_no_key_shaped(log_text, where=str(log_path))
+    redacted, pattern = redact_key_shaped(log_path.read_bytes())
+    if pattern:
+        log_path.write_bytes(redacted)  # the leaked bytes never stay on disk
+        raise KeyLeakError(
+            f"a key-shaped string ({pattern} pattern) was found in {log_path}; redacted there"
+        )
     if not done:
         for item in job.trajectories:
             if (item["corpus_id"], item["repeat"]) not in reported:

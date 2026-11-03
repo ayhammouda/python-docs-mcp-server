@@ -26,6 +26,7 @@ KEY_PATTERNS = {
     "google": _START + r"AIza[0-9A-Za-z_-]{35}" + _END,
 }
 KEY_SHAPED = re.compile("|".join(f"(?P<{name}>{p})" for name, p in KEY_PATTERNS.items()))
+_KEY_SHAPED_BYTES = re.compile(KEY_SHAPED.pattern.encode())
 
 
 class KeyLeakError(BenchmarkValidationError):
@@ -55,6 +56,14 @@ async def read_frame(
     except asyncio.IncompleteReadError:
         return None
     return json.loads(body)
+
+
+def redact_key_shaped(data: bytes) -> tuple[bytes, str | None]:
+    """``data`` with every key shape replaced by ``[redacted]``, and the first pattern's name."""
+    match = _KEY_SHAPED_BYTES.search(data)
+    if match is None:
+        return data, None
+    return _KEY_SHAPED_BYTES.sub(b"[redacted]", data), match.lastgroup
 
 
 def assert_no_key_shaped(text: str, *, where: str) -> None:

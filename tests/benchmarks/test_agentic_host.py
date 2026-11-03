@@ -443,6 +443,17 @@ async def test_a_worker_that_stalls_mid_frame_is_a_lost_worker(
     assert {(m["type"], m["reason"]) for m in host.messages()} == {("not_run", "worker_lost")}
 
 
+async def test_a_key_shape_in_a_worker_log_is_redacted_before_the_run_stops(
+    host: Host, tmp_path: Path
+) -> None:
+    leaked = "sk-ant-api03-" + "z" * 90
+    noisy = f"import sys\nsys.stderr.write('debug: token={leaked}\\n')\n"
+    with pytest.raises(KeyLeakError, match="anthropic"):
+        await host.run([_job(tmp_path, [ANSWER])], launcher=KeyedLauncher(noisy, key=""))
+    (log,) = (tmp_path / "logs").iterdir()
+    assert log.read_text() == "debug: token=[redacted]\n"
+
+
 async def test_host_aborts_the_run_when_a_worker_frame_holds_a_key_shaped_string(
     host: Host, tmp_path: Path
 ) -> None:
