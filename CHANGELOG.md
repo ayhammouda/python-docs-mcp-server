@@ -24,6 +24,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+- Updated locked Pydantic (2.14.2, pydantic-core 2.50.2, with the
+  typing-extensions 4.16.0 and typing-inspection 0.4.4 it requires) and
+  Platformdirs (4.14.0). Pydantic 2.14.2 fixes four validation advisories
+  (GHSA-3r8g-cqwr-jr29, GHSA-qpmf-fgh3-ff25, GHSA-gj4f-r7mf-jjxh,
+  GHSA-955g-x97g-8mcp). Platformdirs 4.14.0 fixes six low-severity advisories
+  in its site and runtime directories; the server uses only the user cache
+  directory, which still honours `XDG_CACHE_HOME` on macOS.
 - The MCP servers that the benchmark harness starts now get the MCP SDK's
   default variables plus only: `CONTEXT7_API_KEY` for the Context7 server (npm
   code), and only in key mode; `PYTHON_DOCS_MCP_DISABLE_AUTO_INDEX` and, when
