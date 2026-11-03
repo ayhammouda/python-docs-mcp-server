@@ -1,0 +1,65 @@
+# Price snapshot for the agentic benchmark's spend ledger.
+#
+# Context: docs/benchmarks/AGENTIC-BENCHMARK-DESIGN.md sections 8 and 12.
+# Every value comes from the research note named in `source`, which quotes
+# the vendor page each `source_url` points at. Rates are USD per million
+# tokens, written as strings so they load as exact decimals.
+#
+# Each tier applies up to `up_to_input_tokens` total input tokens; the last
+# tier has no limit (null). A call's tier is picked from its total reported
+# input (actual cost) or from its input bound (reservation), and applies to
+# input and output both.
+#
+# Loaded and validated by benchmarks.agentic.ledger.load_price_snapshot().
+schema_version: 1
+currency: USD
+unit: per_million_tokens
+captured_on: "2026-10-31"
+# Gemini 3.8 Flash's prices double on 2027-01-01. A live run refuses this
+# snapshot from 2026-12-31 UTC, a one-day margin across time zones, until the
+# snapshot is refreshed.
+expires_on: "2026-12-31"
+source: docs/research/2026-10-31-benchmark-provider-limits.md
+
+models:
+  - model_id: claude-sonnet-5-5
+    provider: anthropic
+    source_url: https://platform.claude.com/docs/en/about-claude/pricing
+    tiers:
+      - up_to_input_tokens: null
+        input: "2"
+        # $4, the higher of the 5-minute and 1-hour write rates: the harness
+        # sends no cache_control, so a write is unexpected and priced high.
+        cache_write: "4"
+        cached_input: "0.10"
+        output: "10"
+
+  - model_id: gpt-6.1-sol
+    provider: openai
+    source_url: https://developers.openai.com/api/docs/pricing
+    tiers:
+      - up_to_input_tokens: 272000
+        input: "2"
+        # $2.50, the 30-minute rate: the harness never requests 12-hour
+        # retention (tests/benchmarks/test_agentic_clients.py pins that).
+        cache_write: "2.50"
+        cached_input: "0.10"
+        output: "10"
+      - up_to_input_tokens: null
+        input: "4"
+        # $5.00, the 30-minute rate above 272K input tokens.
+        cache_write: "5"
+        cached_input: "0.20"
+        output: "15"
+
+  - model_id: gemini-3.8-flash
+    provider: google
+    source_url: https://ai.google.dev/gemini-api/docs/pricing
+    tiers:
+      - up_to_input_tokens: null
+        input: "0.75"
+        # 0: Gemini has no cache-write bucket, and the harness creates no
+        # cached content.
+        cache_write: "0"
+        cached_input: "0.075"
+        output: "3.75"
