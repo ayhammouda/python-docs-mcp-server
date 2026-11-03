@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,7 @@ from benchmarks.agentic.bridge import system_spec_from_raw
 from benchmarks.agentic.clients import PAID_KEY_ENVS
 from benchmarks.agentic.host import LocalLauncher, WorkerJob, refuse_host_keys, run_jobs
 from benchmarks.agentic.ledger import Ledger, LedgerService, ModelPrice, Rates, Tier
-from benchmarks.agentic.loop import HOSTED_CAPS
+from benchmarks.agentic.loop import HOSTED_CAPS, Caps
 from benchmarks.agentic.protocol import FrameTooLarge, KeyLeakError, assert_no_key_shaped
 from benchmarks.model_matrix import ModelFamily, load_model_matrix, model_family_from_raw
 from benchmarks.runner import BenchmarkValidationError
@@ -422,6 +423,24 @@ async def test_host_settles_a_lost_workers_unit_at_twice_its_bound_and_frees_the
     assert {(m["type"], m["reason"]) for m in lost_job_messages} == {("not_run", "worker_lost")}
     assert len(lost_job_messages) == 2
     assert [m["type"] for m in host.messages("normal")][-1] == "done"
+
+
+async def test_a_worker_that_stalls_mid_frame_is_a_lost_worker(
+    host: Host, tmp_path: Path
+) -> None:
+    stalled = (
+        "import sys, time\n"
+        "sys.stdout.buffer.write((100).to_bytes(8, 'big'))\n"
+        "sys.stdout.buffer.flush()\n"
+        "time.sleep(30)\n"
+    )
+    job = replace(
+        _job(tmp_path, [ANSWER]), caps=Caps(trajectory_s=0.2, model_call_timeout_s=0.3)
+    )
+    started = time.monotonic()
+    await host.run([job], launcher=KeyedLauncher(stalled, key=""))
+    assert time.monotonic() - started < 10  # the host's read deadline, not the 30 s sleep
+    assert {(m["type"], m["reason"]) for m in host.messages()} == {("not_run", "worker_lost")}
 
 
 async def test_host_aborts_the_run_when_a_worker_frame_holds_a_key_shaped_string(
