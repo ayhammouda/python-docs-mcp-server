@@ -3,6 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass(frozen=True)
+class ToolSpec:
+    """One tool as an MCP server advertises it."""
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
 
 
 @dataclass(frozen=True)
