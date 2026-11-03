@@ -50,7 +50,6 @@ from benchmarks.runner import (
     _scoring_record,
     _utc_now,
     _write_json,
-    _write_snapshot,
 )
 
 #: Answer-turn stop reasons that mean the output cap cut the answer; the pilot's 1% rule
@@ -391,12 +390,19 @@ def run_agentic(
         seed=seed,
         matrix_dir=config.matrix_path.parent,
     )
+    inputs = {
+        "corpus.yml": config.corpus_path.read_bytes(),
+        "competitor-manifest.yml": config.manifest_path.read_bytes(),
+        "model-matrix.yml": config.matrix_path.read_bytes(),
+        "price-snapshot.yml": config.prices_path.read_bytes(),
+    }
+    for name, data in inputs.items():  # every input, before any snapshot is written
+        assert_no_key_shaped(data.decode("utf-8", errors="replace"), where=f"input {name}")
     out.mkdir(parents=True, exist_ok=True)
     snapshots = out / "snapshots"
-    _write_snapshot(config.corpus_path, snapshots / "corpus.yml")
-    _write_snapshot(config.manifest_path, snapshots / "competitor-manifest.yml")
-    _write_snapshot(config.matrix_path, snapshots / "model-matrix.yml")
-    _write_snapshot(config.prices_path, snapshots / "price-snapshot.yml")
+    snapshots.mkdir()
+    for name, data in inputs.items():  # the exact bytes that were scanned
+        (snapshots / name).write_bytes(data)
     (snapshots / "system-prompt.txt").write_text(SYSTEM_PROMPT, encoding="utf-8")
     environment = {
         **_environment_metadata(run_id=run_id, dry_run=config.dry_run),

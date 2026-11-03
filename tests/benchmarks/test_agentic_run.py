@@ -314,6 +314,16 @@ def test_continuation_answers_count_as_output_cap_stops(tmp_path: Path) -> None:
     assert (fam["output_cap_stops"], fam["answer_turns"]) == (2, 100)  # 2%
 
 
+def test_a_key_shape_in_an_input_file_is_refused_before_any_snapshot(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.yml"
+    key_shape = "sk-ant-api03-" + "A" * 90
+    manifest.write_text(COMMITTED_MANIFEST.read_text() + f"\n# {key_shape}\n", encoding="utf-8")
+    with pytest.raises(KeyLeakError) as caught:
+        run_agentic(_config(tmp_path, manifest_path=manifest, dry_run=True))
+    assert key_shape not in str(caught.value)
+    assert not (tmp_path / "run" / "snapshots").exists()
+
+
 def test_agentic_run_refuses_a_non_empty_out_dir(tmp_path: Path) -> None:
     (tmp_path / "run").mkdir()
     (tmp_path / "run" / "stale.json").write_text("{}")
