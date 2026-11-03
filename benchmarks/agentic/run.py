@@ -30,6 +30,7 @@ from benchmarks.agentic.ledger import (
     PROVIDER_CAPS,
     Ledger,
     LedgerService,
+    PriceSnapshot,
     load_price_snapshot,
     refuse_stale_snapshot,
 )
@@ -207,12 +208,16 @@ class _Collector:
         self.failed = 0
         self.discarded: list[dict[str, Any]] = []
         self.not_run: list[dict[str, Any]] = []
+        self.worker_errors: list[dict[str, Any]] = []
 
     async def on_message(self, job: WorkerJob, message: dict[str, Any]) -> None:
         kind = message["type"]
         if kind == "system_info":
             info = {k: v for k, v in message.items() if k != "type"}
             _write(self.out / "systems" / f"{job.job_id}.json", info)
+            return
+        if kind == "worker_error":
+            self.worker_errors.append({"job_id": job.job_id, "reason": message["reason"]})
             return
         if kind not in ("trajectory", "discarded", "not_run"):
             return
@@ -457,48 +462,67 @@ def run_agentic(
         prices = {f.model_id: snapshot.models[f.model_id] for f in families if f.provider in caps}
         service = LedgerService(ledger, prices, {f.model_id: f for f in families})
         collector = _Collector(out, {q.id: q for q in questions}, families)
-        asyncio.run(
-            run_jobs(
-                jobs,
-                launcher=launcher,
-                ledger=service,
-                on_message=collector.on_message,
-                log_dir=out / "logs",
-                cwd=_REPO_ROOT,
+        try:
+            asyncio.run(
+                run_jobs(
+                    jobs,
+                    launcher=launcher,
+                    ledger=service,
+                    on_message=collector.on_message,
+                    log_dir=out / "logs",
+                    cwd=_REPO_ROOT,
+                )
             )
-        )
-        events = "".join(json.dumps(e, sort_keys=True) + "\n" for e in ledger.events(run_id))
-        assert_no_key_shaped(events, where="ledger-events.jsonl")
-        (out / "ledger-events.jsonl").write_text(events, encoding="utf-8")
-        scored = collector.succeeded + collector.failed
-        summary |= {
-            "completed_at": _utc_now(),
-            "scored_cells": scored,
-            "correctness_denominator_cells": scored,
-            "succeeded_cells": collector.succeeded,
-            "failed_cells": collector.failed,
-            "failed_cells_included_in_correctness_denominator": True,
-            "competitors": sorted(collector.cells),
-            "discarded": collector.discarded,
-            "not_run": collector.not_run,
-            "families": {fid: stats.summary() for fid, stats in collector.families.items()},
-            "ledger": {
-                provider: {
-                    "spent_before": str(spent_before[provider]),
-                    "spent_after": str(ledger.spent(provider)),
-                    "cap": str(caps[provider]),
-                    "stopped": ledger.stopped(provider),
-                }
-                for provider in caps
-            },
-            "price_snapshot": {
-                "captured_on": snapshot.captured_on.isoformat(),
-                "expires_on": None
-                if snapshot.expires_on is None
-                else snapshot.expires_on.isoformat(),
-            },
-        }
-        _write(out / "run-summary.json", summary)
+        except BaseException as exc:  # still write what was spent and what ran
+            summary |= {"status": "aborted", "abort_reason": f"{type(exc).__name__}: {exc}"}
+            raise
+        finally:
+            _write_outcome(out, summary, collector, ledger, run_id, caps, spent_before, snapshot)
         return summary
     finally:
         ledger.close()
+
+
+def _write_outcome(
+    out: Path,
+    summary: dict[str, Any],
+    collector: _Collector,
+    ledger: Ledger,
+    run_id: str,
+    caps: Mapping[str, Decimal],
+    spent_before: Mapping[str, Decimal],
+    snapshot: PriceSnapshot,
+) -> None:
+    """ledger-events.jsonl and run-summary.json, for a completed or an aborted run."""
+    events = "".join(json.dumps(e, sort_keys=True) + "\n" for e in ledger.events(run_id))
+    assert_no_key_shaped(events, where="ledger-events.jsonl")
+    (out / "ledger-events.jsonl").write_text(events, encoding="utf-8")
+    scored = collector.succeeded + collector.failed
+    summary.setdefault("status", "completed")
+    summary |= {
+        "completed_at": _utc_now(),
+        "scored_cells": scored,
+        "correctness_denominator_cells": scored,
+        "succeeded_cells": collector.succeeded,
+        "failed_cells": collector.failed,
+        "failed_cells_included_in_correctness_denominator": True,
+        "competitors": sorted(collector.cells),
+        "discarded": collector.discarded,
+        "not_run": collector.not_run,
+        "worker_errors": collector.worker_errors,
+        "families": {fid: stats.summary() for fid, stats in collector.families.items()},
+        "ledger": {
+            provider: {
+                "spent_before": str(spent_before[provider]),
+                "spent_after": str(ledger.spent(provider)),
+                "cap": str(caps[provider]),
+                "stopped": ledger.stopped(provider),
+            }
+            for provider in caps
+        },
+        "price_snapshot": {
+            "captured_on": snapshot.captured_on.isoformat(),
+            "expires_on": None if snapshot.expires_on is None else snapshot.expires_on.isoformat(),
+        },
+    }
+    _write(out / "run-summary.json", summary)

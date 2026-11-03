@@ -23,6 +23,7 @@ from benchmarks.agentic.ledger import LedgerService
 from benchmarks.agentic.loop import Caps
 from benchmarks.agentic.protocol import (
     MAX_FRAME_BYTES,
+    FrameTooLarge,
     KeyLeakError,
     assert_no_key_shaped,
     encode_frame,
@@ -100,6 +101,7 @@ async def _supervise(
     in_flight: str | None = None
     reported: set[tuple[str, int]] = set()
     done = False
+    lost_reason = "worker_lost"
     try:
         try:
             job_frame = {
@@ -148,7 +150,12 @@ async def _supervise(
                     reason = str(message.get("reason"))
                     if reason == "own key found in output":
                         raise KeyLeakError(f"worker {job.job_id}: {reason}")
-                    raise BenchmarkValidationError(f"worker {job.job_id} failed: {reason}")
+                    if reason.startswith("FrameTooLarge:"):
+                        raise FrameTooLarge(f"worker {job.job_id}: {reason}")
+                    # Any other failure costs only this job's cells, like a lost worker.
+                    lost_reason = "worker_error"
+                    await on_message(job, {"type": "worker_error", "reason": reason})
+                    break
                 else:
                     await on_message(job, message)
                     if kind in ("trajectory", "not_run"):
@@ -179,7 +186,7 @@ async def _supervise(
                         "type": "not_run",
                         "corpus_id": item["corpus_id"],
                         "repeat": item["repeat"],
-                        "reason": "worker_lost",
+                        "reason": lost_reason,
                     },
                 )
 

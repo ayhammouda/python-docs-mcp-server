@@ -356,6 +356,56 @@ def test_a_key_shape_in_an_input_file_is_refused_before_any_snapshot(tmp_path: P
     assert not (tmp_path / "run" / "snapshots").exists()
 
 
+def test_a_worker_error_costs_only_its_own_cells(tmp_path: Path) -> None:
+    # Usage that cannot be bucketed (cached > input) raises BenchmarkValidationError in the
+    # openai worker; the anthropic job still finishes and the summary lists the failure.
+    bad = {
+        "text": "x",
+        "usage": {"input_tokens": 100, "input_tokens_details": {"cached_tokens": 200}},
+    }
+    matrix = _matrix_with(tmp_path, {"scripted-openai": [bad]})
+    config = _config(
+        tmp_path,
+        matrix_path=matrix,
+        models=("scripted-anthropic", "scripted-openai"),
+        systems=("no-docs",),
+        questions=("SYN-EX-001",),
+        repeats=1,
+    )
+    summary = run_agentic(config)
+    assert summary["status"] == "completed" and summary["succeeded_cells"] == 1
+    assert summary["not_run"] == [
+        {
+            "cell": "no-docs--scripted-openai--r1",
+            "corpus_id": "SYN-EX-001",
+            "reason": "worker_error",
+            "attempt": None,
+        }
+    ]
+    (error,) = summary["worker_errors"]
+    assert error["job_id"] == "scripted-openai--no-docs" and "negative" in error["reason"]
+    assert Decimal(summary["ledger"]["openai"]["spent_after"]) > 0  # its unit, at 2x the bound
+
+
+def test_an_aborted_run_still_writes_its_summary_and_ledger_events(tmp_path: Path) -> None:
+    leak = {"text": "sk-ant-api03-" + "a" * 90, "usage": {"input_tokens": 1, "output_tokens": 1}}
+    matrix = _matrix_with(tmp_path, {"scripted-anthropic": [leak]})
+    config = _config(
+        tmp_path,
+        matrix_path=matrix,
+        models=("scripted-anthropic",),
+        systems=("no-docs",),
+        questions=("SYN-EX-001",),
+        repeats=1,
+    )
+    with pytest.raises(KeyLeakError):
+        run_agentic(config)
+    run = tmp_path / "run"
+    summary = json.loads((run / "run-summary.json").read_text())
+    assert summary["status"] == "aborted" and "KeyLeakError" in summary["abort_reason"]
+    assert (run / "ledger-events.jsonl").read_text().count('"event": "reserve"') == 1
+
+
 def test_agentic_run_refuses_a_non_empty_out_dir(tmp_path: Path) -> None:
     (tmp_path / "run").mkdir()
     (tmp_path / "run" / "stale.json").write_text("{}")
