@@ -17,8 +17,8 @@ import pytest
 import yaml
 
 from benchmarks.__main__ import main
+from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
 from benchmarks.agentic.bridge import load_systems
-from benchmarks.agentic.clients import PAID_KEY_ENVS
 from benchmarks.agentic.host import LocalLauncher
 from benchmarks.agentic.loop import MAX_RETRIES, Caps
 from benchmarks.agentic.protocol import KEY_SHAPED, KeyLeakError
@@ -55,7 +55,7 @@ EX2 = "fixture_symbol_ex_2()"
 
 @pytest.fixture(autouse=True)
 def _keyless(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in PAID_KEY_ENVS:
+    for name in PROVIDER_API_KEY_ENV.values():
         monkeypatch.delenv(name, raising=False)
 
 

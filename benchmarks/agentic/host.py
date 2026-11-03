@@ -17,8 +17,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
 from benchmarks.agentic.bridge import SystemSpec
-from benchmarks.agentic.clients import PAID_KEY_ENVS
 from benchmarks.agentic.ledger import LedgerService
 from benchmarks.agentic.loop import Caps
 from benchmarks.agentic.protocol import (
@@ -69,7 +69,9 @@ class LocalLauncher:
 
 
 def refuse_host_keys(environ: Mapping[str, str]) -> None:
-    held = [name for name in PAID_KEY_ENVS if environ.get(name)]
+    # Every key name, competitors included. Only agentic-run calls this: the fixed-flow
+    # `run` command still counts tokens with ANTHROPIC_API_KEY on the host.
+    held = sorted(name for name in set(PROVIDER_API_KEY_ENV.values()) if environ.get(name))
     if held:
         raise BenchmarkValidationError(
             f"the host must never hold a provider key, but {', '.join(held)} is set: "

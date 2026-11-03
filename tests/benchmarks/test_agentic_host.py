@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 import yaml
 
+from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
 from benchmarks.agentic.bridge import system_spec_from_raw
 from benchmarks.agentic.clients import PAID_KEY_ENVS
 from benchmarks.agentic.host import LocalLauncher, WorkerJob, refuse_host_keys, run_jobs
@@ -132,7 +133,7 @@ class Host:
 
 @pytest.fixture
 def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    for name in PAID_KEY_ENVS:
+    for name in PROVIDER_API_KEY_ENV.values():
         monkeypatch.delenv(name, raising=False)
     h = Host(tmp_path)
     yield h
@@ -158,6 +159,12 @@ def test_host_refuses_to_start_with_a_provider_key_in_its_environment() -> None:
         refuse_host_keys({"OPENAI_API_KEY": "x-not-a-key"})
     assert "x-not-a-key" not in str(caught.value)
     refuse_host_keys({"PATH": "/bin", "OPENAI_API_KEY": ""})  # an empty variable holds no key
+
+
+@pytest.mark.parametrize("name", ["REF_API_KEY", "CONTEXT7_API_KEY", "GOOGLE_API_KEY"])
+def test_host_refuses_every_provider_key_name(name: str) -> None:
+    with pytest.raises(BenchmarkValidationError, match=name):
+        refuse_host_keys({name: "x-not-a-key"})
 
 
 def test_local_launcher_passes_no_provider_key_and_runs_only_scripted_models(
