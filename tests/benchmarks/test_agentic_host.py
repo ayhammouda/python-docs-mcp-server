@@ -175,23 +175,44 @@ def test_local_launcher_passes_no_provider_key_and_runs_only_scripted_models(
     assert LocalLauncher().supports(job.family) is True
 
 
+ANTHROPIC_SHAPE = "sk-ant-api03-" + "a" * 90
+
+
 @pytest.mark.parametrize(
-    "text,leaks",
+    "text,pattern",
     [
-        ("sk-ant-api03-" + "a" * 40, True),
-        ("AIza" + "b" * 35, True),
-        ("sk-proj-" + "c" * 40, True),
-        ("a disk-based cache", False),
-        ("task-runner-" + "d" * 40, False),
+        (ANTHROPIC_SHAPE, "anthropic"),
+        ("AIza" + "b" * 35, "google"),
+        ("sk-proj-" + "c" * 40, "openai"),
+        ("sk-svcacct-" + "c" * 40, "openai"),
+        ("sk-" + "c" * 48, "openai"),
+        ("q=%20" + ANTHROPIC_SHAPE, "anthropic"),  # URL-encoded: a digit just before the key
+        ("7" + ANTHROPIC_SHAPE, "anthropic"),
+        ("q=%2B" + "sk-proj-" + "c" * 40, "openai"),
+        ("a disk-based cache", None),
+        ("task-runner-" + "d" * 40, None),
+        ("sk-ant-api03-" + "a" * 20, None),  # too short for any key shape
+        ("AIza" + "b" * 36, None),  # a Google key is exactly 39 characters
     ],
 )
-def test_key_shaped_scan(text: str, leaks: bool) -> None:
-    if leaks:
-        with pytest.raises(KeyLeakError, match="test frame") as caught:
+def test_key_shaped_scan(text: str, pattern: str | None) -> None:
+    if pattern:
+        with pytest.raises(KeyLeakError, match=f"test frame.*{pattern}|{pattern}.*test frame"):
             assert_no_key_shaped(f"before {text} after", where="test frame")
+        with pytest.raises(KeyLeakError) as caught:
+            assert_no_key_shaped(text, where="test frame")
         assert text not in str(caught.value)
     else:
-        assert_no_key_shaped(text, where="test frame")
+        assert_no_key_shaped(f"before {text} after", where="test frame")
+
+
+def test_random_base64_is_not_key_shaped() -> None:
+    import base64
+    import random
+
+    data = random.Random(20261107).randbytes(3 * 1024 * 1024)  # the old pattern fired here
+    for text in (base64.b64encode(data), base64.urlsafe_b64encode(data)):
+        assert_no_key_shaped(text.decode("ascii"), where="random base64")
 
 
 def _run_python(code: str) -> subprocess.CompletedProcess[bytes]:
@@ -349,7 +370,7 @@ async def test_host_aborts_the_run_when_a_worker_frame_holds_a_key_shaped_string
 ) -> None:
     leaky_worker = (
         "import json, sys\n"
-        "body = json.dumps({'type': 'system_info', 'note': 'sk-ant-' + 'a' * 30}).encode()\n"
+        "body = json.dumps({'type': 'system_info', 'note': 'sk-ant-api03-' + 'a' * 90}).encode()\n"
         "sys.stdout.buffer.write(len(body).to_bytes(8, 'big') + body)\n"
         "sys.stdout.buffer.flush()\n"
         "import time; time.sleep(30)\n"

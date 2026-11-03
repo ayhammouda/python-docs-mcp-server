@@ -15,10 +15,17 @@ from typing import Any
 from benchmarks.runner import BenchmarkValidationError
 
 MAX_FRAME_BYTES = 64 * 1024 * 1024
-KEY_SHAPED = re.compile(
-    r"(?<![A-Za-z0-9])(?:sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}"
-    r"|AIza[0-9A-Za-z_-]{30,})"
-)
+#: A key starts a token, or follows a URL escape such as %20; a run of base64 never does.
+_START = r"(?:(?<=%[0-9A-Fa-f]{2})|(?<![A-Za-z0-9_-]))"
+_END = r"(?![A-Za-z0-9_-])"
+#: Real key shapes, by provider. The Anthropic literal is specific enough to need no start
+#: boundary, so a key glued to a digit (``7sk-ant-api03-...``) is still caught.
+KEY_PATTERNS = {
+    "anthropic": r"sk-ant-api\d\d-[A-Za-z0-9_-]{80,}" + _END,
+    "openai": _START + r"sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{40,}" + _END,
+    "google": _START + r"AIza[0-9A-Za-z_-]{35}" + _END,
+}
+KEY_SHAPED = re.compile("|".join(f"(?P<{name}>{p})" for name, p in KEY_PATTERNS.items()))
 
 
 class KeyLeakError(BenchmarkValidationError):
@@ -51,8 +58,9 @@ async def read_frame(
 
 
 def assert_no_key_shaped(text: str, *, where: str) -> None:
-    if KEY_SHAPED.search(text):
-        raise KeyLeakError(f"a key-shaped string was found in {where}")  # never the match
+    if match := KEY_SHAPED.search(text):
+        # Names the place and the pattern, never the match.
+        raise KeyLeakError(f"a key-shaped string ({match.lastgroup} pattern) was found in {where}")
 
 
 def contains_own_key(text: str, own_key: str | None) -> bool:
