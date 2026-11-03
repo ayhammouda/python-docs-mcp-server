@@ -270,7 +270,14 @@ async def _run_job(channel: ProtocolChannel, reader: asyncio.StreamReader) -> in
                 elif attempt <= MAX_RERUNS:
                     queue.append((item, attempt + 1))
                 else:
-                    channel.send({"type": "not_run", **ident, "reason": "retries_exhausted"})
+                    channel.send(
+                        {
+                            "type": "not_run",
+                            **ident,
+                            "reason": "retries_exhausted",
+                            "attempt": attempt,
+                        }
+                    )
                 continue
             await host.request({"type": "trajectory", "record": record, **ident})
             if bridge is not None and (record["error"] or {}).get("category") in _REOPEN_AFTER:

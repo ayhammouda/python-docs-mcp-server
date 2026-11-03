@@ -1,0 +1,54 @@
+# Scripted model families for the agentic end-to-end tests. One per hosted
+# provider, so the ledger meters each provider exactly as a live run would.
+# `script` is relative to this directory; plan_jobs makes it absolute.
+schema_version: 1
+methodology_token_label: "Claude Tokens (Normalized Payload)"
+
+model_families:
+  - id: scripted-anthropic
+    provider: anthropic
+    model_id: scripted-1
+    api: scripted
+    arm: hosted
+    client: scripted
+    script: script-anthropic.yml
+    token_count_method: claude_normalized_payload
+    latency_scope: request_dispatch_to_final_answer
+    max_input_tokens: 200000
+    max_output_tokens: 1024
+    output_cap_includes_reasoning: true
+    framing_allowance_tokens: 256
+    headline_eligible: false
+    headline_ineligibility_reason: Test fixture with a scripted model; never a public result.
+
+  - id: scripted-openai
+    provider: openai
+    model_id: scripted-2
+    api: scripted
+    arm: hosted
+    client: scripted
+    script: script-openai.yml
+    token_count_method: claude_normalized_payload
+    latency_scope: request_dispatch_to_final_answer
+    max_input_tokens: 200000
+    max_output_tokens: 1024
+    output_cap_includes_reasoning: true
+    framing_allowance_tokens: 256
+    headline_eligible: false
+    headline_ineligibility_reason: Test fixture with a scripted model; never a public result.
+
+  - id: scripted-google
+    provider: google
+    model_id: scripted-3
+    api: scripted
+    arm: hosted
+    client: scripted
+    script: script-google.yml
+    token_count_method: claude_normalized_payload
+    latency_scope: request_dispatch_to_final_answer
+    max_input_tokens: 200000
+    max_output_tokens: 1024
+    output_cap_includes_reasoning: true
+    framing_allowance_tokens: 256
+    headline_eligible: false
+    headline_ineligibility_reason: Test fixture with a scripted model; never a public result.

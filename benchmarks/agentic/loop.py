@@ -19,6 +19,7 @@ from typing import Any, Literal, Protocol
 
 from benchmarks.agentic.bridge import BridgeCrash, ToolBridge, truncate_utf8
 from benchmarks.agentic.ledger import Outcome
+from benchmarks.agentic.ledger import _utc_now as _utc_now_ms  # wall_s needs sub-second times
 from benchmarks.agentic.prompt import SYSTEM_PROMPT
 from benchmarks.agentic.schemas import schemas_sha256
 from benchmarks.agentic.types import (
@@ -32,7 +33,7 @@ from benchmarks.agentic.types import (
     UserText,
 )
 from benchmarks.model_matrix import ModelFamily
-from benchmarks.runner import BenchmarkValidationError, _utc_now
+from benchmarks.runner import BenchmarkValidationError
 
 
 @dataclass(frozen=True)
@@ -165,7 +166,7 @@ class _Trajectory:
         self.seconds: dict[str, float] = dict.fromkeys(
             ("used", "model", "tool", "grant_wait", "failed_attempt", "retry_wait"), 0.0
         )
-        self.started_at = _utc_now()
+        self.started_at = _utc_now_ms()
         self.started = time.perf_counter()
 
     def record(self, status: str, error: dict[str, str] | None, answer: str) -> dict[str, Any]:
@@ -187,7 +188,7 @@ class _Trajectory:
                 "overhead_ms": _ms(max(0.0, overhead)),
             },
             "started_at": self.started_at,
-            "completed_at": _utc_now(),
+            "completed_at": _utc_now_ms(),
         }
 
     def discard(
