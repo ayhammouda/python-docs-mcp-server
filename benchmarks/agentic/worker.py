@@ -2,10 +2,10 @@
 
 ``protect_output`` runs before anything else. It keeps the original stdout as
 the protocol channel and sends fds 1 and 2 through a redactor that replaces
-the worker's own key, so ``print()``, ``sys.stderr``, ``os.write(2, ...)``,
-tracebacks and the MCP servers' inherited stderr all pass it. Only
-``ProtocolChannel.send`` writes the protocol fd, and it refuses a frame that
-holds the own key.
+every provider secret the worker holds (each set ``PROVIDER_API_KEY_ENV``
+value), so ``print()``, ``sys.stderr``, ``os.write(2, ...)``, tracebacks and
+the MCP servers' inherited stderr all pass it. Only ``ProtocolChannel.send``
+writes the protocol fd, and it refuses a frame that holds any of them.
 """
 
 from __future__ import annotations
@@ -22,8 +22,9 @@ from dataclasses import asdict
 from importlib.metadata import version
 from typing import Any
 
+from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
 from benchmarks.agentic.bridge import Bridge, SystemSpec, open_bridge, system_spec_from_raw
-from benchmarks.agentic.clients import PAID_KEY_ENVS, make_client
+from benchmarks.agentic.clients import make_client
 from benchmarks.agentic.ledger import Outcome
 from benchmarks.agentic.loop import Caps, TrajectoryDiscarded, run_trajectory
 from benchmarks.agentic.protocol import KeyLeakError, encode_frame, read_frame
@@ -48,14 +49,19 @@ def _write_all(fd: int, data: bytes) -> None:
         data = data[os.write(fd, data) :]
 
 
-def _redact(read_fd: int, sink_fd: int, own_key: str | None) -> None:
-    key = own_key.encode() if own_key else b""
-    hold = max(len(key) - 1, 0)  # a key split across two reads is still caught
+def _secrets() -> tuple[bytes, ...]:
+    """Every provider secret set in this process's environment, longest first."""
+    values = {os.environ.get(name, "") for name in PROVIDER_API_KEY_ENV.values()}
+    return tuple(sorted((v.encode() for v in values if v), key=len, reverse=True))
+
+
+def _redact(read_fd: int, sink_fd: int, secrets: tuple[bytes, ...]) -> None:
+    hold = max((len(s) for s in secrets), default=1) - 1  # a split secret is still caught
     pending = b""
     while chunk := os.read(read_fd, 65536):
         pending += chunk
-        if key:
-            pending = pending.replace(key, _REDACTED)
+        for secret in secrets:
+            pending = pending.replace(secret, _REDACTED)
         out, pending = (pending[:-hold], pending[-hold:]) if hold else (pending, b"")
         with suppress(OSError):  # the sink is gone; keep draining so no writer blocks
             _write_all(sink_fd, out)
@@ -68,21 +74,21 @@ class ProtocolChannel:
     def __init__(
         self,
         protocol_fd: int,
-        own_key: str | None,
+        secrets: tuple[bytes, ...],
         pipe_write_fd: int,
         thread: threading.Thread,
         streams: tuple[io.TextIOWrapper, io.TextIOWrapper],
     ) -> None:
         self._fd = protocol_fd
-        self._own_key = own_key.encode() if own_key else None
+        self._secrets = secrets
         self._pipe_write_fd = pipe_write_fd
         self._thread = thread
         self._streams = streams
 
     def send(self, message: dict[str, Any]) -> None:
-        """Write one frame; refuse a frame that holds the own key."""
+        """Write one frame; refuse a frame that holds any of the worker's secrets."""
         frame = encode_frame(message)
-        if self._own_key and self._own_key in frame:
+        if any(secret in frame for secret in self._secrets):
             raise KeyLeakError("own key found in output")
         _write_all(self._fd, frame)
 
@@ -111,19 +117,20 @@ def _text_stream(fd: int) -> io.TextIOWrapper:
     )
 
 
-def protect_output(own_key: str | None) -> ProtocolChannel:
+def protect_output() -> ProtocolChannel:
     # shortcut: fd redirection is POSIX only; the harness runs on macOS and Linux
     sys.stdout.flush()
     sys.stderr.flush()
     protocol_fd = os.dup(1)
     sink_fd = os.dup(2)
+    secrets = _secrets()
     read_fd, write_fd = os.pipe()
     os.dup2(write_fd, 1)
     os.dup2(write_fd, 2)
-    thread = threading.Thread(target=_redact, args=(read_fd, sink_fd, own_key), daemon=True)
+    thread = threading.Thread(target=_redact, args=(read_fd, sink_fd, secrets), daemon=True)
     thread.start()
     sys.stdout, sys.stderr = streams = (_text_stream(1), _text_stream(2))
-    return ProtocolChannel(protocol_fd, own_key, write_fd, thread, streams)
+    return ProtocolChannel(protocol_fd, secrets, write_fd, thread, streams)
 
 
 class _HostLedger:
@@ -323,9 +330,7 @@ async def _serve(channel: ProtocolChannel) -> int:
 
 def main_worker() -> int:
     """``python -m benchmarks agentic-worker``: protect output first, then run the job."""
-    # A worker holds at most one paid key (make_client refuses a second): that one is its own.
-    own_key = next((os.environ[name] for name in PAID_KEY_ENVS if os.environ.get(name)), None)
-    channel = protect_output(own_key)
+    channel = protect_output()
     try:
         return asyncio.run(_serve(channel))
     finally:

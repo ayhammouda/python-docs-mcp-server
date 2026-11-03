@@ -216,8 +216,10 @@ def test_random_base64_is_not_key_shaped() -> None:
 
 
 def _run_python(code: str) -> subprocess.CompletedProcess[bytes]:
+    """Run ``code`` as a worker would, holding KEY as its Anthropic key."""
+    env = {**os.environ, "ANTHROPIC_API_KEY": KEY}
     return subprocess.run(
-        [sys.executable, "-c", code], cwd=REPO_ROOT, capture_output=True, timeout=60
+        [sys.executable, "-c", code], cwd=REPO_ROOT, capture_output=True, timeout=60, env=env
     )
 
 
@@ -226,7 +228,7 @@ def test_protect_output_redacts_the_own_key_on_every_stream() -> None:
         "import os, sys\n"
         "from benchmarks.agentic.worker import protect_output\n"
         f"KEY = {KEY!r}\n"
-        "ch = protect_output(KEY)\n"
+        "ch = protect_output()\n"
         "print(KEY)\n"
         "sys.stderr.write(KEY + '\\n')\n"
         "os.write(2, KEY[:10].encode())\n"
@@ -245,7 +247,7 @@ def test_protocol_channel_refuses_a_frame_holding_the_own_key() -> None:
         "from benchmarks.agentic.protocol import KeyLeakError\n"
         "from benchmarks.agentic.worker import protect_output\n"
         f"KEY = {KEY!r}\n"
-        "ch = protect_output(KEY)\n"
+        "ch = protect_output()\n"
         "try:\n"
         "    ch.send({'type': 'trajectory', 'answer': 'x' + KEY})\n"
         "except KeyLeakError:\n"
@@ -277,6 +279,38 @@ async def test_host_logs_and_artifacts_never_hold_a_workers_key(host: Host, tmp_
     assert KEY not in logs and logs.count("[redacted]") == 3
     assert all(KEY not in json.dumps(m) for m in host.messages())
     assert [m["type"] for m in host.messages()][-1] == "done"
+
+
+async def test_a_worker_redacts_every_provider_secret_it_holds(
+    host: Host, tmp_path: Path
+) -> None:
+    # Two keys plus a secret that has no key shape (a competitor's server key).
+    secrets = {
+        "ANTHROPIC_API_KEY": KEY,
+        "OPENAI_API_KEY": "openai-synthetic-secret-" + "o" * 30,
+        "REF_API_KEY": "plain-server-secret-77",
+    }
+
+    class SecretsLauncher(KeyedLauncher):
+        def command(self, job: WorkerJob) -> tuple[list[str], dict[str, str]]:
+            argv, env = super().command(job)
+            return argv, {**env, **secrets}
+
+    code = (
+        "import os, sys\n"
+        "from benchmarks.agentic import worker\n"
+        "real = worker.run_worker\n"
+        "async def leaky(channel, reader):\n"
+        "    for name in ('ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'REF_API_KEY'):\n"
+        "        print(os.environ[name])\n"
+        "    return await real(channel, reader)\n"
+        "worker.run_worker = leaky\n"
+        "sys.exit(worker.main_worker())\n"
+    )
+    await host.run([_job(tmp_path, [ANSWER])], launcher=SecretsLauncher(code))
+    logs = "".join(p.read_text() for p in (tmp_path / "logs").iterdir())
+    assert not [name for name, value in secrets.items() if value in logs]
+    assert logs.count("[redacted]") == 3
 
 
 async def test_worker_runs_its_job_over_the_channel_and_reports_done(
