@@ -64,15 +64,18 @@ def tool_arguments(value: Any) -> tuple[dict[str, Any], str | None]:
 
 
 def parse_retry_after(headers: Mapping[str, str]) -> float | None:
-    """Seconds to wait from ``retry-after-ms`` or ``retry-after`` (seconds or an HTTP date)."""
+    """Seconds to wait from ``retry-after-ms`` or ``retry-after`` (seconds or an HTTP date).
+
+    A negative value is clamped to 0; the loop refuses anything above 120 s.
+    """
     try:
         if (ms := headers.get("retry-after-ms")) is not None:
-            return float(ms) / 1000
+            return max(0.0, float(ms) / 1000)
         value = headers.get("retry-after")
         if value is None:
             return None
         try:
-            return float(value)
+            return max(0.0, float(value))
         except ValueError:
             when = parsedate_to_datetime(value)
             return max(0.0, (when - datetime.now(UTC)).total_seconds())
@@ -81,12 +84,13 @@ def parse_retry_after(headers: Mapping[str, str]) -> float | None:
 
 
 def _status_error(status: int, headers: Mapping[str, str], message: str) -> ProviderCallError:
-    if status == 429:
+    """429 and 5xx are retried, honouring retry-after; any other status is rejected."""
+    if status == 429 or status >= 500:
+        kind = "rate_limited" if status == 429 else "server"
         return ProviderCallError(
-            "rate_limited", message, status=status, retry_after_s=parse_retry_after(headers)
+            kind, message, status=status, retry_after_s=parse_retry_after(headers)
         )
-    kind = "server" if status >= 500 else "rejected"
-    return ProviderCallError(kind, message, status=status)
+    return ProviderCallError("rejected", message, status=status)
 
 
 def _utf8_len(payload: Any) -> int:
@@ -396,15 +400,9 @@ class GeminiClient:
                 contents=self._contents(conv.entries),
                 config=self._config(conv),
             )
-        except genai_errors.ClientError as exc:
-            if exc.code == 429:
-                headers = getattr(exc.response, "headers", None) or {}
-                raise _status_error(429, headers, str(exc)) from exc
-            raise ProviderCallError("rejected", str(exc), status=exc.code) from exc
-        except genai_errors.ServerError as exc:
-            raise ProviderCallError("server", str(exc), status=exc.code) from exc
-        except genai_errors.APIError as exc:  # any other status, a redirect included
-            raise ProviderCallError("rejected", str(exc), status=exc.code) from exc
+        except genai_errors.APIError as exc:  # 4xx, 5xx, and any other status (a redirect)
+            headers = getattr(exc.response, "headers", None) or {}
+            raise _status_error(exc.code, headers, str(exc)) from exc
         except httpx.TimeoutException as exc:
             raise ProviderCallError("timeout", str(exc)) from exc
         except httpx.TransportError as exc:

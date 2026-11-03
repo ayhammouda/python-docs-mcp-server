@@ -358,6 +358,30 @@ async def test_rate_limit_is_retried_honouring_retry_after_and_not_counted_as_a_
     assert record["timing"]["retry_wait_ms"] == 7000
 
 
+async def test_a_503_with_retry_after_waits_that_long_before_its_retry(harness: Harness) -> None:
+    import httpx2
+
+    from benchmarks.agentic.clients import AnthropicClient, anthropic_sdk
+
+    answer = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "scripted-1",
+        "content": [{"type": "text", "text": "ok"}],
+        "stop_reason": "end_turn",
+        "stop_sequence": None,
+        "usage": {"input_tokens": 100, "output_tokens": 10},
+    }
+    replies = [
+        httpx2.Response(503, json={"type": "error"}, headers={"retry-after": "90"}),
+        httpx2.Response(200, json=answer),
+    ]
+    sdk = anthropic_sdk("test-key", 30, transport=httpx2.MockTransport(lambda _: replies.pop(0)))
+    record = await harness.run(client=AnthropicClient(sdk, "scripted-1", 1024))  # type: ignore[arg-type]
+    assert harness.sleeps == [90.0] and _outcomes(record) == ["server", "ok"]
+
+
 async def test_server_error_is_booked_at_twice_the_bound_and_retried(harness: Harness) -> None:
     record = await harness.run([{"error": {"kind": "server", "status": 500}}, ANSWER])
     assert record["status"] == "succeeded" and _outcomes(record) == ["server", "ok"]

@@ -368,6 +368,21 @@ def test_parse_retry_after_accepts_an_http_date() -> None:
     assert parse_retry_after({}) is None
 
 
+def test_parse_retry_after_clamps_a_negative_value_to_zero() -> None:
+    assert parse_retry_after({"retry-after": "-5"}) == 0.0
+    assert parse_retry_after({"retry-after-ms": "-1500"}) == 0.0
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai", "google"])
+async def test_a_retryable_5xx_carries_its_retry_after(provider: str) -> None:
+    error = {"error": {"code": 503, "message": "busy", "status": "UNAVAILABLE"}}
+    body = error if provider == "google" else ERROR_BODY
+    recorder = _recorder(provider, _response(provider, 503, body, {"retry-after": "90"}))
+    with pytest.raises(ProviderCallError) as caught:
+        await _live_client(provider, recorder).call(_conv())
+    assert (caught.value.kind, caught.value.retry_after_s) == ("server", 90.0)
+
+
 @pytest.mark.parametrize("provider", ["anthropic", "openai"])
 def test_rendered_bytes_grows_with_each_entry(provider: str) -> None:
     client = _anthropic(Recorder()) if provider == "anthropic" else _openai(Recorder())
@@ -544,7 +559,7 @@ async def test_gemini_status_errors_are_classified(status: int, kind: str) -> No
     with pytest.raises(ProviderCallError) as caught:
         await _gemini(recorder).call(_conv())
     assert caught.value.kind == kind and caught.value.status == status
-    assert caught.value.retry_after_s == (3.0 if status == 429 else None)
+    assert caught.value.retry_after_s == (None if status == 400 else 3.0)  # 429 and 5xx
 
 
 async def test_gemini_timeout_and_connection_errors_are_classified() -> None:
