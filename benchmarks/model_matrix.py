@@ -21,13 +21,14 @@ validator, and mocked provider adapters (see ``benchmarks.adapters``).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from benchmarks.runner import BenchmarkValidationError, Competitor
+from benchmarks.runner import _SAFE_ID, BenchmarkValidationError, Competitor
 
 #: Label for tokens counted by the benchmark's own methodology tokenizer
 #: (Claude token counting after client-side rewrap, per
@@ -47,6 +48,28 @@ _REQUIRED_STRING_FIELDS = (
     "latency_scope",
 )
 
+#: Provider APIs the agentic harness has a client for (design §7.1).
+KNOWN_APIS = frozenset(
+    {
+        "anthropic-messages",
+        "openai-responses",
+        "gemini-generate-content",
+        "openai-chat-completions",
+        "scripted",
+    }
+)
+KNOWN_ARMS = frozenset({"hosted", "air-gapped"})
+MIN_FRAMING_ALLOWANCE_TOKENS = 256
+
+_TOKEN_FIELDS = ("max_input_tokens", "max_output_tokens", "framing_allowance_tokens")
+#: A hosted model is billed, so its spend bound needs every one of these.
+_HOSTED_REQUIRED_FIELDS = (
+    "max_input_tokens",
+    "max_output_tokens",
+    "output_cap_includes_reasoning",
+    "framing_allowance_tokens",
+)
+
 
 @dataclass(frozen=True)
 class ModelFamily:
@@ -61,6 +84,12 @@ class ModelFamily:
     headline_eligible: bool
     headline_ineligibility_reason: str | None
     raw: dict[str, Any]
+    api: str | None = None
+    arm: str | None = None
+    max_input_tokens: int | None = None
+    max_output_tokens: int | None = None
+    output_cap_includes_reasoning: bool | None = None
+    framing_allowance_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -125,55 +154,117 @@ def _load_model_families(data: dict[str, Any]) -> list[ModelFamily]:
     families: list[ModelFamily] = []
     seen: set[str] = set()
     for index, item in enumerate(items):
-        label = f"model family at index {index}"
-        if not isinstance(item, dict):
-            raise BenchmarkValidationError(f"{label} must be a mapping")
+        family = model_family_from_raw(item, label=f"model family at index {index}")
+        if family.id in seen:
+            raise BenchmarkValidationError(f"duplicate model family id: {family.id}")
+        seen.add(family.id)
+        families.append(family)
+    return families
 
-        family_id = item.get("id")
-        if not isinstance(family_id, str) or not family_id.strip():
-            raise BenchmarkValidationError(f"{label} is missing required 'id'")
-        if family_id in seen:
-            raise BenchmarkValidationError(f"duplicate model family id: {family_id}")
-        seen.add(family_id)
 
-        for field in _REQUIRED_STRING_FIELDS:
-            value = item.get(field)
-            if not isinstance(value, str) or not value.strip():
-                raise BenchmarkValidationError(
-                    f"model family {family_id!r} is missing required {field!r}"
-                )
+def model_family_from_raw(item: Mapping[str, Any], *, label: str = "model family") -> ModelFamily:
+    """Validate one ``model_families`` entry and build its :class:`ModelFamily`.
 
-        headline_eligible = item.get("headline_eligible")
-        if not isinstance(headline_eligible, bool):
+    The agentic worker rebuilds its family from the job's raw dict with this
+    function, so it validates exactly what the loader validates.
+    """
+    if not isinstance(item, Mapping):
+        raise BenchmarkValidationError(f"{label} must be a mapping")
+
+    family_id = item.get("id")
+    if not isinstance(family_id, str) or not family_id.strip():
+        raise BenchmarkValidationError(f"{label} is missing required 'id'")
+    if not _SAFE_ID.fullmatch(family_id):
+        raise BenchmarkValidationError(
+            f"model family id {family_id!r} must match {_SAFE_ID.pattern}: "
+            "ids name run directories"
+        )
+
+    for field in _REQUIRED_STRING_FIELDS:
+        value = item.get(field)
+        if not isinstance(value, str) or not value.strip():
             raise BenchmarkValidationError(
-                f"model family {family_id!r} must set 'headline_eligible' to true or false"
+                f"model family {family_id!r} is missing required {field!r}"
             )
-        headline_ineligibility_reason = item.get("headline_ineligibility_reason")
-        if not headline_eligible and (
-            not isinstance(headline_ineligibility_reason, str)
-            or not headline_ineligibility_reason.strip()
+
+    headline_eligible = item.get("headline_eligible")
+    if not isinstance(headline_eligible, bool):
+        raise BenchmarkValidationError(
+            f"model family {family_id!r} must set 'headline_eligible' to true or false"
+        )
+    headline_ineligibility_reason = item.get("headline_ineligibility_reason")
+    if not headline_eligible and (
+        not isinstance(headline_ineligibility_reason, str)
+        or not headline_ineligibility_reason.strip()
+    ):
+        raise BenchmarkValidationError(
+            f"model family {family_id!r} has headline_eligible: false and must include a "
+            "non-empty 'headline_ineligibility_reason'"
+        )
+    if headline_eligible:
+        headline_ineligibility_reason = None
+
+    api = item.get("api")
+    if api is not None and (not isinstance(api, str) or api not in KNOWN_APIS):
+        raise BenchmarkValidationError(
+            f"model family {family_id!r} has unknown 'api' {api!r}; "
+            f"expected one of {sorted(KNOWN_APIS)}"
+        )
+    arm = item.get("arm")
+    if arm is not None and (not isinstance(arm, str) or arm not in KNOWN_ARMS):
+        raise BenchmarkValidationError(
+            f"model family {family_id!r} has unknown 'arm' {arm!r}; "
+            f"expected one of {sorted(KNOWN_ARMS)}"
+        )
+    for field in _TOKEN_FIELDS:
+        value = item.get(field)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
         ):
             raise BenchmarkValidationError(
-                f"model family {family_id!r} has headline_eligible: false and must include a "
-                "non-empty 'headline_ineligibility_reason'"
+                f"model family {family_id!r} must set {field!r} to a positive integer"
             )
-        if headline_eligible:
-            headline_ineligibility_reason = None
-
-        families.append(
-            ModelFamily(
-                id=family_id,
-                provider=item["provider"],
-                model_id=item["model_id"],
-                client=item["client"],
-                token_count_method=item["token_count_method"],
-                latency_scope=item["latency_scope"],
-                headline_eligible=headline_eligible,
-                headline_ineligibility_reason=headline_ineligibility_reason,
-                raw=item,
-            )
+    framing_allowance_tokens = item.get("framing_allowance_tokens")
+    if (
+        framing_allowance_tokens is not None
+        and framing_allowance_tokens < MIN_FRAMING_ALLOWANCE_TOKENS
+    ):
+        raise BenchmarkValidationError(
+            f"model family {family_id!r} must set 'framing_allowance_tokens' to at least "
+            f"{MIN_FRAMING_ALLOWANCE_TOKENS}"
         )
-    return families
+    output_cap_includes_reasoning = item.get("output_cap_includes_reasoning")
+    if output_cap_includes_reasoning is not None and not isinstance(
+        output_cap_includes_reasoning, bool
+    ):
+        raise BenchmarkValidationError(
+            f"model family {family_id!r} must set 'output_cap_includes_reasoning' to true "
+            "or false"
+        )
+    if arm == "hosted":
+        missing = [field for field in _HOSTED_REQUIRED_FIELDS if item.get(field) is None]
+        if missing:
+            raise BenchmarkValidationError(
+                f"hosted model family {family_id!r} must set {missing}"
+            )
+
+    return ModelFamily(
+        id=family_id,
+        provider=item["provider"],
+        model_id=item["model_id"],
+        client=item["client"],
+        token_count_method=item["token_count_method"],
+        latency_scope=item["latency_scope"],
+        headline_eligible=headline_eligible,
+        headline_ineligibility_reason=headline_ineligibility_reason,
+        raw=dict(item),
+        api=api,
+        arm=arm,
+        max_input_tokens=item.get("max_input_tokens"),
+        max_output_tokens=item.get("max_output_tokens"),
+        output_cap_includes_reasoning=output_cap_includes_reasoning,
+        framing_allowance_tokens=framing_allowance_tokens,
+    )
 
 
 def tool_model_cells(
