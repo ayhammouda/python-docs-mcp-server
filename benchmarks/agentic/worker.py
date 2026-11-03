@@ -17,7 +17,7 @@ import os
 import sys
 import threading
 from collections import deque
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, suppress
 from dataclasses import asdict
 from importlib.metadata import version
 from typing import Any
@@ -57,25 +57,27 @@ def _redact(read_fd: int, sink_fd: int, own_key: str | None) -> None:
         if key:
             pending = pending.replace(key, _REDACTED)
         out, pending = (pending[:-hold], pending[-hold:]) if hold else (pending, b"")
-        try:
+        with suppress(OSError):  # the sink is gone; keep draining so no writer blocks
             _write_all(sink_fd, out)
-        except OSError:
-            pass  # the sink is gone; keep draining so writers never block
-    try:
+    with suppress(OSError):
         _write_all(sink_fd, pending)
-    except OSError:
-        pass
     os.close(read_fd)
 
 
 class ProtocolChannel:
     def __init__(
-        self, protocol_fd: int, own_key: str | None, pipe_write_fd: int, thread: threading.Thread
+        self,
+        protocol_fd: int,
+        own_key: str | None,
+        pipe_write_fd: int,
+        thread: threading.Thread,
+        streams: tuple[io.TextIOWrapper, io.TextIOWrapper],
     ) -> None:
         self._fd = protocol_fd
         self._own_key = own_key.encode() if own_key else None
         self._pipe_write_fd = pipe_write_fd
         self._thread = thread
+        self._streams = streams
 
     def send(self, message: dict[str, Any]) -> None:
         """Write one frame; refuse a frame that holds the own key."""
@@ -96,6 +98,17 @@ class ProtocolChannel:
         # A grandchild that still holds the pipe cannot keep the worker alive: the thread
         # is a daemon, and its bytes are dropped, never written unredacted.
         self._thread.join(5)
+        for stream in self._streams:  # fds 1 and 2 stay open (closefd=False)
+            stream.close()
+
+
+def _text_stream(fd: int) -> io.TextIOWrapper:
+    return io.TextIOWrapper(
+        open(fd, "wb", closefd=False),  # closed by ProtocolChannel.close()
+        encoding="utf-8",
+        errors="backslashreplace",
+        line_buffering=True,
+    )
 
 
 def protect_output(own_key: str | None) -> ProtocolChannel:
@@ -109,19 +122,8 @@ def protect_output(own_key: str | None) -> ProtocolChannel:
     os.dup2(write_fd, 2)
     thread = threading.Thread(target=_redact, args=(read_fd, sink_fd, own_key), daemon=True)
     thread.start()
-    sys.stdout = io.TextIOWrapper(
-        open(1, "wb", closefd=False),
-        encoding="utf-8",
-        errors="backslashreplace",
-        line_buffering=True,
-    )
-    sys.stderr = io.TextIOWrapper(
-        open(2, "wb", closefd=False),
-        encoding="utf-8",
-        errors="backslashreplace",
-        line_buffering=True,
-    )
-    return ProtocolChannel(protocol_fd, own_key, write_fd, thread)
+    sys.stdout, sys.stderr = streams = (_text_stream(1), _text_stream(2))
+    return ProtocolChannel(protocol_fd, own_key, write_fd, thread, streams)
 
 
 class _HostLedger:
@@ -311,7 +313,7 @@ async def run_worker(channel: ProtocolChannel, reader: asyncio.StreamReader) -> 
 async def _serve(channel: ProtocolChannel) -> int:
     reader = asyncio.StreamReader()
     await asyncio.get_running_loop().connect_read_pipe(
-        lambda: asyncio.StreamReaderProtocol(reader), open(0, "rb", buffering=0, closefd=False)
+        lambda: asyncio.StreamReaderProtocol(reader), sys.stdin
     )
     return await run_worker(channel, reader)
 

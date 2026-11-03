@@ -137,7 +137,9 @@ def _client_versions() -> dict[str, str]:
 
 class _HasId(Protocol):
     @property
-    def id(self) -> str: ...
+    def id(self) -> str:
+        """The id a selection names."""
+        raise NotImplementedError
 
 
 def _select[T: _HasId](items: Sequence[T], wanted: tuple[str, ...] | None, label: str) -> list[T]:

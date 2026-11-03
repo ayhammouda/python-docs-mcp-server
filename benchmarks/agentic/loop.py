@@ -62,9 +62,11 @@ class LedgerPort(Protocol):
         input_bound: int,
         output_bound: int,
         kind: str = "model_call",
-    ) -> str | None: ...
+    ) -> str | None:
+        """A unit id, or None when the provider's cap refuses the unit."""
 
-    async def settle(self, unit_id: str, *, outcome: Outcome, buckets: Buckets | None) -> None: ...
+    async def settle(self, unit_id: str, *, outcome: Outcome, buckets: Buckets | None) -> None:
+        """Book the unit's outcome and free the provider."""
 
 
 class TrajectoryDiscarded(Exception):

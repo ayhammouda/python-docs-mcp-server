@@ -101,15 +101,15 @@ class ModelClient(Protocol):
 
     def request_params(self) -> dict[str, Any]:
         """Every setting sent except system, tools and messages."""
-        ...
+        raise NotImplementedError
 
     def rendered_bytes(self, conv: Conversation, start: int) -> int:
         """UTF-8 bytes of the provider-rendered request.
 
         System, tools and ``entries[start:]`` when ``start == 0``, else ``entries[start:]`` only.
         """
-        ...
+        raise NotImplementedError
 
     async def call(self, conv: Conversation) -> ModelTurn:
         """One HTTP request; raises :class:`ProviderCallError`."""
-        ...
+        raise NotImplementedError

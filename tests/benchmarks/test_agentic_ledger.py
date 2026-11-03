@@ -352,6 +352,11 @@ def test_a_second_open_on_the_same_directory_is_refused(tmp_path: Path) -> None:
     _open(tmp_path, anthropic="10").close()  # released by close()
 
 
+def test_the_lock_file_is_private_to_its_owner(tmp_path: Path) -> None:
+    _open(tmp_path, anthropic="10").close()
+    assert (tmp_path / ".lock").stat().st_mode & 0o077 == 0
+
+
 def test_a_killed_ledger_holder_releases_the_lock_and_its_unit_is_booked_at_twice_its_bound(
     tmp_path: Path,
 ) -> None:

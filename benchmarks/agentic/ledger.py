@@ -249,7 +249,7 @@ class Ledger:
     ) -> Ledger:
         ledger_dir.mkdir(parents=True, exist_ok=True)
         lock_path = ledger_dir / ".lock"
-        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
         try:
             # shortcut: fcntl is POSIX only; the harness runs on macOS and Linux, add msvcrt.locking if Windows runs are ever needed  # noqa: E501
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)

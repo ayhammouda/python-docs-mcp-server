@@ -62,7 +62,9 @@ class BridgeCrash(Exception):
 class ToolBridge(Protocol):
     tools: list[ToolSpec]
 
-    async def call(self, name: str, arguments: dict[str, Any]) -> ToolOutcome: ...
+    async def call(self, name: str, arguments: dict[str, Any]) -> ToolOutcome:
+        """Call one tool; a dead transport raises :class:`BridgeCrash`."""
+        raise NotImplementedError
 
 
 def _strings(value: Any, label: str) -> tuple[str, ...]:

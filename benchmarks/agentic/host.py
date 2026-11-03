@@ -46,9 +46,13 @@ class WorkerJob:
 
 
 class Launcher(Protocol):
-    def supports(self, family: ModelFamily) -> bool: ...
+    def supports(self, family: ModelFamily) -> bool:
+        """Whether this launcher can run the family's worker."""
+        raise NotImplementedError
 
-    def command(self, job: WorkerJob) -> tuple[list[str], dict[str, str]]: ...
+    def command(self, job: WorkerJob) -> tuple[list[str], dict[str, str]]:
+        """The worker's argv and its whole environment."""
+        raise NotImplementedError
 
 
 class LocalLauncher:
