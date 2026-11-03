@@ -368,6 +368,14 @@ def test_the_lock_file_is_private_to_its_owner(tmp_path: Path) -> None:
     assert (tmp_path / ".lock").stat().st_mode & 0o077 == 0
 
 
+def test_an_existing_world_readable_lock_file_is_made_private(tmp_path: Path) -> None:
+    lock = tmp_path / ".lock"
+    lock.touch()
+    lock.chmod(0o644)
+    _open(tmp_path, anthropic="10").close()
+    assert lock.stat().st_mode & 0o777 == 0o600
+
+
 def test_a_killed_ledger_holder_releases_the_lock_and_its_unit_is_booked_at_twice_its_bound(
     tmp_path: Path,
 ) -> None:
