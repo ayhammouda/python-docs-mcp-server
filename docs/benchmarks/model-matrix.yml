@@ -1,19 +1,31 @@
-# Model / client matrix for the v0.5.0 public benchmark.
+# Model matrix for the agentic public benchmark.
 #
-# Context: issue #73 (parent #63). See
-# docs/benchmarks/PUBLIC-BENCHMARK-METHODOLOGY.md for the full methodology,
-# in particular "Token Measurement" (roadmap decision 5.8 / ADR-006) and
-# "Systems Under Test".
+# Context: docs/benchmarks/AGENTIC-BENCHMARK-DESIGN.md section 7.1 (parent
+# issue #63). This file is that table: three hosted models and one air-gapped
+# model. Every hosted token limit cites the research note
+# docs/research/2026-10-31-benchmark-provider-limits.md, which quotes each
+# vendor page it took a value from. See
+# docs/benchmarks/PUBLIC-BENCHMARK-METHODOLOGY.md for the methodology.
 #
 # This file defines the MODEL axis of the benchmark's evaluation matrix. The
-# TOOL axis (competitor manifest: python-docs-mcp-server, Context7, GitMCP,
-# DeepWiki, Ref.tools, no-MCP baseline) is defined separately in the
-# benchmark manifest consumed by `benchmarks.runner`. The evaluation matrix
-# cross-multiplies these two axes: every eligible tool is evaluated against
-# every model family listed here, independently. Tool scores are never
-# averaged across model families; any aggregate across model families is
-# secondary and must be clearly labeled as an aggregate in reports (see
+# systems under test (design section 5) are the other axis. Every system is
+# evaluated against every model family listed here, independently. Scores are
+# never averaged across model families; any aggregate across model families
+# is secondary and must be clearly labeled as an aggregate in reports (see
 # benchmarks/model_matrix.py:tool_model_cells).
+#
+# Agentic fields (validated by benchmarks.model_matrix.model_family_from_raw):
+# - api: the provider API the harness's client speaks.
+# - arm: `hosted` (billed, so its spend bound needs every token field below)
+#   or `air-gapped` (local Ollama, no spend).
+# - max_input_tokens: the input bound used for the spend check.
+# - max_output_tokens: the output cap sent on every call. 32,768 for every
+#   hosted model (owner ruling on #184), below each documented maximum.
+# - output_cap_includes_reasoning: thinking or reasoning tokens count inside
+#   max_output_tokens, so no extra reasoning budget is added to the bound.
+# - framing_allowance_tokens: tokens added to the input bound per message for
+#   wrappers and provider-injected text (design section 12; at least 256).
+# - limits_source: the research note section the limits come from.
 #
 # Loaded and schema-validated by benchmarks.model_matrix.load_model_matrix().
 schema_version: 1
@@ -23,79 +35,114 @@ schema_version: 1
 # after client-side rewrap) are always reported under this exact label,
 # regardless of which provider/model produced the answer. This keeps the
 # cross-model comparable metric from ever being confused with a provider's
-# own billing/usage tokens (OpenAI `usage.total_tokens`,
-# Google `usage_metadata.total_token_count`, etc.), which are recorded
-# per-entry below only as separate diagnostic data.
-#
-# Maintainer decision (PLAN.md Amendment 2026-07-08): real Claude token
-# counting via the Anthropic count-tokens API is confined to the
-# maintainer-run live phase. Nothing in benchmarks/model_matrix.py calls
-# that API. benchmarks/adapters/claude_tokens.py (issue #89) is the one
-# module that does, and only after benchmarks.adapters.guard's live-phase
-# guard passes (BENCHMARK_LIVE_PROVIDERS_ENABLED + ANTHROPIC_API_KEY, both
-# maintainer-set) -- CI and unit tests never reach that call. This file and
-# the mocked OpenAI/Google adapters only record where/how that count would
-# be produced for those model families.
+# own billing/usage tokens (Anthropic and OpenAI `usage`, Google
+# `usage_metadata`), which are recorded per entry below only as separate
+# diagnostic and cost data.
 methodology_token_label: "Claude Tokens (Normalized Payload)"
 
 model_families:
-  - id: openai-gpt-4o-mini
-    provider: openai
-    model_id: gpt-4o-mini
-    client: openai-python
-    client_wrapper: benchmarks.adapters.openai_adapter.OpenAIAdapter
+  - id: claude-sonnet-5-5
+    provider: anthropic
+    model_id: claude-sonnet-5-5
+    api: anthropic-messages
+    arm: hosted
+    client: anthropic
     # How the primary, cross-model comparable token count is produced for
     # this entry. `claude_normalized_payload` means: the methodology
     # tokenizer is applied to the client-rewrapped message envelope, per
     # PUBLIC-BENCHMARK-METHODOLOGY.md; that count is reported under the
     # `methodology_token_label` above, never as this provider's own tokens.
     token_count_method: claude_normalized_payload
-    # Diagnostic-only: this provider's own native/billing token usage field,
-    # recorded separately and never reported under methodology_token_label.
-    provider_native_token_field: usage.total_tokens
+    # Diagnostic and cost only: this provider's own usage object, recorded
+    # separately and never reported under methodology_token_label.
+    provider_native_token_field: usage
     latency_scope: request_dispatch_to_final_answer
+    settings: >-
+      Provider default effort; no sampling parameters (Claude 5.5 rejects
+      them). Adaptive thinking is on by default and cannot be disabled; the
+      documented default effort is `high`.
+    # Documented as "1M tokens". The exact integer needs the Models API,
+    # which PR 4's smoke run reads.
+    max_input_tokens: 1000000
+    # Documented maximum 128,000.
+    max_output_tokens: 32768
+    output_cap_includes_reasoning: true
+    framing_allowance_tokens: 256
+    limits_source: docs/research/2026-10-31-benchmark-provider-limits.md#a-claude-sonnet-5-5-anthropic-messages-api
     headline_eligible: false
     headline_ineligibility_reason: >-
       No live benchmark run has been executed against this model family yet;
       per roadmap decision 5.17, no comparative claim may cite this entry
       until the harness produces reproducible live data.
 
-  - id: openai-gpt-4o
+  - id: gpt-6.1-sol
     provider: openai
-    model_id: gpt-4o
-    client: openai-python
-    client_wrapper: benchmarks.adapters.openai_adapter.OpenAIAdapter
+    model_id: gpt-6.1-sol
+    api: openai-responses
+    arm: hosted
+    client: openai
     token_count_method: claude_normalized_payload
-    provider_native_token_field: usage.total_tokens
+    provider_native_token_field: usage
     latency_scope: request_dispatch_to_final_answer
+    settings: >-
+      Provider default reasoning effort. The documented default effort is
+      `medium`.
+    # No separate input limit is published: the 1,050,000-token context
+    # window minus the 32,768-token output cap.
+    max_input_tokens: 1017232
+    # Documented maximum 128,000.
+    max_output_tokens: 32768
+    output_cap_includes_reasoning: true
+    framing_allowance_tokens: 256
+    limits_source: docs/research/2026-10-31-benchmark-provider-limits.md#b-gpt-61-sol-openai-responses-api
     headline_eligible: false
     headline_ineligibility_reason: >-
       No live benchmark run has been executed against this model family yet;
       per roadmap decision 5.17, no comparative claim may cite this entry
       until the harness produces reproducible live data.
 
-  - id: google-gemini-1.5-flash
+  - id: gemini-3.8-flash
     provider: google
-    model_id: gemini-1.5-flash
+    model_id: gemini-3.8-flash
+    # `generate_content` with automatic function calling disabled, paid tier.
+    api: gemini-generate-content
+    arm: hosted
     client: google-genai
-    client_wrapper: benchmarks.adapters.google_adapter.GoogleAdapter
     token_count_method: claude_normalized_payload
-    provider_native_token_field: usage_metadata.total_token_count
+    provider_native_token_field: usage_metadata
     latency_scope: request_dispatch_to_final_answer
+    settings: >-
+      Provider default thinking level. Run before 2027-01-01, when its price
+      doubles, or refresh the price snapshot. The documented default thinking
+      level is `medium`.
+    # Documented input token limit.
+    max_input_tokens: 1048576
+    # Documented maximum 65,536.
+    max_output_tokens: 32768
+    output_cap_includes_reasoning: true
+    framing_allowance_tokens: 256
+    limits_source: docs/research/2026-10-31-benchmark-provider-limits.md#c-gemini-38-flash-gemini-api-google-genai-paid-tier
     headline_eligible: false
     headline_ineligibility_reason: >-
       No live benchmark run has been executed against this model family yet;
       per roadmap decision 5.17, no comparative claim may cite this entry
       until the harness produces reproducible live data.
 
-  - id: google-gemini-1.5-pro
-    provider: google
-    model_id: gemini-1.5-pro
-    client: google-genai
-    client_wrapper: benchmarks.adapters.google_adapter.GoogleAdapter
+  - id: gemma4-12b
+    provider: ollama
+    model_id: gemma4:12b
+    api: openai-chat-completions
+    arm: air-gapped
+    client: openai
     token_count_method: claude_normalized_payload
-    provider_native_token_field: usage_metadata.total_token_count
+    provider_native_token_field: usage
     latency_scope: request_dispatch_to_final_answer
+    settings: >-
+      Ollama defaults except `OLLAMA_CONTEXT_LENGTH=32768` for both local
+      systems (the default on a 16 GB machine is 4,096, which cannot hold
+      seven tool schemas plus a docs result, and the OpenAI-compatible
+      endpoint cannot change it per request). 12B fits the maintainer's
+      16 GB M1 Pro; 26B and 31B do not.
     headline_eligible: false
     headline_ineligibility_reason: >-
       No live benchmark run has been executed against this model family yet;

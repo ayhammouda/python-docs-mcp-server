@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from benchmarks.model_matrix import (
     REQUIRED_PROVIDERS,
     ModelFamily,
     load_model_matrix,
+    model_family_from_raw,
     tool_model_cells,
     validate_manifest_against_matrix,
 )
@@ -74,6 +76,130 @@ def test_real_model_matrix_file_loads_and_covers_required_providers() -> None:
         assert isinstance(family.headline_eligible, bool)
         if not family.headline_eligible:
             assert family.headline_ineligibility_reason
+
+
+def test_real_model_matrix_matches_design_section_7_1() -> None:
+    matrix = load_model_matrix(MODEL_MATRIX_PATH)
+    rows = {(f.id, f.provider, f.model_id, f.api, f.arm) for f in matrix.model_families}
+    assert rows == {
+        ("claude-sonnet-5-5", "anthropic", "claude-sonnet-5-5", "anthropic-messages", "hosted"),
+        ("gpt-6.1-sol", "openai", "gpt-6.1-sol", "openai-responses", "hosted"),
+        ("gemini-3.8-flash", "google", "gemini-3.8-flash", "gemini-generate-content", "hosted"),
+        ("gemma4-12b", "ollama", "gemma4:12b", "openai-chat-completions", "air-gapped"),
+    }
+    hosted = {f.id: f for f in matrix.model_families if f.arm == "hosted"}
+    assert {i: f.max_input_tokens for i, f in hosted.items()} == {
+        "claude-sonnet-5-5": 1_000_000,
+        "gpt-6.1-sol": 1_017_232,
+        "gemini-3.8-flash": 1_048_576,
+    }
+    for family in hosted.values():
+        assert "client_wrapper" not in family.raw
+        assert family.max_output_tokens == 32_768
+        assert family.output_cap_includes_reasoning is True
+        assert family.framing_allowance_tokens == 256
+        assert family.raw["limits_source"].startswith(
+            "docs/research/2026-10-31-benchmark-provider-limits.md#"
+        )
+
+
+def test_every_limits_source_anchor_is_a_research_note_heading() -> None:
+    note = (REPO_ROOT / "docs/research/2026-10-31-benchmark-provider-limits.md").read_text(
+        encoding="utf-8"
+    )
+    # GitHub slug: lowercase, drop every character except letters, digits, spaces, "-" and "_",
+    # then spaces -> "-"
+    slugs = {
+        re.sub(r"[^\w\- ]", "", line.lstrip("#").strip().lower()).replace(" ", "-")
+        for line in note.splitlines()
+        if line.startswith("#")
+    }
+    for family in load_model_matrix(MODEL_MATRIX_PATH).model_families:
+        if family.arm == "hosted":
+            assert family.raw["limits_source"].split("#", 1)[1] in slugs
+
+
+_HOSTED_FIELDS = {
+    "api": "openai-responses",
+    "arm": "hosted",
+    "max_input_tokens": 1_000,
+    "max_output_tokens": 100,
+    "output_cap_includes_reasoning": True,
+    "framing_allowance_tokens": 256,
+}
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "max_input_tokens",
+        "max_output_tokens",
+        "output_cap_includes_reasoning",
+        "framing_allowance_tokens",
+    ],
+)
+def test_hosted_family_must_set_its_budget_fields(tmp_path: Path, field: str) -> None:
+    hosted = _family(**_HOSTED_FIELDS)
+    del hosted[field]
+    path = _matrix_yaml(
+        tmp_path / "matrix.yml",
+        families=[hosted, _family(id="google-test", provider="google")],
+    )
+
+    with pytest.raises(BenchmarkValidationError, match=field):
+        load_model_matrix(path)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("api", "bedrock"),
+        ("arm", "cloud"),
+        ("max_output_tokens", 0),
+        ("max_output_tokens", True),
+        ("max_input_tokens", -1),
+        ("framing_allowance_tokens", 255),
+        ("output_cap_includes_reasoning", "yes"),
+    ],
+)
+def test_load_model_matrix_rejects_a_bad_agentic_field(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    broken = _family(**{**_HOSTED_FIELDS, field: value})
+    path = _matrix_yaml(
+        tmp_path / "matrix.yml",
+        families=[broken, _family(id="google-test", provider="google")],
+    )
+
+    with pytest.raises(BenchmarkValidationError, match=field):
+        load_model_matrix(path)
+
+
+def test_model_family_id_must_be_path_safe(tmp_path: Path) -> None:
+    path = _matrix_yaml(
+        tmp_path / "matrix.yml",
+        families=[_family(id="gemma4:12b"), _family(id="google-test", provider="google")],
+    )
+
+    with pytest.raises(BenchmarkValidationError, match="gemma4:12b"):
+        load_model_matrix(path)
+
+
+def test_entries_without_agentic_fields_still_load(tmp_path: Path) -> None:
+    matrix = load_model_matrix(_matrix_yaml(tmp_path / "matrix.yml"))
+
+    for family in matrix.model_families:
+        assert family.api is None
+        assert family.arm is None
+        assert family.max_input_tokens is None
+        assert family.max_output_tokens is None
+        assert family.output_cap_includes_reasoning is None
+        assert family.framing_allowance_tokens is None
+
+
+def test_model_family_from_raw_round_trips_every_committed_entry() -> None:
+    for family in load_model_matrix(MODEL_MATRIX_PATH).model_families:
+        assert model_family_from_raw(family.raw) == family
 
 
 def test_load_model_matrix_accepts_minimal_valid_file(tmp_path: Path) -> None:
@@ -264,7 +390,7 @@ def test_validate_manifest_against_matrix_against_the_real_model_matrix_file() -
         Competitor(
             id="python-docs-mcp-server",
             adapter="python-docs-mcp-stdio",
-            raw={"provider": "openai", "model": "gpt-4o-mini"},
+            raw={"provider": "openai", "model": "gpt-6.1-sol"},
         )
     ]
 
