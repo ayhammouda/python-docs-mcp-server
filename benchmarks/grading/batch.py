@@ -21,6 +21,9 @@ from typing import Any, Literal, Protocol, get_args
 import anthropic
 import httpx
 import openai
+from anthropic._decoders.jsonl import AsyncJSONLDecoder
+from anthropic._utils import path_template
+from anthropic.types.messages import MessageBatchIndividualResponse
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
@@ -300,11 +303,25 @@ class AnthropicBatchClient:
         return batch.processing_status if batch.processing_status == "ended" else None
 
     async def results(self, batch_id: str, item_ids: Sequence[str]) -> list[BatchItemResult]:
+        if not batch_id:
+            raise ValueError("Expected a non-empty batch id")
+        # The SDK's batches.results() follows an absolute results_url from metadata.
+        path = path_template("/v1/messages/batches/{id}/results", id=batch_id)
+
         async def read() -> dict[str, BatchItemResult]:
             found: dict[str, BatchItemResult] = {}
-            async for line in await self._sdk.messages.batches.results(batch_id):
-                result = anthropic_result(line.model_dump(mode="json"))
-                found[result.item_id] = result
+            stream = await self._sdk.get(
+                path,
+                cast_to=AsyncJSONLDecoder[MessageBatchIndividualResponse],
+                options={"headers": {"Accept": "application/binary"}, "follow_redirects": False},
+                stream=True,
+            )
+            try:
+                async for line in stream:
+                    result = anthropic_result(line.model_dump(mode="json"))
+                    found[result.item_id] = result
+            finally:
+                await stream.close()
             return found
 
         return _in_order(item_ids, await _call(read()))
@@ -448,6 +465,9 @@ class GeminiBatchClient:
         file_name = job.dest.file_name if job.dest is not None else None
         if not file_name:  # FAILED, CANCELLED or EXPIRED with no results: every item missing
             return [missing(item_id) for item_id in item_ids]
+        # The SDK also accepts URIs and interpolates names into the download path.
+        if not re.fullmatch(r"files/[A-Za-z0-9_-]+", file_name):
+            raise ProviderCallError("rejected", "Expected a Gemini output file resource name")
         data = await _call(self._sdk.aio.files.download(file=file_name))
         found = {r.item_id: r for r in map(gemini_result, _jsonl(data.decode("utf-8")))}
         return _in_order(item_ids, found)

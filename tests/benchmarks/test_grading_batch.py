@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
+import anthropic
 import httpx
 import httpx2
 import pytest
@@ -260,10 +261,16 @@ def _gemini_job(state: str, responses_file: str | None = None) -> dict[str, Any]
 
 def _gemini_results(lines: list[dict[str, Any]], state: str = "JOB_STATE_SUCCEEDED") -> Any:
     jsonl = "".join(json.dumps(line) + "\n" for line in lines)
+    url = "https://generativelanguage.googleapis.com/v1beta/files/batch-out:download?alt=media"
+
+    def download(request: httpx.Request) -> httpx.Response:
+        assert "x-goog-api-key" in request.headers
+        return httpx.Response(200, content=jsonl.encode())
+
     router = Router(
         [
-            ("GET", r"files/out:download", _text(httpx, jsonl)),
-            ("GET", r"/v1beta/batches/b1", _json(httpx, _gemini_job(state, "files/out"))),
+            ("GET", "^" + re.escape(url) + "$", download),
+            ("GET", r"/v1beta/batches/b1", _json(httpx, _gemini_job(state, "files/batch-out"))),
         ]
     )
     return _gemini_client(router)
@@ -393,6 +400,111 @@ def _results_client(provider: str) -> Any:
     if provider == "openai":
         return _openai_results([_openai_body("i3"), _openai_body("i1")])
     return _gemini_results([_gemini_response("i3"), _gemini_response("i1")])
+
+
+async def test_anthropic_results_use_only_the_requested_batch_endpoint() -> None:
+    batch = "https://api.anthropic.com/v1/messages/batches/msgbatch_1"
+    foreign = "https://downloads.invalid/results"
+    ended = {**ANTHROPIC_BATCH, "processing_status": "ended", "results_url": foreign}
+    router = Router(
+        [
+            ("GET", re.escape(batch) + "$", _json(httpx2, ended)),
+            (
+                "GET",
+                re.escape(batch + "/results") + "$",
+                _text(httpx2, json.dumps(_anthropic_ok("i1"))),
+            ),
+            ("GET", re.escape(foreign) + "$", _text(httpx2, "")),
+        ]
+    )
+    client = _anthropic_client(router)
+    assert await client.poll("msgbatch_1") == "ended"
+    (result,) = await client.results("msgbatch_1", ["i1"])
+    assert [str(req.url) for req in router.seen] == [batch, batch + "/results"]
+    assert all("x-api-key" in req.headers for req in router.seen)
+    assert result.text == VOTE_TEXT
+    assert result.raw_usage is not None and result.raw_usage["input_tokens"] == 1200
+
+
+async def test_anthropic_result_download_refuses_redirect_with_redirects_enabled() -> None:
+    batch = "https://api.anthropic.com/v1/messages/batches/msgbatch_1"
+    results_url = batch + "/results"
+    foreign = "https://downloads.invalid/redirected"
+    ended = {**ANTHROPIC_BATCH, "processing_status": "ended", "results_url": results_url}
+    router = Router(
+        [
+            ("GET", re.escape(batch) + "$", _json(httpx2, ended)),
+            ("GET", re.escape(results_url) + "$", _json(httpx2, {}, 307, {"location": foreign})),
+            ("GET", re.escape(foreign) + "$", _text(httpx2, "")),
+        ]
+    )
+    async with anthropic.AsyncAnthropic(
+        api_key="test-key",
+        base_url="https://api.anthropic.com",
+        max_retries=0,
+        http_client=httpx2.AsyncClient(
+            transport=httpx2.MockTransport(router), trust_env=False, follow_redirects=True
+        ),
+    ) as sdk:
+        client = AnthropicBatchClient(sdk, "claude-haiku-5-5", 16384, "low")
+        with pytest.raises(ProviderCallError) as raised:
+            await client.results("msgbatch_1", ["i1"])
+    assert (raised.value.kind, raised.value.status) == ("rejected", 307)
+    assert [str(req.url) for req in router.seen] == [results_url]
+
+
+async def test_anthropic_results_quote_the_batch_id_as_one_segment() -> None:
+    batch = "https://api.anthropic.com/v1/messages/batches/b%2F1%3F"
+    url = batch + "/results"
+    ended = {**ANTHROPIC_BATCH, "processing_status": "ended", "results_url": url}
+    router = Router(
+        [
+            ("GET", re.escape(batch) + "$", _json(httpx2, ended)),
+            ("GET", re.escape(url) + "$", _text(httpx2, json.dumps(_anthropic_ok("i1")))),
+        ]
+    )
+    client = _anthropic_client(router)
+    (result,) = await client.results("b/1?", ["i1"])
+    assert [str(req.url) for req in router.seen] == [url]
+    assert result.text == VOTE_TEXT
+
+
+@pytest.mark.parametrize("batch_id", ["", ".", ".."])
+async def test_anthropic_results_reject_invalid_batch_id_before_request(batch_id: str) -> None:
+    router = Router([])
+    with pytest.raises(ValueError):
+        await _anthropic_client(router).results(batch_id, ["i1"])
+    assert not router.seen
+
+
+async def test_anthropic_closes_result_stream_on_invalid_jsonl() -> None:
+    class BrokenJSONL(httpx2.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            yield b"invalid".ljust(127) + b"\n"
+            raise AssertionError("read past the malformed record")
+
+    response = httpx2.Response(200, stream=BrokenJSONL())
+    batch = "https://api.anthropic.com/v1/messages/batches/msgbatch_1"
+    ended = {**ANTHROPIC_BATCH, "processing_status": "ended", "results_url": batch + "/results"}
+    router = Router(
+        [("GET", "/results$", lambda _: response), ("GET", "msgbatch_1$", _json(httpx2, ended))]
+    )
+    with pytest.raises(json.JSONDecodeError):
+        await _anthropic_client(router).results("msgbatch_1", ["i1"])
+    assert response.is_closed
+
+
+@pytest.mark.parametrize("reference", ["https://downloads.invalid/files/out", "files/../other"])
+async def test_gemini_rejects_non_resource_download_references(reference: str) -> None:
+    batch = "https://generativelanguage.googleapis.com/v1beta/batches/b1"
+    job = _gemini_job("JOB_STATE_SUCCEEDED", reference)
+    router = Router(
+        [("GET", re.escape(batch) + "$", _json(httpx, job)), ("GET", ".*", _text(httpx, ""))]
+    )
+    with pytest.raises(ProviderCallError) as raised:
+        await _gemini_client(router).results("batches/b1", ["i1"])
+    assert raised.value.kind == "rejected"
+    assert [str(req.url) for req in router.seen] == [batch]
 
 
 @pytest.mark.parametrize("provider", ["anthropic", "openai", "google"])
