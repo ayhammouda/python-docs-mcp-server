@@ -67,11 +67,17 @@ from typing import Any
 
 import yaml
 
-from benchmarks.agentic.inputs import CapturedJSON
+from benchmarks.agentic.inputs import json_mapping
 from benchmarks.agentic.protocol import assert_no_key_shaped_json, scanned_json_bytes
 from benchmarks.corpus import CorpusQuestion, validate_corpus
 from benchmarks.report import _sha256_of
-from benchmarks.runner import BenchmarkValidationError
+from benchmarks.report_files import (
+    artifact_bytes,
+    artifact_output_dirs,
+    artifact_paths,
+    checked_path,
+)
+from benchmarks.runner import BenchmarkValidationError, _required_safe_id
 
 #: The methodology's closed correctness score vocabulary
 #: (PUBLIC-BENCHMARK-METHODOLOGY.md "Correctness Scoring"). No finalized
@@ -269,7 +275,7 @@ def score_run(
     rollups = _compute_rollups(finalized, answer_keys)
     rollups["corpus_sha256"] = corpus_sha256
     write_record(paths.rollups_path, rollups)
-    _write_checked_outputs(updates)
+    _write_checked_outputs(run_dir, updates)
 
     return {
         "run_dir": str(run_dir),
@@ -485,7 +491,7 @@ def apply_llm_grades(
     rollups = _compute_rollups(finalized, answer_keys)
     rollups["corpus_sha256"] = corpus_sha256
     updates[paths.rollups_path] = rollups
-    _write_checked_outputs(updates)
+    _write_checked_outputs(run_dir, updates)
     return {
         "run_dir": str(run_dir),
         "llm_graded_cells": len(grades),
@@ -597,9 +603,11 @@ def _build_queue_entry(
     transcript_path = transcripts_dir / competitor_id / f"{corpus_id}.json"
     answer = ""
     tool_calls: list[dict[str, Any]] | None = None
+    if agentic:
+        checked_path(transcripts_dir.parent, transcript_path)
     if transcript_path.is_file():
         transcript = (
-            CapturedJSON.read(transcript_path, "transcript").mapping
+            json_mapping(artifact_bytes(transcripts_dir.parent, transcript_path), "transcript")
             if agentic
             else _read_json(transcript_path)
         )
@@ -721,11 +729,26 @@ def _load_cell_dir(
     base_dir: Path, required_fields: tuple[str, ...], label: str, *, checked: bool = False
 ) -> dict[tuple[str, str], tuple[Path, dict[str, Any]]]:
     records: dict[tuple[str, str], tuple[Path, dict[str, Any]]] = {}
+    if checked:
+        root = base_dir.parent
+        for cell_file in artifact_paths(root, base_dir, "*/*.json"):
+            data = json_mapping(artifact_bytes(root, cell_file), label)
+            for field in required_fields:
+                if field not in data:
+                    raise BenchmarkValidationError(f"{label} file is missing required {field!r}")
+            key = (
+                _required_safe_id(data, "competitor_id", label),
+                _required_safe_id(data, "corpus_id", label),
+            )
+            if key != (cell_file.parent.name, cell_file.stem):
+                raise BenchmarkValidationError(f"{label} cell coordinates differ from its path")
+            records[key] = (cell_file, data)
+        return records
     if not base_dir.is_dir():
         return records
     for competitor_dir in sorted(p for p in base_dir.iterdir() if p.is_dir()):
         for cell_file in sorted(competitor_dir.glob("*.json")):
-            data = CapturedJSON.read(cell_file, label).mapping if checked else _read_json(cell_file)
+            data = _read_json(cell_file)
             missing = [field for field in required_fields if field not in data]
             if missing:
                 raise BenchmarkValidationError(
@@ -799,7 +822,7 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def _write_checked_outputs(updates: Mapping[Path, dict[str, Any]]) -> None:
+def _write_checked_outputs(run_dir: Path, updates: Mapping[Path, dict[str, Any]]) -> None:
     """Scan the complete scoring batch before changing any previous good artifact.
 
     Keep the exact checked bytes for publication. This prevents a late cell or queue
@@ -809,9 +832,13 @@ def _write_checked_outputs(updates: Mapping[Path, dict[str, Any]]) -> None:
         path: scanned_json_bytes(record, where="scoring output", indent=2, sort_keys=True) + b"\n"
         for path, record in updates.items()
     }
-    for path, body in bodies.items():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(body)
+    if not bodies:
+        return
+    from benchmarks.agentic.egress import write_new
+
+    with artifact_output_dirs(run_dir, bodies) as directories:
+        for path, body in bodies.items():
+            write_new(directories[path.parent], path.name, body, mode=0o644)
 
 
 def _utc_now() -> str:

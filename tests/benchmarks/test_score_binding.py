@@ -287,6 +287,7 @@ def test_cli_checks_the_actual_judge_request(scripted_graded_run, tmp_path, faul
 
 
 def test_public_claim_rechecks_answer_after_scoring(tmp_path):
+    from benchmarks.agentic_report import _RunMetadata
     from tests.benchmarks import test_agentic_report as reports
 
     run = reports._live_like_run(tmp_path)
@@ -295,6 +296,8 @@ def test_public_claim_rechecks_answer_after_scoring(tmp_path):
     assert cell["grading"]["input_sha256"] == (
         "3553b8ad031d0517ff04d4d5baadaa093742864fbfa74870bd66a03bde20e8a8"
     )
+    verified = _RunMetadata(reports._load_run_bundle(run))
+    assert (verified.answering, verified.grading) == ("live", "live")
     assert "No public claim" in reports._readme(run)
     reports._validated(run)  # An adversarial tier must not bypass the answer check.
     path = run / "transcripts" / runs._cell("docs-fetch") / f"{runs.QUESTIONS[0]}.json"
@@ -302,7 +305,8 @@ def test_public_claim_rechecks_answer_after_scoring(tmp_path):
     raw = reports._section(reports._render(run), "## Claims")
     assert r"not evaluable\: missing or inconsistent grading evidence" in raw
     readme = reports._readme(run)
-    assert "unknown for grading" in readme and reports.ROUND_1_SCOPE not in readme
+    assert "Execution provenance is unknown for answering and grading." in readme
+    assert reports.ROUND_1_SCOPE not in readme
 
 
 def test_scorer_uses_frozen_renderer_after_worktree_edits(
@@ -386,7 +390,8 @@ def test_public_claim_requires_current_scores_from_all_final_votes(tmp_path, tam
             path.with_name("run-1--a2.json"), {**vote, "attempt": 2, "graded_at": "2099-01-01"}
         )
     readme = reports._readme(run)
-    assert "unknown for grading" in readme and reports.ROUND_1_SCOPE not in readme
+    assert "Execution provenance is unknown for grading." in readme
+    assert reports.ROUND_1_SCOPE not in readme
 
 
 def test_cli_verifies_the_masked_answer_seen_by_the_panel(tmp_path):

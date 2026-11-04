@@ -328,14 +328,8 @@ def render_judge_input(
     )
 
 
-def answer_requests(
-    questions: Mapping[str, GradingQuestion],
-    transcripts: Mapping[tuple[str, str], dict[str, Any]],
-    *,
-    prompt: bytes,
-    schema: bytes,
-) -> dict[tuple[str, str], JudgeInput]:
-    """Replay the worker renderer using only the captured, manifest-checked inputs."""
+def frozen_judge_document(prompt: bytes, schema: bytes) -> tuple[str, dict[str, Any]]:
+    """Decode the captured prompt/schema exactly as the canonical grade producer."""
     try:
         # The worker reads the UTF-8 system prompt in universal-newline text mode.
         system = prompt.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
@@ -350,6 +344,18 @@ def answer_requests(
         or {key: spec.get("type") for key, spec in properties.items()} != expected
     ):
         raise BenchmarkValidationError("unsupported frozen judge schema")
+    return system, shape
+
+
+def answer_requests(
+    questions: Mapping[str, GradingQuestion],
+    transcripts: Mapping[tuple[str, str], dict[str, Any]],
+    *,
+    prompt: bytes,
+    schema: bytes,
+) -> dict[tuple[str, str], JudgeInput]:
+    """Replay the worker renderer using only the captured, manifest-checked inputs."""
+    system, shape = frozen_judge_document(prompt, schema)
     requests = {}
     for key, row in transcripts.items():
         answer = row.get("answer")

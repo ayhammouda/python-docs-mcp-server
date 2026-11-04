@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from benchmarks.agentic.inputs import CapturedInput
+from benchmarks.agentic_report import _GradeCapture
 from benchmarks.grading.calibration import judge_settings, replay_g1
 from benchmarks.grading.gates import G1Binding, g1, reference_probe_check
 from benchmarks.grading.inputs import SNAPSHOT_FILES
@@ -41,6 +42,8 @@ def test_publication_replays_authentic_calibration_and_refuses_summary_only(
         inputs=json.loads((root / "grading/inputs/inputs.json").read_bytes()),
         frozen=frozen,
         judges=yaml.safe_load(frozen["panel"])["judges"],
+        grade_capture=_GradeCapture(),
+        reference_sample={},
         transcripts={},
         scoring={},
         tokens={},

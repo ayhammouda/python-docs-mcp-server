@@ -15,16 +15,23 @@ from benchmarks.agentic.count import (
     _raw_arguments,
     count_item_from_transcript,
 )
-from benchmarks.agentic.count_evidence import planned_count_calls, validate_count_fields
+from benchmarks.agentic.count_evidence import is_count_coordinate, validate_count_fields
 from benchmarks.agentic.inputs import json_mapping
 from benchmarks.agentic.protocol import KeyLeakError, scanned_json_bytes
+from benchmarks.grading.batch import BatchItemResult
 from benchmarks.grading.execution_evidence import grading_execution_matches
-from benchmarks.report_files import artifact_bytes, optional_json
+from benchmarks.report_files import artifact_bytes
 from benchmarks.runner import BenchmarkValidationError
 
 
 def _identifier(value: Any) -> str:
     if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,240}", value):
+        raise ValueError("invalid measurement coordinate")
+    return value
+
+
+def _coordinate(value: Any) -> str:
+    if not is_count_coordinate(value):
         raise ValueError("invalid measurement coordinate")
     return value
 
@@ -44,8 +51,9 @@ def grading_receipt_matches(
     judge: dict[str, Any],
     invocation: dict[str, Any],
     events: list[dict[str, Any]],
+    results: dict[str, BatchItemResult] | None = None,
 ) -> bool:
-    """Use the host's durable execution history, bound by the invocation manifest."""
+    """Join the captured receipt; retain its normalized result only on admission."""
     run = _identifier(vote["grading_run_id"])
     judge_id, item = _identifier(vote["judge_id"]), _identifier(vote["item_id"])
     attempt = vote["attempt"]
@@ -68,32 +76,65 @@ def grading_receipt_matches(
     ):
         return False
     try:
-        return grading_execution_matches(vote, digest, judge, invocation, events, history)
+        return grading_execution_matches(vote, digest, judge, invocation, events, history, results)
     except BenchmarkValidationError:
         return False
 
 
-def live_count_matches(root: Path, transcript: dict[str, Any], token: dict[str, Any]) -> bool:
-    """Bind a current projection to archived per-call counts and frozen inputs."""
-    try:
-        cell, qid = _identifier(transcript["competitor_id"]), _identifier(transcript["corpus_id"])
+class CountCapture:
+    """Capture count evidence once for one report/render, never across renders.
+
+    Every first read uses the confined, bounded, sensitive-data-scanning reader.
+    Validating a shared invocation is linear in its items even when every item
+    is subsequently joined by a claim. Mutable files are recaptured next render.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self._bodies: dict[str, bytes] = {}
+        self._mappings: dict[str, dict[str, Any]] = {}
+        self._items: dict[
+            tuple[str, str], tuple[dict[str, Any], CountItem, dict[str, Any]]
+        ] = {}
+        self._invocations: dict[str, dict[str, bytes] | None] = {}
+
+    def _bytes(self, relative: str) -> bytes:
+        if relative not in self._bodies:
+            self._bodies[relative] = artifact_bytes(self.root, self.root / relative)
+        return self._bodies[relative]
+
+    def _mapping(self, relative: str) -> dict[str, Any]:
+        if relative not in self._mappings:
+            body = self._bytes(relative)
+            try:
+                self._mappings[relative] = json_mapping(body, "count evidence")
+            except KeyLeakError:
+                raise
+            except BenchmarkValidationError as exc:
+                raise ValueError("malformed count evidence") from exc
+        return self._mappings[relative]
+
+    def _item(self, cell: str, qid: str) -> tuple[dict[str, Any], CountItem, dict[str, Any]]:
+        key = cell, qid
+        if key in self._items:
+            return self._items[key]
+        relative = f"transcripts/{cell}/{qid}.json"
+        transcript = self._mapping(relative)
+        if (transcript["competitor_id"], transcript["corpus_id"]) != key:
+            raise ValueError("count transcript identity differs")
         family, system = (
-            _identifier(transcript["model_family_id"]),
-            _identifier(transcript["system_id"]),
+            _coordinate(transcript["model_family_id"]),
+            _coordinate(transcript["system_id"]),
         )
-        prompt = artifact_bytes(root, root / "snapshots/system-prompt.txt").decode("utf-8")
-        system_path = root / "systems" / f"{family}--{system}.json"
-        system_body = artifact_bytes(root, system_path)
-        info = json_mapping(system_body, "count system")
+        prompt = self._bytes("snapshots/system-prompt.txt").decode("utf-8")
+        system_path = f"systems/{family}--{system}.json"
+        info = self._mapping(system_path)
         try:
             item = count_item_from_transcript(
                 transcript, system_prompt=prompt, tools_raw=info["tools_raw"]
             )
-            validate_count_fields(
-                token, item, _anthropic_method(DEFAULT_COUNT_MODEL).record_fields()
-            )
-        except BenchmarkValidationError:
-            return False
+        except BenchmarkValidationError as exc:
+            raise ValueError("count inputs differ") from exc
         for position in item.calls:
             if (
                 type(position) is not int
@@ -101,9 +142,9 @@ def live_count_matches(root: Path, transcript: dict[str, Any], token: dict[str, 
                 or item.messages[position]["role"] != "assistant"
                 or item.messages[position - 1]["role"] != "user"
             ):
-                return False
+                raise ValueError("invalid counted position")
         if item.calls != sorted(set(item.calls)):
-            return False
+            raise ValueError("invalid counted positions")
         for call, position in zip(
             (c for c in transcript["model_calls"] if c.get("tool_calls_requested") is not None),
             item.calls,
@@ -116,54 +157,23 @@ def live_count_matches(root: Path, transcript: dict[str, Any], token: dict[str, 
                 or uses != call["tool_calls_requested"]
                 or len(raw) != uses
             ):
-                return False
-        if token["status"] != "counted":
-            return False
-        transcript_body = artifact_bytes(root, root / "transcripts" / cell / f"{qid}.json")
-        if json_mapping(transcript_body, "count transcript") != transcript:
-            return False
+                raise ValueError("count tool calls differ")
         frozen = {
             "item": asdict(item),
-            "transcript_sha256": _digest(transcript_body),
-            "system_sha256": _digest(system_body),
+            "transcript_sha256": _digest(self._bytes(relative)),
+            "system_sha256": _digest(self._bytes(system_path)),
         }
-        key = _digest(f"{cell}/{qid}".encode())
-        inputs = optional_json(root, root / "grading/count-inputs.json") or {}
-        if inputs.get(key) != frozen or token.get("input_sha256") != _digest(_json_bytes(frozen)):
-            return False
-        run = _identifier(token["count_run_id"])
-        relative = f"{cell}/{qid}.json"
-        archived = artifact_bytes(root, root / "grading/counts" / run / relative)
-        current = artifact_bytes(root, root / "tokens" / relative)
-        receipt = optional_json(root, root / "grading/count-runs" / f"{run}.json") or {}
-        planned = 0
-        for relative_result, digest in receipt.get("results", {}).items():
-            parts = relative_result.split("/")
-            if len(parts) != 2 or not parts[1].endswith(".json"):
-                return False
-            rcell, rqid = _identifier(parts[0]), _identifier(parts[1][:-5])
-            result_body = artifact_bytes(root, root / "grading/counts" / run / relative_result)
-            row = json_mapping(result_body, "archived count result")
-            assigned = inputs[_digest(f"{rcell}/{rqid}".encode())]
-            counted_item = CountItem(**assigned["item"])
-            try:
-                validate_count_fields(
-                    row, counted_item, _anthropic_method(DEFAULT_COUNT_MODEL).record_fields()
-                )
-            except BenchmarkValidationError:
-                return False
-            if (
-                row.get("status") != "counted"
-                or row.get("count_run_id") != run
-                or row.get("input_sha256") != _digest(_json_bytes(assigned))
-                or (counted_item.cell, counted_item.corpus_id) != (rcell, rqid)
-                or digest != _digest(result_body)
-            ):
-                return False
-            planned += planned_count_calls(counted_item)
-        return bool(
-            archived == current
-            and json_mapping(current, "count projection") == token
+        inputs = self._mapping("grading/count-inputs.json")
+        if inputs.get(_digest(f"{cell}/{qid}".encode())) != frozen:
+            raise ValueError("frozen count inputs differ")
+        self._items[key] = transcript, item, frozen
+        return self._items[key]
+
+    def _read_invocation(self, run: str) -> dict[str, bytes]:
+        receipt = self._mapping(f"grading/count-runs/{run}.json")
+        results = receipt.get("results")
+        if not (
+            isinstance(results, dict)
             and receipt.get("count_run_id") == run
             and receipt.get("dry_run") is False
             and receipt.get("status") == "completed"
@@ -171,16 +181,78 @@ def live_count_matches(root: Path, transcript: dict[str, Any], token: dict[str, 
             and receipt.get("worker_errors") == []
             and receipt.get("units") == []
             and type(receipt.get("records_written")) is int
-            and receipt.get("records_written") == len(receipt.get("results", {}))
+            and receipt["records_written"] == len(results)
             and type(receipt.get("items")) is int
             and receipt["items"] == receipt["records_written"]
             and type(receipt.get("count_calls")) is int
-            and receipt["count_calls"] == planned
-            and receipt.get("results", {}).get(relative) == _digest(archived)
-        )
-    except KeyLeakError:
-        raise
-    except BenchmarkValidationError:
-        raise  # Unsafe artifact reads are errors, not missing measurements.
-    except (FileNotFoundError, ValueError, KeyError, TypeError, AttributeError, IndexError):
-        return False
+        ):
+            raise ValueError("incomplete count invocation")
+        actual = 0
+        archived = {}
+        for relative_result, digest in results.items():
+            parts = relative_result.split("/")
+            if len(parts) != 2 or not parts[1].endswith(".json"):
+                raise ValueError("invalid count result coordinate")
+            rcell, rqid = _coordinate(parts[0]), _coordinate(parts[1][:-5])
+            path = f"grading/counts/{run}/{relative_result}"
+            result_body = self._bytes(path)
+            row = self._mapping(path)
+            _, counted_item, assigned = self._item(rcell, rqid)
+            try:
+                validate_count_fields(
+                    row, counted_item, _anthropic_method(DEFAULT_COUNT_MODEL).record_fields()
+                )
+            except BenchmarkValidationError as exc:
+                raise ValueError("invalid archived count result") from exc
+            if (
+                row.get("status") != "counted"
+                or row.get("count_run_id") != run
+                or row.get("input_sha256") != _digest(_json_bytes(assigned))
+                or (counted_item.cell, counted_item.corpus_id) != (rcell, rqid)
+                or digest != _digest(result_body)
+            ):
+                raise ValueError("archived count binding differs")
+            actual += row["count_calls"]
+            archived[relative_result] = result_body
+        if receipt["count_calls"] != actual:
+            raise ValueError("invocation count calls differ from actual item totals")
+        return archived
+
+    def matches(self, transcript: dict[str, Any], token: dict[str, Any]) -> bool:
+        """Bind a projection to a complete invocation and all its current inputs."""
+        try:
+            cell = _coordinate(transcript["competitor_id"])
+            qid = _coordinate(transcript["corpus_id"])
+            _coordinate(transcript["model_family_id"])
+            _coordinate(transcript["system_id"])
+            if self._item(cell, qid)[0] != transcript:
+                return False
+            run = _identifier(token["count_run_id"])
+            if run not in self._invocations:
+                try:
+                    self._invocations[run] = self._read_invocation(run)
+                except BenchmarkValidationError:
+                    raise  # Includes sensitive-data and unsafe-file failures.
+                except (
+                    FileNotFoundError, ValueError, KeyError, TypeError, AttributeError, IndexError,
+                ):
+                    self._invocations[run] = None
+            archived = self._invocations[run]
+            relative = f"{cell}/{qid}.json"
+            return bool(
+                archived is not None
+                and relative in archived
+                and archived[relative] == self._bytes(f"tokens/{relative}")
+                and self._mapping(f"tokens/{relative}") == token
+            )
+        except KeyLeakError:
+            raise
+        except BenchmarkValidationError:
+            raise  # Unsafe artifact reads are errors, not missing measurements.
+        except (FileNotFoundError, ValueError, KeyError, TypeError, AttributeError, IndexError):
+            return False
+
+
+def live_count_matches(root: Path, transcript: dict[str, Any], token: dict[str, Any]) -> bool:
+    """A standalone join captures fresh files on every call."""
+    return CountCapture(root).matches(transcript, token)

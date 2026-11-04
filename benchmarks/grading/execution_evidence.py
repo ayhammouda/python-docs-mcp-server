@@ -12,9 +12,9 @@ from typing import Any
 
 from benchmarks.agentic.clients import _LIVE_APIS
 from benchmarks.agentic.reference import nonnegative_decimal
-from benchmarks.grading.aggregate import withheld_reason
-from benchmarks.grading.batch import anthropic_result, gemini_result, openai_result
-from benchmarks.grading.inputs import EXPLANATION_FIELD, VOTE_FIELDS
+from benchmarks.grading.aggregate import receipt_result, withheld_reason
+from benchmarks.grading.batch import BatchItemResult
+from benchmarks.grading.inputs import EXPLANATION_FIELD, VOTE_FIELDS, key_audit_schema
 
 
 def grading_execution_matches(
@@ -24,12 +24,30 @@ def grading_execution_matches(
     invocation: dict[str, Any],
     events: list[dict[str, Any]],
     history: dict[str, Any],
+    results: dict[str, BatchItemResult] | None = None,
 ) -> bool:
     """Join one selected vote to its host receipt and uniquely settled item.
 
     The caller captures/scans files and verifies the receipt hash from the run
     manifest. No report, worker, network, repository or filesystem dependency.
+    On admission, ``results`` retains that exact normalized reply for vote replay.
     """
+    result = receipt_result(vote, digest, judge, history)
+    if result is None or not _execution_matches(vote, judge, invocation, events, history, result):
+        return False
+    if results is not None:
+        results[digest] = result
+    return True
+
+
+def _execution_matches(
+    vote: dict[str, Any],
+    judge: dict[str, Any],
+    invocation: dict[str, Any],
+    events: list[dict[str, Any]],
+    history: dict[str, Any],
+    result: BatchItemResult,
+) -> bool:
     run, unit, item = vote["grading_run_id"], vote["unit_id"], vote["item_id"]
     if (
         _LIVE_APIS.get(judge["api"]) != judge["provider"]
@@ -47,29 +65,9 @@ def grading_execution_matches(
         or vote["provider_batch_id"].lower().startswith("scripted")
     ):
         return False
-    expected = {
-        "grading_run_id": run,
-        "unit_id": unit,
-        "item_id": item,
-        "judge_id": vote["judge_id"],
-        "target": vote["target"],
-        "pass": vote["pass"],
-        "attempt": vote["attempt"],
-        "provider_batch_id": vote["provider_batch_id"],
-        "input_sha256": vote["input_sha256"],
-        "vote_sha256": digest,
-        "provider": judge["provider"],
-        "api": judge["api"],
-        "model_id": judge["model_id"],
-        "effort": vote["effort"],
-    }
-    if any(type(history.get(k)) is not type(v) or history.get(k) != v for k, v in expected.items()):
-        return False
     raw = history.get("result", {}).get("raw")
     if not isinstance(raw, dict) or "scripted_rule" in raw:
         return False
-    normalize = {"anthropic": anthropic_result, "openai": openai_result, "google": gemini_result}
-    result = normalize[judge["provider"]](raw)
     # Registered judge vote shape, expressed from the shared field names. The
     # caller separately proves the grade against the captured frozen schema;
     # receipt checking must not reopen repository inputs after an export moves.
@@ -77,6 +75,8 @@ def grading_execution_matches(
         EXPLANATION_FIELD: {"type": "string"},
         **{field: {"type": "boolean"} for field in VOTE_FIELDS},
     }}
+    if vote.get("target") == "key-audit":
+        schema = key_audit_schema()
     withheld = withheld_reason(result, schema)
     if (
         result.item_id != item
@@ -102,13 +102,6 @@ def grading_execution_matches(
             code = response.get("status_code")
             if type(code) is not int or not 400 <= code < 500:
                 return False
-    normalized = asdict(result)
-    if history["result"] != normalized or any(
-        vote.get(k) != normalized[k]
-        for k in ("status", "text", "stop_reason", "raw_usage", "buckets", "reported_model")
-    ):
-        return False
-
     # The normalizers accept int-coercible usage for SDK compatibility; evidence
     # requires actual nonnegative integer measurements, including nested details.
     def counts(value: Any) -> bool:

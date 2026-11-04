@@ -12,6 +12,7 @@ import json
 import shutil
 import socket
 from collections import Counter
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -116,6 +117,46 @@ def _answer_digest(root: Path, target: str, item: str) -> str:
     return evidence["meta"]["input_sha256"]
 
 
+@lru_cache(maxsize=128)
+def _probe_fixture_requests(root: Path):
+    from benchmarks.grading.inputs import criteria_from_mapping, render_judge_input
+
+    suite = load_probe_file(
+        root / "inputs/probes.yml",
+        criteria_path=root / "inputs/grading-criteria.yml",
+        tuning_path=TUNING_PATH,
+    )
+    questions = criteria_from_mapping(
+        yaml.safe_load((root / "inputs/grading-criteria.yml").read_bytes()),
+        root / "inputs/grading-criteria.yml",
+        corpus_path=root / "inputs/corpus.yml",
+        schema_path=SCHEMA,
+    )
+    questions.update(load_tuning_questions(TUNING_PATH))
+    system = (root / "inputs/judge-prompt.md").read_text()
+    schema = json.loads((root / "inputs/judge-schema.json").read_bytes())
+    return {
+        p.id: (
+            p, render_judge_input(questions[p.question_id], p.text, system=system, schema=schema)
+        )
+        for p in suite.probes
+    }
+
+
+def _probe_digest(root: Path, target: str, item_id: str) -> str:
+    if target not in {"tuning", "probes", "reference-probes"}:
+        return "d" * 64  # Generation/check replies use a different schema.
+    pair = _probe_fixture_requests(root).get(item_id)
+    if pair is None:
+        return "d" * 64  # Deliberately unrelated item in retest selection controls.
+    probe, request = pair
+    _json(
+        root / "items" / target / f"{item_id}.json",
+        request.item_evidence({"question_id": probe.question_id, "suspect": request.suspect}),
+    )
+    return request.sha256()
+
+
 def _vote(
     root: Path,
     judge: str,
@@ -145,7 +186,7 @@ def _vote(
         provider_batch_id="b1",
         input_sha256=_answer_digest(root, target, item_id)
         if target in {"answers", "reference"}
-        else "d" * 64,
+        else _probe_digest(root, target, item_id),
         schema=schema or judge_schema(),
     )
 
@@ -500,6 +541,10 @@ def _workspace(
         panel_path=panel,
         probes_path=handoff.get("probes.yml", PROBES),
     )
+    corpus = criteria.parent / "corpus.yml"
+    if not corpus.is_file():
+        corpus = FIX / "corpus.sample.yml"
+    shutil.copyfile(corpus, path / "inputs/corpus.yml")
     (path / "handoff").mkdir()
     shas = {}
     for name, source in handoff.items():

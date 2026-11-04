@@ -7,8 +7,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from benchmarks.grading.inputs import MAPPING_TABLE as MAPPING_TABLE
-from benchmarks.grading.inputs import VOTE_FIELDS, Weight, judge_schema
+from benchmarks.grading.inputs import MAPPING_TABLE, VOTE_FIELDS, Weight, judge_schema
+
+__all__ = [
+    "MAPPING_TABLE", "Label", "Vote", "PanelFields", "parse_object", "parse_vote", "grade",
+    "panel_fields",
+]
 
 Label = Literal["CORRECT", "PARTIAL", "INCORRECT", "NOT_ATTEMPTED"]
 

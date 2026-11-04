@@ -28,6 +28,35 @@ from benchmarks.grading.inputs import JudgeInput, load_criteria, render_judge_in
 from benchmarks.grading.panel import load_panel
 
 
+def write_registered_sample(run: Path) -> None:
+    from benchmarks.grading.aggregate import load_answer_votes
+    from benchmarks.grading.gates import pass1_composition, registered_g3_sample
+    from benchmarks.grading.inputs import answer_requests
+
+    root = run / "grading"
+    questions = load_criteria(
+        root / "inputs/grading-criteria.yml", corpus_path=run / "snapshots/corpus.yml",
+        schema_path=Path(__file__).resolve().parents[2] / "docs/benchmarks/corpus.schema.json",
+    )
+    panel = load_panel(root / "inputs/panel.yml")
+    composition = pass1_composition(root, "answers")
+    efforts = {j: c["effort"] for j, c in composition.items()}
+    transcripts = {}
+    for path in (run / "transcripts").glob("*/*.json"):
+        row = read(path)
+        transcripts[row["competitor_id"], row["corpus_id"]] = row
+    requests = answer_requests(
+        questions, transcripts, prompt=(root / "inputs/judge-prompt.md").read_bytes(),
+        schema=(root / "inputs/judge-schema.json").read_bytes(),
+    )
+    answers = load_answer_votes(root, panel=panel, judges=efforts, requests=requests)
+    ids, info = registered_g3_sample(
+        answers, transcripts, questions, list(efforts),
+        seed=str(read(run / "environment.json")["seed"]),
+    )
+    write(root / "reference-sample.json", {**info, "ids": ids})
+
+
 def digest(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest()
 
@@ -379,7 +408,8 @@ async def record_counts(run: Path, *, varied: bool = False) -> None:
         frozen_body = json.dumps(frozen, indent=2, sort_keys=True).encode() + b"\n"
         result.update(count_run_id=run_id, input_sha256=digest(frozen_body))
         body = write(run / "tokens" / relative, result)
-        assert write(run / "grading/counts" / run_id / relative, result) == body
+        counted_body = write(run / "grading/counts" / run_id / relative, result)
+        assert counted_body == body
         write(
             run / "grading/count-runs" / f"{run_id}.json",
             {
@@ -460,6 +490,8 @@ def complete_recording(run: Path) -> Path:
         values.update(answer_turns=turns, output_cap_stops=0, wall_s=turns * 0.95)
     write(run / "run-summary.json", summary)
     rebuild_grading(run)
+    if (run / "grading/reference-sample.json").exists():
+        write_registered_sample(run)
     asyncio.run(record_counts(run))
     return run
 
@@ -571,9 +603,7 @@ def airgapped_recording(run: Path, model: str) -> None:
         summary[key] = len(plan["cells"])
     summary["ledger"][old_provider]["spent_after"] = 0
     write(path, summary)
-    ids = sorted(p.stem for p in (run / "grading/items/answers").glob("*.json"))
-    assert len(ids) >= 300
-    write(run / "grading/reference-sample.json", {"ids": ids[:300]})
+    assert len(list((run / "grading/items/answers").glob("*.json"))) >= 300
     write(run / "egress/summary.json", {"jobs": jobs, "isolation_probe": "pass"})
 
     def unavailable(address: Any, timeout: float) -> Any:

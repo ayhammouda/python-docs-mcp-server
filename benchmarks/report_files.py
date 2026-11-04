@@ -1,10 +1,11 @@
-"""Read only named, regular artifacts from a saved benchmark export."""
+"""Confined reads and atomic publication of named benchmark artifacts."""
 
 from __future__ import annotations
 
 import os
 import stat
-from contextlib import ExitStack
+from collections.abc import Iterable, Iterator
+from contextlib import ExitStack, contextmanager
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,16 @@ from typing import Any
 from benchmarks.agentic.inputs import json_mapping
 from benchmarks.agentic.protocol import MAX_FRAME_BYTES, KeyLeakError, assert_no_key_shaped
 from benchmarks.runner import BenchmarkValidationError
+
+
+def _read_artifact_at(parent: int, parts: tuple[str, ...]) -> bytes:
+    """Own each open directory until the shared bounded reader has finished."""
+    from benchmarks.agentic.egress import open_log_dir, read_log_at
+
+    if len(parts) == 1:
+        return read_log_at(parent, parts[0], max_bytes=MAX_FRAME_BYTES)
+    with open_log_dir(Path(parts[0]), dir_fd=parent) as directory:
+        return _read_artifact_at(directory, parts[1:])
 
 
 def checked_path(root: Path, path: Path) -> Path:
@@ -27,6 +38,62 @@ def checked_path(root: Path, path: Path) -> Path:
         if current.is_symlink():
             raise BenchmarkValidationError(f"artifact path contains a symlink: {current}")
     return path
+
+
+def check_output_paths(root: Path, paths: Iterable[Path]) -> None:
+    """Preflight the whole publication/removal set without changing derived state."""
+    for path in paths:
+        checked_path(root, path)
+        if path == root:
+            raise BenchmarkValidationError("an artifact cannot replace the run directory")
+        for parent in (root, *path.parents):
+            if parent != root and not parent.is_relative_to(root):
+                continue
+            if parent.exists() and not parent.is_dir():
+                raise BenchmarkValidationError(f"artifact parent is not a directory: {parent}")
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            raise BenchmarkValidationError(f"artifact is not a regular file: {path}")
+
+
+@contextmanager
+def artifact_output_dirs(root: Path, paths: Iterable[Path]) -> Iterator[dict[Path, int]]:
+    """Open every output parent beneath the run before publishing any artifact.
+
+    Reuse the evidence spool's nonfollowing directory walk and atomic writer. Existing
+    regular files (including hardlinks) may be replaced, never opened for mutation.
+    """
+    from benchmarks.agentic.egress import open_log_dir
+
+    paths = tuple(paths)
+    check_output_paths(root, paths)
+    with ExitStack() as stack:
+        directories = {root: stack.enter_context(open_log_dir(root))}
+        for path in paths:
+            parent = root
+            for component in path.relative_to(root).parts[:-1]:
+                child = parent / component
+                if child not in directories:
+                    try:
+                        os.mkdir(component, dir_fd=directories[parent])
+                    except FileExistsError:
+                        pass
+                    directories[child] = stack.enter_context(
+                        open_log_dir(Path(component), dir_fd=directories[parent])
+                    )
+                parent = child
+        # Repeat the leaf check against the opened parents, before the first write.
+        for path in paths:
+            try:
+                info = os.stat(path.name, dir_fd=directories[path.parent], follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                raise BenchmarkValidationError(f"artifact is not a regular file: {path}")
+        yield directories
 
 
 def artifact_paths(root: Path, base: Path, pattern: str) -> list[Path]:
@@ -51,15 +118,12 @@ def artifact_bytes(root: Path, path: Path) -> bytes:
         if not stat.S_ISREG(info.st_mode):
             raise BenchmarkValidationError(f"artifact is not a regular file: {path}")
         if os.open in os.supports_dir_fd:
-            from benchmarks.agentic.egress import open_log_dir, read_log_at
+            from benchmarks.agentic.egress import open_log_dir
 
             # Anchor each lookup to its open parent. The shared reader rejects links,
             # non-regular files, oversize artifacts and changes of length during a read.
-            with ExitStack() as stack:
-                parent = stack.enter_context(open_log_dir(root))
-                for component in path.relative_to(root).parts[:-1]:
-                    parent = stack.enter_context(open_log_dir(Path(component), dir_fd=parent))
-                body = read_log_at(parent, path.name, max_bytes=MAX_FRAME_BYTES)
+            with open_log_dir(root) as parent:
+                body = _read_artifact_at(parent, path.relative_to(root).parts)
 
         else:
             # Fixed-flow reporting also supports platforms without directory descriptors.

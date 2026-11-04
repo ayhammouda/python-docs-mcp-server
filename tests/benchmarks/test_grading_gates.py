@@ -502,6 +502,108 @@ def test_g3_sample_borrows_within_the_same_model_and_system_only() -> None:
     )
 
 
+def _registered_cohort():
+    from benchmarks.grading.aggregate import AnswerVotes
+    from benchmarks.grading.inputs import GradingQuestion, safe_id
+    from benchmarks.grading.mapping import Vote
+
+    answers, transcripts, questions = {}, {}, {}
+    vote = Vote("synthetic", True, True, True, False, False)
+    for n, candidate in enumerate(_candidates()):
+        qid, cell = f"Q{n}", f"C{n}"
+        key = cell, qid
+        questions[qid] = GradingQuestion(qid, candidate.category, "3.13", "q", "k", None, (), ())
+        transcripts[key] = {
+            "competitor_id": cell, "corpus_id": qid, "status": "succeeded", "answer": "answer",
+            "model_family_id": candidate.model_family_id, "system_id": candidate.system_id,
+        }
+        answers[key] = AnswerVotes(safe_id(*key), cell, qid,
+                                  dict.fromkeys(("a", "b", "c"), vote),
+                                  {j: {"final": True} for j in ("a", "b", "c")},
+                                  False, None, None)
+    return answers, transcripts, questions
+
+
+def test_registered_g3_uses_full_inventory_then_excludes_adjudications() -> None:
+    from dataclasses import replace
+
+    from benchmarks.grading.gates import registered_g3_sample
+
+    answers, transcripts, questions = _registered_cohort()
+    judges = ["a", "b", "c"]
+    original, _ = registered_g3_sample(answers, transcripts, questions, judges, seed="7")
+    # Independent reference outcomes do not influence selection, even when
+    # every candidate has already received a reference vote.
+    answers = {k: replace(a, reference=next(iter(a.votes.values())))
+               for k, a in answers.items()}
+    assert registered_g3_sample(answers, transcripts, questions, judges, seed="7")[0] == original
+    selected = [k for k, a in answers.items() if a.item_id in original][:2]
+    answers[selected[0]] = replace(answers[selected[0]], suspect=True)
+    answers[selected[1]] = replace(answers[selected[1]], votes=dict.fromkeys(judges))
+    candidates = [SampleCandidate(a.item_id, transcripts[k]["model_family_id"],
+                                  transcripts[k]["system_id"], questions[k[1]].category)
+                  for k, a in answers.items()]
+    excluded = {answers[k].item_id for k in selected}
+    expected = g3_sample(candidates, excluded=excluded, seed="7")
+    actual = registered_g3_sample(answers, transcripts, questions, judges, seed="7")
+    assert actual == expected and len(actual[0]) == 300
+    assert not excluded.intersection(actual[0])
+    # Withheld final panel votes are an adjudication exclusion; a missing
+    # final record instead prevents freezing any cohort.
+    answers[selected[1]] = replace(answers[selected[1]], records={})
+    with pytest.raises(BenchmarkValidationError, match="complete current panel"):
+        registered_g3_sample(answers, transcripts, questions, judges, seed="7")
+
+
+def test_registered_g3_ignores_failed_or_empty_answers_but_requires_all_real_answers() -> None:
+    from benchmarks.grading.gates import registered_g3_sample
+
+    answers, transcripts, questions = _registered_cohort()
+    expected = registered_g3_sample(answers, transcripts, questions, ["a", "b", "c"], seed="7")
+    transcripts["failed", "Q0"] = {"status": "failed", "answer": "text"}
+    transcripts["empty", "Q0"] = {"status": "succeeded", "answer": "  "}
+    assert (
+        registered_g3_sample(answers, transcripts, questions, ["a", "b", "c"], seed="7")
+        == expected
+    )
+    transcripts["missing", "Q0"] = {"status": "succeeded", "answer": "real answer"}
+    with pytest.raises(BenchmarkValidationError, match="inventory is incomplete"):
+        registered_g3_sample(answers, transcripts, questions, ["a", "b", "c"], seed="7")
+
+
+@pytest.mark.parametrize("damage", [None, "ids", "duplicate", "seed", "size", "groups",
+                                   "borrowed", "shortfall", "legacy", "inventory", "pending"])
+def test_registered_g3_rejects_unregistered_or_incomplete_cohorts(damage: str | None) -> None:
+    from dataclasses import replace
+
+    from benchmarks.grading.gates import registered_g3, registered_g3_sample
+
+    answers, transcripts, questions = _registered_cohort()
+    ids, info = registered_g3_sample(answers, transcripts, questions, ["a", "b", "c"], seed="7")
+    sample = {**info, "ids": ids}
+    pairs = {a.item_id: (float(n % 2), float(n % 2)) for n, a in enumerate(answers.values())}
+    if damage == "ids":
+        sample["ids"] = sorted(pairs)[:300]
+        assert sample["ids"] != ids
+    elif damage == "duplicate":
+        sample["ids"] = [ids[0]] * 300
+    elif damage in ("seed", "size", "groups", "borrowed", "shortfall"):
+        sample[damage] = "incorrect"
+    elif damage == "legacy":
+        sample = {"ids": ids}
+    elif damage == "inventory":
+        answers.pop(next(iter(answers)))
+    elif damage == "pending":
+        key = next(iter(answers))
+        answers[key] = replace(answers[key], records={"a": {"final": False}})
+    result = registered_g3(
+        sample, pairs, {a.item_id: a.corpus_id for a in answers.values()},
+        answers=answers, transcripts=transcripts, questions=questions, judges=["a", "b", "c"],
+        seed="7", reference_check=GateResult("r", True, {}), resamples=100,
+    )
+    assert result.passed is (True if damage is None else None)
+
+
 def test_self_preference_cancels_general_leniency() -> None:
     grades: dict[str, dict[str, float | None]] = {}
     family_of: dict[str, str] = {}

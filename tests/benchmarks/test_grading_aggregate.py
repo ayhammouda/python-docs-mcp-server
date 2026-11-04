@@ -263,6 +263,7 @@ def test_vote_paths_keep_every_effort_attempt_and_invocation(tmp_path: Path) -> 
         1,
     )
     assert record["input_sha256"] == _request().sha256() and record["terminal"] is False
+    assert record["refusal"] is False
     assert set(record) == {
         "item_id",
         "target",
@@ -274,6 +275,7 @@ def test_vote_paths_keep_every_effort_attempt_and_invocation(tmp_path: Path) -> 
         "grading_run_id",
         "attempt",
         "status",
+        "refusal",
         "withheld",
         "terminal",
         "text",

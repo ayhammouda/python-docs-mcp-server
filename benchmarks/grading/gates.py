@@ -8,6 +8,7 @@ only through the two loaders at the end of this module.
 
 from __future__ import annotations
 
+import json
 import math
 import random
 import re
@@ -19,6 +20,8 @@ from pathlib import Path
 from typing import Any, Literal, TypeGuard
 
 from benchmarks.agentic.inputs import json_mapping, read_json
+from benchmarks.grading.aggregate import AnswerVotes, reference_needed
+from benchmarks.grading.inputs import GradingQuestion, safe_id
 from benchmarks.grading.panel import Panel, composition_key
 from benchmarks.grading.probes import (
     HELD_OUT_QUESTIONS,
@@ -454,6 +457,80 @@ class SampleCandidate:
     model_family_id: str
     system_id: str
     category: str
+
+
+def registered_g3_sample(
+    answers: Mapping[tuple[str, str], AnswerVotes],
+    transcripts: Mapping[tuple[str, str], Mapping[str, Any]],
+    questions: Mapping[str, GradingQuestion],
+    judges: Sequence[str],
+    *,
+    seed: str,
+) -> tuple[list[str], dict[str, Any]]:
+    """Reconstruct the producer's cohort before looking at reference outcomes.
+
+    Allocate over all successful nonempty answers, then exclude suspects and
+    panel settlements. Pending panel records invalidate selection; they must
+    never shrink a stratum or masquerade as an adjudication exclusion.
+    """
+    eligible = {
+        key: row for key, row in transcripts.items()
+        if row.get("status") == "succeeded" and (row.get("answer") or "").strip()
+    }
+    if not judges or answers.keys() != eligible.keys():
+        raise BenchmarkValidationError("registered G3 answer inventory is incomplete")
+    candidates = []
+    for key, row in eligible.items():
+        av = answers[key]
+        if (
+            av.item_id != safe_id(*key)
+            or (av.competitor_id, av.corpus_id) != key
+            or key != (row["competitor_id"], row["corpus_id"])
+            or key[1] not in questions
+            or set(av.votes) != set(judges)
+            or not all(av.records.get(j, {}).get("final") is True for j in judges)
+        ):
+            raise BenchmarkValidationError("registered G3 needs complete current panel records")
+        candidates.append(SampleCandidate(
+            av.item_id, row["model_family_id"], row["system_id"], questions[key[1]].category
+        ))
+    return g3_sample(candidates, excluded=set(reference_needed(answers)), seed=seed)
+
+
+def registered_g3(
+    sample: Mapping[str, Any] | None,
+    pairs: Mapping[str, tuple[float, float]],
+    question_of: Mapping[str, str],
+    *,
+    answers: Mapping[tuple[str, str], AnswerVotes],
+    transcripts: Mapping[tuple[str, str], Mapping[str, Any]],
+    questions: Mapping[str, GradingQuestion],
+    judges: Sequence[str],
+    seed: str,
+    reference_check: GateResult,
+    resamples: int = 10_000,
+) -> GateResult:
+    """Admit G3 only for the exact registered cohort and allocation metadata."""
+    try:
+        ids, info = registered_g3_sample(answers, transcripts, questions, judges, seed=seed)
+    except (BenchmarkValidationError, KeyError, TypeError, ValueError) as exc:
+        return GateResult("G3", None, {"reason": f"G3 was not evaluated: {exc}"})
+    expected = {**info, "ids": ids}
+    saved_ids = None if sample is None else sample.get("ids")
+    count = len(saved_ids) if isinstance(saved_ids, list) else 0
+    # JSON comparison also distinguishes booleans from integer sizes/counts.
+    if sample is None or any(
+        k not in sample or json.dumps(sample[k], sort_keys=True) != json.dumps(v, sort_keys=True)
+        for k, v in expected.items()
+    ):
+        return GateResult("G3", None, {
+            "reason": f"G3 was not evaluated: the reference sample holds "
+                      f"{count} of 300 answers; "
+                      "saved reference sample differs from the registered "
+                      "selection or lacks its allocation metadata.",
+        })
+    return g3(ids, pairs, question_of, seed=seed, reference_check=reference_check,
+              sample_info=info, resamples=resamples)
 
 
 def g3_sample(

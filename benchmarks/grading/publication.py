@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from benchmarks.agentic.inputs import CapturedInput
 from benchmarks.agentic.protocol import KeyLeakError
-from benchmarks.grading.aggregate import LLM_PANEL, judge_grade
+from benchmarks.grading.aggregate import LLM_PANEL, judge_grade, own_grade
 from benchmarks.grading.calibration import replay_g1
 from benchmarks.grading.gates import (
     G1Binding,
@@ -21,17 +21,17 @@ from benchmarks.grading.gates import (
     c2,
     c3,
     g2,
-    g3,
     g4,
+    registered_g3,
 )
 from benchmarks.grading.mapping import grade
-from benchmarks.grading.score import _jsonable, _own
+from benchmarks.grading.serialization import jsonable
 from benchmarks.grading.stats import GATE_RESAMPLES
 from benchmarks.report_files import optional_json
 from benchmarks.runner import BenchmarkValidationError
 
 if TYPE_CHECKING:
-    from benchmarks.agentic_report import _RunMetadata
+    from benchmarks import agentic_report
 
 
 def _gate(raw: Any, name: str) -> GateResult:
@@ -42,7 +42,7 @@ def _gate(raw: Any, name: str) -> GateResult:
 
 
 def _consistent(saved: GateResult, actual: GateResult) -> GateResult:
-    if _jsonable(asdict(saved)) == _jsonable(asdict(actual)):
+    if jsonable(asdict(saved)) == jsonable(asdict(actual)):
         return actual
     return GateResult(
         saved.id,
@@ -55,7 +55,7 @@ def _consistent(saved: GateResult, actual: GateResult) -> GateResult:
     )
 
 
-def reconcile_gates(run: _RunMetadata) -> dict[str, GateResult]:
+def reconcile_gates(run: agentic_report._RunMetadata) -> dict[str, GateResult]:
     """Derive gate eligibility from this export; never write or rescore its artifacts."""
     summary = run.summary
     gates = {
@@ -120,7 +120,7 @@ def reconcile_gates(run: _RunMetadata) -> dict[str, GateResult]:
             item = av.item_id
             question_of[item] = key[1]
             question = captured.questions[key[1]]
-            scores = {j: _own(av, j, question.weights) for j in efforts}
+            scores = {j: own_grade(av, j, question.weights) for j in efforts}
             if not av.suspect and sum(s is not None for s in scores.values()) >= 2:
                 own[item] = scores
             final = captured.finals.get(key)
@@ -141,13 +141,16 @@ def reconcile_gates(run: _RunMetadata) -> dict[str, GateResult]:
         sample = run.reference_sample
         gates["G3"] = _consistent(
             gates["G3"],
-            g3(
-                sample.get("ids") or [],
+            registered_g3(
+                sample,
                 pairs,
                 question_of,
+                answers=captured.answers,
+                transcripts=run.transcripts,
+                questions=captured.questions,
+                judges=list(efforts),
                 seed=run.seed,
                 reference_check=reference,
-                sample_info=sample,
             ),
         )
         planned = {
@@ -185,7 +188,7 @@ def reconcile_gates(run: _RunMetadata) -> dict[str, GateResult]:
             j: panel_claims if scores == panel_scores else claims(scores)
             for j, scores in judge_scores.items()
         }
-        if _jsonable(panel_claims) != summary.get("claims") or _jsonable(by_judge) != summary.get(
+        if jsonable(panel_claims) != summary.get("claims") or jsonable(by_judge) != summary.get(
             "claims_by_judge"
         ):
             # Pending or unverified cells cannot inherit a cached claim. Keep

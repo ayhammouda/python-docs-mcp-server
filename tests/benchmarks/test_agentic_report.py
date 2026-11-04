@@ -876,8 +876,9 @@ def validated_bundle(tmp_path: Path, validated_template: Path) -> Path:
 def test_complete_passing_evidence_publishes_in_report_and_readme(validated_bundle: Path) -> None:
     before = (validated_bundle / "grading/summary.json").read_bytes()
     assert "Grading outcome: Validated" in _render(validated_bundle)
-    assert "fewer normalized tokens" in _readme(validated_bundle)
-    assert "ratio 0.500" in _readme(validated_bundle)
+    readme = _readme(validated_bundle)
+    assert "fewer normalized tokens" in readme
+    assert "ratio 0.500" in readme
     assert (validated_bundle / "grading/summary.json").read_bytes() == before
 
 
@@ -1053,10 +1054,11 @@ def test_missing_snapshot_withholds_public_claim_without_calling_it_scripted(
 ) -> None:
     run = validated_bundle
     (run / missing).unlink()
-    for text in (_readme(run), _render(run)):
+    readme = _readme(run)
+    for text in (readme, _render(run)):
         assert "unknown" in text.lower()
         assert "demonstration" not in text.lower()
-    assert "fewer normalized tokens" not in _readme(run)
+    assert "fewer normalized tokens" not in readme
 
 
 def test_unknown_active_api_withholds_public_claim(validated_bundle: Path) -> None:
@@ -1495,6 +1497,25 @@ def current_offline_export(tmp_path: Path) -> Path:
     return export
 
 
+@pytest.mark.parametrize("ungraded", [True, False])
+def test_current_offline_checks_and_denials_survive_absent_c3(
+    current_offline_export: Path, ungraded: bool
+) -> None:
+    summary = current_offline_export / "grading/summary.json"
+    if ungraded:
+        summary.unlink()
+    else:
+        record = json.loads(summary.read_bytes())
+        record["claims"]["C3"] = {}
+        _json(summary, record)
+    c3 = _render(current_offline_export).split("### C3:", 1)[1].split("### S1:", 1)[0]
+    assert "Offline evidence: pass" in c3
+    denial = r"- gemma4-12b--python-docs: pypi\.org\:443 (refused; nothing left the sandbox)"
+    assert denial in c3.splitlines()
+    assert "No air-gapped model ran" not in c3
+    assert "answers the corpus better" not in _readme(current_offline_export)
+
+
 @pytest.mark.parametrize(
     "change,expected",
     [
@@ -1665,9 +1686,10 @@ def test_saved_relabelled_pilot_cannot_publish(
         _json(target, record)
     else:
         shutil.copyfile(transcript, target)
-    for text in (_readme(run), _render(run)):
+    readme = _readme(run)
+    for text in (readme, _render(run)):
         assert "scripted answering" in text
-    assert "fewer normalized tokens" not in _readme(run)
+    assert "fewer normalized tokens" not in readme
 
 
 @pytest.mark.parametrize(
@@ -1767,10 +1789,13 @@ def test_saved_claim_needs_matching_evidence(validated_bundle: Path, change: str
         _json(path, invocation)
     elif change == "scripted_reservation":
         path = run / "grading/ledger-events.jsonl"
-        with path.open("a") as ledger:
-            ledger.write(
-                json.dumps({"event": "reserve", "unit_id": "u1", "api": "scripted"}) + "\n"
-            )
+        vote_path = next((run / "grading/votes/answers/haiku/low/pass1").glob("*/*.json"))
+        unit = json.loads(vote_path.read_bytes())["unit_id"]
+        events = [json.loads(line) for line in path.read_text().splitlines()]
+        reserve, = (e for e in events if e["event"] == "reserve" and e["unit_id"] == unit)
+        assert reserve["api"] == "anthropic-messages"
+        reserve["api"] = "scripted"
+        path.write_text("".join(json.dumps(e) + "\n" for e in events))
     elif change == "count":
         next((run / "tokens/python-docs--scripted-anthropic--r1").glob("*.json")).unlink()
     elif change in {"scripted_count", "legacy_count"}:
@@ -1847,15 +1872,57 @@ def test_export_cli_rechecks_offline_evidence_for_c3(
     for claim, family in (("C3", FAMILIES[0]), ("C2", FAMILIES[1])):
         interval = metadata.summary["claims"][claim][family]["interval"]
         assert interval["low"] < interval["point"] < interval["high"]
-    assert main(args) == 0
+    result = main(args)
+    assert result == 0
     positive = (run / "README-SUMMARY.md").read_text()
     assert "answers the corpus better" in positive
     assert f"- {FAMILIES[1]}: python-docs-mcp-server uses" in positive
-    assert "pypi.org:443" in (run / "REPORT.md").read_text()
+    report = (run / "REPORT.md").read_text()
+    claims = _section(report, "## Claims")
+    c3 = claims[claims.index("### C3") : claims.index("### S1")]
+    rendered = re.sub(r"\\([!-/:-@\[-`{-~])", r"\1", c3)
+    denials = [line for line in rendered.splitlines() if line.startswith("- ")]
+    expected = [
+        f"- {FAMILIES[0]}--python-docs: pypi.org:443 (refused; nothing left the sandbox)"
+    ]
+    assert denials == expected
+
+    # A different host that contains the expected text must not satisfy this control.
+    egress_path = run / "egress/summary.json"
+    egress = json.loads(egress_path.read_bytes())
+    egress["jobs"][f"{FAMILIES[0]}--python-docs"]["hosts_denied"] = [
+        "pypi.org:443.attacker.invalid"
+    ]
+    _json(egress_path, egress)
+    result = main(args)
+    assert result == 0
+    changed = _section((run / "REPORT.md").read_text(), "## Claims")
+    changed_c3 = changed[changed.index("### C3") : changed.index("### S1")]
+    changed_rendered = re.sub(r"\\([!-/:-@\[-`{-~])", r"\1", changed_c3)
+    changed_denials = [line for line in changed_rendered.splitlines() if line.startswith("- ")]
+    assert changed_denials == [
+        f"- {FAMILIES[0]}--python-docs: pypi.org:443.attacker.invalid "
+        + "(refused; nothing left the sandbox)"
+    ]
+    assert changed_denials != expected
+    assert "answers the corpus better" in (run / "README-SUMMARY.md").read_text()
     checks.unlink()
-    assert main(args) == 0
+    result = main(args)
+    assert result == 0
     assert "answers the corpus better" not in (run / "README-SUMMARY.md").read_text()
     assert "missing or inconsistent execution evidence" in (run / "REPORT.md").read_text()
+
+    # Rescoring can retain the independently measured hosted claim with C3 unknown.
+    _score(run, tmp_path, panel_path=run / "grading/inputs/panel.yml", composition=composition)
+    refreshed = _RunMetadata(_load_run_bundle(run))
+    assert refreshed.summary["claims"]["C3"][FAMILIES[0]]["passed"] is None
+    assert refreshed.tier == "Validated"
+    assert refreshed.claim_evidence("C2", FAMILIES[1])
+    result = main(args)
+    assert result == 0
+    readme = (run / "README-SUMMARY.md").read_text()
+    assert f"- {FAMILIES[1]}: python-docs-mcp-server uses" in readme
+    assert "answers the corpus better" not in readme
 
 
 @pytest.mark.parametrize("artifact", ["fifo", "oversized"])
@@ -1906,12 +1973,107 @@ def test_accepted_fixture_has_complete_registered_evidence(validated_bundle: Pat
     assert all(json.loads(p.read_bytes())["per_call"] for p in counts)
 
 
+@pytest.mark.parametrize("saved_cohort", ["registered", "sorted-slice"])
+def test_g3_reconstructs_mixed_cohort_before_scoring_or_publication(
+    validated_bundle: Path, tmp_path: Path, saved_cohort: str
+) -> None:
+    from benchmarks.agentic_report import _RunMetadata
+    from benchmarks.grading.gates import GateResult, SampleCandidate, g3, g3_sample
+    from benchmarks.grading.inputs import safe_id
+    from benchmarks.grading.mapping import grade
+
+    run = validated_bundle
+    airgapped_recording(run, FAMILIES[0])
+    questions = grading_inputs.load_criteria(
+        run / "grading/inputs/grading-criteria.yml",
+        corpus_path=run / "snapshots/corpus.yml", schema_path=SCHEMA,
+    )
+    rows = [json.loads(p.read_bytes()) for p in (run / "transcripts").glob("*/*.json")]
+    ids, info = g3_sample(
+        [SampleCandidate(safe_id(r["competitor_id"], r["corpus_id"]),
+                         r["model_family_id"], r["system_id"],
+                         questions[r["corpus_id"]].category) for r in rows],
+        excluded=set(), seed=str(json.loads((run / "environment.json").read_bytes())["seed"]),
+    )
+    assert len(rows) == 350 and len(ids) == 300
+    omitted_prefix = f"python-docs--{FAMILIES[1]}--"
+    assert sum(i.startswith(omitted_prefix) for i in ids) == 42
+    sample_path = run / "grading/reference-sample.json"
+    # Normal mixed fixture must itself use the registered selection.
+    if saved_cohort == "registered":
+        assert json.loads(sample_path.read_bytes()) == {**info, "ids": ids}
+    composition = json.loads((run / "grading/runs/run-1.json").read_bytes())["composition"]
+    _json(sample_path, {**info, "ids": ids})
+    _score(run, tmp_path, panel_path=run / "grading/inputs/panel.yml", composition=composition)
+    assert _RunMetadata(_load_run_bundle(run)).tier == "Validated"
+    assert "fewer normalized tokens" in _readme(run)
+
+    # Change the actual recorded replies and rebuild production receipts. This
+    # stratum was entirely absent from the old arbitrary sorted slice.
+    for path in (run / "grading/votes/reference").glob(f"*/*/pass1/{omitted_prefix}*/*.json"):
+        vote = json.loads(path.read_bytes())
+        vote["vote"]["attempted"] = False
+        _json(path, vote)
+    rebuild_grading(run)
+    if saved_cohort == "sorted-slice":
+        arbitrary = sorted(safe_id(r["competitor_id"], r["corpus_id"]) for r in rows)[:300]
+        assert not any(i.startswith(omitted_prefix) for i in arbitrary)
+        _json(sample_path, {**info, "ids": arbitrary})
+    _score(run, tmp_path, panel_path=run / "grading/inputs/panel.yml", composition=composition)
+    summary = json.loads((run / "grading/summary.json").read_bytes())
+    assert summary["gates"]["G3"]["passed"] is (False if saved_cohort == "registered" else None)
+    if saved_cohort == "registered":
+        assert 0.66 < summary["gates"]["G3"]["details"]["alpha"] < 0.69
+    else:
+        assert "registered" in summary["gates"]["G3"]["details"]["reason"]
+        # Recreate the old, numerically consistent all-pass cache. Publication
+        # must independently reject its cohort, even with correct statistics.
+        capture = _RunMetadata(_load_run_bundle(run)).grade_capture
+        pairs = {av.item_id: (capture.finals[k]["score"],
+                             grade(av.reference.fields(), questions[k[1]].weights)[0])
+                 for k, av in capture.answers.items() if av.reference is not None}
+        old_gate = g3(arbitrary, pairs, {av.item_id: av.corpus_id
+                                       for av in capture.answers.values()},
+                      seed=info["seed"], reference_check=GateResult("r", True, {}))
+        assert old_gate.passed is True
+        summary["gates"]["G3"] = {"passed": old_gate.passed, "details": old_gate.details}
+        _json(run / "grading/summary.json", summary)
+    assert _RunMetadata(_load_run_bundle(run)).tier != "Validated"
+    assert "fewer normalized tokens" not in _readme(run)
+    assert "Grading outcome: Validated" not in _render(run)
+
+
+@pytest.mark.parametrize("field", ["seed", "size", "groups", "borrowed", "shortfall", "ids"])
+def test_publication_independently_checks_registered_sample_metadata(
+    validated_bundle: Path, field: str
+) -> None:
+    from benchmarks.agentic_report import _RunMetadata
+
+    run = validated_bundle
+    assert _RunMetadata(_load_run_bundle(run)).tier == "Validated"
+    path = run / "grading/reference-sample.json"
+    sample = json.loads(path.read_bytes())
+    if field == "ids":
+        sample["ids"] = [sample["ids"][0]] * 300
+    else:
+        sample.pop(field)
+    _json(path, sample)
+    # No rescore: the saved positive summary and grades remain byte-for-byte.
+    summary = (run / "grading/summary.json").read_bytes()
+    from benchmarks.grading.publication import reconcile_gates
+
+    assert reconcile_gates(_RunMetadata(_load_run_bundle(run)))["G3"].passed is None
+    assert "fewer normalized tokens" not in _readme(run)
+    assert (run / "grading/summary.json").read_bytes() == summary
+
+
 @pytest.mark.parametrize("change", ["gate", "grade", "count", "receipt"])
 def test_single_evidence_change_limits_public_wording(validated_bundle: Path, change: str) -> None:
     from benchmarks.agentic_report import _RunMetadata
 
     run = validated_bundle
-    assert all(f"- {family}: python-docs-mcp-server uses" in _readme(run) for family in FAMILIES)
+    baseline = _readme(run)
+    assert all(f"- {family}: python-docs-mcp-server uses" in baseline for family in FAMILIES)
     cell = f"python-docs--{FAMILIES[0]}--r1"
     if change == "gate":
         path = run / "grading/summary.json"

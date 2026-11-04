@@ -6,11 +6,24 @@ No filesystem, worker, inference ledger or report dependencies belong here.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from benchmarks.agentic.count import CountItem
 from benchmarks.agentic.loop import MAX_RETRIES
 from benchmarks.runner import BenchmarkValidationError
+
+
+def is_count_coordinate(value: Any) -> bool:
+    """One non-hidden path component, at most 240 ASCII characters.
+
+    Use the runner's _SAFE_ID character set, preserving legacy leading dashes
+    and underscores. Run IDs and provider item IDs have separate grammars.
+    """
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,239}", value) is not None
+    )
 
 
 def planned_count_calls(item: CountItem) -> int:

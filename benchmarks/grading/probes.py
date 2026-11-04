@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from benchmarks.agentic.egress import write_new
 from benchmarks.agentic.inputs import CapturedInput
 from benchmarks.agentic.protocol import assert_no_key_shaped, assert_no_key_shaped_json
 from benchmarks.grading.batch import BatchRequest
@@ -29,6 +30,7 @@ from benchmarks.grading.inputs import (
     tuning_questions_from_mapping,
 )
 from benchmarks.grading.mapping import Label, grade
+from benchmarks.report_files import artifact_output_dirs
 from benchmarks.runner import BenchmarkValidationError
 
 PROBE_TYPES = (
@@ -355,7 +357,8 @@ def write_probe_file(path: Path, probe_file: ProbeFile) -> None:
     assert_no_key_shaped_json(data, where="probe file")
     body = yaml.safe_dump(data, sort_keys=False, width=100).encode("utf-8")
     assert_no_key_shaped(body, where="probe file")
-    path.write_bytes(body)
+    with artifact_output_dirs(path.parent, [path]) as directories:
+        write_new(directories[path.parent], path.name, body, mode=0o644)
 
 
 def load_probe_file(path: Path, *, criteria_path: Path, tuning_path: Path) -> ProbeFile:

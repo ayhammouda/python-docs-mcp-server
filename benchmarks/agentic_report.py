@@ -26,6 +26,7 @@ from benchmarks.agentic.ledger import actual_cost, price_snapshot_from_mapping
 from benchmarks.agentic.protocol import KeyLeakError, check_json_text
 from benchmarks.agentic.reference import ReferenceTranscripts, ReferenceUnits, scripted_response
 from benchmarks.agentic.types import Buckets
+from benchmarks.grading import disclosure, publication
 from benchmarks.grading.aggregate import (
     AnswerVotes,
     final_grade,
@@ -33,6 +34,7 @@ from benchmarks.grading.aggregate import (
     record_order,
     vote_from_record,
 )
+from benchmarks.grading.batch import BatchItemResult
 from benchmarks.grading.gates import (
     EGRESS_JOB_FIELDS,
     CellKey,
@@ -55,12 +57,11 @@ from benchmarks.grading.inputs import (
     criteria_from_mapping,
     safe_id,
 )
-from benchmarks.grading.publication import reconcile_gates
 from benchmarks.grading.stats import GATE_RESAMPLES, paired_bootstrap
 from benchmarks.model_matrix import KNOWN_APIS, ModelMatrix, model_family_from_raw
-from benchmarks.report import RunBundle, _cell, _percentile, _relative_link, _table
+from benchmarks.report_common import RunBundle, _cell, _percentile, _relative_link, _table
 from benchmarks.report_files import artifact_bytes, artifact_paths, checked_path, optional_json
-from benchmarks.report_measurements import grading_receipt_matches, live_count_matches
+from benchmarks.report_measurements import CountCapture, grading_receipt_matches, live_count_matches
 from benchmarks.runner import BenchmarkValidationError
 
 REQUIRED_WORDING = "LLM-graded, validated against synthetic probes and inter-model agreement"
@@ -266,6 +267,7 @@ class _GradeCapture:
     answers: dict[tuple[str, str], AnswerVotes] = field(default_factory=dict)
     finals: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
     scores: dict[tuple[str, str], float] = field(default_factory=dict)
+    reconciled: bool = False  # the whole join succeeded, including any genuinely pending cells
 
 
 def _graded_execution(
@@ -300,6 +302,7 @@ def _graded_execution(
     composition = {j: {"model_id": judges[j]["model_id"], "effort": e} for j, e in efforts.items()}
     reservations = {e.get("unit_id"): e for e in events if e.get("event") == "reserve"}
     votes = {}
+    results: dict[str, BatchItemResult] = {}
     latest = {}
     attempts: dict[tuple[str, str, str, str], int] = {}
     members_by_target = {
@@ -377,7 +380,7 @@ def _graded_execution(
                 ):
                     try:
                         matched = grading_receipt_matches(
-                            root, vote, record_sha, judges[judge], invocation, events
+                            root, vote, record_sha, judges[judge], invocation, events, results
                         )
                     except KeyLeakError:
                         raise
@@ -458,7 +461,9 @@ def _graded_execution(
                         and raw.get("input_sha256") == request.sha256()
                     ):
                         try:
-                            parsed[judge] = vote_from_record(raw, request=request)
+                            parsed[judge] = vote_from_record(
+                                raw, request=request, result=results[sha]
+                            )
                         except BenchmarkValidationError:
                             pass  # An invalid or unverified vote cannot contribute to G2.
                 capture.answers[key] = AnswerVotes(
@@ -524,7 +529,7 @@ def _graded_execution(
             ):
                 return "unknown"
             try:
-                parsed[judge] = vote_from_record(raw, request=request)
+                parsed[judge] = vote_from_record(raw, request=request, result=results[sha])
             except BenchmarkValidationError:
                 return "unknown"
             observed.add(judge)
@@ -554,6 +559,7 @@ def _graded_execution(
         capture.answers[key] = av
         capture.finals[key] = replay
         capture.scores[key] = replay["score"]
+    capture.reconciled = True
     return "live" if not pending and efforts and set(efforts) <= observed else "unknown"
 
 
@@ -624,6 +630,7 @@ class _RunMetadata:
         self.grading = _execution_kind([*active, *references], grading=True)
         self.scoring = bundle.scoring
         self.tokens = bundle.tokens
+        self.count_capture = CountCapture(run)
         self.grade_capture = _GradeCapture()
         self.reference_sample = optional_json(run, run / "grading/reference-sample.json") or {}
         checked_versions: dict[Path, str | None] = {}
@@ -683,7 +690,7 @@ class _RunMetadata:
         self.versions = {
             judge: _reported_versions(run, judge, checked_versions) for judge in efforts
         }
-        gates = reconcile_gates(self)
+        gates = publication.reconcile_gates(self)
         self.tier = (
             outcome_tier(*(gates[name] for name in ("G1", "G2", "G3", "G4")))
             if self.summary
@@ -697,6 +704,38 @@ class _RunMetadata:
                     for name, gate in gates.items()
                 },
             }
+        self.audit: dict[str, Any] = {"verified": False}
+        self.retained: dict[str, Any] = {}
+        self.retained_reason = "unverified audit or comparison evidence"
+        try:
+            if self.inputs.keys() != self.frozen.keys():
+                raise ValueError("unbound audit inputs")
+            reference = next(
+                j for j, spec in self.judges.items() if spec.get("role") == "reference"
+            )
+            self.audit = disclosure.verified_key_audit(
+                run, questions=self.grade_capture.questions, reference=reference,
+                judge=self.judges[reference], inputs=self.inputs,
+                prompt=self.frozen["key_audit_prompt"], events=self.grading_events,
+            )
+            if self.audit["flagged"]:
+                self.retained = disclosure.retained_claims(self, self.audit["flagged"])
+        except KeyLeakError:
+            raise
+        except (
+            FileNotFoundError, BenchmarkValidationError, KeyError, TypeError, ValueError,
+            StopIteration, AttributeError, DecimalException, ZeroDivisionError,
+        ):
+            pass  # Keep the verified audit if only the retained comparison was unavailable.
+        self.grading_spend: dict[str, Any] | None = None
+        try:
+            if checked_path(run, run / "grading/ledger-events.jsonl").is_file():
+                self.grading_spend = disclosure.ledger_spend(
+                    self.grading_events,
+                    len(self.grade_capture.finals) if self.grade_capture.reconciled else None,
+                )
+        except (KeyError, TypeError, ValueError, DecimalException):
+            pass
 
     def claim_evidence(self, claim: str, model: str) -> bool:
         systems = TOKEN_SYSTEMS if claim == "C2" else ("python-docs", "no-docs")
@@ -735,7 +774,7 @@ class _RunMetadata:
             scores[coord] = score
             if claim == "C2":
                 token = self.tokens.get(key, {})
-                if not _live_count(token, root=self.root, transcript=transcript):
+                if not self.count_capture.matches(transcript, token):
                     return False
                 counts[coord] = token["client_wrapped_tokens"]
 
@@ -755,8 +794,8 @@ class _RunMetadata:
             return False
         return result.passed is True and asdict(result) == self.summary["claims"][claim][model]
 
-    def offline_ok(self) -> bool:
-        return self.current_offline.verdict.ok is True
+    def offline_ok(self) -> bool | None:
+        return self.current_offline.verdict.ok
 
     @property
     def grading_label(self) -> str:
@@ -787,7 +826,7 @@ class _Run(_RunMetadata):
     def __init__(self, bundle: RunBundle, matrix: ModelMatrix, report_dir: Path) -> None:
         super().__init__(bundle)
         run = bundle.run_dir
-        self.dir, self.bundle, self.report_dir = run, bundle, report_dir
+        self.dir, self.report_dir = run, report_dir
         # The caller's matrix is a display fallback, never evidence for a claim.
         if not self.families:
             self.families = {
@@ -1032,17 +1071,15 @@ def _claims(run: _Run) -> list[str]:
     if not graded:
         lines.append(f"C3 is {ungraded}")
     elif not claims.get("C3"):
-        lines.append("No air-gapped model ran in this run, so C3 has no verdict.")
+        lines.append("No C3 comparison is available for this run.")
     else:
         lines += _table(
             ["Model", "Score difference with docs minus without", "Verdict", "G4"],
             _claim_rows(run, claims["C3"], sensitive, "C3"),
         )
-        offline = run.current_offline
-        lines += [
-            "",
-            _offline_status(run),
-        ]
+    offline = run.current_offline
+    if claims.get("C3") or offline.airgap_jobs or offline.host_checks is not None:
+        lines += ["", _offline_status(run)]
         denied = offline.verdict.denied_attempts
         if denied:
             lines += [
@@ -1123,8 +1160,10 @@ def _disclosure(run: _Run) -> list[str]:
             "",
             f"{REQUIRED_WORDING}.",
             "",
-            "The air-gapped arm applies only to answering. Grading used the providers' "
-            "hosted batch APIs.",
+            (
+                "The air-gapped arm applies only to answering. Grading used the providers' "
+                + "hosted batch APIs."
+            ),
         ]
     else:
         lines += [
@@ -1135,8 +1174,10 @@ def _disclosure(run: _Run) -> list[str]:
         if run.grading == "unknown":
             lines += [
                 "",
-                "Persisted cell scores and derived metrics are unverified diagnostics. "
-                "Missing or inconsistent vote evidence cannot support a public comparison.",
+                (
+                    "Persisted cell scores and derived metrics are unverified diagnostics. "
+                    + "Missing or inconsistent vote evidence cannot support a public comparison."
+                ),
             ]
     lines += [
         "",
@@ -1382,26 +1423,41 @@ def _diagnostics(run: _Run) -> list[str]:
                 f"not_run reason {_esc(reason)}: {', '.join(_esc(i) for i in items)}; "
                 "they block the reference grader until fixed"
             )
-    audit = summary.get("key_audit") or {}
+    audit = run.audit
     flagged = ", ".join(_esc(q) for q in audit.get("flagged") or [])
     lines += [
         "",
-        f"Answer-key audit: {_esc(audit.get('audited', 0))} keys audited by the reference "
-        f"grader; flagged: {flagged or 'none'}.",
-        "The audit checks whether the cited docs support the frozen key. When a question has "
-        "several correct answers, a valid alternative may earn less credit if the key omits it.",
+        (f"Answer-key audit: {_esc(audit.get('audited'))} keys audited by the reference "
+         f"grader; flagged: {flagged or 'none'}."
+         if audit.get("verified") else
+         "Answer-key audit: unverified (missing, legacy or inconsistent current request/reply "
+         "and execution evidence); flagged counts and subset comparisons are ineligible."),
+        "Audit and execution hashes establish consistency of unsigned exported records; "
+        "they do not independently authenticate provider execution or the cited text.",
+        (
+            "The audit checks whether the cited docs support the frozen key. When a question has "
+            + "several correct answers, a valid alternative may earn less credit "
+            + "if the key omits it."
+        ),
     ]
-    if summary.get("claims_without_flagged_keys"):
-        for cid, by in sorted(summary["claims_without_flagged_keys"].items()):
+    if run.retained:
+        for cid, by in sorted(run.retained.items()):
             for model, c in sorted(by.items()):
                 lines.append(
                     f"- Without flagged questions, {_esc(cid)}/{_esc(model)}: "
                     f"{_verdict(c.get('passed'))}, {_esc(_interval(c.get('interval')))}"
+                    + (f" ({_esc(c['reason'])})" if c.get("reason") else "")
                 )
-    spend = summary.get("spend") or {}
+    elif audit.get("flagged") or summary.get("claims_without_flagged_keys"):
+        lines.append(f"Without flagged questions: not evaluable ({run.retained_reason}).")
+    spend = run.grading_spend or {}
     lines += [
         "",
         "Grading cost, kept apart from the benchmark's own token metrics:",
+        "",
+        (f"Settled ledger bookings; completed LLM-graded answers: {spend['graded_answers']}."
+         if spend.get("graded_answers") is not None else
+         "Grading cost: unverified denominator or missing ledger; per-answer cost unavailable."),
         "",
         *_table(
             ["Provider", "Booked (USD)", "Per graded answer"],

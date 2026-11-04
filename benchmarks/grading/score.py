@@ -10,20 +10,18 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import re
+import secrets
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
-from decimal import Decimal
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Any
 
 import yaml
 
-from benchmarks.agentic.egress import open_log_dir, read_log_at
+from benchmarks.agentic.egress import read_log_at, write_new
 from benchmarks.agentic.inputs import (
     CapturedInput,
     CapturedJSON,
@@ -32,19 +30,24 @@ from benchmarks.agentic.inputs import (
     read_json,
 )
 from benchmarks.agentic.protocol import (
+    KeyLeakError,
     assert_no_key_shaped_json,
     scanned_json_bytes,
 )
 from benchmarks.grading.aggregate import (
     LLM_PANEL,
     AnswerVotes,
-    chosen_record,
+    chosen_vote_file,
     final_grade,
     judge_grade,
     load_answer_votes,
+    recorded_result,
+    vote_from_record,
 )
+from benchmarks.grading.aggregate import own_grade as _own
 from benchmarks.grading.calibration import judge_settings as _judge_settings
 from benchmarks.grading.calibration import replay_g1
+from benchmarks.grading.disclosure import ledger_spend, verified_key_audit
 from benchmarks.grading.gates import (
     BINDING_INPUTS,
     CellKey,
@@ -55,13 +58,13 @@ from benchmarks.grading.gates import (
     c3,
     g1,
     g2,
-    g3,
     g4,
     length_grade_correlation,
     model_lineage,
     outcome_tier,
     pass1_composition,
     reference_probe_check,
+    registered_g3,
     run_binding,
     run_offline_evidence,
     self_preference,
@@ -72,9 +75,12 @@ from benchmarks.grading.inputs import (
     REPO_ROOT,
     SNAPSHOT_FILES,
     TUNING_PATH,
+    JudgeInput,
     Weight,
     answer_requests,
     criteria_from_mapping,
+    frozen_judge_document,
+    render_judge_input,
     safe_id,
     scanned_input,
     tuning_questions_from_mapping,
@@ -96,8 +102,14 @@ from benchmarks.grading.probes import (
     reference_subset,
     write_probe_file,
 )
+from benchmarks.grading.serialization import jsonable as _jsonable
 from benchmarks.grading.stats import GATE_RESAMPLES
-from benchmarks.report_files import artifact_bytes, artifact_paths
+from benchmarks.report_files import (
+    artifact_bytes,
+    artifact_output_dirs,
+    artifact_paths,
+    check_output_paths,
+)
 from benchmarks.runner import BenchmarkValidationError
 from benchmarks.scoring import apply_llm_grades, score_run
 
@@ -117,21 +129,10 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _jsonable(value: Any) -> Any:
-    """JSON without NaN or infinities: a non-finite float becomes the string 'inf' etc."""
-    if isinstance(value, float) and not math.isfinite(value):
-        return "nan" if math.isnan(value) else ("inf" if value > 0 else "-inf")
-    if isinstance(value, Mapping):
-        return {str(k): _jsonable(v) for k, v in value.items()}
-    if isinstance(value, list | tuple):
-        return [_jsonable(v) for v in value]
-    return value
-
-
-def _write(path: Path, data: Any) -> Any:
+def _write(root: Path, path: Path, data: Any) -> Any:
     body = scanned_json_bytes(_jsonable(data), where="grading evidence", indent=2, sort_keys=True)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(body + b"\n")
+    with artifact_output_dirs(root, [path]) as directories:
+        write_new(directories[path.parent], path.name, body + b"\n", mode=0o644)
     return json.loads(body)
 
 
@@ -178,36 +179,38 @@ def _g1_inputs(
     return entries, bodies, copies
 
 
-def _new_g1_archives(raw_dir: Path, bodies: Mapping[str, bytes]) -> dict[str, bytes]:
-    if not bodies or not raw_dir.exists():
-        return dict(bodies)
-    with open_log_dir(raw_dir) as directory:
-        names = set(os.listdir(directory))
-        missing = {}
-        for sha, body in bodies.items():
-            name = f"{sha}.json"
-            if name not in names:
-                missing[sha] = body
-            elif read_log_at(directory, name, max_bytes=len(body)) != body:
+def _new_g1_archives(root: Path, raw_dir: Path, bodies: Mapping[str, bytes]) -> dict[str, bytes]:
+    missing = {}
+    for sha, body in bodies.items():
+        try:
+            archived = artifact_bytes(root, raw_dir / f"{sha}.json")
+        except FileNotFoundError:
+            missing[sha] = body
+        else:
+            if archived != body:
                 raise BenchmarkValidationError("archived G1 bytes differ from their digest")
     return missing
 
 
-def _publish_g1_archives(raw_dir: Path, missing: Mapping[str, bytes]) -> None:
+def _publish_g1_archives(root: Path, raw_dir: Path, missing: Mapping[str, bytes]) -> None:
     if not missing:
         return
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    with open_log_dir(raw_dir) as directory, TemporaryDirectory(dir=raw_dir) as temp:
+    paths = [raw_dir / f"{sha}.json" for sha in missing]
+    with artifact_output_dirs(root, paths) as directories:
+        directory = directories[raw_dir]
         for sha, body in missing.items():
             name = f"{sha}.json"
-            staged = Path(temp) / name
-            staged.write_bytes(body)
+            staged = f".{name}.{secrets.token_hex(8)}.tmp"
+            write_new(directory, staged, body, mode=0o644)
             try:
                 # Publish complete immutable bytes without replacing a concurrent archive.
-                os.link(staged, name, dst_dir_fd=directory)
-            except FileExistsError:
-                if read_log_at(directory, name, max_bytes=len(body)) != body:
-                    raise BenchmarkValidationError("archived G1 bytes differ from their digest")
+                try:
+                    os.link(staged, name, src_dir_fd=directory, dst_dir_fd=directory)
+                except FileExistsError:
+                    if read_log_at(directory, name, max_bytes=len(body)) != body:
+                        raise BenchmarkValidationError("archived G1 bytes differ from their digest")
+            finally:
+                os.unlink(staged, dir_fd=directory)
 
 
 def _cells(base: Path) -> dict[tuple[str, str], dict[str, Any]]:
@@ -235,28 +238,19 @@ def _gate(result: GateResult) -> dict[str, Any]:
     return {"passed": result.passed, "details": result.details}
 
 
-def _own(av: AnswerVotes, judge_id: str, weights: tuple[Weight, Weight]) -> float | None:
-    vote = av.votes.get(judge_id)
-    return None if vote is None else grade(vote.fields(), weights)[0]
+def _ledger_events(grading: Path) -> list[dict[str, Any]]:
+    path = grading / "ledger-events.jsonl"
+    try:
+        body = artifact_bytes(grading, path)
+    except FileNotFoundError:
+        body = b""
+    return [
+        json_mapping(line, "grading ledger") for line in body.splitlines() if line.strip()
+    ]
 
 
 def _ledger_spend(grading: Path, graded: int) -> dict[str, Any]:
-    booked: dict[str, Decimal] = defaultdict(Decimal)
-    path = grading / "ledger-events.jsonl"
-    if path.is_file():
-        for line in path.read_text(encoding="utf-8").splitlines():
-            event = json.loads(line) if line.strip() else {}
-            if event.get("event") == "settle":
-                booked[event["provider"]] += Decimal(str(event["booked"]))
-    return {
-        "by_provider": {p: str(v) for p, v in sorted(booked.items())},
-        "graded_answers": graded,
-        "per_graded_answer": {
-            p: str((v / graded).quantize(Decimal("0.000001"))) for p, v in sorted(booked.items())
-        }
-        if graded
-        else {},
-    }
+    return ledger_spend(_ledger_events(grading), graded)
 
 
 def _no_final_record(
@@ -386,7 +380,18 @@ def score_run_dir(
     raw_g1 = disclosure / "g1"
     if any(p.is_symlink() for p in (grading, disclosure, raw_g1)):
         raise BenchmarkValidationError("G1 disclosure directory must be within the run")
-    missing_archives = _new_g1_archives(raw_g1, bodies)
+    # Include removals and immutable archives: none may fail after scoring has changed.
+    check_output_paths(
+        run_dir,
+        [
+            grading / "summary.json",
+            disclosure / "breakdowns.json",
+            disclosure / "g1-entries.json",
+            disclosure / "tuning.json",
+            *(raw_g1 / f"{sha}.json" for sha in bodies),
+        ],
+    )
+    missing_archives = _new_g1_archives(run_dir, raw_g1, bodies)
     efforts = {judge: spec.get("effort") for judge, spec in binding.composition.items()}
     transcripts = _cells(run_dir / "transcripts")
     requests = answer_requests(
@@ -461,7 +466,7 @@ def score_run_dir(
     }
     g2_result = g2(agreement, question_of, seed=seed, resamples=resamples)
 
-    # 4. G3 on the stored reference sample: final grade vs an independent reference vote.
+    # 4. Reconstruct the registered cohort independently of saved reference outcomes.
     pairs: dict[str, tuple[float, float]] = {}
     for k, final in finals.items():
         av = answer_votes[k]
@@ -471,13 +476,16 @@ def score_run_dir(
                 grade(av.reference.fields(), weights[av.corpus_id])[0],
             )
     if sample is not None:
-        g3_result = g3(
-            sample_ids,
+        g3_result = registered_g3(
+            sample,
             pairs,
             question_of,
+            answers=answer_votes,
+            transcripts=transcripts,
+            questions=questions,
+            judges=list(efforts),
             seed=seed,
             reference_check=reference_check,
-            sample_info=sample,
             resamples=resamples,
         )
     else:
@@ -561,19 +569,18 @@ def score_run_dir(
 
     # 7. The key audit: the reference's verdict on each answer key.
     reference = panel.judges[panel.reference]
-    audited: dict[str, bool] = {}
-    for qid in questions:
-        record = chosen_record(
-            grading,
-            target="key-audit",
-            judge_id=reference.id,
-            effort=reference.effort,
-            pass_number=1,
-            item_id=safe_id(qid),
+    ledger_events = _ledger_events(grading)
+    try:
+        audit = verified_key_audit(
+            run_dir, questions=questions, reference=reference.id, judge=reference.raw,
+            inputs=manifest, prompt=frozen["key_audit_prompt"],
+            events=ledger_events,
         )
-        if record is not None and isinstance(record.get("parsed"), dict):
-            audited[qid] = bool(record["parsed"].get("key_supported"))
-    flagged = sorted(q for q, supported in audited.items() if not supported)
+    except KeyLeakError:
+        raise
+    except (FileNotFoundError, KeyError, TypeError, ValueError, BenchmarkValidationError):
+        audit = {"verified": False, "audited": None, "flagged": None}
+    flagged = audit["flagged"] or []
     without_flagged = None
     if flagged:
         kept = {cell for cell in planned if cell[2] not in flagged}
@@ -679,15 +686,17 @@ def score_run_dir(
             "confusion": {k: dict(v) for k, v in sorted(confusion.items())},
         },
     }
-    _write(grading / "disclosure" / "breakdowns.json", breakdowns)
+    _write(run_dir, disclosure / "breakdowns.json", breakdowns)
     for path, value in (
         (disclosure / "g1-entries.json", entries),
         (disclosure / "tuning.json", entry.get("tuning")),
     ):
-        path.unlink(missing_ok=True)
         if value:
-            _write(path, value)
-    _publish_g1_archives(raw_g1, missing_archives)
+            _write(run_dir, path, value)
+        elif path.exists():
+            with artifact_output_dirs(run_dir, [path]) as directories:
+                os.unlink(path.name, dir_fd=directories[path.parent])
+    _publish_g1_archives(run_dir, raw_g1, missing_archives)
 
     summary = {
         "run_dir": str(run_dir),
@@ -709,7 +718,7 @@ def score_run_dir(
             for j, claims in judge_claims.items()
         },
         "judge_sensitive": g4_result.details.get("judge_sensitive", []),
-        "key_audit": {"audited": len(audited), "flagged": flagged},
+        "key_audit": audit,
         "claims_without_flagged_keys": None
         if without_flagged is None
         else {cid: {m: _claim(r) for m, r in by.items()} for cid, by in without_flagged.items()},
@@ -718,10 +727,10 @@ def score_run_dir(
         "pending_cells": pending,
         "diagnostics": diagnostics,
         "breakdowns": breakdowns,
-        "spend": _ledger_spend(grading, len(finals)),
+        "spend": ledger_spend(ledger_events, len(finals)),
         "disclosure": {"g1_files": copies},
     }
-    return _write(grading / "summary.json", summary)
+    return _write(run_dir, grading / "summary.json", summary)
 
 
 def _model_families(run_dir: Path) -> dict[str, dict[str, Any]]:
@@ -750,9 +759,18 @@ def _record_vote(record: Mapping[str, Any] | None) -> Vote | None:
 
 
 def _probe_record(
-    root: Path, *, target: str, judge: JudgeSpec, effort: str | None, pass_number: int, item_id: str
+    root: Path,
+    *,
+    target: str,
+    judge: JudgeSpec,
+    effort: str | None,
+    pass_number: int,
+    item_id: str,
+    request: JudgeInput | None = None,
+    question_id: str | None = None,
 ) -> dict[str, Any] | None:
-    record = chosen_record(
+    """Select the original producer's record, verifying any supplied judge request."""
+    selected = chosen_vote_file(
         root,
         target=target,
         judge_id=judge.id,
@@ -760,17 +778,44 @@ def _probe_record(
         pass_number=pass_number,
         item_id=item_id,
     )
-    if record is not None:
-        identity = {
-            "target": target,
-            "judge_id": judge.id,
-            "model_id": judge.model_id,
-            "effort": effort,
-            "pass": pass_number,
-            "item_id": item_id,
-        }
-        if any(record.get(k) != value for k, value in identity.items()):
-            raise BenchmarkValidationError(f"foreign vote record for {target}/{judge.id}/{item_id}")
+    if selected is None:
+        return None
+    record = selected[1]
+    identity = {
+        "target": target,
+        "judge_id": judge.id,
+        "model_id": judge.model_id,
+        "effort": effort,
+        "pass": pass_number,
+        "item_id": item_id,
+    }
+    if request is not None:
+        identity["input_sha256"] = request.sha256()
+    if any(
+        type(record.get(k)) is not type(v) or record.get(k) != v
+        for k, v in identity.items()
+    ):
+        raise BenchmarkValidationError(f"foreign vote record for {target}/{judge.id}/{item_id}")
+    if request is not None:
+        path = root / "items" / target / f"{item_id}.json"
+        try:
+            document = json_mapping(artifact_bytes(root, path), "calibration item")
+        except FileNotFoundError:
+            raise BenchmarkValidationError(
+                f"missing calibration input document for {target}/{item_id}; "
+                "legacy records without request proof cannot establish a verdict"
+            ) from None
+        expected = request.item_evidence(
+            {"question_id": question_id, "suspect": request.suspect}
+        )
+        if json.dumps(document, sort_keys=True) != json.dumps(expected, sort_keys=True):
+            raise BenchmarkValidationError(f"calibration input document differs for {item_id}")
+        if record.get("parsed") is not None:
+            raise BenchmarkValidationError(f"unexpected parsed calibration reply for {item_id}")
+        vote_from_record(
+            record, request=request,
+            result=recorded_result(root, record, judge, vote_sha256=selected[2]),
+        )
     return record
 
 
@@ -782,6 +827,8 @@ def _judge_score(
     probe: Probe,
     weights: Mapping[str, tuple[Weight, Weight]],
     pass_number: int = 1,
+    *,
+    request: JudgeInput,
 ) -> tuple[bool, float | None]:
     """(a record exists, the judge's score of the probe or None)."""
     record = _probe_record(
@@ -791,6 +838,8 @@ def _judge_score(
         effort=effort,
         pass_number=pass_number,
         item_id=probe.id,
+        request=request,
+        question_id=probe.question_id,
     )
     vote = _record_vote(record)
     score = None if vote is None else grade(vote.fields(), weights[probe.question_id])[0]
@@ -811,6 +860,7 @@ class _WorkspaceInputs:
     settings: dict[str, CapturedInput]
     panel: Panel
     tuning: CapturedInput
+    bodies: dict[str, bytes]
 
 
 def _workspace_inputs(
@@ -822,7 +872,9 @@ def _workspace_inputs(
 ) -> _WorkspaceInputs:
     meta = _workspace(workspace, kind)
     root = workspace / "inputs"
-    manifest, settings, _ = _frozen_inputs(root, criteria_path=criteria_path, panel_path=panel_path)
+    manifest, settings, bodies = _frozen_inputs(
+        root, criteria_path=criteria_path, panel_path=panel_path
+    )
     if meta.get("inputs") != manifest:
         raise BenchmarkValidationError("workspace metadata differs from its grading input manifest")
     tuning = CapturedInput.read(tuning_path, "tuning", "tuning questions")
@@ -835,7 +887,50 @@ def _workspace_inputs(
     ):
         raise BenchmarkValidationError("workspace tuning questions differ")
     panel = panel_from_mapping(settings["panel"].mapping, root / SNAPSHOT_FILES["panel"])
-    return _WorkspaceInputs(meta, settings, panel, tuning)
+    return _WorkspaceInputs(meta, settings, panel, tuning, bodies)
+
+
+def _workspace_requests(
+    workspace: Path,
+    inputs: _WorkspaceInputs,
+    probes: Sequence[Probe],
+    *,
+    tuning: bool = False,
+) -> dict[str, JudgeInput]:
+    """Reconstruct canonical stage-2 requests from the hash-bound input documents."""
+    system, schema = frozen_judge_document(
+        inputs.bodies["judge_prompt"], inputs.bodies["judge_schema"],
+    )
+    if tuning:
+        questions = tuning_questions_from_mapping(inputs.tuning.mapping)
+    else:
+        # Original stage-2 workspaces used the repository corpus, whose digest
+        # the frozen criteria pin. New producers also retain those exact bytes.
+        corpus = workspace / "inputs/corpus.yml"
+        if corpus.exists() or corpus.is_symlink():
+            body = artifact_bytes(workspace, corpus)
+        else:
+            body = read_input_bytes(CORPUS_PATH, "corpus", "calibration corpus")
+            if hashlib.sha256(body).hexdigest() != inputs.settings["criteria"].mapping.get(
+                "corpus_sha256"
+            ):
+                raise BenchmarkValidationError(
+                    "legacy calibration lacks a matching frozen corpus; "
+                    "cannot reconstruct probe requests or establish a verdict"
+                )
+        questions = criteria_from_mapping(
+            inputs.settings["criteria"].mapping,
+            workspace / "inputs" / SNAPSHOT_FILES["criteria"],
+            corpus_path=corpus, corpus_body=body, schema_path=CORPUS_SCHEMA_PATH,
+        )
+    requests = {}
+    for probe in probes:
+        if probe.question_id not in questions or probe.id != safe_id(probe.type, probe.question_id):
+            raise BenchmarkValidationError("invalid grading probe")
+        requests[probe.id] = render_judge_input(
+            questions[probe.question_id], probe.text, system=system, schema=schema,
+        )
+    return requests
 
 
 def assemble_workspace_probes(
@@ -849,6 +944,7 @@ def assemble_workspace_probes(
     schema_path: Path = CORPUS_SCHEMA_PATH,
 ) -> Path:
     """probe-build workspace: the generation and check votes plus code-built probes."""
+    check_output_paths(workspace, [workspace / "probes.yml"])
     inputs = _workspace_inputs(workspace, "probe-build", panel_path, criteria_path, tuning_path)
     panel = inputs.panel
     criteria = inputs.settings["criteria"]
@@ -953,10 +1049,12 @@ def write_tuning(
 ) -> Path:
     """tuning workspace: accuracy per judge per effort, and the lowest effort meeting G1's
     per-judge criteria (overall >= 0.90, zero INJ credit)."""
+    check_output_paths(workspace, [workspace / "tuning.json"])
     inputs = _workspace_inputs(workspace, "tuning", panel_path, criteria_path, tuning_path)
     suite, _ = _handoff_inputs(workspace, inputs)
     panel = inputs.panel
     probes = [p for p in suite.probes if p.set == "tuning"]
+    requests = _workspace_requests(workspace, inputs, probes, tuning=True)
     weights = {
         qid: q.weights for qid, q in tuning_questions_from_mapping(inputs.tuning.mapping).items()
     }
@@ -965,7 +1063,10 @@ def write_tuning(
         efforts: dict[str, Any] = {}
         for effort in panel.judges[judge_id].effort_levels:
             scored = [
-                _judge_score(workspace, "tuning", panel.judges[judge_id], effort, p, weights)
+                _judge_score(
+                    workspace, "tuning", panel.judges[judge_id], effort, p, weights,
+                    request=requests[p.id],
+                )
                 for p in probes
             ]
             if not any(exists for exists, _ in scored):
@@ -984,6 +1085,7 @@ def write_tuning(
         judges[judge_id] = {"efforts": efforts, "tried": list(efforts), "chosen": chosen}
     path = workspace / "tuning.json"
     _write(
+        workspace,
         path,
         {
             "workspace": str(workspace),
@@ -1001,45 +1103,27 @@ def write_tuning(
 def _probe_repeat(
     workspace: Path,
     probe: Probe,
-    judge: str,
+    judge: JudgeSpec,
     spec: Mapping[str, str | None],
     first: Mapping[str, Any] | None,
     first_score: float | None,
     weights: tuple[Weight, Weight],
+    request: JudgeInput,
 ) -> dict[str, Any] | None:
     """Select this judge's second take on the identical probe input."""
-    second = chosen_record(
+    second = _probe_record(
         workspace,
         target="probes",
-        judge_id=judge,
+        judge=judge,
         effort=spec.get("effort"),
         item_id=probe.id,
         pass_number=2,
+        request=request,
+        question_id=probe.question_id,
     )
     if second is None:
         return None
-    for number, record in ((1, first), (2, second)):
-        if record is None:
-            continue
-        expected = {
-            "target": "probes",
-            "judge_id": judge,
-            "effort": spec.get("effort"),
-            "item_id": probe.id,
-            "model_id": spec.get("model_id"),
-            "pass": number,
-        }
-        if any(record.get(k) != v for k, v in expected.items()):
-            raise BenchmarkValidationError(f"foreign probe retest record for {judge}/{probe.id}")
-    input_sha = second.get("input_sha256")
-    if (
-        not isinstance(input_sha, str)
-        or len(input_sha) != 64
-        or any(c not in "0123456789abcdef" for c in input_sha)
-    ):
-        raise BenchmarkValidationError(f"invalid probe retest input digest for {judge}/{probe.id}")
-    if first is not None and input_sha != first.get("input_sha256"):
-        raise BenchmarkValidationError(f"probe retest input differs for {judge}/{probe.id}")
+    input_sha = request.sha256()
     vote = _record_vote(second)
     return {
         "question_id": probe.question_id,
@@ -1129,10 +1213,12 @@ def write_g1(
 ) -> Path:
     """held-out workspace: G1 for its composition, the reference probe check, the dropped
     probes and the handed-off tuning evidence, as one entry of ``g1.json``."""
+    check_output_paths(workspace, [workspace / "g1.json"])
     inputs = _workspace_inputs(workspace, "held-out", panel_path, criteria_path, tuning_path)
     probe_file, evidence = _handoff_inputs(workspace, inputs)
     panel = inputs.panel
     held_out = [p for p in probe_file.probes if p.set == "held_out"]
+    requests = _workspace_requests(workspace, inputs, held_out)
     weights = {
         qid: (entries[0]["weight"], entries[1]["weight"])
         for qid, entries in inputs.settings["criteria"].mapping["questions"].items()
@@ -1154,6 +1240,8 @@ def write_g1(
                 effort=spec.get("effort"),
                 pass_number=1,
                 item_id=probe.id,
+                request=requests[probe.id],
+                question_id=probe.question_id,
             )
             vote = _record_vote(record)
             votes[judge_id] = vote
@@ -1163,11 +1251,12 @@ def write_g1(
             repeat = _probe_repeat(
                 workspace,
                 probe,
-                judge_id,
+                panel.judges[judge_id],
                 spec,
                 record,
                 judge_scores[judge_id][probe.id],
                 weights[probe.question_id],
+                requests[probe.id],
             )
             if repeat is not None:
                 repeats[judge_id][probe.id] = repeat
@@ -1188,7 +1277,10 @@ def write_g1(
     reference = panel.judges[panel.reference]
     subset = reference_subset(held_out, seed=probe_file.header["corpus_sha256"])
     scored = [
-        _judge_score(workspace, "reference-probes", reference, reference.effort, p, weights)
+        _judge_score(
+            workspace, "reference-probes", reference, reference.effort, p, weights,
+            request=requests[p.id],
+        )
         for p in subset
     ]
     check = None
@@ -1222,5 +1314,5 @@ def write_g1(
         "tuning": evidence,
     }
     path = workspace / "g1.json"
-    _write(path, {"entries": {composition_key(list(composition)): entry}})
+    _write(workspace, path, {"entries": {composition_key(list(composition)): entry}})
     return path

@@ -47,6 +47,16 @@ def _vote(run, judge="haiku"):
     return next((run / "grading/votes/answers" / judge / "low/pass1" / item).glob("*.json"))
 
 
+def _rebind_corrupt_vote(run, path, vote):
+    """Update the cached digest without regenerating the original provider receipt."""
+    _json(path, vote)
+    record = _read(_record(run))
+    record["grading"]["votes"][vote["judge_id"]]["sha256"] = hashlib.sha256(
+        path.read_bytes()
+    ).hexdigest()
+    _json(_record(run), record)
+
+
 def _regrade(run):
     """Persist scorer output after deliberately changing a recording's evidence."""
     root = run / "grading"
@@ -125,8 +135,9 @@ def test_altered_persisted_grade_is_unknown_and_not_public(recording, field, val
     _json(path, record)
     assert _RunMetadata(_load_run_bundle(recording)).grading == "unknown"
     assert "fewer normalized tokens" not in _readme(_validated(recording))
-    assert "grading provenance unknown" in _render(recording)
-    assert "## Correctness" in _render(recording)  # retain raw diagnostics
+    report = _render(recording)
+    assert "grading provenance unknown" in report
+    assert "## Correctness" in report  # retain raw diagnostics
 
 
 @pytest.mark.parametrize(
@@ -168,15 +179,7 @@ def test_chosen_evidence_must_match_recorded_content_and_selection(recording, mu
         record["grading"]["votes"]["haiku"]["input_sha256"] = "f" * 64
         _json(_record(recording), record)
     if mutation not in {"missing-panel", "newer-final", "source-hash", "source-meta"}:
-        _json(path, vote)
-        if mutation == "fields":
-            record = _read(_record(recording))
-            record["grading"]["votes"]["haiku"]["sha256"] = hashlib.sha256(
-                path.read_bytes()
-            ).hexdigest()
-            _json(_record(recording), record)
-        else:
-            _regrade(recording)  # refreshed hashes cannot bind inconsistent vote content
+        _rebind_corrupt_vote(recording, path, vote)
     assert _RunMetadata(_load_run_bundle(recording)).grading == "unknown"
 
 
@@ -323,8 +326,7 @@ def test_malformed_raw_vote_flags_are_not_live_evidence(recording, withheld, ter
     vote.update(withheld=withheld, terminal=terminal)
     if withheld is not None:
         vote["vote"] = None
-    _json(path, vote)
-    _regrade(recording)
+    _rebind_corrupt_vote(recording, path, vote)
     assert _RunMetadata(_load_run_bundle(recording)).grading == "unknown"
 
 
@@ -437,8 +439,7 @@ def test_numeric_stored_vote_cannot_impersonate_a_boolean_reply(recording):
     vote = _read(path)
     assert vote["vote"]["attempted"] is True
     vote["vote"]["attempted"] = 1
-    _json(path, vote)
-    _regrade(recording)
+    _rebind_corrupt_vote(recording, path, vote)
     assert _RunMetadata(_load_run_bundle(recording)).grading == "unknown"
 
 
