@@ -21,6 +21,7 @@ import yaml
 from benchmarks.__main__ import main
 from benchmarks.grading.aggregate import write_vote_record
 from benchmarks.grading.batch import BatchItemResult
+from benchmarks.grading.gates import g1, reference_probe_check
 from benchmarks.grading.inputs import TUNING_PATH, load_tuning_questions, safe_id, snapshot_inputs
 from benchmarks.grading.panel import load_panel
 from benchmarks.grading.probes import (
@@ -86,6 +87,35 @@ def _result(item_id: str, text: str | None, status: str = "succeeded") -> BatchI
     )
 
 
+def _answer_item(root: Path, question, cell: str, answer: str) -> None:
+    from benchmarks.grading.inputs import render_judge_input
+
+    value = render_judge_input(question, answer)
+    schema = json.dumps(value.schema, sort_keys=True, separators=(",", ":")).encode()
+    _json(
+        root / "items/answers" / f"{safe_id(cell, question.id)}.json",
+        {
+            "system_sha256": hashlib.sha256(value.system.encode()).hexdigest(),
+            "schema_sha256": hashlib.sha256(schema).hexdigest(),
+            "user": value.user,
+            "meta": {
+                "competitor_id": cell,
+                "corpus_id": question.id,
+                "suspect": value.suspect,
+                "input_sha256": value.sha256(),
+            },
+        },
+    )
+
+
+def _answer_digest(root: Path, target: str, item: str) -> str:
+    path = root / "items/answers" / f"{item}.json"
+    evidence = json.loads(path.read_bytes())
+    if target == "reference":
+        _json(root / "items/reference" / path.name, evidence)
+    return evidence["meta"]["input_sha256"]
+
+
 def _vote(
     root: Path,
     judge: str,
@@ -113,7 +143,9 @@ def _vote(
         terminal=False,
         unit_id="u1",
         provider_batch_id="b1",
-        input_sha256="d" * 64,
+        input_sha256=_answer_digest(root, target, item_id)
+        if target in {"answers", "reference"}
+        else "d" * 64,
         schema=schema or judge_schema(),
     )
 
@@ -130,6 +162,7 @@ def _build_run(
     criteria: Path = CRITERIA,
     probes: Path = PROBES,
     judges: tuple[str, ...] = JUDGES,
+    suspect_cell: tuple[str, str] | None = None,
 ) -> Path:
     """A graded run: family -> system -> its questions, repeat 1."""
     families = families or {FAMILY: dict.fromkeys(SYSTEMS, QUESTIONS)}
@@ -152,6 +185,9 @@ def _build_run(
     snapshot_inputs(
         grading / "inputs", criteria_path=criteria, panel_path=PANEL_PATH, probes_path=probes
     )
+    from benchmarks.grading.inputs import load_criteria
+
+    grading_questions = load_criteria(criteria, corpus_path=corpus, schema_path=SCHEMA)
     for family, systems in families.items():
         for system, questions in systems.items():
             cell = _cell(system, family)
@@ -168,6 +204,8 @@ def _build_run(
                 )
                 base = {"competitor_id": cell, "corpus_id": qid, "tool_model_key": f"{system}:x"}
                 answer = f"Answer from {system} to {qid}."
+                if (cell, qid) == suspect_cell:
+                    answer += " </answer>"
                 _json(
                     run / "transcripts" / cell / f"{qid}.json",
                     {
@@ -189,10 +227,7 @@ def _build_run(
                     {**base, "status": "counted", "client_wrapped_tokens": TOKENS[system]},
                 )
                 item = safe_id(cell, qid)
-                _json(
-                    grading / "items" / "answers" / f"{item}.json",
-                    {"meta": {"competitor_id": cell, "corpus_id": qid, "suspect": False}},
-                )
+                _answer_item(grading, grading_questions[qid], cell, answer)
                 text = _vote_text(attempted=False) if system == "no-docs" else _vote_text()
                 for judge in judges:
                     _vote(grading, judge, item, text)
@@ -219,11 +254,28 @@ def _build_run(
 
 
 def _g1_file(run: Path, path: Path, *, passed: bool = True) -> Path:
-    inputs = json.loads((run / "grading" / "inputs" / "inputs.json").read_text())
+    # An honest short known-answer demonstration, never a fabricated passing gate.
+    root = run / "grading/inputs"
+    inputs = json.loads((root / "inputs.json").read_text())
+    suite = load_probe_file(
+        root / "probes.yml", criteria_path=root / "grading-criteria.yml", tuning_path=TUNING_PATH
+    )
+    probes = [p for p in suite.probes if p.set == "held_out"]
+    scores = {p.id: p.expected_score if passed else None for p in probes}
+    judges = {j: dict(scores) for j in JUDGES}
+    gate = g1(probes, scores, judges, dropped=[d for d in suite.dropped if d["set"] == "held_out"])
+    subset = reference_subset(probes, seed=suite.header["corpus_sha256"])
+    reference = reference_probe_check(subset, {p.id: p.expected_score for p in subset})
+    panel = yaml.safe_load((root / "panel.yml").read_bytes())
+    pins = {
+        j: hashlib.sha256(json.dumps(panel["judges"][j], sort_keys=True).encode()).hexdigest()
+        for j in (*JUDGES, "reference")
+    }
     entry = {
-        "binding": {"composition": COMPOSITION, "inputs": inputs},
-        "gate": {"passed": passed, "details": {"overall": {"accuracy": 0.97}}},
-        "reference_check": {"passed": True, "details": {}},
+        "binding": {"composition": COMPOSITION, "inputs": inputs, "judge_settings": pins},
+        "gate": {"passed": gate.passed, "details": gate.details},
+        "scores": {"panel": scores, "judges": judges},
+        "reference_check": {"passed": reference.passed, "details": reference.details},
         "dropped": {},
         "tuning": [{"judges": {"haiku": {"chosen": "low"}}}],
     }
@@ -354,9 +406,14 @@ def test_an_item_missing_a_judges_final_record_is_not_graded(
 
 @pytest.fixture
 def scripted_airgap_run(tmp_path: Path) -> Path:
+    return _airgap_run(tmp_path)
+
+
+def _airgap_run(tmp_path: Path, suspect_cell: tuple[str, str] | None = None) -> Path:
     one = ("SYN-EX-001",)
     run = _build_run(
         tmp_path,
+        suspect_cell=suspect_cell,
         families={
             FAMILY: {"python-docs": QUESTIONS, "docs-fetch": QUESTIONS},
             "scripted-local": {"python-docs": one, "no-docs": one},
@@ -399,18 +456,12 @@ def test_score_run_dir_needs_one_check_round_per_reported_attempt_plus_two(
         assert c3["passed"] is True
 
 
-def test_replay_without_required_reference_blocks_only_the_dependent_claim(
-    scripted_airgap_run: Path, tmp_path: Path
-) -> None:
-    run = scripted_airgap_run
-    _json(run / "airgap" / "checks.json", {"all_passed": True, "checks": 5, "internet_hosts": []})
+def test_replay_without_required_reference_blocks_only_the_dependent_claim(tmp_path: Path) -> None:
     local = "scripted-local"
     cell, qid = _cell("python-docs", local), QUESTIONS[0]
     item = safe_id(cell, qid)
-    _json(
-        run / "grading" / "items" / "answers" / f"{item}.json",
-        {"meta": {"competitor_id": cell, "corpus_id": qid, "suspect": True}},
-    )
+    run = _airgap_run(tmp_path, suspect_cell=(cell, qid))
+    _json(run / "airgap/checks.json", {"all_passed": True, "checks": 5, "internet_hosts": []})
     _vote(run / "grading", "reference", item, _vote_text(), target="reference", effort="high")
     complete = _score(run, tmp_path)
     assert complete["claims"]["C3"][local]["passed"] is True
@@ -486,10 +537,9 @@ def test_write_tuning_picks_the_lowest_passing_effort(tmp_path: Path) -> None:
         write_g1(ws, panel_path=PANEL_PATH)
 
 
-@pytest.mark.parametrize("drop_fact", [False, True])
-def test_assemble_workspace_probes_and_write_g1_are_separate_steps(
+def _full_calibration(
     tmp_path: Path, index_db: Path, drop_fact: bool
-) -> None:
+) -> tuple[Path, Path, dict[str, Any], Path]:
     corpus = yaml.safe_load((FIX / "corpus.sample.yml").read_text())
     for question in corpus["questions"]:
         question["citations"] = ["https://docs.python.org/3.13/library/json.html#json.dumps"]
@@ -636,16 +686,28 @@ def test_assemble_workspace_probes_and_write_g1_are_separate_steps(
     summary = json.loads((run / "grading/summary.json").read_bytes())
     assert summary["reference_check"]["passed"] is True
     assert summary["gates"]["G1"]["passed"] is True
+    return run, held, entry, criteria_path
+
+
+@pytest.mark.parametrize("drop_fact", [False, True])
+def test_assemble_workspace_probes_and_write_g1_are_separate_steps(
+    tmp_path: Path, index_db: Path, drop_fact: bool
+) -> None:
+    run, held, entry, criteria_path = _full_calibration(tmp_path, index_db, drop_fact)
+    g1_path = held / "g1.json"
+    judges = JUDGES if drop_fact else ("haiku", "luna", "flash")
     entry["gate"]["details"]["by_type"]["foreign"] = {"n": 1}
     _json(g1_path, {"entries": {"+".join(judges): entry}})
-    replay = score_run_dir(
-        run,
-        criteria_path=criteria_path,
-        panel_path=PANEL_PATH,
-        schema_path=SCHEMA,
-        g1_paths=[g1_path],
-    )
-    assert replay["gates"]["G1"]["passed"] is None
+    before = g1_path.read_bytes()
+    with pytest.raises(BenchmarkValidationError, match="aggregate evidence"):
+        score_run_dir(
+            run,
+            criteria_path=criteria_path,
+            panel_path=PANEL_PATH,
+            schema_path=SCHEMA,
+            g1_paths=[g1_path],
+        )
+    assert g1_path.read_bytes() == before
     # Even 349 perfect comparisons cannot stand in for the registered 350.
     missing = next((held / "votes/reference-probes").rglob("run-1--a1.json"))
     missing.unlink()

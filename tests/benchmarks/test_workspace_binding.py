@@ -166,6 +166,19 @@ def test_workspace_vote_requires_the_frozen_judge_model(
 
 
 def _replace_after_open(monkeypatch, source, replacement):
+    if source.parent.name == "inputs":
+        from benchmarks.grading import score
+
+        capture = score.artifact_bytes
+
+        def swap_after_capture(root, path):
+            body = capture(root, path)
+            if path == source and replacement.exists():
+                replacement.replace(path)
+            return body
+
+        monkeypatch.setattr(score, "artifact_bytes", swap_after_capture)
+        return
     original_open = Path.open
 
     def swap(path, *args, **kwargs):

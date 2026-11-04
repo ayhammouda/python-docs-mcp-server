@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal, TypeGuard
 
-from benchmarks.agentic.inputs import read_json
+from benchmarks.agentic.inputs import json_mapping, read_json
 from benchmarks.grading.panel import Panel, composition_key
 from benchmarks.grading.probes import (
     HELD_OUT_QUESTIONS,
@@ -36,7 +36,7 @@ from benchmarks.grading.stats import (
     tokens_per_correct,
     wilson,
 )
-from benchmarks.report_files import optional_json
+from benchmarks.report_files import artifact_bytes, artifact_paths, optional_json
 from benchmarks.runner import BenchmarkValidationError
 
 CellKey = tuple[str, str, str, int]  # (system_id, model_family_id, corpus_id, repeat)
@@ -212,8 +212,8 @@ def pass1_composition(
     """The composition (judge -> model id and effort) of every pass-1 run of ``target`` under
     ``root/runs``; runs that disagree are refused."""
     compositions = []
-    for path in sorted((root / "runs").glob("*.json")):
-        run = read_json(path, "grading invocation")
+    for path in artifact_paths(root, root / "runs", "*.json"):
+        run = json_mapping(artifact_bytes(root, path), "grading invocation")
         if run.get("target") == target and run.get("pass") == 1:
             if not isinstance(run.get("composition"), dict) or not run["composition"]:
                 raise BenchmarkValidationError(f"{root}: pass-1 {target} run has no composition")
@@ -622,6 +622,111 @@ def offline_verdict(
     return OfflineVerdict(ok, denied)
 
 
+@dataclass(frozen=True)
+class RunOfflineEvidence:
+    """Current exported evidence shared by scoring, publication and diagnostics."""
+
+    verdict: OfflineVerdict
+    expected_checks: int | None
+    airgap_jobs: list[str]
+    host_checks: OfflineEvidence | None
+    isolation_probe: str
+    internet_hosts: list[str]  # observed reached hosts, never denied attempts
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "ok": self.verdict.ok,
+            "expected_checks": self.expected_checks,
+            "airgap_jobs": self.airgap_jobs,
+            "denied_attempts": self.verdict.denied_attempts,
+        }
+
+
+def run_offline_evidence(
+    run_dir: Path, families: Mapping[str, Mapping[str, Any]]
+) -> RunOfflineEvidence:
+    """Rederive C3 offline status from raw files, never a cached grading summary.
+
+    The host checks once before the arm, after every trajectory or discard (failed
+    attempts included), and once after the arm. Discard ownership comes from its
+    planned cell directory, as in the collector, not optional transcript metadata.
+    """
+    local = {fid for fid, spec in families.items() if spec.get("arm") == "air-gapped"}
+    cells = (read_evidence_json(run_dir, "planned-cells.json") or {}).get("cells")
+    owners: dict[str, str] = {}
+    coordinates: set[tuple[str, str]] = set()
+    jobs: set[str] = set()
+    valid = isinstance(cells, list) and bool(cells)
+    for cell in cells if isinstance(cells, list) else []:
+        if not isinstance(cell, dict) or any(
+            not isinstance(cell.get(field), str) or not cell[field].strip()
+            for field in ("cell", "model_family_id", "system_id", "corpus_id")
+        ):
+            valid = False
+            continue
+        family, system, name = cell["model_family_id"], cell["system_id"], cell["cell"]
+        repeat = cell.get("repeat")
+        coord = (name, cell["corpus_id"])
+        if (
+            family not in families
+            or type(repeat) is not int
+            or repeat < 1
+            or name != f"{system}--{family}--r{repeat}"
+            or coord in coordinates
+            or cell.get("competitor_id", name) != name
+        ):
+            valid = False
+        coordinates.add(coord)
+        owners[name] = family
+        if family in local:
+            jobs.add(f"{family}--{system}")
+    attempts = 0
+    for kind in ("transcripts", "discarded"):
+        for path in artifact_paths(run_dir, run_dir / kind, "*/*.json"):
+            owner = owners.get(path.parent.name)
+            if owner is None:
+                valid = False
+            if owner not in local:
+                continue
+            attempts += 1
+            record = optional_json(run_dir, path)
+            if record is None or record.get("model_family_id", owner) != owner:
+                valid = False
+    expected = attempts + 2 if valid and jobs and attempts else None
+    airgap_jobs = sorted(jobs)
+    raw_egress = read_evidence_json(run_dir, "egress/summary.json")
+    egress = egress_from_mapping(raw_egress)
+    observed = egress_from_mapping(raw_egress, partial=True) or {}
+    observed_jobs = observed.get("jobs", {})
+    denied = [
+        {"job_id": job, "host": host}
+        for job in airgap_jobs
+        for host in observed_jobs.get(job, {}).get("hosts_denied", [])
+    ]
+    evidence = load_offline_evidence(run_dir)
+    reached = {
+        host
+        for job in airgap_jobs
+        for host in observed_jobs.get(job, {}).get("hosts_allowed", [])
+        if host != OLLAMA_HOST
+    }
+    if evidence is not None:
+        reached.update(evidence.internet_hosts)
+    verdict = (
+        offline_verdict(evidence, egress, expected_checks=expected, airgap_jobs=airgap_jobs)
+        if expected is not None
+        else OfflineVerdict(None, [])
+    )
+    return RunOfflineEvidence(
+        OfflineVerdict(verdict.ok, denied),
+        expected,
+        airgap_jobs,
+        evidence,
+        observed.get("isolation_probe", "unknown"),
+        sorted(reached),
+    )
+
+
 def c3(
     scores: Mapping[CellKey, float | None],
     planned: set[CellKey],
@@ -852,6 +957,6 @@ def load_offline_evidence(run_dir: Path) -> OfflineEvidence | None:
     )
     if not isinstance(all_passed, bool) or isinstance(checks, bool) or not isinstance(checks, int):
         return None
-    if not _strings(hosts):
+    if checks < 0 or not _strings(hosts) or any(not host.strip() for host in hosts):
         return None
     return OfflineEvidence(all_passed, checks, list(hosts))

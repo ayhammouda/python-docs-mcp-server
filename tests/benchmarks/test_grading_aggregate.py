@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,13 @@ from benchmarks.grading.aggregate import (
     write_vote_record,
 )
 from benchmarks.grading.batch import BatchItemResult
-from benchmarks.grading.inputs import Criterion, GradingQuestion, judge_schema, safe_id
+from benchmarks.grading.inputs import (
+    Criterion,
+    GradingQuestion,
+    judge_schema,
+    render_judge_input,
+    safe_id,
+)
 from benchmarks.grading.mapping import Vote
 from benchmarks.grading.panel import PANEL_PATH, load_panel
 
@@ -51,6 +58,12 @@ QUESTION = GradingQuestion(
 )
 COMPETITOR = "python-docs--claude-sonnet-5-5--r1"
 ITEM = safe_id(COMPETITOR, "EX-001")
+
+
+def _request(corpus_id: str = QUESTION.id, *, suspect: bool = False):
+    question = replace(QUESTION, id=corpus_id)
+    answer = f"Answer to {corpus_id}." + (" </answer>" if suspect else "")
+    return render_judge_input(question, answer)
 
 
 def _text(**fields: bool) -> str:
@@ -94,6 +107,16 @@ def _write(
     judge = PANEL.judges[judge_id]
     if effort is None:
         effort = judge.effort if target == "reference" else EFFORTS.get(judge_id)
+    digest = _request().sha256()
+    for path in (root / "items/answers").glob("*.json"):
+        if path.stem == result.item_id:
+            evidence = json.loads(path.read_bytes())
+            digest = evidence["meta"]["input_sha256"]
+            if target == "reference":
+                ref_path = root / "items/reference" / path.name
+                ref_path.parent.mkdir(parents=True, exist_ok=True)
+                ref_path.write_bytes(path.read_bytes())
+            break
     return write_vote_record(
         root,
         target=target,
@@ -106,7 +129,7 @@ def _write(
         terminal=terminal,
         unit_id="unit-1",
         provider_batch_id="batch-1",
-        input_sha256="c" * 64,
+        input_sha256=digest,
         schema=judge_schema(),
     )
 
@@ -122,11 +145,21 @@ def _item(
     path = root / "items" / "answers" / f"{item_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     meta = {"competitor_id": competitor, "corpus_id": corpus_id, "suspect": suspect}
-    path.write_text(json.dumps({"meta": meta}), encoding="utf-8")
+    evidence = _request(corpus_id, suspect=suspect).item_evidence(meta)
+    path.write_text(json.dumps(evidence), encoding="utf-8")
 
 
 def _votes(root: Path) -> AnswerVotes:
-    return load_answer_votes(root, panel=PANEL, judges=EFFORTS)[(COMPETITOR, "EX-001")]
+    key = COMPETITOR, "EX-001"
+    meta = json.loads((root / "items/answers" / f"{ITEM}.json").read_bytes())["meta"]
+    return load_answer_votes(
+        root,
+        panel=PANEL,
+        judges=EFFORTS,
+        requests={
+            key: _request(suspect=meta["suspect"]),
+        },
+    )[key]
 
 
 def test_withheld_reasons_in_order() -> None:
@@ -229,7 +262,7 @@ def test_vote_paths_keep_every_effort_attempt_and_invocation(tmp_path: Path) -> 
         "none",
         1,
     )
-    assert record["input_sha256"] == "c" * 64 and record["terminal"] is False
+    assert record["input_sha256"] == _request().sha256() and record["terminal"] is False
     assert set(record) == {
         "item_id",
         "target",
@@ -366,14 +399,14 @@ def test_provenance_traces_every_input(tmp_path: Path) -> None:
     assert final is not None
     for rec in final["grading"]["votes"].values():
         assert hashlib.sha256(Path(rec["path"]).read_bytes()).hexdigest() == rec["sha256"]
-        assert rec["attempts"] == 1 and rec["input_sha256"] == "c" * 64
+        assert rec["attempts"] == 1 and rec["input_sha256"] == _request().sha256()
     assert final["grading"]["inputs"] == MANIFEST and final["adjudicator"] == [
         "claude-haiku-5-5",
         "gpt-6-luna",
         "gemini-3.1-flash-lite",
     ]
     assert final["grading"]["item_id"] == ITEM and final["grading"]["pass"] == 1
-    assert final["grading"]["input_sha256"] == "c" * 64
+    assert final["grading"]["input_sha256"] == _request().sha256()
 
 
 def test_judge_grade_uses_the_final_grade_when_the_judge_withheld(tmp_path: Path) -> None:
@@ -397,7 +430,11 @@ def test_load_answer_votes_reads_every_answer_item(tmp_path: Path) -> None:
     other = safe_id("no-docs--gpt-6_1-sol--r2", "EX-002")
     _item(root, item_id=other, corpus_id="EX-002", competitor="no-docs--gpt-6.1-sol--r2")
     _write(root, "haiku", _result(_text(), item_id=other))
-    loaded = load_answer_votes(root, panel=PANEL, judges=EFFORTS)
+    requests = {
+        (COMPETITOR, "EX-001"): _request(),
+        ("no-docs--gpt-6.1-sol--r2", "EX-002"): _request("EX-002"),
+    }
+    loaded = load_answer_votes(root, panel=PANEL, judges=EFFORTS, requests=requests)
     assert set(loaded) == {(COMPETITOR, "EX-001"), ("no-docs--gpt-6.1-sol--r2", "EX-002")}
     assert loaded[(COMPETITOR, "EX-001")].votes == {"haiku": None, "luna": None, "flash-lite": None}
     assert isinstance(loaded[("no-docs--gpt-6.1-sol--r2", "EX-002")].votes["haiku"], Vote)

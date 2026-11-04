@@ -38,6 +38,17 @@ def _files(run: Path) -> dict[Path, bytes]:
     return {p.relative_to(run): p.read_bytes() for p in run.rglob("*") if p.is_file()}
 
 
+def _fallback_evidence(entry: dict, run: Path) -> None:
+    """The fallback owns its judge evidence and portable runtime settings."""
+    entry["scores"]["judges"]["flash"] = entry["scores"]["judges"].pop("flash-lite")
+    by_judge = entry["gate"]["details"]["by_judge"]
+    by_judge["flash"] = by_judge.pop("flash-lite")
+    pins = entry["binding"]["judge_settings"]
+    del pins["flash-lite"]
+    settings = yaml.safe_load((run / "grading/inputs/panel.yml").read_bytes())["judges"]["flash"]
+    pins["flash"] = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
+
+
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize("conflict", ["verdict", "provenance"])
 def test_conflicting_entries_refused_before_any_write(
@@ -85,7 +96,9 @@ def test_unpinned_legacy_probes_cannot_validate_either_gate(
     runs._json(manifest, inputs)
     (manifest.parent / "probes.yml").unlink()
     if not entry_is_pinned:
-        runs._g1_file(run, path)
+        data = json.loads(path.read_bytes())
+        data["entries"][PRIMARY]["binding"]["inputs"] = inputs
+        runs._json(path, data)
     before = _files(run)
     with pytest.raises(SystemExit) as refused:
         _score(run, path)
@@ -96,6 +109,25 @@ def test_unpinned_legacy_probes_cannot_validate_either_gate(
     assert summary["gates"]["G1"]["passed"] is None
     assert summary["reference_check"]["passed"] is None
     assert not (run / "grading/disclosure/g1-entries.json").exists()
+
+
+def test_corrupt_g1_archive_refuses_replay_before_changing_outputs(
+    run: Path, tmp_path: Path
+) -> None:
+    primary = runs._g1_file(run, tmp_path / "primary.json")
+    assert _score(run, primary) == 0
+    grading = run / "grading"
+    summary = json.loads((grading / "summary.json").read_bytes())
+    archived = grading / summary["disclosure"]["g1_files"][0]["path"]
+    archived.write_bytes(b"unrelated archive contents")
+    cell = next((run / "scoring").glob("*/*.json"))
+    runs._json(cell, {**json.loads(cell.read_bytes()), "score": 0.125})
+    before = _files(run)
+
+    with pytest.raises(SystemExit) as refused:
+        _score(run, primary)
+    assert refused.value.code == 2
+    assert _files(run) == before
 
 
 def test_rescore_publishes_only_current_g1_evidence(run: Path, tmp_path: Path) -> None:
@@ -109,12 +141,12 @@ def test_rescore_publishes_only_current_g1_evidence(run: Path, tmp_path: Path) -
         "model_id": runs.PANEL.judges["flash"].model_id,
         "effort": "low",
     }
-    entry["gate"]["passed"] = False
+    _fallback_evidence(entry, run)
     runs._json(fallback, {"entries": {FALLBACK: entry}})
     assert _score(run, fallback, primary) == 0
     summary = json.loads((grading / "summary.json").read_bytes())
     assert summary["gates"]["G1"]["passed"] is None
-    assert summary["gates"]["G1"]["details"]["overall"]["accuracy"] == 0.97
+    assert summary["gates"]["G1"]["details"]["overall"]["accuracy"] == 1.0
     assert summary["reference_check"]["passed"] is None
     assert summary["reference_check"]["details"]["overall"]["n"] == 28
     entries_file = disclosure / "g1-entries.json"
@@ -164,7 +196,7 @@ def test_fallback_uses_recorded_efforts_and_its_own_reference_check(
     composition = entry["binding"]["composition"]
     del composition["flash-lite"]
     composition["flash"] = {"model_id": runs.PANEL.judges["flash"].model_id, "effort": "medium"}
-    entry["gate"]["passed"] = False
+    _fallback_evidence(entry, run)
     fallback = tmp_path / "fallback.json"
     runs._json(fallback, {"entries": {FALLBACK: entry}})
 
@@ -179,7 +211,8 @@ def test_fallback_uses_recorded_efforts_and_its_own_reference_check(
     summary = json.loads((grading / "summary.json").read_bytes())
     assert summary["composition"] == FALLBACK
     assert summary["efforts"]["flash"] == "medium" and summary["pending_cells"] == []
-    assert summary["gates"]["G1"]["passed"] is False
+    assert summary["gates"]["G1"]["passed"] is None
+    assert "held-out slots" in summary["gates"]["G1"]["details"]["reason"]
     assert summary["reference_check"]["passed"] is None
     assert summary["reference_check"]["details"]["overall"]["n"] == 28
 
@@ -202,7 +235,7 @@ def test_unregistered_pass1_composition_cannot_register_itself(run: Path, tmp_pa
 def test_duplicate_json_member_cannot_hide_a_second_verdict(run: Path, tmp_path: Path) -> None:
     path = runs._g1_file(run, tmp_path / "g1.json")
     path.write_bytes(
-        path.read_bytes().replace(b'"passed": true', b'"passed": false, "passed": true', 1)
+        path.read_bytes().replace(b'"passed": null', b'"passed": false, "passed": null', 1)
     )
     before = _files(run)
     with pytest.raises(SystemExit) as refused:

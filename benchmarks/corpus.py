@@ -63,7 +63,9 @@ class CorpusValidationResult:
         return len(self.questions)
 
 
-def validate_corpus(corpus_path: Path, schema_path: Path) -> CorpusValidationResult:
+def validate_corpus(
+    corpus_path: Path, schema_path: Path, *, corpus_data: dict[str, Any] | None = None
+) -> CorpusValidationResult:
     """Validate ``corpus_path`` against ``schema_path``.
 
     Raises ``BenchmarkValidationError`` with a clean, non-traceback message on
@@ -78,7 +80,8 @@ def validate_corpus(corpus_path: Path, schema_path: Path) -> CorpusValidationRes
     allowed_categories = _allowed_categories(question_schema)
     expected_distribution = _category_distribution(schema, allowed_categories)
 
-    corpus_data = _load_corpus(corpus_path)
+    if corpus_data is None:
+        corpus_data = _load_corpus(corpus_path)
     items = corpus_data.get("questions")
     if not isinstance(items, list) or not items:
         raise BenchmarkValidationError(

@@ -119,7 +119,7 @@ def test_raw_g1_digest_and_copy_use_the_original_bytes(
     assert reads == 1
     gate = summary["gates"]["G1"]
     assert gate["passed"] is None  # The original entry describes a partial fixture.
-    assert gate["details"]["overall"]["accuracy"] == 0.97
+    assert gate["details"]["overall"]["accuracy"] == 1.0
     copy = f"disclosure/g1/{digest}.json"
     assert summary["disclosure"]["g1_files"] == [
         {"source": str(path), "path": copy, "sha256": digest}

@@ -17,12 +17,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from benchmarks.agentic.inputs import json_mapping, read_json
 from benchmarks.agentic.protocol import assert_no_key_shaped_json, scanned_json_bytes
 from benchmarks.agentic.run import OUTPUT_CAP_STOPS
 from benchmarks.grading.batch import BatchItemResult
-from benchmarks.grading.inputs import VOTE_FIELDS, GradingQuestion
+from benchmarks.grading.inputs import VOTE_FIELDS, GradingQuestion, JudgeInput, safe_id
 from benchmarks.grading.mapping import Vote, grade, panel_fields, parse_object, parse_vote
 from benchmarks.grading.panel import JudgeSpec, Panel
+from benchmarks.report_files import artifact_bytes, artifact_paths
 from benchmarks.runner import BenchmarkValidationError
 
 Withheld = Literal["parse_failure", "refusal", "output_cap", "errored", "expired", "canceled",
@@ -138,25 +140,46 @@ def is_final(record: Mapping[str, Any]) -> bool:
 
 
 def read_vote_record(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return read_json(path, "grading vote")
 
 
-def _records(root: Path, **where: Any) -> list[tuple[Path, dict[str, Any]]]:
-    found = [(p, read_vote_record(p)) for p in vote_dir(root, **where).glob("*.json")]
-    found.sort(key=lambda pr: (pr[1]["graded_at"], pr[1]["grading_run_id"], pr[1]["attempt"]))
+VoteFile = tuple[Path, dict[str, Any], str]
+
+
+def _records(root: Path, **where: Any) -> list[VoteFile]:
+    found = []
+    for path in artifact_paths(root, vote_dir(root, **where), "*.json"):
+        body = artifact_bytes(root, path)
+        found.append((path, json_mapping(body, "grading vote"), hashlib.sha256(body).hexdigest()))
     return found
 
 
-def _chosen(root: Path, **where: Any) -> tuple[Path, dict[str, Any]] | None:
-    records = _records(root, **where)
-    finals = [pr for pr in records if is_final(pr[1])]
-    return (finals or records or [None])[-1]
+def record_order(path: Path, record: Mapping[str, Any]) -> tuple[bool, str, str, int]:
+    when, run, attempt = (
+        record.get("graded_at"),
+        record.get("grading_run_id"),
+        record.get("attempt"),
+    )
+    if (
+        not isinstance(when, str)
+        or not isinstance(run, str)
+        or type(attempt) is not int
+        or attempt < 1
+    ):
+        raise BenchmarkValidationError("grading vote lacks its selection coordinates")
+    if path.name != f"{run}--a{attempt}.json":
+        raise BenchmarkValidationError("grading vote differs from its run or attempt coordinate")
+    return is_final(record), when, run, attempt
+
+
+def _chosen(records: list[VoteFile]) -> VoteFile | None:
+    return max(records, key=lambda pr: record_order(pr[0], pr[1]), default=None)
 
 
 def chosen_record(
     root: Path, *, target: str, judge_id: str, effort: str | None, pass_number: int, item_id: str
 ) -> dict[str, Any] | None:
-    chosen = _chosen(
+    records = _records(
         root,
         target=target,
         judge_id=judge_id,
@@ -164,6 +187,7 @@ def chosen_record(
         pass_number=pass_number,
         item_id=item_id,
     )
+    chosen = _chosen(records)
     return None if chosen is None else chosen[1]
 
 
@@ -178,7 +202,7 @@ def has_final_record(
         pass_number=pass_number,
         item_id=item_id,
     )
-    return any(is_final(record) for _, record in records)
+    return any(is_final(record) for _, record, _ in records)
 
 
 def total_attempts(
@@ -186,7 +210,6 @@ def total_attempts(
 ) -> int:
     """Takes across invocations: per run id, the highest ``attempt`` from its vote records
     and its ``runs/<id>.json`` ``not_run[]`` entries (takes that left no vote file)."""
-    highest: dict[str, int] = {}
     where = {
         "target": target,
         "judge_id": judge_id,
@@ -194,11 +217,25 @@ def total_attempts(
         "pass_number": pass_number,
         "item_id": item_id,
     }
-    for _, record in _records(root, **where):
+    return _attempts(root, _records(root, **where), **where)
+
+
+def _attempts(
+    root: Path,
+    records: list[VoteFile],
+    *,
+    target: str,
+    judge_id: str,
+    effort: str | None,
+    pass_number: int,
+    item_id: str,
+) -> int:
+    highest: dict[str, int] = {}
+    for _, record, _ in records:
         run = record["grading_run_id"]
         highest[run] = max(highest.get(run, 0), int(record["attempt"]))
-    for path in sorted((root / "runs").glob("*.json")):
-        run_file = json.loads(path.read_text(encoding="utf-8"))
+    for path in artifact_paths(root, root / "runs", "*.json"):
+        run_file = json_mapping(artifact_bytes(root, path), "grading invocation")
         for entry in run_file.get("not_run") or []:
             if (
                 entry.get("item_id") == item_id
@@ -225,7 +262,15 @@ class AnswerVotes:
 
 
 def _summary(
-    root: Path, path: Path, record: dict[str, Any], *, judge: JudgeSpec, **where: Any
+    root: Path,
+    path: Path,
+    record: dict[str, Any],
+    record_sha: str,
+    candidates: list[VoteFile],
+    *,
+    judge: JudgeSpec,
+    request: JudgeInput | None,
+    **where: Any,
 ) -> dict[str, Any]:
     expected = {
         "judge_id": judge.id,
@@ -235,31 +280,82 @@ def _summary(
         "target": where["target"],
         "item_id": where["item_id"],
     }
+    if request is not None:
+        expected["input_sha256"] = request.sha256()
     for field, value in expected.items():
-        if record.get(field) != value:
+        if field not in record or type(record[field]) is not type(value) or record[field] != value:
             raise BenchmarkValidationError(
-                f"{judge.id} vote differs from scoring inputs at {field}"
+                f"{where['item_id']} {where['target']} {judge.id} pass {where['pass_number']} "
+                f"vote differs from scoring inputs at {field}"
             )
     return {
         "path": str(path),
-        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "sha256": record_sha,
+        "final": is_final(record),
         "model_id": record["model_id"],
         "reported_model": record["reported_model"],
         "effort": record["effort"],
         "withheld": record["withheld"],
         "terminal": record["terminal"],
         "input_sha256": record["input_sha256"],
-        "attempts": total_attempts(root, **where),
+        "attempts": _attempts(root, candidates, **where),
     }
 
 
-def _vote_of(record: Mapping[str, Any]) -> Vote | None:
+def vote_from_record(record: Mapping[str, Any], *, request: JudgeInput | None) -> Vote | None:
     vote = record.get("vote")
-    return None if record.get("withheld") is not None or vote is None else Vote(**vote)
+    if request is not None:
+        withheld = record.get("withheld")
+        status = record.get("status")
+        if (
+            type(record.get("terminal")) is not bool
+            or status not in ("succeeded", "errored", "expired", "canceled", "missing")
+            or withheld not in (
+                None, "parse_failure", "refusal", "output_cap", "errored", "expired",
+                "canceled", "missing",
+            )
+        ):
+            raise BenchmarkValidationError("invalid judge vote flags")
+        parsed = None
+        text = record.get("text")
+        if text is not None and not isinstance(text, str):
+            raise BenchmarkValidationError("invalid judge reply text")
+        try:
+            reply = parse_object(text, request.schema)
+        except (TypeError, KeyError, AttributeError):
+            raise BenchmarkValidationError("invalid frozen judge schema") from None
+        if withheld is None:
+            if status != "succeeded" or record.get("stop_reason") in OUTPUT_CAP_STOPS:
+                raise BenchmarkValidationError("missing successful judge reply")
+            parsed = reply
+            if parsed is None:
+                raise BenchmarkValidationError("invalid judge reply")
+        elif (
+            (withheld == "parse_failure" and (status != "succeeded" or reply is not None))
+            or (withheld == "output_cap" and record.get("stop_reason") not in OUTPUT_CAP_STOPS)
+            or (withheld in ("errored", "expired", "canceled", "missing") and status != withheld)
+        ):
+            raise BenchmarkValidationError("withheld reason differs from judge reply")
+        # JSON equality distinguishes booleans from 0/1 in persisted fields.
+        if json.dumps(parsed, sort_keys=True) != json.dumps(vote, sort_keys=True):
+            raise BenchmarkValidationError("stored vote differs from its judge reply")
+        vote = parsed
+    if record.get("withheld") is not None or vote is None:
+        return None
+    try:
+        return Vote(**vote)
+    except TypeError:
+        raise BenchmarkValidationError("invalid stored judge vote") from None
 
 
 def load_answer_votes(
-    root: Path, *, panel: Panel, judges: Mapping[str, str | None], pass_number: int = 1
+    root: Path,
+    *,
+    panel: Panel,
+    judges: Mapping[str, str | None],
+    pass_number: int = 1,
+    requests: Mapping[tuple[str, str], JudgeInput] | None = None,
+    include_reference: bool = True,
 ) -> dict[tuple[str, str], AnswerVotes]:
     """Every answer item under ``items/answers/``, with each judge's chosen record.
 
@@ -268,9 +364,27 @@ def load_answer_votes(
     """
     reference = panel.judges[panel.reference]
     loaded: dict[tuple[str, str], AnswerVotes] = {}
-    for item_path in sorted((root / "items" / "answers").glob("*.json")):
-        meta = json.loads(item_path.read_text(encoding="utf-8"))["meta"]
+    for item_path in artifact_paths(root, root / "items/answers", "*.json"):
+        evidence = json_mapping(artifact_bytes(root, item_path), "answer item")
+        meta = evidence.get("meta")
+        if not isinstance(meta, dict):
+            raise BenchmarkValidationError("missing answer item metadata")
+        competitor, corpus = meta.get("competitor_id"), meta.get("corpus_id")
         item_id = item_path.stem
+        if not isinstance(competitor, str) or not isinstance(corpus, str):
+            raise BenchmarkValidationError(f"{item_id} has invalid answer coordinates")
+        key = competitor, corpus
+        request = None
+        if requests is not None:
+            request = requests.get(key)
+            try:
+                expected_id = safe_id(*key)
+            except ValueError:
+                raise BenchmarkValidationError("invalid grading item ID") from None
+            if request is None or key in loaded or item_id != expected_id:
+                raise BenchmarkValidationError(f"{item_id} differs from its answer coordinates")
+            if not request.matches_answer_item(key, evidence):
+                raise BenchmarkValidationError(f"{item_id} item differs from rendered answer input")
         votes: dict[str, Vote | None] = {}
         records: dict[str, dict[str, Any]] = {}
         for judge_id, effort in judges.items():
@@ -281,10 +395,20 @@ def load_answer_votes(
                 "pass_number": pass_number,
                 "item_id": item_id,
             }
-            chosen = _chosen(root, **where)
-            votes[judge_id] = None if chosen is None else _vote_of(chosen[1])
+            candidates = _records(root, **where)
+            chosen = _chosen(candidates)
+            votes[judge_id] = (
+                None if chosen is None else vote_from_record(chosen[1], request=request)
+            )
             if chosen is not None:
-                records[judge_id] = _summary(root, *chosen, judge=panel.judges[judge_id], **where)
+                records[judge_id] = _summary(
+                    root,
+                    *chosen,
+                    candidates,
+                    judge=panel.judges[judge_id],
+                    request=request,
+                    **where,
+                )
         where = {
             "target": "reference",
             "judge_id": reference.id,
@@ -292,18 +416,29 @@ def load_answer_votes(
             "pass_number": 1,
             "item_id": item_id,
         }
-        chosen = _chosen(root, **where)
-        loaded[(meta["competitor_id"], meta["corpus_id"])] = AnswerVotes(
+        candidates = _records(root, **where) if include_reference else []
+        chosen = _chosen(candidates)
+        if chosen is not None and request is not None:
+            reference_path = root / "items/reference" / item_path.name
+            try:
+                reference_item = json_mapping(
+                    artifact_bytes(root, reference_path), "reference item"
+                )
+            except FileNotFoundError:
+                raise BenchmarkValidationError(f"{item_id} missing reference input") from None
+            if reference_item != evidence:
+                raise BenchmarkValidationError(f"{item_id} reference input differs from the answer")
+        loaded[key] = AnswerVotes(
             item_id=item_id,
             competitor_id=meta["competitor_id"],
             corpus_id=meta["corpus_id"],
             votes=votes,
             records=records,
             suspect=bool(meta.get("suspect")),
-            reference=None if chosen is None else _vote_of(chosen[1]),
+            reference=None if chosen is None else vote_from_record(chosen[1], request=request),
             reference_record=None
             if chosen is None
-            else _summary(root, *chosen, judge=reference, **where),
+            else _summary(root, *chosen, candidates, judge=reference, request=request, **where),
         )
     return loaded
 

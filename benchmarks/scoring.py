@@ -67,7 +67,8 @@ from typing import Any
 
 import yaml
 
-from benchmarks.agentic.protocol import scanned_json_bytes, write_json_evidence
+from benchmarks.agentic.inputs import CapturedJSON
+from benchmarks.agentic.protocol import assert_no_key_shaped_json, scanned_json_bytes
 from benchmarks.corpus import CorpusQuestion, validate_corpus
 from benchmarks.report import _sha256_of
 from benchmarks.runner import BenchmarkValidationError
@@ -166,11 +167,15 @@ def score_run(
 
     Idempotent: re-running after a partial adjudication ingest recomputes
     the same automatic decisions and leaves every human-scored record
-    exactly as ingested.
+    exactly as ingested. Agentic inputs, including preserved legacy records,
+    and the complete output batch are scanned for key shapes before any write.
     """
     paths = ScoringPaths(run_dir)
+    agentic = _is_agentic(run_dir)
 
-    scoring_records = _load_cell_dir(paths.scoring_dir, _SCORING_REQUIRED_FIELDS, "scoring")
+    scoring_records = _load_cell_dir(
+        paths.scoring_dir, _SCORING_REQUIRED_FIELDS, "scoring", checked=agentic
+    )
     if not scoring_records:
         raise BenchmarkValidationError(
             f"no scoring placeholder files found under {paths.scoring_dir}; run the "
@@ -179,7 +184,7 @@ def score_run(
     corpus_snapshot, corpus_sha256 = _run_corpus(run_dir, corpus_path)
     answer_keys = _load_answer_keys(corpus_snapshot, schema_path)
     transcript_records = _load_cell_dir(
-        paths.transcripts_dir, _TRANSCRIPT_REQUIRED_FIELDS, "transcript"
+        paths.transcripts_dir, _TRANSCRIPT_REQUIRED_FIELDS, "transcript", checked=agentic
     )
 
     finalized: list[dict[str, Any]] = []
@@ -187,8 +192,8 @@ def score_run(
     automatic_decided = 0
     already_human = 0
     queued = 0
-    agentic = _is_agentic(run_dir)
-    write_record = write_json_evidence if agentic else _write_json
+    updates: dict[Path, dict[str, Any]] = {}
+    write_record = updates.__setitem__ if agentic else _write_json
 
     for key in sorted(scoring_records):
         path, record = scoring_records[key]
@@ -264,6 +269,7 @@ def score_run(
     rollups = _compute_rollups(finalized, answer_keys)
     rollups["corpus_sha256"] = corpus_sha256
     write_record(paths.rollups_path, rollups)
+    _write_checked_outputs(updates)
 
     return {
         "run_dir": str(run_dir),
@@ -413,12 +419,14 @@ def apply_llm_grades(
     "adjudicator", "grading"}``. Every grade is checked before any file is written: a
     score outside ``VALID_SCORES``, a method outside ``LLM_SCORING_METHODS``, an unknown
     cell or a failed cell is refused. ``grounded`` and ``correct_but_ungrounded`` are
-    written on every other scored cell too.
+    written on every other scored cell too. Supplied grades, captured legacy records
+    and all derived JSON are checked for key shapes before any file is changed.
     """
+    assert_no_key_shaped_json(grades, where="LLM grades")
     paths = ScoringPaths(run_dir)
     corpus_snapshot, corpus_sha256 = _run_corpus(run_dir, corpus_path)
     answer_keys = _load_answer_keys(corpus_snapshot, schema_path)
-    records = _load_cell_dir(paths.scoring_dir, _SCORING_REQUIRED_FIELDS, "scoring")
+    records = _load_cell_dir(paths.scoring_dir, _SCORING_REQUIRED_FIELDS, "scoring", checked=True)
     for (competitor_id, corpus_id), grade in grades.items():
         cell = f"{competitor_id}/{corpus_id}"
         if (competitor_id, corpus_id) not in records:
@@ -437,6 +445,7 @@ def apply_llm_grades(
             )
 
     now = _utc_now()
+    updates: dict[Path, dict[str, Any]] = {}
     for key, (path, record) in records.items():
         if key in grades:
             grade = grades[key]
@@ -459,7 +468,7 @@ def apply_llm_grades(
         is_grounded = bool(grounded.get(key, False))
         updated["grounded"] = is_grounded
         updated["correct_but_ungrounded"] = updated["score"] > 0.0 and not is_grounded
-        _write_json(path, updated)
+        updates[path] = updated
         records[key] = (path, updated)
 
     finalized = [record for _, record in records.values()]
@@ -468,12 +477,15 @@ def apply_llm_grades(
         _build_queue_entry(record, answer_keys, paths.transcripts_dir, agentic=True)
         for record in pending
     ]
-    write_json_evidence(
-        paths.queue_path, {"run_dir": str(run_dir), "generated_at": now, "cells": queue_entries}
-    )
+    updates[paths.queue_path] = {
+        "run_dir": str(run_dir),
+        "generated_at": now,
+        "cells": queue_entries,
+    }
     rollups = _compute_rollups(finalized, answer_keys)
     rollups["corpus_sha256"] = corpus_sha256
-    _write_json(paths.rollups_path, rollups)
+    updates[paths.rollups_path] = rollups
+    _write_checked_outputs(updates)
     return {
         "run_dir": str(run_dir),
         "llm_graded_cells": len(grades),
@@ -586,7 +598,11 @@ def _build_queue_entry(
     answer = ""
     tool_calls: list[dict[str, Any]] | None = None
     if transcript_path.is_file():
-        transcript = _read_json(transcript_path)
+        transcript = (
+            CapturedJSON.read(transcript_path, "transcript").mapping
+            if agentic
+            else _read_json(transcript_path)
+        )
         answer = transcript.get("answer") or ""
         tool_calls = transcript.get("tool_calls")
     payload = {"answer": answer, "tool_calls": tool_calls}
@@ -702,14 +718,14 @@ def _load_answer_keys(corpus_path: Path, schema_path: Path) -> dict[str, CorpusQ
 
 
 def _load_cell_dir(
-    base_dir: Path, required_fields: tuple[str, ...], label: str
+    base_dir: Path, required_fields: tuple[str, ...], label: str, *, checked: bool = False
 ) -> dict[tuple[str, str], tuple[Path, dict[str, Any]]]:
     records: dict[tuple[str, str], tuple[Path, dict[str, Any]]] = {}
     if not base_dir.is_dir():
         return records
     for competitor_dir in sorted(p for p in base_dir.iterdir() if p.is_dir()):
         for cell_file in sorted(competitor_dir.glob("*.json")):
-            data = _read_json(cell_file)
+            data = CapturedJSON.read(cell_file, label).mapping if checked else _read_json(cell_file)
             missing = [field for field in required_fields if field not in data]
             if missing:
                 raise BenchmarkValidationError(
@@ -781,6 +797,21 @@ def _read_json(path: Path) -> dict[str, Any]:
 def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _write_checked_outputs(updates: Mapping[Path, dict[str, Any]]) -> None:
+    """Scan the complete scoring batch before changing any previous good artifact.
+
+    Keep the exact checked bytes for publication. This prevents a late cell or queue
+    refusal from leaving earlier cells changed; filesystem write failures are separate.
+    """
+    bodies = {
+        path: scanned_json_bytes(record, where="scoring output", indent=2, sort_keys=True) + b"\n"
+        for path, record in updates.items()
+    }
+    for path, body in bodies.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
 
 
 def _utc_now() -> str:

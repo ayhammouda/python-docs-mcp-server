@@ -289,6 +289,10 @@ that design.
 - **Claims** (§2). The C1–C3 pass rules and every anti-claim apply as written
   there. `no-docs` is never ranked on tokens. Round 1 supports only "fewer
   tokens than fetching the official docs pages".
+  Reports derive the grading tier from G1–G4 and the exported evidence using
+  the scorer's rules, rather than trusting the saved tier label. Missing or
+  contradictory calibration, reference, method or single-judge evidence
+  withholds comparative claims; measured intervals remain in the raw report.
 - **Denominators:**
   - A hit on a §6 model-call, tool-call or time cap is a failure scored 0.0.
     The §6 result cap is not a failure.

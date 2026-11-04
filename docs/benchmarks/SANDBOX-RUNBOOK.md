@@ -186,6 +186,12 @@ to another directory and regenerating scoring, token or report artifacts remain 
 This is a consistency check for partial restores or edits, without signing infrastructure;
 deliberately forging the entire unsigned evidence bundle is outside its scope.
 
+Agentic scoring also checks legacy scoring records and supplied LLM grades for
+provider-key shapes before changing cells, queues, rollups or the grading summary.
+A refusal identifies the pattern without printing the matched text and preserves
+the existing files. Restore clean evidence in the working copy before rerunning;
+the scorer does not redact or repair the original evidence.
+
 Every actual model-call attempt must have a unique `unit_id`. For metered providers,
 that ID must join to exactly one reservation and settlement in the summary's `run_id`,
 with the same provider, family/system job and model. Execution identity establishes the
@@ -213,6 +219,13 @@ with exit 3 before confirmation or any provider call, with no key in the diagnos
 - `airgap/checks.json` (the C3 evidence, read by PR 5) and `airgap/records.jsonl` (every
   check round).
 - `ollama.json`: the Ollama version, the model's digest and details, and its context.
+
+Scoring and report export derive offline status from the current planned jobs,
+trajectory and discard artifacts, isolation result, egress summary and host checks.
+They require one check round per reported attempt plus the initial and final rounds;
+the cached offline verdict in `grading/summary.json` cannot establish a pass.
+Missing, malformed or incomplete evidence is unknown. Denied proxy attempts remain
+separate from internet hosts reached, including when the overall verdict is unknown.
 
 Worker stderr stays in an unlinked file until teardown. The host publishes a scrubbed
 snapshot in the run directory after stopping the worker. A snapshot over 8 MiB fails
@@ -262,6 +275,17 @@ unconfirmed external attempt fails isolation and C3 even when `internet_hosts` i
 empty. Unreadable or unrecognized evidence also fails isolation. Older seven-field
 logs still support established 200 tunnels, forwarded 2xx HTTP responses and request ACL
 denials. A recognized older failed MISS or aborted request can preserve isolation for a permitted destination, but cannot establish that it reached that destination.
+
+When replaying a graded run, `agentic-score` renders the answer again with the frozen
+question, criteria, system prompt and schema. It masks links and escapes answer delimiters
+as the judge saw them. Each selected answer or reference vote must match that request's
+`input_sha256` and its item, target, judge, model, effort and pass. A missing vote can
+leave a grade pending. A present vote with missing or contradictory input evidence
+stops scoring before it updates the run. To replay an incomplete export, restore the
+original item and vote files from the grading run.
+
+The calibration run exports each judge’s held-out scores so the scorer can recompute
+G1 when it imports the handoff. [G1 evidence format](grading/G1-EVIDENCE.md).
 
 ## 10. Air-gapped arm
 

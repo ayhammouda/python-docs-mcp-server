@@ -11,18 +11,26 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from decimal import Decimal
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import yaml
 
 from benchmarks.agentic.egress import open_log_dir, read_log_at
-from benchmarks.agentic.inputs import CapturedInput, CapturedJSON, read_input_bytes, read_json
+from benchmarks.agentic.inputs import (
+    CapturedInput,
+    CapturedJSON,
+    json_mapping,
+    read_input_bytes,
+    read_json,
+)
 from benchmarks.agentic.protocol import (
     assert_no_key_shaped_json,
     scanned_json_bytes,
@@ -32,10 +40,11 @@ from benchmarks.grading.aggregate import (
     AnswerVotes,
     chosen_record,
     final_grade,
-    has_final_record,
     judge_grade,
     load_answer_votes,
 )
+from benchmarks.grading.calibration import judge_settings as _judge_settings
+from benchmarks.grading.calibration import replay_g1
 from benchmarks.grading.gates import (
     BINDING_INPUTS,
     CellKey,
@@ -48,17 +57,13 @@ from benchmarks.grading.gates import (
     g2,
     g3,
     g4,
-    held_out_shortfall,
     length_grade_correlation,
-    load_egress_evidence,
-    load_offline_evidence,
     model_lineage,
-    offline_verdict,
     outcome_tier,
     pass1_composition,
     reference_probe_check,
     run_binding,
-    select_g1,
+    run_offline_evidence,
     self_preference,
     test_retest,
 )
@@ -68,6 +73,7 @@ from benchmarks.grading.inputs import (
     SNAPSHOT_FILES,
     TUNING_PATH,
     Weight,
+    answer_requests,
     criteria_from_mapping,
     safe_id,
     scanned_input,
@@ -82,7 +88,6 @@ from benchmarks.grading.panel import (
 )
 from benchmarks.grading.probes import (
     MAX_ROUNDS,
-    PROBE_TYPES,
     Probe,
     ProbeFile,
     assemble,
@@ -92,6 +97,7 @@ from benchmarks.grading.probes import (
     write_probe_file,
 )
 from benchmarks.grading.stats import GATE_RESAMPLES
+from benchmarks.report_files import artifact_bytes, artifact_paths
 from benchmarks.runner import BenchmarkValidationError
 from benchmarks.scoring import apply_llm_grades, score_run
 
@@ -172,11 +178,46 @@ def _g1_inputs(
     return entries, bodies, copies
 
 
+def _new_g1_archives(raw_dir: Path, bodies: Mapping[str, bytes]) -> dict[str, bytes]:
+    if not bodies or not raw_dir.exists():
+        return dict(bodies)
+    with open_log_dir(raw_dir) as directory:
+        names = set(os.listdir(directory))
+        missing = {}
+        for sha, body in bodies.items():
+            name = f"{sha}.json"
+            if name not in names:
+                missing[sha] = body
+            elif read_log_at(directory, name, max_bytes=len(body)) != body:
+                raise BenchmarkValidationError("archived G1 bytes differ from their digest")
+    return missing
+
+
+def _publish_g1_archives(raw_dir: Path, missing: Mapping[str, bytes]) -> None:
+    if not missing:
+        return
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    with open_log_dir(raw_dir) as directory, TemporaryDirectory(dir=raw_dir) as temp:
+        for sha, body in missing.items():
+            name = f"{sha}.json"
+            staged = Path(temp) / name
+            staged.write_bytes(body)
+            try:
+                # Publish complete immutable bytes without replacing a concurrent archive.
+                os.link(staged, name, dst_dir_fd=directory)
+            except FileExistsError:
+                if read_log_at(directory, name, max_bytes=len(body)) != body:
+                    raise BenchmarkValidationError("archived G1 bytes differ from their digest")
+
+
 def _cells(base: Path) -> dict[tuple[str, str], dict[str, Any]]:
     records: dict[tuple[str, str], dict[str, Any]] = {}
-    for path in sorted(base.glob("*/*.json")):
-        data = _read(path)
-        records[(data["competitor_id"], data["corpus_id"])] = data
+    for path in artifact_paths(base.parent, base, "*/*.json"):
+        data = json_mapping(artifact_bytes(base.parent, path), "run cell")
+        key = path.parent.name, path.stem
+        if key != (data.get("competitor_id"), data.get("corpus_id")):
+            raise BenchmarkValidationError(f"{base.name} cell coordinates differ from its path")
+        records[key] = data
     return records
 
 
@@ -219,28 +260,21 @@ def _ledger_spend(grading: Path, graded: int) -> dict[str, Any]:
 
 
 def _no_final_record(
-    grading: Path, efforts: Mapping[str, str | None], items: Sequence[str]
+    grading: Path, efforts: Mapping[str, str | None], items: Mapping[str, AnswerVotes]
 ) -> dict[str, dict[str, list[str]]]:
     """Amendment 2: per judge, the items with no final pass-1 record, by last not_run reason."""
     # Invocation timestamps are written in UTC. Their one-second precision allows ties.
     history: dict[tuple[str, str], dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
-    for path in (grading / "runs").glob("*.json"):
-        run = _read(path)
+    for path in artifact_paths(grading, grading / "runs", "*.json"):
+        run = json_mapping(artifact_bytes(grading, path), "grading invocation")
         when = run.get("completed_at") or run.get("started_at") or ""
         for entry in run.get("not_run") or []:
             if entry.get("target") == "answers" and entry.get("pass") == 1:
                 history[entry["judge_id"], entry["item_id"]][when].add(entry["reason"])
     result: dict[str, dict[str, list[str]]] = {}
-    for judge_id, effort in efforts.items():
-        for item in items:
-            if not has_final_record(
-                grading,
-                target="answers",
-                judge_id=judge_id,
-                effort=effort,
-                pass_number=1,
-                item_id=item,
-            ):
+    for judge_id in efforts:
+        for item in sorted(items):
+            if not items[item].records.get(judge_id, {}).get("final"):
                 reasons = history.get((judge_id, item), {})
                 latest = reasons.get(max(reasons, default=""), set()) | reasons.get("", set())
                 reason = next(iter(latest), NO_RECORD)
@@ -252,23 +286,30 @@ def _no_final_record(
 
 def _frozen_inputs(
     root: Path, *, criteria_path: Path | None, panel_path: Path | None
-) -> tuple[dict[str, str], dict[str, CapturedInput]]:
+) -> tuple[dict[str, str], dict[str, CapturedInput], dict[str, bytes]]:
     """Capture each snapshot once; path overrides are byte-for-byte assertions."""
-    manifest = read_json(root / "inputs.json", "grading input manifest")
+
+    def capture(path: Path) -> bytes:
+        try:
+            return artifact_bytes(root.parent, path)
+        except FileNotFoundError:
+            raise BenchmarkValidationError(f"missing grading input {path.name}") from None
+
+    manifest = json_mapping(capture(root / "inputs.json"), "grading input manifest")
     if manifest.keys() - SNAPSHOT_FILES.keys():
         raise BenchmarkValidationError("unrecognized entries in grading input manifest")
     overrides = {"criteria": criteria_path, "panel": panel_path}
     settings = {}
+    bodies = {}
     for name, filename in SNAPSHOT_FILES.items():
         path = root / filename
         if name == "probes" and name not in manifest and not path.exists():
             continue  # An older run without probes can still be scored without G1.
+        body = bodies[name] = capture(path)
         if name in {"criteria", "panel", "probes"}:
-            captured = CapturedInput.read(path, name, name)
-            settings[name] = captured
-            body = captured.content
-        else:
-            body = scanned_input(path, suffix=path.suffix)
+            settings[name] = CapturedInput.from_bytes(body, name, name)
+        elif path.suffix == ".json":
+            json_mapping(body, name)
         if hashlib.sha256(body).hexdigest() != manifest.get(name):
             raise BenchmarkValidationError(f"frozen {name} differs from the grading input manifest")
         override = overrides.get(name)
@@ -279,26 +320,7 @@ def _frozen_inputs(
         ):
             raise BenchmarkValidationError(f"--{name} differs from the frozen {name}")
 
-    return manifest, settings
-
-
-def _judge_settings(
-    panel_input: CapturedInput,
-    judges: Sequence[str],
-    *,
-    reference: str | None = None,
-    before_effort_freeze: bool = False,
-) -> dict[str, str]:
-    """Pin each participating judge independently, using the portable panel-file settings."""
-    pins = {}
-    participants = [*judges, reference] if reference is not None else judges
-    for judge in participants:
-        settings = dict(panel_input.mapping["judges"][judge])
-        if before_effort_freeze:
-            settings.pop("effort", None)  # Tuning chooses this field for the held-out panel.
-        body = scanned_json_bytes(settings, where="grading judge settings", sort_keys=True)
-        pins[judge] = hashlib.sha256(body).hexdigest()
-    return pins
+    return manifest, settings, bodies
 
 
 def score_run_dir(
@@ -317,13 +339,18 @@ def score_run_dir(
             f"gate scoring requires {GATE_RESAMPLES} bootstrap resamples"
         )
     grading = run_dir / "grading"
+    if grading.is_symlink():
+        raise BenchmarkValidationError("grading directory must be within the run")
     seed = str(_read(run_dir / "environment.json").get("seed"))
     root = grading / "inputs"
-    manifest, settings = _frozen_inputs(root, criteria_path=criteria_path, panel_path=panel_path)
+    manifest, settings, frozen = _frozen_inputs(
+        root, criteria_path=criteria_path, panel_path=panel_path
+    )
     questions = criteria_from_mapping(
         settings["criteria"].mapping,
         root / SNAPSHOT_FILES["criteria"],
         corpus_path=run_dir / "snapshots/corpus.yml",
+        corpus_body=artifact_bytes(run_dir, run_dir / "snapshots/corpus.yml"),
         schema_path=schema_path,
     )
     panel = panel_from_mapping(settings["panel"].mapping, root / SNAPSHOT_FILES["panel"])
@@ -331,81 +358,63 @@ def score_run_dir(
     entries, bodies, copies = _g1_inputs(g1_paths)
     if entries and binding.missing_field():
         raise BenchmarkValidationError(f"G1 input cannot bind missing {binding.missing_field()}")
-    g1_result = (
-        select_g1(entries, binding)
-        if entries
-        else GateResult("G1", None, {"reason": "no G1 evidence was given (--g1)"})
-    )
     key = composition_key(list(binding.composition))
     entry = entries.get(key, {})
-    bound = entry.get("binding", {})
-    if "judge_settings" in bound and bound["judge_settings"] != _judge_settings(
-        settings["panel"],
-        list(binding.composition),
-        reference=panel.reference if entry.get("reference_check") is not None else None,
-    ):
-        raise BenchmarkValidationError("G1 judge settings differ from the frozen run panel")
-    check = entry.get("reference_check") or {}
-    if not isinstance(check, dict) or not isinstance(check.get("details", {}), dict):
-        raise BenchmarkValidationError("G1 reference check must contain gate details")
-    reference_check = GateResult(
-        "reference_probe_check", check.get("passed"), dict(check.get("details") or {})
-    )
-
-    if g1_result.passed is True or reference_check.passed is True:
-        # A bound entry can predate coverage checks. Verify passing claims against the
-        # run's frozen probe inventory, not just the exported pass flags.
-        suite = probe_file_from_inputs(
-            settings["probes"],
-            settings["criteria"],
-            CapturedInput.read(tuning_path, "tuning", "tuning questions"),
+    g1_result = GateResult("G1", None, {"reason": "no G1 evidence was given (--g1)"})
+    reference_check = GateResult("reference_probe_check", None, {})
+    if entries:
+        g1_result, reference_check = replay_g1(
+            entries,
+            binding,
+            panel=settings["panel"],
+            probes=settings["probes"],
+            criteria=settings["criteria"],
+            tuning=CapturedInput.read(tuning_path, "tuning", "tuning questions") if entry else None,
         )
-        held = [p for p in suite.probes if p.set == "held_out"]
-        if g1_result.passed is True:
-            reason = held_out_shortfall(held, [d for d in suite.dropped if d["set"] == "held_out"])
-            counts = Counter(p.type for p in held)
-            reported = g1_result.details.get("by_type")
-            if (
-                not isinstance(reported, dict)
-                or reported.keys() != set(PROBE_TYPES)
-                or any(
-                    not isinstance(row, dict) or row.get("n") != counts[t]
-                    for t, row in reported.items()
-                )
-            ):
-                reason = "G1 type counts differ from the frozen held-out probes"
-            if reason:
-                g1_result = GateResult("G1", None, {**g1_result.details, "reason": reason})
-        if reference_check.passed is True:
-            subset = reference_subset(held, seed=suite.header["corpus_sha256"])
-            reference_check = reference_probe_check(
-                subset, reference_check.details.get("scores") or {}
-            )
 
     if entry:
         # The raw export is archived separately. Display only the verdicts this run can support.
         entries[key] = {
-            **entry, "gate": _gate(g1_result), "reference_check": _gate(reference_check)
+            **entry,
+            "gate": _gate(g1_result),
+            "reference_check": (
+                _gate(reference_check) if entry.get("reference_check") is not None else None
+            ),
         }
 
     disclosure = grading / "disclosure"
     raw_g1 = disclosure / "g1"
     if any(p.is_symlink() for p in (grading, disclosure, raw_g1)):
         raise BenchmarkValidationError("G1 disclosure directory must be within the run")
+    missing_archives = _new_g1_archives(raw_g1, bodies)
     efforts = {judge: spec.get("effort") for judge, spec in binding.composition.items()}
-    answer_votes = load_answer_votes(grading, panel=panel, judges=efforts)
-    pass2 = load_answer_votes(grading, panel=panel, judges=efforts, pass_number=2)
     transcripts = _cells(run_dir / "transcripts")
+    requests = answer_requests(
+        questions, transcripts, prompt=frozen["judge_prompt"], schema=frozen["judge_schema"]
+    )
+    answer_votes = load_answer_votes(grading, panel=panel, judges=efforts, requests=requests)
+    pass2 = load_answer_votes(
+        grading,
+        panel=panel,
+        judges=efforts,
+        pass_number=2,
+        requests=requests,
+        include_reference=False,
+    )
+
+    sample_path = grading / "reference-sample.json"
+    try:
+        sample = json_mapping(artifact_bytes(run_dir, sample_path), "reference sample")
+    except FileNotFoundError:
+        sample = None
+    sample_ids = [] if sample is None else sample.get("ids")
+    if not isinstance(sample_ids, list) or not all(isinstance(i, str) for i in sample_ids):
+        raise BenchmarkValidationError("reference-sample.json must list answer IDs")
 
     # 2. LLM grades: an item waits until every panel judge has a final pass-1 record.
     finals: dict[tuple[str, str], dict[str, Any]] = {}
     for key, av in answer_votes.items():
-        complete = all(
-            has_final_record(
-                grading, target="answers", judge_id=j, effort=e, pass_number=1, item_id=av.item_id
-            )
-            for j, e in efforts.items()
-        )
+        complete = all(av.records.get(j, {}).get("final") for j in efforts)
         final = final_grade(av, questions[av.corpus_id], inputs=manifest) if complete else None
         if final is not None:
             assert_no_key_shaped_json(final, where="cell grade")
@@ -461,12 +470,7 @@ def score_run_dir(
                 final["score"],
                 grade(av.reference.fields(), weights[av.corpus_id])[0],
             )
-    sample_path = grading / "reference-sample.json"
-    if sample_path.is_file():
-        sample = _read(sample_path)
-        sample_ids = sample.get("ids")
-        if not isinstance(sample_ids, list) or not all(isinstance(i, str) for i in sample_ids):
-            raise BenchmarkValidationError("reference-sample.json must list answer IDs")
+    if sample is not None:
         g3_result = g3(
             sample_ids,
             pairs,
@@ -493,7 +497,6 @@ def score_run_dir(
     planned: set[CellKey] = {
         (c["system_id"], c["model_family_id"], c["corpus_id"], int(c["repeat"])) for c in plan_cells
     }
-    cell_family = {c["cell"]: c["model_family_id"] for c in plan_cells}
     key_of: dict[tuple[str, str], CellKey] = {
         k: (t["system_id"], t["model_family_id"], t["corpus_id"], int(t["repeat"]))
         for k, t in transcripts.items()
@@ -527,26 +530,9 @@ def score_run_dir(
     offline: dict[str, Any] | None = None
     offline_ok: bool | None = None
     if c3_models:
-        airgap_jobs = sorted({f"{m}--{s}" for s, m, _q, _r in planned if m in airgap})
-        reported = sum(1 for t in transcripts.values() if t["model_family_id"] in airgap)
-        reported += sum(
-            1
-            for path in (run_dir / "discarded").glob("*/*.json")
-            if cell_family.get(path.parent.name) in airgap
-        )
-        verdict = offline_verdict(
-            load_offline_evidence(run_dir),
-            load_egress_evidence(run_dir),
-            expected_checks=reported + 2,
-            airgap_jobs=airgap_jobs,
-        )
-        offline_ok = verdict.ok
-        offline = {
-            "ok": verdict.ok,
-            "expected_checks": reported + 2,
-            "airgap_jobs": airgap_jobs,
-            "denied_attempts": verdict.denied_attempts,
-        }
+        current_offline = run_offline_evidence(run_dir, families)
+        offline_ok = current_offline.verdict.ok
+        offline = current_offline.summary()
 
     def claims_for(
         scores: Mapping[CellKey, float | None], cells: set[CellKey]
@@ -672,7 +658,7 @@ def score_run_dir(
         "per_judge": per_judge,
         # shortcut: an item listed here blocks the reference target until it is fixed and
         # graded again (Task 8 refuses `reference` while any panel item lacks a final record).
-        "no_final_record": _no_final_record(grading, efforts, sorted(by_item)),
+        "no_final_record": _no_final_record(grading, efforts, by_item),
     }
 
     def breakdown(grades: Mapping[str, Any], of: Mapping[str, str]) -> dict[str, Any]:
@@ -701,17 +687,7 @@ def score_run_dir(
         path.unlink(missing_ok=True)
         if value:
             _write(path, value)
-    if bodies:
-        raw_g1.mkdir(parents=True, exist_ok=True)
-    for sha, body in bodies.items():
-        path = raw_g1 / f"{sha}.json"
-        try:
-            with path.open("xb") as f:
-                f.write(body)
-        except FileExistsError:
-            with open_log_dir(raw_g1) as directory:
-                if read_log_at(directory, path.name, max_bytes=len(body)) != body:
-                    raise BenchmarkValidationError("archived G1 bytes differ from their digest")
+    _publish_g1_archives(raw_g1, missing_archives)
 
     summary = {
         "run_dir": str(run_dir),
@@ -846,7 +822,7 @@ def _workspace_inputs(
 ) -> _WorkspaceInputs:
     meta = _workspace(workspace, kind)
     root = workspace / "inputs"
-    manifest, settings = _frozen_inputs(root, criteria_path=criteria_path, panel_path=panel_path)
+    manifest, settings, _ = _frozen_inputs(root, criteria_path=criteria_path, panel_path=panel_path)
     if meta.get("inputs") != manifest:
         raise BenchmarkValidationError("workspace metadata differs from its grading input manifest")
     tuning = CapturedInput.read(tuning_path, "tuning", "tuning questions")
@@ -1240,6 +1216,7 @@ def write_g1(
             "inputs": {name: inputs.meta["inputs"].get(name) for name in BINDING_INPUTS},
         },
         "gate": _gate(gate),
+        "scores": {"panel": panel_scores, "judges": judge_scores},
         "reference_check": check,
         "dropped": dict(Counter(str(d.get("type")) for d in probe_file.dropped)),
         "tuning": evidence,

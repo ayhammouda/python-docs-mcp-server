@@ -19,8 +19,6 @@ _DEFAULT_METHODOLOGY = Path("docs/benchmarks/PUBLIC-BENCHMARK-METHODOLOGY.md")
 _DEFAULT_CORPUS_SCHEMA = Path("docs/benchmarks/corpus.schema.json")
 _DEFAULT_AGENTIC_MANIFEST = Path("docs/benchmarks/agentic-manifest.yml")
 _DEFAULT_PRICES = Path("docs/benchmarks/price-snapshot.yml")
-_DEFAULT_GRADING_CRITERIA = Path("docs/benchmarks/grading-criteria.yml")
-_DEFAULT_GRADING_PANEL = Path("docs/benchmarks/grading/panel.yml")
 _DEFAULT_TUNING_QUESTIONS = Path("docs/benchmarks/grading/tuning-questions.yml")
 
 

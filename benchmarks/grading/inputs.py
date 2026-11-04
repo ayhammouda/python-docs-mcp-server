@@ -11,11 +11,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from benchmarks.agentic.inputs import CapturedInput, CapturedJSON, read_input_bytes
+from benchmarks.agentic.inputs import CapturedInput, CapturedJSON, json_mapping, read_input_bytes
 from benchmarks.agentic.protocol import scanned_json_bytes
 from benchmarks.corpus import validate_corpus
 from benchmarks.runner import BenchmarkValidationError, _load_yaml_mapping
@@ -166,15 +167,23 @@ def load_criteria(
 
 
 def criteria_from_mapping(
-    data: dict[str, Any], path: Path, *, corpus_path: Path, schema_path: Path
+    data: dict[str, Any],
+    path: Path,
+    *,
+    corpus_path: Path,
+    schema_path: Path,
+    corpus_body: bytes | None = None,
 ) -> dict[str, GradingQuestion]:
     if data.get("schema_version") != 1:
         raise BenchmarkValidationError(f"grading criteria {path} must set schema_version: 1")
-    if data.get("corpus_sha256") != _sha256(corpus_path.read_bytes()):
+    if corpus_body is None:
+        corpus_body = read_input_bytes(corpus_path, "corpus", "grading corpus")
+    if data.get("corpus_sha256") != _sha256(corpus_body):
         raise BenchmarkValidationError(
             f"grading criteria {path}: corpus_sha256 does not match {corpus_path}"
         )
-    corpus = validate_corpus(corpus_path, schema_path).questions
+    captured = CapturedInput.from_bytes(corpus_body, "corpus", "grading corpus")
+    corpus = validate_corpus(corpus_path, schema_path, corpus_data=captured.mapping).questions
     entries = data.get("questions")
     if not isinstance(entries, dict):
         raise BenchmarkValidationError(f"grading criteria {path} must map question ids")
@@ -267,13 +276,39 @@ class JudgeInput:
     schema: dict[str, Any]
     suspect: bool
 
+    def item_evidence(self, meta: dict[str, Any]) -> dict[str, Any]:
+        digest = self.sha256()
+        if meta.get("input_sha256", digest) != digest:
+            raise BenchmarkValidationError("prepared item differs from the judge request")
+        schema = json.dumps(self.schema, sort_keys=True, separators=(",", ":")).encode()
+        return {
+            "user": self.user,
+            "system_sha256": _sha256(self.system.encode()),
+            "schema_sha256": _sha256(schema),
+            "meta": {**meta, "input_sha256": digest},
+        }
+
+    def matches_answer_item(self, key: tuple[str, str], evidence: dict[str, Any] | None) -> bool:
+        meta = {"competitor_id": key[0], "corpus_id": key[1], "suspect": self.suspect}
+        return (
+            evidence is not None
+            and evidence == self.item_evidence(meta)
+            and evidence["meta"]["suspect"] is self.suspect
+        )
+
     def sha256(self) -> str:
         """Over system, user and the canonical schema JSON: the exact request content."""
         schema = json.dumps(self.schema, sort_keys=True, separators=(",", ":"))
         return _sha256(json.dumps([self.system, self.user, schema], separators=(",", ":")).encode())
 
 
-def render_judge_input(question: GradingQuestion, answer: str) -> JudgeInput:
+def render_judge_input(
+    question: GradingQuestion,
+    answer: str,
+    *,
+    system: str | None = None,
+    schema: dict[str, Any] | None = None,
+) -> JudgeInput:
     lines = [
         f'<question version="{question.version}">{question.prompt}</question>',
         f"<answer_key>{question.answer_key}</answer_key>",
@@ -286,11 +321,47 @@ def render_judge_input(question: GradingQuestion, answer: str) -> JudgeInput:
         lines.append(f"<ambiguity_note>{question.ambiguity_note}</ambiguity_note>")
     lines += ["<answer>", escape_delimiters(mask_links(answer)), "</answer>"]
     return JudgeInput(
-        system=judge_prompt(),
+        system=judge_prompt() if system is None else system,
         user="\n".join(lines),
-        schema=judge_schema(),
+        schema=judge_schema() if schema is None else schema,
         suspect=injection_suspect(answer),
     )
+
+
+def answer_requests(
+    questions: Mapping[str, GradingQuestion],
+    transcripts: Mapping[tuple[str, str], dict[str, Any]],
+    *,
+    prompt: bytes,
+    schema: bytes,
+) -> dict[tuple[str, str], JudgeInput]:
+    """Replay the worker renderer using only the captured, manifest-checked inputs."""
+    try:
+        # The worker reads the UTF-8 system prompt in universal-newline text mode.
+        system = prompt.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    except UnicodeDecodeError:
+        raise BenchmarkValidationError("invalid UTF-8 grading prompt") from None
+    shape = json_mapping(schema, "judge schema")
+    expected = {**dict.fromkeys(VOTE_FIELDS, "boolean"), "explanation": "string"}
+    properties = shape.get("properties")
+    if (
+        not isinstance(properties, dict)
+        or any(not isinstance(spec, dict) for spec in properties.values())
+        or {key: spec.get("type") for key, spec in properties.items()} != expected
+    ):
+        raise BenchmarkValidationError("unsupported frozen judge schema")
+    requests = {}
+    for key, row in transcripts.items():
+        answer = row.get("answer")
+        if row.get("status") != "succeeded" or not answer:
+            continue
+        if not isinstance(answer, str) or key[1] not in questions:
+            raise BenchmarkValidationError("invalid grading answer or corpus ID")
+        if answer.strip():
+            requests[key] = render_judge_input(
+                questions[key[1]], answer, system=system, schema=shape
+            )
+    return requests
 
 
 def _manifest_files(

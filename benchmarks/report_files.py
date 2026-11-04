@@ -51,17 +51,14 @@ def artifact_bytes(root: Path, path: Path) -> bytes:
         if not stat.S_ISREG(info.st_mode):
             raise BenchmarkValidationError(f"artifact is not a regular file: {path}")
         if os.open in os.supports_dir_fd:
-            from benchmarks.agentic.egress import read_log_at
+            from benchmarks.agentic.egress import open_log_dir, read_log_at
 
             # Anchor each lookup to its open parent. The shared reader rejects links,
             # non-regular files, oversize artifacts and changes of length during a read.
-            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-            with ExitStack() as handles:
-                parent = os.open(root, flags)
-                handles.callback(os.close, parent)
-                for part in path.parent.relative_to(root).parts:
-                    parent = os.open(part, flags, dir_fd=parent)
-                    handles.callback(os.close, parent)
+            with ExitStack() as stack:
+                parent = stack.enter_context(open_log_dir(root))
+                for component in path.relative_to(root).parts[:-1]:
+                    parent = stack.enter_context(open_log_dir(Path(component), dir_fd=parent))
                 body = read_log_at(parent, path.name, max_bytes=MAX_FRAME_BYTES)
 
         else:

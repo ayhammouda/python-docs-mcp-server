@@ -368,13 +368,20 @@ def load_probe_file(path: Path, *, criteria_path: Path, tuning_path: Path) -> Pr
 
 
 def probe_file_from_inputs(
-    probes_input: CapturedInput, criteria: CapturedInput, tuning: CapturedInput
+    probes_input: CapturedInput, criteria: CapturedInput, tuning: CapturedInput | None
 ) -> ProbeFile:
+    """Validate captured probes; export replay needs no external tuning question file.
+
+    Without tuning bytes, validate its slots and disjointness from held-out ids.
+    Only workspace/scoring readers with those bytes attest the tuning input hash.
+    """
     data = probes_input.mapping
     header = data.get("header")
     if data.get("schema_version") != 1 or not isinstance(header, dict):
         raise BenchmarkValidationError("probe file needs schema_version: 1 and a header")
     for field, source in (("criteria_sha256", criteria), ("tuning_sha256", tuning)):
+        if source is None:
+            continue
         if header.get(field) != hashlib.sha256(source.content).hexdigest():
             raise BenchmarkValidationError(
                 f"probe file header {field} does not match {source.name}"
@@ -398,12 +405,20 @@ def probe_file_from_inputs(
     questions = criteria.mapping.get("questions")
     if not isinstance(questions, dict):
         raise BenchmarkValidationError("criteria missing held-out question ids")
-    tuning_questions = tuning_questions_from_mapping(tuning.mapping)
+    tuning_questions = tuning_questions_from_mapping(tuning.mapping) if tuning is not None else {}
     if questions.keys() & tuning_questions.keys():
         raise BenchmarkValidationError("held-out and tuning question ids overlap")
     sets = {qid: "held_out" for qid in questions} | {qid: "tuning" for qid in tuning_questions}
+
+    def valid_question(qid: Any, probe_set: Any) -> bool:
+        if not isinstance(qid, str) or not qid:
+            return False
+        if tuning is None and probe_set == "tuning":
+            return qid not in questions
+        return sets.get(qid) == probe_set
+
     for p in probes:
-        if not isinstance(p.question_id, str) or sets.get(p.question_id) != p.set:
+        if not valid_question(p.question_id, p.set):
             raise BenchmarkValidationError(f"foreign question or set for probe {p.id!r}")
         provenance = p.built_by
         if p.type in CODE_BUILT:
@@ -413,9 +428,8 @@ def probe_file_from_inputs(
             raise BenchmarkValidationError(f"missing generation or check evidence for {p.id}")
     for d in dropped:
         if (
-            not isinstance(d.get("question_id"), str)
-            or d.get("set") not in ("held_out", "tuning")
-            or sets.get(d["question_id"]) != d["set"]
+            d.get("set") not in ("held_out", "tuning")
+            or not valid_question(d.get("question_id"), d.get("set"))
         ):
             raise BenchmarkValidationError(f"foreign question or set for dropped probe {d!r}")
     validate_slots(probes, dropped)

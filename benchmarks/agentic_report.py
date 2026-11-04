@@ -15,34 +15,52 @@ import re
 import statistics
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from decimal import Decimal, DecimalException
 from pathlib import Path
 from typing import Any
 
-from benchmarks.adapters.claude_tokens import DEFAULT_COUNT_MODEL
 from benchmarks.agentic.egress import PROVIDER_HOSTS
 from benchmarks.agentic.inputs import CapturedInput, json_mapping
 from benchmarks.agentic.ledger import actual_cost, price_snapshot_from_mapping
 from benchmarks.agentic.protocol import KeyLeakError, check_json_text
 from benchmarks.agentic.reference import ReferenceTranscripts, ReferenceUnits, scripted_response
 from benchmarks.agentic.types import Buckets
+from benchmarks.grading.aggregate import (
+    AnswerVotes,
+    final_grade,
+    is_final,
+    record_order,
+    vote_from_record,
+)
 from benchmarks.grading.gates import (
     EGRESS_JOB_FIELDS,
     CellKey,
     c2,
     c3,
     egress_from_mapping,
-    load_offline_evidence,
     model_lineage,
-    offline_verdict,
+    outcome_tier,
     read_evidence_json,
+    run_offline_evidence,
 )
-from benchmarks.grading.inputs import SNAPSHOT_FILES, safe_id
+from benchmarks.grading.inputs import (
+    MAPPING_TABLE,
+    MASK_RULES,
+    REPO_ROOT,
+    SNAPSHOT_FILES,
+    GradingQuestion,
+    JudgeInput,
+    answer_requests,
+    criteria_from_mapping,
+    safe_id,
+)
+from benchmarks.grading.publication import reconcile_gates
 from benchmarks.grading.stats import GATE_RESAMPLES, paired_bootstrap
 from benchmarks.model_matrix import KNOWN_APIS, ModelMatrix, model_family_from_raw
 from benchmarks.report import RunBundle, _cell, _percentile, _relative_link, _table
 from benchmarks.report_files import artifact_bytes, artifact_paths, checked_path, optional_json
+from benchmarks.report_measurements import grading_receipt_matches, live_count_matches
 from benchmarks.runner import BenchmarkValidationError
 
 REQUIRED_WORDING = "LLM-graded, validated against synthetic probes and inter-model agreement"
@@ -234,6 +252,22 @@ def _answering_evidence(
     return ("live" if live else "unknown"), transcripts, discarded
 
 
+@dataclass
+class _GradeCapture:
+    """Evidence admitted by the grade join, reused by publication without I/O.
+
+    These unsigned exports establish internal continuity, not provider authenticity.
+    A pending answer may contribute verified independent votes to G2, but only
+    a reconciled final (or automatic zero) contributes a cell score.
+    """
+
+    requests: dict[tuple[str, str], JudgeInput] = field(default_factory=dict)
+    questions: dict[str, GradingQuestion] = field(default_factory=dict)
+    answers: dict[tuple[str, str], AnswerVotes] = field(default_factory=dict)
+    finals: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+    scores: dict[tuple[str, str], float] = field(default_factory=dict)
+
+
 def _graded_execution(
     root: Path,
     judges: dict[str, Any],
@@ -241,21 +275,38 @@ def _graded_execution(
     reference: str,
     inputs: dict[str, str],
     scoring: dict[tuple[str, str], dict[str, Any]],
+    requests: dict[tuple[str, str], JudgeInput],
+    questions: dict[str, GradingQuestion],
     events: list[dict[str, Any]],
     reported_versions: dict[Path, str | None],
+    transcripts: dict[tuple[str, str], dict[str, Any]],
+    capture: _GradeCapture,
 ) -> str:
+    capture.requests = requests
+    capture.questions = questions
     # Join chosen votes by their digest and coordinates. Recorded path strings
     # may name the original machine or be relative to a different working directory.
     runs = {
         p.stem: optional_json(root, p) or {}
         for p in artifact_paths(root, root / "grading/runs", "*.json")
     }
+    seats = {
+        j if j in efforts else spec.get("fallback")
+        for j, spec in judges.items()
+        if spec.get("role") == "panel"
+    }
+    if seats != efforts.keys() or any(e != judges[j].get("effort") for j, e in efforts.items()):
+        return "unknown"
+    composition = {j: {"model_id": judges[j]["model_id"], "effort": e} for j, e in efforts.items()}
     reservations = {e.get("unit_id"): e for e in events if e.get("event") == "reserve"}
     votes = {}
-    for target, members in (
-        ("answers", efforts),
-        ("reference", {reference: judges[reference].get("effort")}),
-    ):
+    latest = {}
+    attempts: dict[tuple[str, str, str, str], int] = {}
+    members_by_target = {
+        "answers": efforts,
+        "reference": {reference: judges[reference].get("effort")},
+    }
+    for target, members in members_by_target.items():
         for judge, effort in members.items():
             parts = (judge, effort or "default")
             if not all(
@@ -266,8 +317,20 @@ def _graded_execution(
             base = root.joinpath("grading/votes", target, *parts, "pass1")
             for path in artifact_paths(root, base, "*/*.json"):
                 body = artifact_bytes(root, path)
+                reported_versions[path] = None
                 vote = json_mapping(body, "grading vote")
                 reported_versions[path] = vote.get("reported_model")
+                record_sha = hashlib.sha256(body).hexdigest()
+                try:
+                    order = record_order(path, vote)
+                except BenchmarkValidationError:
+                    return "unknown"
+                coordinate = judge, path.parent.name
+                attempt_key = target, judge, path.parent.name, vote["grading_run_id"]
+                attempts[attempt_key] = max(attempts.get(attempt_key, 0), vote["attempt"])
+                if coordinate not in latest or order > latest[coordinate][0]:
+                    latest[coordinate] = order, record_sha
+
                 if str(vote.get("provider_batch_id")).startswith("scripted-batch-"):
                     return "scripted"
                 run_id = vote.get("grading_run_id")
@@ -281,13 +344,19 @@ def _graded_execution(
                     or invocation.get("target") != target
                     or invocation.get("pass") != 1
                     or invocation.get("dry_run")
-                    or (invocation.get("composition") or {}).get(judge) != spec
+                    or (
+                        invocation.get("composition")
+                        != (composition if target == "answers" else {judge: spec})
+                    )
                 ):
                     continue
-                reserve = reservations.get(vote.get("unit_id"))
+                unit = vote.get("unit_id")
+                if not isinstance(unit, str) or not unit:
+                    continue
+                reserve = reservations.get(unit)
                 if reserve and reserve.get("api") == "scripted":
                     return "scripted"
-                if reserve and (
+                if not reserve or (
                     reserve.get("provider") != judges[judge].get("provider")
                     or reserve.get("model_id") != model_id
                     or reserve.get("api", judges[judge]["api"]) != judges[judge]["api"]
@@ -303,51 +372,199 @@ def _graded_execution(
                     "item_id": path.parent.name,
                 }
                 if vote.get("provider_batch_id") and all(
-                    vote.get(k) == v for k, v in identity.items()
+                    k in vote and type(vote[k]) is type(v) and vote[k] == v
+                    for k, v in identity.items()
                 ):
-                    votes[judge, path.parent.name, hashlib.sha256(body).hexdigest()] = model_id
+                    try:
+                        matched = grading_receipt_matches(
+                            root, vote, record_sha, judges[judge], invocation, events
+                        )
+                    except KeyLeakError:
+                        raise
+                    except BenchmarkValidationError:
+                        raise  # Preserve artifact-reader confinement failures.
+                    except (
+                        FileNotFoundError, ValueError, KeyError, TypeError, AttributeError,
+                        IndexError, DecimalException, OverflowError,
+                    ):
+                        matched = False
+                    if matched:
+                        votes[judge, path.parent.name, record_sha] = vote
 
+    # Attempt totals use the same captured votes and invocations as selection.
+    for run_id, invocation in runs.items():
+        for entry in invocation.get("not_run") or []:
+            target, judge = entry.get("target"), entry.get("judge_id")
+            members = members_by_target.get(target, {})
+            if (
+                entry.get("pass") == 1
+                and judge in members
+                and (entry.get("effort") or "default") == (members[judge] or "default")
+            ):
+                attempt_key = (
+                    target, judge, entry.get("item_id"), invocation.get("grading_run_id", run_id)
+                )
+                attempt = entry.get("attempt")
+                if type(attempt) is not int or attempt < 1:
+                    return "unknown"
+                attempts[attempt_key] = max(attempts.get(attempt_key, 0), attempt)
+    if scoring.keys() != transcripts.keys():
+        return "unknown"
+    takes_by_vote: dict[tuple[str, str, str], int] = defaultdict(int)
+    for (target, judge, item, _), count in attempts.items():
+        takes_by_vote[target, judge, item] += count
     observed = set()
-    for record in scoring.values():
+    pending = False
+    for key, record in scoring.items():
+        if (record.get("competitor_id"), record.get("corpus_id")) != key:
+            return "unknown"
+        request = requests.get(key)
         grade = record.get("grading")
         if not grade:
             # Automatic zeroes (e.g. a failed trajectory) have no LLM votes.
-            if record.get("score") is not None and record.get("scoring_method") != "automatic":
+            if record.get("score") is not None and (
+                request is not None
+                or record.get("scoring_method") != "automatic"
+                or type(record.get("score")) not in (float, int)
+                or record["score"] != 0
+                or not (
+                    transcripts[key].get("status") == "failed"
+                    or (
+                        transcripts[key].get("status") == "succeeded"
+                        and isinstance(transcripts[key].get("answer"), str)
+                        and not transcripts[key]["answer"].strip()
+                    )
+                )
+            ):
                 return "unknown"
+            if record.get("score") is not None:
+                capture.scores[key] = 0.0
+            elif request is not None:
+                pending = True
+                item = safe_id(*key)
+                item_path = root / "grading/items/answers" / f"{item}.json"
+                if not request.matches_answer_item(key, optional_json(root, item_path)):
+                    return "unknown"
+                # G2 uses eligible pass-1 pairs even before a final exists. Only
+                # the same receipt-verified latest records can supply those pairs.
+                parsed = {}
+                for judge in efforts:
+                    sha = latest.get((judge, item), (None, None))[1]
+                    raw = votes.get((judge, item, sha))
+                    parsed[judge] = None
+                    if (
+                        raw is not None
+                        and is_final(raw)
+                        and raw.get("input_sha256") == request.sha256()
+                    ):
+                        try:
+                            parsed[judge] = vote_from_record(raw, request=request)
+                        except BenchmarkValidationError:
+                            pass  # An invalid or unverified vote cannot contribute to G2.
+                capture.answers[key] = AnswerVotes(
+                    item, key[0], key[1], parsed, {}, request.suspect, None, None
+                )
             continue
         try:
             item = safe_id(record["competitor_id"], record["corpus_id"])
         except ValueError:
             return "unknown"
-        if grade.get("inputs") != inputs or grade.get("item_id") != item:
+        if (
+            not isinstance(grade, dict)
+            or request is None
+            or grade.get("inputs") != inputs
+            or grade.get("item_id") != item
+        ):
             return "unknown"
-        chosen = dict(grade.get("votes") or {})
+        item_path = root / "grading/items/answers" / f"{item}.json"
+        if not request.matches_answer_item(key, optional_json(root, item_path)):
+            return "unknown"
+        digest = request.sha256()
+        if (
+            grade.get("input_sha256") != digest
+            or grade.get("injection_suspect") is not request.suspect
+        ):
+            return "unknown"
+        if not isinstance(grade.get("votes"), dict):
+            return "unknown"
+        chosen = dict(grade["votes"])
+        if chosen.keys() != efforts.keys():
+            return "unknown"
         if grade.get("reference"):
+            ref_path = root / "grading/items/reference" / f"{item}.json"
+            if not request.matches_answer_item(key, optional_json(root, ref_path)):
+                return "unknown"
             chosen[reference] = grade["reference"]
-        if not chosen:
+        elif (reference, item) in latest:
             return "unknown"
+        parsed = {}
         for judge, binding in chosen.items():
-            model_id = votes.get((judge, item, binding.get("sha256")))
-            if not model_id or model_id != binding.get("model_id"):
+            if not isinstance(binding, dict) or binding.get("input_sha256") != digest:
+                return "unknown"
+            sha = binding.get("sha256")
+            if not isinstance(sha, str):
+                return "unknown"
+            raw = votes.get((judge, item, sha))
+            target = "reference" if judge == reference else "answers"
+            takes = takes_by_vote[target, judge, item]
+            if (
+                raw is None
+                or not is_final(raw)
+                or latest[judge, item][1] != sha
+                or raw.get("input_sha256") != digest
+                or any(
+                    k not in binding
+                    or type(binding[k]) is not type(raw.get(k))
+                    or binding[k] != raw.get(k)
+                    for k in ("model_id", "reported_model", "effort", "withheld", "terminal")
+                )
+                or ("final" in binding and binding["final"] is not True)
+                or type(binding.get("attempts")) is not int
+                or binding["attempts"] != takes
+            ):
+                return "unknown"
+            try:
+                parsed[judge] = vote_from_record(raw, request=request)
+            except BenchmarkValidationError:
                 return "unknown"
             observed.add(judge)
-    return "live" if efforts and set(efforts) <= observed else "unknown"
+        av = AnswerVotes(
+            item,
+            key[0],
+            key[1],
+            {j: parsed[j] for j in efforts},
+            grade["votes"],
+            request.suspect,
+            parsed.get(reference),
+            grade.get("reference"),
+        )
+        replay = final_grade(av, questions[key[1]], inputs=inputs)
+        if (
+            replay is None
+            or type(record.get("score")) not in (float, int)
+            or replay["score"] != record.get("score")
+            or replay["label"] != record.get("label")
+            or replay["method"] != record.get("scoring_method")
+            or json.dumps(replay["grading"], sort_keys=True) != json.dumps(grade, sort_keys=True)
+            or not isinstance(record.get("adjudicator"), list)
+            or not all(isinstance(j, str) for j in record["adjudicator"])
+            or sorted(replay["adjudicator"]) != sorted(record["adjudicator"])
+        ):
+            return "unknown"
+        capture.answers[key] = av
+        capture.finals[key] = replay
+        capture.scores[key] = replay["score"]
+    return "live" if not pending and efforts and set(efforts) <= observed else "unknown"
 
 
-def _live_count(record: dict[str, Any]) -> bool:
-    # ScriptedCountClient also writes DEFAULT_COUNT_MODEL and approximation=False.
-    # The model label alone cannot establish which adapter measured the tokens.
-    execution = record.get("execution")
+def _live_count(
+    record: dict[str, Any], *, root: Path | None = None,
+    transcript: dict[str, Any] | None = None,
+) -> bool:
     return (
-        isinstance(execution, dict)
-        and record.get("status") == "counted"
-        and record.get("approximation") is False
-        and record.get("count_model") == DEFAULT_COUNT_MODEL
-        and execution.get("provider") == "anthropic"
-        and execution.get("api") == "anthropic-messages"
-        and execution.get("model_id") == record["count_model"]
-        and type(record.get("client_wrapped_tokens")) is int
-        and record["client_wrapped_tokens"] >= 0
+        root is not None
+        and transcript is not None
+        and live_count_matches(root, transcript, record)
     )
 
 
@@ -355,7 +572,9 @@ class _RunMetadata:
     """Execution provenance shared by both renderers, from exported inputs only."""
 
     def __init__(self, bundle: RunBundle) -> None:
+        self.bundle = bundle
         run = bundle.run_dir
+        self.root = run
         self.summary: dict[str, Any] = optional_json(run, run / "grading" / "summary.json") or {}
         snapshot = _read_yaml(run, run / "snapshots" / "model-matrix.yml") or {}
         self.families: dict[str, dict[str, Any]] = {
@@ -391,7 +610,7 @@ class _RunMetadata:
         self.answer_events = _events(run, run / "ledger-events.jsonl")
         self.grading_events = _events(run, run / "grading/ledger-events.jsonl")
         self.egress_data = read_evidence_json(run, "egress/summary.json")
-        self.offline = load_offline_evidence(run)
+        self.current_offline = run_offline_evidence(run, self.families)
         self.plan = read_evidence_json(run, "planned-cells.json") or {}
         self.seed = str(bundle.environment.get("seed"))
         self.answering, self.transcripts, self.discarded = _answering_evidence(
@@ -405,6 +624,8 @@ class _RunMetadata:
         self.grading = _execution_kind([*active, *references], grading=True)
         self.scoring = bundle.scoring
         self.tokens = bundle.tokens
+        self.grade_capture = _GradeCapture()
+        self.reference_sample = optional_json(run, run / "grading/reference-sample.json") or {}
         checked_versions: dict[Path, str | None] = {}
         if self.grading == "live":
             reference = next(
@@ -413,23 +634,69 @@ class _RunMetadata:
             if (
                 self.inputs.keys() != self.frozen.keys()
                 or not (SNAPSHOT_FILES.keys() - {"probes"}) <= self.frozen.keys()
+                or self.frozen.get("mapping_table") != MAPPING_TABLE.encode()
+                or self.frozen.get("mask_rules") != MASK_RULES.encode()
             ):
                 self.grading = "unknown"
             else:
-                self.grading = _graded_execution(
-                    run,
-                    self.judges,
-                    efforts,
-                    reference,
-                    self.inputs,
-                    self.scoring,
-                    self.grading_events,
-                    checked_versions,
-                )
+                corpus_path = run / "snapshots/corpus.yml"
+                try:
+                    corpus = artifact_bytes(run, corpus_path)
+                    criteria_path = run / "grading/inputs" / SNAPSHOT_FILES["criteria"]
+                    criteria = CapturedInput.from_bytes(
+                        self.frozen["criteria"], "criteria", "grading criteria"
+                    )
+                    questions = criteria_from_mapping(
+                        criteria.mapping,
+                        criteria_path,
+                        corpus_path=corpus_path,
+                        corpus_body=corpus,
+                        schema_path=REPO_ROOT / "docs/benchmarks/corpus.schema.json",
+                    )
+                    requests = answer_requests(
+                        questions,
+                        self.transcripts,
+                        prompt=self.frozen["judge_prompt"],
+                        schema=self.frozen["judge_schema"],
+                    )
+                    self.grading = _graded_execution(
+                        run,
+                        self.judges,
+                        efforts,
+                        reference,
+                        self.inputs,
+                        self.scoring,
+                        requests,
+                        questions,
+                        self.grading_events,
+                        checked_versions,
+                        self.transcripts,
+                        self.grade_capture,
+                    )
+                except KeyLeakError:
+                    raise
+                except (
+                    BenchmarkValidationError, ValueError, TypeError, KeyError, AttributeError,
+                    FileNotFoundError,
+                ):
+                    self.grading = "unknown"
         self.versions = {
             judge: _reported_versions(run, judge, checked_versions) for judge in efforts
         }
-        self.tier = str(self.summary.get("tier", NOT_GRADED))
+        gates = reconcile_gates(self)
+        self.tier = (
+            outcome_tier(*(gates[name] for name in ("G1", "G2", "G3", "G4")))
+            if self.summary
+            else NOT_GRADED
+        )
+        if self.summary:
+            self.summary = {
+                **self.summary,
+                "gates": {
+                    name: {"passed": gate.passed, "details": gate.details}
+                    for name, gate in gates.items()
+                },
+            }
 
     def claim_evidence(self, claim: str, model: str) -> bool:
         systems = TOKEN_SYSTEMS if claim == "C2" else ("python-docs", "no-docs")
@@ -457,7 +724,7 @@ class _RunMetadata:
         counts: dict[CellKey, int] = {}
         for key, transcript in records.items():
             coord = planned[key]
-            score = self.scoring.get(key, {}).get("score")
+            score = self.grade_capture.scores.get(key)
             if (
                 coord != (transcript["system_id"], model, key[1], transcript.get("repeat"))
                 or type(coord[3]) is not int
@@ -468,7 +735,7 @@ class _RunMetadata:
             scores[coord] = score
             if claim == "C2":
                 token = self.tokens.get(key, {})
-                if not _live_count(token):
+                if not _live_count(token, root=self.root, transcript=transcript):
                     return False
                 counts[coord] = token["client_wrapped_tokens"]
 
@@ -489,34 +756,7 @@ class _RunMetadata:
         return result.passed is True and asdict(result) == self.summary["claims"][claim][model]
 
     def offline_ok(self) -> bool:
-        local = {f for f, spec in self.families.items() if spec.get("arm") == "air-gapped"}
-        attempts = [
-            t
-            for t in (*self.transcripts.values(), *self.discarded.values())
-            if t.get("model_family_id") in local
-        ]
-        cells = self.plan.get("cells")
-        if not isinstance(cells, list) or any(
-            not isinstance(cell, dict) or not isinstance(cell.get("system_id"), str)
-            for cell in cells
-        ):
-            return False
-        jobs = {
-            f"{cell['model_family_id']}--{cell['system_id']}"
-            for cell in cells
-            if cell.get("model_family_id") in local
-        }
-        egress = egress_from_mapping(self.egress_data)
-        return bool(
-            egress
-            and egress["isolation_probe"] == "pass"
-            and offline_verdict(
-                self.offline,
-                egress,
-                expected_checks=len(attempts) + 2,
-                airgap_jobs=sorted(jobs),
-            ).ok
-        )
+        return self.current_offline.verdict.ok is True
 
     @property
     def grading_label(self) -> str:
@@ -625,13 +865,30 @@ def _claim_rows(
     rows = []
     for model, claim in sorted(claims.items()):
         passed = claim.get("passed")
+        offline_blocked = (
+            claim_id == "C3" and passed is True and run.current_offline.verdict.ok is not True
+        )
+        if offline_blocked:
+            passed = run.current_offline.verdict.ok
         verdict = (
             _verdict(passed) if passed is not None else str(claim.get("reason") or "not evaluable")
         )
-        if passed is True and not run.claim_blocker and not run.claim_evidence(claim_id, model):
+        interval = None if offline_blocked else claim.get("interval")
+        if offline_blocked:
+            if passed is None:
+                verdict = "not evaluable: missing or inconsistent execution evidence"
+        elif run.grading == "unknown" and passed is True:
+            verdict = "not evaluable: missing or inconsistent grading evidence"
+        elif passed is True and not run.claim_blocker and not run.claim_evidence(claim_id, model):
             verdict = "not evaluable: missing or inconsistent execution evidence"
+        if passed is True and run.tier != "Validated":
+            verdict = (
+                f"{verdict}; grading gates do not support publication"
+                if verdict.startswith("not evaluable:")
+                else "not evaluable: grading gates do not support publication"
+            )
         flag = "judge-sensitive" if f"{claim_id}/{model}" in sensitive else ""
-        rows.append([model, _interval(claim.get("interval")), verdict, flag])
+        rows.append([model, _interval(interval), verdict, flag])
     return rows
 
 
@@ -689,7 +946,7 @@ def _c1(run: _Run) -> list[str]:
     probe = evidence.get("isolation_probe", "unknown")
     expected = _planned_job_families(run)
     airgap = run.airgapped()
-    offline_ok = (run.summary.get("offline") or {}).get("ok") is True and run.offline_ok()
+    offline_ok = run.offline_ok()
     rows = []
     for system_id, system in sorted(run.systems.items()):
         families = expected.get(system_id, set())
@@ -781,13 +1038,12 @@ def _claims(run: _Run) -> list[str]:
             ["Model", "Score difference with docs minus without", "Verdict", "G4"],
             _claim_rows(run, claims["C3"], sensitive, "C3"),
         )
-        offline = run.summary.get("offline") or {}
+        offline = run.current_offline
         lines += [
             "",
-            f"Offline evidence: {_verdict(offline.get('ok'))} "
-            f"({_esc(offline.get('expected_checks'))} check rounds expected).",
+            _offline_status(run),
         ]
-        denied = offline.get("denied_attempts") or []
+        denied = offline.verdict.denied_attempts
         if denied:
             lines += [
                 "",
@@ -876,6 +1132,12 @@ def _disclosure(run: _Run) -> list[str]:
             "",
             f"Recorded judges: {'; '.join(described) or 'unknown'}.",
         ]
+        if run.grading == "unknown":
+            lines += [
+                "",
+                "Persisted cell scores and derived metrics are unverified diagnostics. "
+                "Missing or inconsistent vote evidence cannot support a public comparison.",
+            ]
     lines += [
         "",
         f"The run was graded by the composition {_esc(summary.get('composition'))}.",
@@ -930,7 +1192,7 @@ def _disclosure(run: _Run) -> list[str]:
         by = breakdowns.get(gate) or {}
         lines += _alpha_table(f"{gate} per evaluated family", by.get("by_family") or {})
         lines += _alpha_table(f"{gate} per system", by.get("by_system") or {})
-    sample = optional_json(run.dir, run.dir / "grading" / "reference-sample.json") or {}
+    sample = run.reference_sample
     groups = sample.get("groups") or {}
     borrowed = sample.get("borrowed") or {}
     shortfall = sample.get("shortfall") or {}
@@ -1573,20 +1835,31 @@ def _reproducibility(run: _Run) -> list[str]:
     return lines
 
 
+def _offline_status(run: _RunMetadata) -> str:
+    offline = run.current_offline
+    status = "unknown" if offline.verdict.ok is None else _verdict(offline.verdict.ok)
+    expected = offline.expected_checks if offline.expected_checks is not None else "unknown"
+    return f"Offline evidence: {status} ({expected} check rounds expected)."
+
+
 def _airgap(run: _Run) -> list[str]:
     lines = ["## Air-gapped arm", ""]
     airgap = run.airgapped() & {f for f, _ in run.groups}
     if not airgap:
         return [*lines, "No air-gapped model ran in this run."]
-    evidence = run.offline
+    offline = run.current_offline
+    lines += [_offline_status(run), f"Isolation probe: {_esc(offline.isolation_probe)}."]
+    evidence = offline.host_checks
     if evidence is None:
-        lines.append("Host checks: no airgap/checks.json in this run.")
+        lines.append("Host checks: unknown (missing or malformed airgap/checks.json).")
     else:
-        hosts = ", ".join(_esc(h) for h in evidence.internet_hosts) or "none"
         lines.append(
-            f"Host checks: all passed {evidence.all_passed}, {evidence.checks} rounds, "
-            f"internet hosts reached: {hosts}."
+            f"Host checks: all passed {evidence.all_passed}, {evidence.checks} rounds."
         )
+    hosts = ", ".join(_esc(h) for h in offline.internet_hosts)
+    if offline.verdict.ok is None:
+        hosts = f"unknown (observed: {hosts})" if hosts else "unknown"
+    lines.append(f"internet hosts reached: {hosts or 'none'}.")
     for family in sorted(airgap):
         for (f, system), keys in run.groups.items():
             if f == family:
