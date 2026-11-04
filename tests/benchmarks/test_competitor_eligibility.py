@@ -288,6 +288,17 @@ def test_exclusions_block_passes_validation_and_survives_snapshot_byte_for_byte(
 # --- The committed template manifest ----------------------------------------
 
 
+def test_template_states_the_ref_tools_session_requirement_for_round_2() -> None:
+    data = yaml.safe_load(_TEMPLATE_MANIFEST_PATH.read_text(encoding="utf-8"))
+    (ref,) = [c for c in data["competitors"] if c["id"] == "ref-tools"]
+    conditions = " ".join(ref["eligibility"]["conditions"])
+    assert (
+        "Requirement for round 2: the bridge must open a fresh MCP session per cell for "
+        "Ref.tools (today one session per job, reused across cells)." in conditions
+    )
+    assert "satisfied by construction" not in conditions
+
+
 def test_template_manifest_parses_and_validates() -> None:
     data = yaml.safe_load(_TEMPLATE_MANIFEST_PATH.read_text(encoding="utf-8"))
 

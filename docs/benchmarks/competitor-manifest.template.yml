@@ -150,7 +150,7 @@ competitors:
       conditions:
         - "Requires a maintainer API key and paid credits to run live (free tier: 200 one-time credits, ~1 credit per tool call)."
         - "Publishing comparative results needs a written-permission decision from Ref.tools at the live-authoring phase (T13)."
-        - "Each question must use a fresh MCP session (Ref.tools dedupes/trims within a session) -- satisfied by construction: the bridge opens a fresh MCP session per cell."
+        - "Each question must use a fresh MCP session (Ref.tools dedupes/trims within a session). Requirement for round 2: the bridge must open a fresh MCP session per cell for Ref.tools (today one session per job, reused across cells)."
 
 # No competitor from the methodology's initial candidate matrix is excluded
 # in this TEMPLATE -- all four are built and included above (each still
