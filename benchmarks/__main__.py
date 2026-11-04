@@ -261,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "agentic-run":
         # Lazy, like agentic-worker: only agentic commands load the provider SDKs.
         from benchmarks.agentic import run as agentic_run
-        from benchmarks.agentic.protocol import KeyLeakError
+        from benchmarks.agentic.protocol import KeyLeakError, scanned_json_bytes
         from benchmarks.runner import _default_run_id
 
         if args.live and args.launcher != "container":
@@ -290,11 +290,12 @@ def main(argv: list[str] | None = None) -> int:
         try:
             launcher = _container_launcher(args, run_id) if args.launcher == "container" else None
             summary = agentic_run.run_agentic(config, launcher=launcher)
+            output = scanned_json_bytes(summary, where="run summary", indent=2, sort_keys=True)
         except KeyLeakError as exc:  # before its base class
             parser.exit(3, f"agentic run stopped on a key leak: {exc}\n")
         except BenchmarkValidationError as exc:
             parser.exit(2, f"agentic run failed: {exc}\n")
-        print(json.dumps(summary, indent=2, sort_keys=True))
+        print(output.decode())
         return 0
 
     if args.command == "run":

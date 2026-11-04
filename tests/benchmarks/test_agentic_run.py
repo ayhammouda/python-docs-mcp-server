@@ -19,6 +19,7 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 import yaml
@@ -891,6 +892,27 @@ def test_late_max_tokens_answers_count_as_answer_turns_and_cap_stops(
     fam = summary["families"]["scripted-google"]
     assert summary["failed_cells"] == 2
     assert (fam["output_cap_stops"], fam["answer_turns"]) == (2, 100)
+
+
+def test_run_refuses_escaped_keys_before_writing_json_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    key = "AIza" + "g" * 35
+    config = _config(tmp_path, run_id="run\n" + key, dry_run=True)
+    with pytest.raises(KeyLeakError) as caught:
+        run_agentic(config)
+    assert key not in str(caught.value)
+    assert not (config.out_dir / "environment.json").exists()
+
+    # Check the run's exported events separately from the persistent provider ledger.
+    config = _config(tmp_path, out_dir=tmp_path / "export")
+    events = [{"event": "stop", "provider": "google", "reason": "é" + key}]
+    monkeypatch.setattr(Ledger, "invocation_events", lambda self: events)
+    monkeypatch.setattr("benchmarks.agentic.run.run_jobs", AsyncMock())
+    with pytest.raises(KeyLeakError) as caught:
+        run_agentic(config)
+    assert key not in str(caught.value)
+    assert not (config.out_dir / "ledger-events.jsonl").exists()
 
 
 def test_a_key_shape_in_an_input_file_is_refused_before_any_snapshot(tmp_path: Path) -> None:

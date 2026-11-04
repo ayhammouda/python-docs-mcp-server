@@ -21,6 +21,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Literal
 
+from benchmarks.agentic.protocol import scanned_json_bytes
 from benchmarks.agentic.types import Buckets
 from benchmarks.model_matrix import ModelFamily
 from benchmarks.runner import BenchmarkValidationError, _load_yaml_mapping
@@ -319,8 +320,9 @@ class Ledger:
 
     def _append(self, provider: str, fields: dict[str, Any]) -> None:
         event = {"run_id": self._run_id, "provider": provider, "at": _utc_now(), **fields}
-        with (self._dir / f"{provider}.jsonl").open("a", encoding="utf-8") as file:
-            file.write(json.dumps(event, sort_keys=True) + "\n")
+        line = scanned_json_bytes(event, where="spend ledger", sort_keys=True) + b"\n"
+        with (self._dir / f"{provider}.jsonl").open("ab") as file:
+            file.write(line)
         self._events.append(event)
 
     def spent(self, provider: str) -> Decimal:

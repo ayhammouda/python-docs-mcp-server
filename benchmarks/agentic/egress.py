@@ -19,7 +19,7 @@ from ipaddress import ip_address
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from benchmarks.agentic.protocol import assert_no_key_shaped
+from benchmarks.agentic.protocol import scanned_json_bytes
 from benchmarks.model_matrix import ModelFamily
 from benchmarks.runner import BenchmarkValidationError
 
@@ -265,11 +265,10 @@ def write_new(dir_fd: int, name: str, data: bytes, *, mode: int = 0o600) -> None
 
 def write_scanned_json(path: Path, record: dict[str, Any]) -> None:
     """Publish complete, key-scanned probe or summary evidence."""
-    text = json.dumps(record, indent=2, sort_keys=True) + "\n"
-    assert_no_key_shaped(text, where=str(path))
+    data = scanned_json_bytes(record, where="JSON evidence", indent=2, sort_keys=True) + b"\n"
     path.parent.mkdir(parents=True, exist_ok=True)
     with open_log_dir(path.parent) as dir_fd:
-        write_new(dir_fd, path.name, text.encode(), mode=0o644)
+        write_new(dir_fd, path.name, data, mode=0o644)
 
 
 def forbidden_env_names(environ: Mapping[str, str]) -> list[str]:

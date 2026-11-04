@@ -19,6 +19,7 @@ from benchmarks.agentic.bridge import (
     system_spec_from_raw,
     truncate_utf8,
 )
+from benchmarks.agentic.protocol import KeyLeakError
 from tests.test_mcp_get_docs_cache_smoke import _create_contentful_json_index
 from tests.test_stdio_smoke import _isolated_cache_env
 
@@ -55,6 +56,14 @@ def test_canonical_text_prefers_compact_structured_content() -> None:
         is_error=False,
     )
     assert canonical_text(r) == '{"a":"é","b":[1,2]}'
+
+
+def test_structured_tool_result_refuses_a_key_before_converting_to_text() -> None:
+    key = "AIza" + "g" * 35
+    result = CallToolResult(content=[], structured_content={"extra": [{"\n" + key: True}]})
+    with pytest.raises(KeyLeakError) as caught:
+        canonical_text(result)
+    assert key not in str(caught.value)
 
 
 def test_canonical_text_joins_text_blocks_and_marks_other_blocks() -> None:

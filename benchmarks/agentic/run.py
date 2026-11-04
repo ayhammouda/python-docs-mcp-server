@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import os
 import random
 import signal
@@ -53,7 +52,13 @@ from benchmarks.agentic.live import (
 )
 from benchmarks.agentic.loop import AIR_GAPPED_CAPS, HOSTED_CAPS
 from benchmarks.agentic.prompt import SYSTEM_PROMPT
-from benchmarks.agentic.protocol import assert_no_key_shaped
+from benchmarks.agentic.protocol import (
+    assert_no_key_shaped,
+    scanned_json_bytes,
+)
+from benchmarks.agentic.protocol import (
+    write_json_evidence as _write,
+)
 from benchmarks.agentic.sandbox import ContainerLauncher
 from benchmarks.agentic.worker import _client_versions
 from benchmarks.model_matrix import (
@@ -73,7 +78,6 @@ from benchmarks.runner import (
     _load_yaml_mapping,
     _scoring_record,
     _utc_now,
-    _write_json,
 )
 
 #: Answer-turn stop reasons that mean the output cap cut the answer; the pilot's 1% rule
@@ -215,11 +219,6 @@ def plan_jobs(
             )
             jobs.append(WorkerJob(f"{family.id}--{system.id}", family, system, trajectories, caps))
     return jobs
-
-
-def _write(path: Path, data: dict[str, Any]) -> None:
-    assert_no_key_shaped(json.dumps(data, sort_keys=True), where=str(path))
-    _write_json(path, data)
 
 
 class _HasId(Protocol):
@@ -599,15 +598,17 @@ def run_agentic(
     def write_outcome() -> None:
         """ledger-events.jsonl and run-summary.json, for a completed or an aborted run."""
         run_events = ledger.invocation_events()
-        events = "".join(json.dumps(e, sort_keys=True) + "\n" for e in run_events)
+        events = b"".join(
+            scanned_json_bytes(e, where="ledger-events.jsonl", sort_keys=True) + b"\n"
+            for e in run_events
+        )
         # The pilot reads how often reported input passed its bound (design §12).
         exceeded = Counter(
             e["provider"]
             for e in run_events
             if e["event"] == "settle" and e["input_bound_exceeded"]
         )
-        assert_no_key_shaped(events, where="ledger-events.jsonl")
-        (out / "ledger-events.jsonl").write_text(events, encoding="utf-8")
+        (out / "ledger-events.jsonl").write_bytes(events)
         if isinstance(launcher, ContainerLauncher):  # C1 evidence, "fail" for a stopped run
             write_egress_summary(out, jobs, run_events)
         scored = collector.succeeded + collector.failed

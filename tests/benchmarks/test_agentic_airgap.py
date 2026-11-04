@@ -16,12 +16,14 @@ from benchmarks.__main__ import main
 from benchmarks.agentic.airgap import (
     MIN_OLLAMA,
     REQUIRED_CONTEXT,
+    AirGapWatch,
     default_routes,
     host_offline_checks,
     ollama_preflight,
     write_airgap_evidence,
 )
 from benchmarks.agentic.egress import allowlist
+from benchmarks.agentic.protocol import KeyLeakError
 from benchmarks.agentic.run import run_agentic
 from benchmarks.model_matrix import load_model_matrix
 from benchmarks.runner import BenchmarkValidationError
@@ -361,6 +363,25 @@ def _egress_summary(out: Path, allowed: list[str], *, probe: str = "pass") -> No
     (out / "egress").mkdir(parents=True, exist_ok=True)
     summary = {"jobs": jobs, "isolation_probe": probe}
     (out / "egress" / "summary.json").write_text(json.dumps(summary))
+
+
+async def test_airgap_checks_reject_an_escaped_mapping_key(tmp_path: Path) -> None:
+    key = "AIza" + "g" * 35
+    record = {"check": "routes", "passed": True, "observed": [{"\n" + key: 1}]}
+    watch = AirGapWatch(tmp_path, lambda: [record])
+    with pytest.raises(KeyLeakError) as caught:
+        await watch.check("before_first")
+    assert key not in str(caught.value)
+    assert all(key.encode() not in p.read_bytes() for p in tmp_path.rglob("*.jsonl"))
+
+
+def test_airgap_evidence_refuses_an_escaped_host(tmp_path: Path) -> None:
+    key = "AIza" + "g" * 35
+    _egress_summary(tmp_path, ["é" + key])
+    with pytest.raises(KeyLeakError) as caught:
+        write_airgap_evidence(tmp_path, rounds=1, broken=False, job_ids=[GEMMA])
+    assert key not in str(caught.value)
+    assert not (tmp_path / "airgap" / "checks.json").exists()
 
 
 def test_airgap_evidence_has_exactly_the_bound_keys(tmp_path: Path) -> None:

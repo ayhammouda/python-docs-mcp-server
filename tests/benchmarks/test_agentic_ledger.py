@@ -28,6 +28,7 @@ from benchmarks.agentic.ledger import (
     load_price_snapshot,
     refuse_stale_snapshot,
 )
+from benchmarks.agentic.protocol import KeyLeakError
 from benchmarks.agentic.types import Buckets
 from benchmarks.agentic.usage import (
     anthropic_buckets,
@@ -345,6 +346,27 @@ def test_actual_above_bound_stops_the_provider_until_acknowledged(tmp_path: Path
     assert [e["event"] for e in ledger.events(RUN_ID)][-1] == "resume"
     assert _reserve(ledger, "anthropic", "1") is not None
     ledger.close()
+
+
+def test_ledger_refuses_an_escaped_key_before_recording_a_reservation(tmp_path: Path) -> None:
+    key = "AIza" + "g" * 35
+    ledger = _open(tmp_path, anthropic="10")
+    try:
+        with pytest.raises(KeyLeakError) as caught:
+            ledger.reserve(
+                "anthropic",
+                model_id="é" + key,
+                kind="model_call",
+                bound=D(1),
+                input_bound=1,
+                output_bound=1,
+            )
+        assert key not in str(caught.value)
+        assert not (tmp_path / "anthropic.jsonl").exists()
+        assert ledger.invocation_events() == []
+        assert _reserve(ledger, "anthropic", "1")
+    finally:
+        ledger.close()
 
 
 def test_ledger_files_hold_money_as_decimal_strings(tmp_path: Path) -> None:

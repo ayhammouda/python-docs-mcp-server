@@ -103,7 +103,7 @@ class ProtocolChannel:
 
     def send(self, message: dict[str, Any]) -> None:
         """Write one frame; refuse a frame that holds any of the worker's secrets."""
-        frame = encode_frame(message)
+        frame = encode_frame(message, where="worker frame")
         if any(secret in frame for secret in self._secrets):
             raise KeyLeakError("own key found in output")
         _write_all(self._fd, frame)

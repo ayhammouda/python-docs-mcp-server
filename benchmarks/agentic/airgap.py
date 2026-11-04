@@ -19,7 +19,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from benchmarks.runner import BenchmarkValidationError, _write_json
+from benchmarks.agentic.protocol import scanned_json_bytes, write_json_evidence
+from benchmarks.runner import BenchmarkValidationError
 
 #: A name (DNS must be down) and an address (IP must be down too): both must fail.
 OUTSIDE_TARGETS = (("pypi.org", 443), ("1.1.1.1", 443))
@@ -166,9 +167,13 @@ class AirGapWatch:
         records = await asyncio.to_thread(self._checks)  # connects block for up to 5 s
         self.rounds += 1
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._path.open("a", encoding="utf-8") as file:
-            for record in records:
-                file.write(json.dumps({**record, "when": when}, sort_keys=True) + "\n")
+        lines = b"".join(
+            scanned_json_bytes({**r, "when": when}, where="airgap/records.jsonl", sort_keys=True)
+            + b"\n"
+            for r in records
+        )
+        with self._path.open("ab") as file:
+            file.write(lines)
         failed = [r["check"] for r in records if not r["passed"]]
         if failed:
             self.broken = True
@@ -210,5 +215,5 @@ def write_airgap_evidence(
         "internet_hosts": internet,
     }
     assert set(result) == {"all_passed", "checks", "internet_hosts"}  # round-2 ruling E18
-    _write_json(out_dir / "airgap" / "checks.json", result)
+    write_json_evidence(out_dir / "airgap" / "checks.json", result)
     return result

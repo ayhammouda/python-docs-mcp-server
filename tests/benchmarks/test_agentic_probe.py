@@ -10,6 +10,7 @@ import json
 import socket
 import subprocess
 import threading
+import traceback
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import replace
@@ -338,7 +339,7 @@ async def test_read_only_artifacts_cannot_disclose_squid_logs(
     assert not docker.resources
 
 
-@pytest.mark.parametrize("source", ["access.log", "checks"])
+@pytest.mark.parametrize("source", ["access.log", "checks", "checks-newline"])
 async def test_leaking_probe_never_publishes_a_prefix_or_allows_clean_collection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
 ) -> None:
@@ -353,6 +354,8 @@ async def test_leaking_probe_never_publishes_a_prefix_or_allows_clean_collection
     out.mkdir()
     launcher = ContainerLauncher(sandbox, control=AsyncMock())
 
+    key = "AIza" + "g" * 35 if source == "checks-newline" else SYNTHETIC
+
     async def one_shot(*args: Any) -> list[dict[str, Any]]:
         spool = docker.squid_spool(job.job_id)
         lines = list(PROBE_LINES)
@@ -360,12 +363,13 @@ async def test_leaking_probe_never_publishes_a_prefix_or_allows_clean_collection
             lines.append(PYPI_LINE.replace("pypi.org", SYNTHETIC))
         (spool / "access.log").write_text("\n".join(lines) + "\n")
         (spool / "cache.log").write_text("squid started\n")
-        return [{"check": "env", "passed": True, "detail": SYNTHETIC if source == "checks" else ""}]
+        detail = {"checks": key, "checks-newline": "\n" + key}.get(source, "")
+        return [{"check": "env", "passed": True, "detail": detail}]
 
     monkeypatch.setattr(probe, "_one_shot", one_shot)
     with pytest.raises(KeyLeakError) as detected:
         await launcher.prepare([job])
-    assert SYNTHETIC not in str(detected.value)
+    assert key not in str(detected.value)
     assert not (out / "probe" / f"{job.job_id}.json").exists()
     # Even if Squid replaces a leaking prefix before collection, the verdict stays failed.
     spool = docker.squid_spool(job.job_id)
@@ -373,7 +377,7 @@ async def test_leaking_probe_never_publishes_a_prefix_or_allows_clean_collection
     with pytest.raises(KeyLeakError):
         await launcher.close()
     assert not spool.parent.exists()
-    assert all(SYNTHETIC.encode() not in p.read_bytes() for p in out.rglob("*") if p.is_file())
+    assert all(key.encode() not in p.read_bytes() for p in out.rglob("*") if p.is_file())
     assert (out / "probe" / f"{job.job_id}.collection-pending").is_file()
     assert json.loads((out / "egress" / job.job_id / "collected.json").read_text())["ok"] is False
 
@@ -513,6 +517,28 @@ async def test_a_completed_probe_accepts_docker_auto_removal(tmp_path: Path) -> 
     argv = probe._probe_argv(sandbox, name, "test-net", {}, {})
     assert await probe._one_shot(sandbox, argv, name) == checks
     assert not docker.resources
+
+
+@pytest.mark.parametrize("source", ["stderr-tail", "decoder"])
+async def test_probe_failure_never_echoes_key_in_traceback(
+    source: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    key = "AIza" + "g" * 35
+    proc = _done([], 1, err="X" + key + " " + "." * 260)
+    if source == "decoder":
+        proc = _done([], out="invalid")
+        error = json.JSONDecodeError("invalid token " + key, "invalid", 0)
+        monkeypatch.setattr(probe.json, "loads", Mock(side_effect=error))
+    sandbox = Mock(
+        create_resource=AsyncMock(return_value="fake-id"),
+        docker=AsyncMock(return_value=proc),
+        remove_container=AsyncMock(),
+    )
+    with pytest.raises((KeyLeakError, IsolationProbeFailed)) as caught:
+        await probe._one_shot(sandbox, ["create"], "probe")
+    assert key not in str(caught.value)
+    assert key not in "".join(traceback.format_exception(caught.value))
+    sandbox.remove_container.assert_awaited_once()
 
 
 async def test_probe_create_conflict_does_not_remove_the_existing_container(tmp_path: Path) -> None:

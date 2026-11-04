@@ -32,7 +32,13 @@ from benchmarks.agentic.egress import (
     read_log,
     write_scanned_json,
 )
-from benchmarks.agentic.protocol import KeyLeakError, assert_no_key_shaped, redact_key_shaped
+from benchmarks.agentic.protocol import (
+    KeyLeakError,
+    assert_no_key_shaped,
+    assert_no_key_shaped_json,
+    redact_key_shaped,
+    scanned_json_bytes,
+)
 from benchmarks.runner import BenchmarkValidationError
 
 if TYPE_CHECKING:
@@ -140,7 +146,7 @@ def probe_main(argv: list[str]) -> int:
         checks = [run_control((spec["control"][0], int(spec["control"][1])), spec["token"])]
     else:
         checks = run_probe_checks(spec)
-    print(json.dumps({"checks": checks}))
+    print(scanned_json_bytes({"checks": checks}, where="probe output").decode())
     return 0
 
 
@@ -220,15 +226,23 @@ async def _one_shot(sandbox: Sandbox, argv: list[str], name: str) -> list[dict[s
         proc = await sandbox.docker(["docker", "start", "--attach", container_id])
     finally:
         await sandbox.remove_container(container_id, pending=sys.exception())
-    try:
-        if proc.returncode != 0:
-            raise ValueError(f"exit {proc.returncode}")
-        return list(json.loads(proc.stdout)["checks"])
-    except (ValueError, KeyError, TypeError) as exc:
-        detail = proc.stderr.decode("utf-8", errors="replace").strip()
-        assert_no_key_shaped(detail, where=f"{name} stderr")
-        detail = detail[-300:]
-        raise IsolationProbeFailed(f"probe container {name} failed ({exc}): {detail}") from None
+    if proc.returncode != 0:
+        reason = f"exit {proc.returncode}"
+    else:
+        assert_no_key_shaped(proc.stdout, where="probe output")
+        try:
+            checks = list(json.loads(proc.stdout)["checks"])
+        except (ValueError, KeyError, TypeError) as exc:
+            reason = f"invalid probe output ({type(exc).__name__})"
+        else:
+            assert_no_key_shaped_json(checks, where="probe output")
+            return checks
+
+    detail = proc.stderr.decode("utf-8", errors="replace").strip()
+    assert_no_key_shaped(detail, where="probe stderr")
+    message = f"probe container {name} failed ({reason}): {detail[-300:]}"
+    assert_no_key_shaped(message, where="probe diagnostic")
+    raise IsolationProbeFailed(message)
 
 
 def _probe_argv(

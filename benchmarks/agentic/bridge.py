@@ -7,7 +7,6 @@ canonical text string by the same rule.
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 from collections.abc import AsyncIterator, Mapping
@@ -20,7 +19,7 @@ from mcp import ClientSession, MCPError, StdioServerParameters, stdio_client
 from mcp.types import CONNECTION_CLOSED, CallToolResult, PaginatedRequestParams, TextContent
 
 from benchmarks.adapters.guard import EGRESS_URL_ENV, PROVIDER_API_KEY_ENV
-from benchmarks.agentic.protocol import assert_no_key_shaped
+from benchmarks.agentic.protocol import assert_no_key_shaped, scanned_json_bytes
 from benchmarks.agentic.types import ToolSpec
 from benchmarks.runner import (
     _SAFE_ID,
@@ -120,7 +119,12 @@ def load_systems(manifest_path: Path) -> list[SystemSpec]:
 def canonical_text(result: CallToolResult) -> str:
     """Compact JSON of ``structured_content`` when present, else the joined text blocks."""
     if result.structured_content is not None:
-        return json.dumps(result.structured_content, ensure_ascii=False, separators=(",", ":"))
+        return scanned_json_bytes(
+            result.structured_content,
+            where="structured tool result",
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).decode()
     return "\n".join(
         block.text if isinstance(block, TextContent) else f"[{block.type} content omitted]"
         for block in result.content

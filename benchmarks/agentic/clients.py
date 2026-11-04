@@ -35,6 +35,11 @@ from benchmarks.adapters.guard import (
     PROVIDER_API_KEY_ENV,
     require_live_environment,
 )
+from benchmarks.agentic.protocol import (
+    assert_no_key_shaped,
+    assert_no_key_shaped_json,
+    scanned_json_bytes,
+)
 from benchmarks.agentic.schemas import (
     to_anthropic,
     to_gemini,
@@ -75,10 +80,14 @@ def tool_arguments(value: Any) -> tuple[dict[str, Any], str | None]:
         try:
             parsed = json.loads(value)
         except json.JSONDecodeError:
-            return {}, value
+            parsed = None
     if isinstance(parsed, dict):
         return parsed, None
-    return {}, value if isinstance(value, str) else json.dumps(value)
+    if isinstance(value, str):
+        assert_no_key_shaped_json(parsed, where="tool arguments")
+        assert_no_key_shaped(value, where="tool arguments")
+        return {}, value
+    return {}, scanned_json_bytes(value, where="tool arguments").decode()
 
 
 def parse_retry_after(headers: Mapping[str, str]) -> float | None:

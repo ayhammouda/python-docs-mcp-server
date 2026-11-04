@@ -524,6 +524,34 @@ async def test_unassigned_or_invalid_report_never_reaches_callback(
     assert host.received == []
 
 
+@pytest.mark.parametrize("raw_only", [False, True])
+async def test_host_refuses_an_escaped_key_in_a_worker_frame(
+    host: Host, tmp_path: Path, worker_stream: asyncio.StreamReader, raw_only: bool
+) -> None:
+    key = "AIza" + "g" * 35
+    if raw_only:  # The escaped A hides the key's end boundary in the decoded value.
+        body = ('{"type":"done","extra":"' + key + r'\u0041"}').encode()
+        worker_stream.feed_data(len(body).to_bytes(8, "big") + body)
+    else:
+        worker_stream.feed_data(encode_frame({"type": "done", "extra": [{"\n" + key: True}]}))
+    worker_stream.feed_eof()
+    with pytest.raises(KeyLeakError) as caught:
+        await host.run([_job(tmp_path, [], count=1)])
+    assert key not in str(caught.value)
+    assert host.received == []
+
+
+def test_worker_checks_decoded_fields_before_sending(monkeypatch: pytest.MonkeyPatch) -> None:
+    write = Mock()
+    monkeypatch.setattr(worker, "_write_all", write)
+    key = "AIza" + "g" * 35
+    channel = worker.ProtocolChannel(1, (), 2, Mock(), (Mock(), Mock()))
+    with pytest.raises(KeyLeakError) as caught:
+        channel.send({"answer": ["\n" + key]})
+    assert key not in str(caught.value)
+    write.assert_not_called()
+
+
 async def test_assigned_reports_reach_callback(
     host: Host, tmp_path: Path, worker_stream: asyncio.StreamReader
 ) -> None:

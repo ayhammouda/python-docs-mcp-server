@@ -42,6 +42,7 @@ from benchmarks.agentic.clients import (
     parse_retry_after,
     tool_arguments,
 )
+from benchmarks.agentic.protocol import KeyLeakError
 from benchmarks.agentic.types import (
     Buckets,
     Conversation,
@@ -374,6 +375,15 @@ async def test_openai_non_object_arguments_are_kept_raw(raw: str) -> None:
 )
 def test_tool_arguments(value: Any, expected: tuple[dict[str, Any], str | None]) -> None:
     assert tool_arguments(value) == expected
+
+
+@pytest.mark.parametrize("serialized", [True, False])
+def test_raw_tool_arguments_refuse_a_key_before_becoming_transcript_text(serialized: bool) -> None:
+    key = "AIza" + "g" * 35
+    arguments = ["\n" + key]
+    with pytest.raises(KeyLeakError) as caught:
+        tool_arguments(json.dumps(arguments) if serialized else arguments)
+    assert key not in str(caught.value)
 
 
 def test_parse_retry_after_accepts_an_http_date(monkeypatch: pytest.MonkeyPatch) -> None:

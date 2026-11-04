@@ -9,7 +9,6 @@ its bound.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import signal
 import subprocess
@@ -33,7 +32,6 @@ from benchmarks.agentic.protocol import (
     MAX_FRAME_BYTES,
     FrameTooLarge,
     KeyLeakError,
-    assert_no_key_shaped,
     encode_frame,
     read_frame,
     redact_key_shaped,
@@ -315,18 +313,16 @@ async def _supervise(
                 "trajectories": list(job.trajectories),
                 "caps": asdict(job.caps),
             }
-            proc.stdin.write(encode_frame(job_frame))
+            proc.stdin.write(encode_frame(job_frame, where="job frame"))
             await proc.stdin.drain()
             # Between two frames a worker runs one model call or a trajectory's other tool
             # calls, plus a backoff of at most 120 s: silent for longer, it is lost.
             silence_s = job.caps.trajectory_s + job.caps.model_call_timeout_s
             while (
                 message := await asyncio.wait_for(
-                    read_frame(proc.stdout, limit=max_frame_bytes), silence_s
+                    read_frame(proc.stdout, limit=max_frame_bytes, where="worker frame"), silence_s
                 )
             ) is not None:
-                where = f"a frame from worker {job.job_id}"
-                assert_no_key_shaped(json.dumps(message, ensure_ascii=False), where=where)
                 kind = message.get("type")
                 reply: dict[str, Any] | None = None
                 if kind == "reserve":
@@ -383,7 +379,7 @@ async def _supervise(
                     if kind in ("trajectory", "discarded"):
                         reply = {"type": "ack"}
                 if reply is not None:
-                    proc.stdin.write(encode_frame(reply))
+                    proc.stdin.write(encode_frame(reply, where="host reply"))
                     await proc.stdin.drain()
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             pass  # the worker died or stalled; handled as a lost worker below
