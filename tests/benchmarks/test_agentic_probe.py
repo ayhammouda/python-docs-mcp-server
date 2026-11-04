@@ -66,7 +66,7 @@ def _listener(reply: Callable[[bytes], bytes] | None = None) -> Iterator[tuple[i
                     while b"\r\n\r\n" not in data and (chunk := conn.recv(4096)):
                         data += chunk
                 except TimeoutError:
-                    pass
+                    pass  # a client that sends no blank line: keep what arrived
                 received.append(data)
                 if reply is not None:
                     conn.sendall(reply(data))

@@ -561,8 +561,9 @@ async def test_close_stops_each_proxy_then_removes_what_it_created(tmp_path: Pat
     for job in jobs:
         _logs(tmp_path / "run" / "egress" / job.job_id)
     start = len(docker.calls)
-    assert await launcher.close() == []
-    tail = [" ".join(c[1:3]) + " " + c[-1] for c in docker.calls[start:]]
+    problems = await launcher.close()
+    assert problems == []
+    tail =[" ".join(c[1:3]) + " " + c[-1] for c in docker.calls[start:]]
     expected = []
     for job in jobs:
         proxy, net = f"pdmcp-{RUN}-{job.job_id}-proxy", f"pdmcp-{RUN}-{job.job_id}-net"

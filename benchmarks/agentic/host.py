@@ -17,6 +17,7 @@ import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import asdict, dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -330,9 +331,7 @@ async def _supervise(
     finally:
         # Runs to its end even when a second abort cancels this task meanwhile; then re-raise.
         teardown = asyncio.ensure_future(
-            _teardown(
-                proc, anchor, log_path, ledger, in_flight, lambda: launcher.stop_worker(job)
-            )
+            _teardown(proc, anchor, log_path, ledger, in_flight, partial(launcher.stop_worker, job))
         )
         cancelled: asyncio.CancelledError | None = None
         while not teardown.done():
