@@ -471,6 +471,24 @@ class _RunInput:
         return cls(name, content, _require_yaml_mapping(data, label))
 
 
+def _finalization_failure(primary: BaseException | None, later: BaseException) -> BaseException:
+    if primary is None:
+        return later
+    if isinstance(primary, Exception):
+        # Preserve an operator interrupt even if an earlier ordinary operation failed.
+        if not isinstance(later, Exception):
+            add_cleanup_cause(later, BenchmarkValidationError(redact_key_shaped_text(str(primary))))
+            return later
+        if isinstance(later, KeyLeakError) and not isinstance(primary, KeyLeakError):
+            return KeyLeakError(
+                f"{redact_key_shaped_text(str(later))}; "
+                f"earlier failure: {redact_key_shaped_text(str(primary))}"
+            )
+    detail = f"{type(later).__name__}: {redact_key_shaped_text(str(later))}"
+    add_cleanup_cause(primary, BenchmarkValidationError(detail))
+    return primary
+
+
 def run_agentic(
     config: AgenticConfig,
     *,
@@ -744,24 +762,15 @@ def run_agentic(
         detail = redact_key_shaped_text(str(exc))
         summary |= {"status": "aborted", "abort_reason": f"{type(exc).__name__}: {detail}"}
     finally:
-        # A failed evidence export must not hide a detected leak or skip releasing the ledger.
-        for finalize in (write_outcome, ledger.close):
+        try:
+            write_outcome()
+        except BaseException as exc:  # retain the interrupt or leak while closing the ledger
+            failure = _finalization_failure(failure, exc)
+        finally:
             try:
-                finalize()
-            except Exception as exc:  # noqa: BLE001 - keep both failures and finish cleanup
-                if failure is None:
-                    failure = exc
-                elif isinstance(exc, KeyLeakError) and not isinstance(
-                    failure, (asyncio.CancelledError, KeyLeakError)
-                ):
-                    failure = KeyLeakError(
-                        f"{redact_key_shaped_text(str(exc))}; "
-                        f"earlier failure: {redact_key_shaped_text(str(failure))}"
-                    )
-                else:
-                    add_cleanup_cause(
-                        failure, BenchmarkValidationError(redact_key_shaped_text(str(exc)))
-                    )
+                ledger.close()
+            except BaseException as exc:
+                failure = _finalization_failure(failure, exc)
     if failure is not None:
         raise failure
     return summary

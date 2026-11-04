@@ -1392,6 +1392,39 @@ def test_runs_share_one_durable_ledger_by_default(
     assert (expected / "anthropic.jsonl").is_file()
 
 
+@pytest.mark.parametrize("stage", ["export", "run", "export_after_failure"])
+def test_keyboard_interrupt_survives_finalization_and_releases_the_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    interrupt = KeyboardInterrupt("operator interrupt")
+    config = _config(tmp_path, models=("scripted-anthropic",), systems=("no-docs",))
+
+    def before_workers(*args: Any, **kwargs: Any) -> None:
+        if stage == "run":
+            raise interrupt
+        if stage == "export_after_failure":
+            raise BenchmarkValidationError("earlier failure")
+
+    def fail_export(path: Path, data: bytes) -> int:
+        if path.name == "ledger-events.jsonl":
+            if stage == "run":
+                raise KeyLeakError("key found in evidence")
+            raise interrupt
+        return write(path, data)
+
+    write = Path.write_bytes
+    monkeypatch.setattr(Path, "write_bytes", fail_export)
+    monkeypatch.setattr("benchmarks.agentic.run.LedgerService", before_workers)
+    monkeypatch.setattr("benchmarks.agentic.run.run_jobs", AsyncMock())
+    with pytest.raises(KeyboardInterrupt) as error:
+        run_agentic(config)
+    assert error.value is interrupt
+    if stage != "export":
+        reason = "key found in evidence" if stage == "run" else "earlier failure"
+        assert reason in str(interrupt.__cause__)
+    Ledger.open(config.ledger_dir, run_id="after-interrupt").close()
+
+
 def test_cli_leak_stays_primary_when_the_artifact_volume_is_full(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
