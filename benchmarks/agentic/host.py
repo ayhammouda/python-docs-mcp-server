@@ -80,19 +80,6 @@ def refuse_host_keys(environ: Mapping[str, str]) -> None:
         )
 
 
-async def _read(
-    reader: asyncio.StreamReader, caps: Caps, max_frame_bytes: int
-) -> dict[str, Any] | None:
-    """The next frame, or TimeoutError once the worker has been silent too long.
-
-    Between two frames a worker runs at most one model call (model_call_timeout_s) or the
-    rest of a trajectory's tool calls (trajectory_s), plus a backoff of at most 120 s, which
-    model_call_timeout_s (300 s or more) covers.
-    """
-    async with asyncio.timeout(caps.trajectory_s + caps.model_call_timeout_s):
-        return await read_frame(reader, limit=max_frame_bytes)
-
-
 async def _supervise(
     job: WorkerJob,
     *,
@@ -131,7 +118,14 @@ async def _supervise(
             }
             proc.stdin.write(encode_frame(job_frame))
             await proc.stdin.drain()
-            while (message := await _read(proc.stdout, job.caps, max_frame_bytes)) is not None:
+            # Between two frames a worker runs one model call or a trajectory's other tool
+            # calls, plus a backoff of at most 120 s: silent for longer, it is lost.
+            silence_s = job.caps.trajectory_s + job.caps.model_call_timeout_s
+            while (
+                message := await asyncio.wait_for(
+                    read_frame(proc.stdout, limit=max_frame_bytes), silence_s
+                )
+            ) is not None:
                 where = f"a frame from worker {job.job_id}"
                 assert_no_key_shaped(json.dumps(message, ensure_ascii=False), where=where)
                 kind = message.get("type")
