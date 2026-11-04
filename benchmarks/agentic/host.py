@@ -37,6 +37,7 @@ from benchmarks.agentic.protocol import (
     encode_frame,
     read_frame,
     redact_key_shaped,
+    redact_key_shaped_text,
 )
 from benchmarks.agentic.types import Buckets
 from benchmarks.agentic.worker import MAX_RERUNS
@@ -178,7 +179,7 @@ def _diagnostic(message: str) -> None:
     # During terminal hangup even stderr can be closed.
     if sys.stderr is not None:
         with suppress(OSError, ValueError):
-            print(KEY_SHAPED.sub("[redacted]", message), file=sys.stderr, flush=True)
+            print(redact_key_shaped_text(message), file=sys.stderr, flush=True)
 
 
 async def _teardown(
@@ -227,12 +228,10 @@ async def _teardown(
     # Formatting failures must never interrupt mandatory scrubbing or accounting.
     for i, exc in enumerate(errors):
         try:
-            detail = f"{location}: {type(exc).__name__}: {exc}"
+            detail = f"{location}: {type(exc).__name__}: {redact_key_shaped_text(str(exc))}"
             if KEY_SHAPED.search("".join(traceback.format_exception(exc, limit=0))):
                 # An outer exception may be clean while its notes or chained daemon error leak.
-                errors[i] = KeyLeakError(
-                    KEY_SHAPED.sub("[redacted]", detail) + " (key shape redacted)"
-                )
+                errors[i] = KeyLeakError(detail + " (key shape redacted)")
             else:
                 exc.add_note(location)
             _diagnostic(detail)
@@ -254,9 +253,6 @@ def _publish_scrubbed(worker_log: BinaryIO, log_path: Path) -> str | None:
     if len(data) != size:
         raise OSError("incomplete worker log read")
     redacted, pattern = redact_key_shaped(data)
-    # A replacement can introduce a token boundary for a previously adjacent key.
-    if pattern and redact_key_shaped(redacted)[1]:
-        redacted = b"[redacted]"
     stage = tempfile.NamedTemporaryFile(dir=log_path.parent, suffix=".tmp", delete=False)
     try:
         with stage:
@@ -462,7 +458,7 @@ async def run_jobs(
         async def close() -> None:
             nonlocal reported
             if problems := await launcher.close():
-                detail = KEY_SHAPED.sub("[redacted]", "; ".join(problems))
+                detail = redact_key_shaped_text("; ".join(problems))
                 if failed:
                     _diagnostic(f"launcher cleanup problems: {detail}")
                 reason = (

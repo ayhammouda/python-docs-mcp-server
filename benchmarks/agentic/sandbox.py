@@ -40,7 +40,7 @@ from benchmarks.agentic.egress import (
     squid_conf,
     write_new,
 )
-from benchmarks.agentic.protocol import KEY_SHAPED, KeyLeakError, redact_key_shaped
+from benchmarks.agentic.protocol import KeyLeakError, redact_key_shaped, redact_key_shaped_text
 from benchmarks.model_matrix import KNOWN_APIS, ModelFamily
 from benchmarks.runner import BenchmarkValidationError, _write_json
 
@@ -194,7 +194,7 @@ async def _remove(docker: DockerRun, *args: str) -> subprocess.CompletedProcess[
     try:
         return await docker(["docker", *args])
     except (OSError, subprocess.TimeoutExpired) as exc:
-        detail = KEY_SHAPED.sub("[redacted]", str(exc))
+        detail = redact_key_shaped_text(str(exc))
         raise BenchmarkValidationError(f"docker {' '.join(args)} failed: {detail}") from None
 
 
@@ -209,11 +209,11 @@ async def _rollback(
     except asyncio.CancelledError as interrupt:
         if cancelled is None and interrupt is not setup_error:
             # A signal arrived after setup failed. Later close failures can hide its context.
-            reason = KEY_SHAPED.sub("[redacted]", str(setup_error))
+            reason = redact_key_shaped_text(str(setup_error))
             add_cleanup_cause(interrupt, BenchmarkValidationError(reason))
         raise
     except BenchmarkValidationError as exc:
-        reason = KEY_SHAPED.sub("[redacted]", str(setup_error))
+        reason = redact_key_shaped_text(str(setup_error))
         raise BenchmarkValidationError(f"{reason}; rollback failed: {exc}") from None
 
 
@@ -367,7 +367,7 @@ class Sandbox:
                     else:
                         await self.remove_container(resource_id)
                 except Exception as exc:  # noqa: BLE001 - still remove the other owned IDs
-                    failures.append(f"{resource_id}: {KEY_SHAPED.sub('[redacted]', str(exc))}")
+                    failures.append(f"{resource_id}: {redact_key_shaped_text(str(exc))}")
         if failures:
             raise BenchmarkValidationError("; ".join(failures))
 
@@ -383,7 +383,7 @@ class Sandbox:
             try:
                 ids = await self.output(*ls, "--no-trunc", "--quiet", "--filter", label_filter)
             except (BenchmarkValidationError, OSError, subprocess.TimeoutExpired) as exc:
-                detail = KEY_SHAPED.sub("[redacted]", str(exc))
+                detail = redact_key_shaped_text(str(exc))
                 raise BenchmarkValidationError(
                     f"Docker lookup for {label_filter} failed: {detail}"
                 ) from None

@@ -831,6 +831,27 @@ async def test_network_remove_failure_names_the_owned_id_and_scrubs_daemon_stder
     assert SYNTHETIC not in problems[0]
 
 
+@pytest.mark.parametrize("cli_raises", [False, True])
+async def test_removal_diagnostic_cannot_expose_an_adjacent_key(
+    tmp_path: Path, cli_raises: bool
+) -> None:
+    sandbox = _sandbox(tmp_path, FakeDocker())
+    google = "AIza" + "g" * 35
+
+    async def disconnected(argv: Sequence[str]) -> Any:
+        detail = f"unavailable: {google}{SYNTHETIC}"
+        if cli_raises:
+            raise OSError(detail)
+        return _done(argv, 1, err=detail)
+
+    sandbox.docker = disconnected
+    owned = "b" * 64
+    with pytest.raises(BenchmarkValidationError, match=owned) as error:
+        await sandbox.run("network", "rm", owned)
+    trace = "".join(traceback.format_exception(error.value))
+    assert SYNTHETIC not in trace and google not in trace
+
+
 @pytest.mark.parametrize("kind", ["container", "network"])
 async def test_remove_cli_start_failure_identifies_owned_resource_and_scrubs_error(
     tmp_path: Path, kind: str

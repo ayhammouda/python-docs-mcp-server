@@ -91,7 +91,17 @@ def redact_key_shaped(data: bytes) -> tuple[bytes, str | None]:
     match = _KEY_SHAPED_BYTES.search(data)
     if match is None:
         return data, None
-    return _KEY_SHAPED_BYTES.sub(b"[redacted]", data), match.lastgroup
+    redacted = _KEY_SHAPED_BYTES.sub(b"[redacted]", data)
+    # Removing a key can give an adjacent key a token boundary. Withhold ambiguous output.
+    if _KEY_SHAPED_BYTES.search(redacted):
+        redacted = b"[redacted]"
+    return redacted, match.lastgroup
+
+
+def redact_key_shaped_text(text: str) -> str:
+    """Use the same key scan for printable errors and byte-oriented artifacts."""
+    redacted, pattern = redact_key_shaped(text.encode("utf-8", errors="surrogatepass"))
+    return redacted.decode("utf-8", errors="surrogatepass") if pattern else text
 
 
 def assert_no_key_shaped(text: str, *, where: str) -> None:
