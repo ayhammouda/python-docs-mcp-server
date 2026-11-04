@@ -86,7 +86,8 @@ def run_probe_checks(
     """Every check the spec asks for, each ``{"check", "target", "passed", "detail"}``."""
     token = str(spec.get("token", ""))
     forbidden = forbidden_env_names(os.environ)
-    results = [_result("env", "", not forbidden, ", ".join(forbidden))]  # names, never values
+    names = ", ".join(forbidden)  # names, never values: a failure names what was injected
+    results = [_result("env", names, not forbidden, names)]
     results += [_direct(str(host), int(port), token) for host, port in spec.get("direct", [])]
     if dns_name := spec.get("dns_name"):
         try:

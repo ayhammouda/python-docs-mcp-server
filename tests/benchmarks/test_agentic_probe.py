@@ -188,6 +188,9 @@ def test_env_check_names_forbidden_variables_only(monkeypatch: pytest.MonkeyPatc
     (env,) = _check(run_probe_checks({}), "env")
     assert env["passed"] is False and "HTTPS_PROXY" in env["detail"]
     assert "secret" not in json.dumps(env)
+    # The failure names the variables, so the operator sees which one the docker CLI injected.
+    failed = probe_verdict([env], **_verdict_args())
+    assert failed == ["env HTTPS_PROXY"] and "secret" not in json.dumps(failed)
 
 
 def _passing() -> list[dict[str, Any]]:
