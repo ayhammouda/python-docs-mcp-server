@@ -75,6 +75,8 @@ def _write_record(
     *,
     model_id: str | None = None,
     api: str = "openai-responses",
+    unit_id: str = "u1",
+    outcome: str = "ok",
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     cell, corpus = path.parent.name, path.name.split("--")[0].removesuffix(".json")
@@ -86,7 +88,22 @@ def _write_record(
         "model_id": model_id or family_id,
         "provider": provider,
         "execution": {"provider": provider, "model_id": model_id or family_id, "api": api},
-        "model_calls": [{"raw_response": {"id": "response-1"}}],
+        "model_calls": [
+            {
+                "request_params": {"model": model_id or family_id},
+                "attempts": [{"unit_id": unit_id, "outcome": outcome}],
+                "buckets": {
+                    "uncached_input": 1000,
+                    "cache_write_input": 0,
+                    "cached_input": 0,
+                    "output": 100,
+                    "reasoning": 0,
+                }
+                if outcome == "ok"
+                else None,
+                "raw_response": {"id": "response-1"} if outcome == "ok" else None,
+            }
+        ],
         "timing": {"wall_ms": wall_ms, "grant_wait_ms": wait_ms},
     }
     path.write_text(json.dumps(record), encoding="utf-8")
@@ -94,6 +111,7 @@ def _write_record(
 
 def _pilot_summary(run: Path, status: str, planned: int, scored: int, openai_spend: str) -> None:
     summary = {
+        "run_id": "pilot",
         "status": status,
         "planned_cells": planned,
         "scored_cells": scored,
@@ -109,15 +127,34 @@ def _pilot_summary(run: Path, status: str, planned: int, scored: int, openai_spe
 def _settled_unit(
     unit_id: str, family: str, booked: str, outcome: str, *, model_id: str | None = None
 ) -> list[dict[str, str]]:
-    unit = {"provider": "openai", "unit_id": unit_id}
+    unit = {"provider": "openai", "unit_id": unit_id, "run_id": "pilot"}
     return [
         {
             **unit,
             "event": "reserve",
+            "kind": "model_call",
+            "bound": booked if outcome == "ok" else str(D(booked) / 2),
+            "input_bound": 1000,
+            "output_bound": 100,
             "job_id": f"{family}--no-docs",
             "model_id": model_id or family,
         },
-        {**unit, "event": "settle", "booked": booked, "outcome": outcome},
+        {
+            **unit,
+            "event": "settle",
+            "booked": booked,
+            "outcome": outcome,
+            "actual": booked if outcome == "ok" else None,
+            "buckets": {
+                "uncached_input": 1000,
+                "cache_write_input": 0,
+                "cached_input": 0,
+                "output": 100,
+                "reasoning": 0,
+            }
+            if outcome == "ok"
+            else None,
+        },
     ]
 
 
@@ -273,15 +310,30 @@ def test_reference_rates_aggregate_every_attempt_of_a_cell(tmp_path: Path) -> No
         cell = f"no-docs--gpt-6.1-sol--r{r}"
         for q in ("Q1", "Q2", "Q3"):
             _write_record(
-                run / "transcripts" / cell / f"{q}.json", "gpt-6.1-sol", "openai", 2000, 500
+                run / "transcripts" / cell / f"{q}.json",
+                "gpt-6.1-sol",
+                "openai",
+                2000,
+                500,
+                unit_id=f"{cell}/{q}/ok",
             )
             discarded = run / "discarded" / cell / f"{q}--attempt1.json"
-            _write_record(discarded, "gpt-6.1-sol", "openai", 1000, 0)
+            _write_record(
+                discarded,
+                "gpt-6.1-sol",
+                "openai",
+                1000,
+                0,
+                unit_id=f"{cell}/{q}/timeout",
+                outcome="timeout",
+            )
     _pilot_summary(run, "completed", 90, 90, "9")
     events = []
-    for i in range(180):
-        outcome = "ok" if i % 2 else "timeout"
-        events.extend(_settled_unit(f"u{i}", "gpt-6.1-sol", "0.05", outcome))
+    for r in range(1, 31):
+        for q in ("Q1", "Q2", "Q3"):
+            for outcome in ("timeout", "ok"):
+                unit = f"no-docs--gpt-6.1-sol--r{r}/{q}/{outcome}"
+                events.extend(_settled_unit(unit, "gpt-6.1-sol", "0.05", outcome))
     (run / "ledger-events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
     (rate,) = reference_rates(run).values()
     assert (rate.family_id, rate.provider, rate.cells) == ("gpt-6.1-sol", "openai", 90)
@@ -350,7 +402,7 @@ def test_reference_spend_and_time_follow_the_family_that_incurred_them(tmp_path:
     events = []
     for family, price, wall in [("cheap", "0.01", 200), ("expensive", "3.00", 4000)]:
         record = tmp_path / "transcripts" / f"no-docs--{family}--r1" / "Q1.json"
-        _write_record(record, family, "openai", wall, 100)
+        _write_record(record, family, "openai", wall, 100, unit_id=family)
         events.extend(_settled_unit(family, family, price, "ok"))
     (tmp_path / "ledger-events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
     _pilot_summary(tmp_path, "completed", 2, 2, "3.01")

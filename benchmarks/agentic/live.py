@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, TextIO
 from benchmarks.agentic.inputs import CapturedInput, read_json, read_jsonl
 from benchmarks.agentic.ledger import PROVIDER_MARGINS, UNMETERED_PROVIDERS
 from benchmarks.agentic.protocol import KeyLeakError, assert_no_key_shaped
+from benchmarks.agentic.reference import ReferenceUnits
 from benchmarks.model_matrix import model_matrix_from_mapping
 from benchmarks.runner import BenchmarkValidationError
 
@@ -75,7 +76,12 @@ def _read_reference_rates(run_dir: Path) -> dict[str, ReferenceRate]:
     if summary["status"] != "completed":
         raise ValueError("the run did not complete")
     # Budget stops and worker errors can leave status "completed" with cells unscored.
-    if not summary["scored_cells"] or summary["scored_cells"] != summary["planned_cells"]:
+    if (
+        type(summary["scored_cells"]) is not int
+        or type(summary["planned_cells"]) is not int
+        or summary["scored_cells"] <= 0
+        or summary["scored_cells"] != summary["planned_cells"]
+    ):
         raise ValueError("the run did not score every planned cell")
     seconds: dict[str, dict[tuple[str, str], float]] = defaultdict(lambda: defaultdict(float))
     matrix_input = CapturedInput.read(
@@ -83,7 +89,7 @@ def _read_reference_rates(run_dir: Path) -> dict[str, ReferenceRate]:
     )
     matrix = model_matrix_from_mapping(matrix_input.mapping)
     families = {family.id: family for family in matrix.model_families}
-    job_families: dict[tuple[str, str], str] = {}
+    units = ReferenceUnits()
     scored: set[tuple[str, str]] = set()
     discarded = {
         (d["cell"], f"{d['corpus_id']}--attempt{d['attempt']}.json") for d in summary["discarded"]
@@ -110,16 +116,11 @@ def _read_reference_rates(run_dir: Path) -> dict[str, ReferenceRate]:
                 raise ValueError(
                     f"executed client disagrees with the model snapshot for {family_id}"
                 )
-            if execution["api"] != "scripted" and any(
-                "scripted_step" in (call.get("raw_response") or {})
-                for call in record.get("model_calls", [])
-            ):
-                raise ValueError(
-                    f"scripted response contradicts live reference identity for {family_id}"
-                )
             if (provider, record["model_id"]) != (family.provider, family.model_id):
                 raise ValueError(f"transcript disagrees with the model snapshot for {family_id}")
-            job_families[provider, f"{family_id}--{record['system_id']}"] = family_id
+            if record["competitor_id"] != path.parent.name:
+                raise ValueError("reference transcript cell disagrees with its path")
+            units.add(record, family)
             timing = record["timing"]
             cell = (record["competitor_id"], record["corpus_id"])
             elapsed = (timing["wall_ms"] - timing["grant_wait_ms"]) / 1000
@@ -127,6 +128,8 @@ def _read_reference_rates(run_dir: Path) -> dict[str, ReferenceRate]:
                 raise ValueError(f"invalid timing for {family_id} {cell}")
             seconds[family_id][cell] += elapsed
             if kind == "transcripts":
+                if cell in scored:
+                    raise ValueError("duplicate scored reference cell")
                 scored.add(cell)
             else:
                 discarded.remove((path.parent.name, path.name))
@@ -137,40 +140,9 @@ def _read_reference_rates(run_dir: Path) -> dict[str, ReferenceRate]:
     ):
         raise ValueError("scored transcripts do not cover the reference cells")
 
-    booked: dict[str, Decimal] = defaultdict(Decimal)  # includes charges for failed attempts
-    measured: set[str] = set()
-    reserved: dict[str, str] = {}
+    # These events are parsed from the same captured bytes that were scanned for keys.
     events = read_jsonl(run_dir / "ledger-events.jsonl", "reference ledger")
-    for event in events:
-        provider = event["provider"]
-        if event["event"] == "reserve":
-            family_id = job_families[provider, event["job_id"]]
-            if event["model_id"] != families[family_id].model_id:
-                raise ValueError(f"reservation disagrees with the model snapshot for {family_id}")
-            reserved[event["unit_id"]] = family_id
-        elif event["event"] == "settle":
-            # Ledger.open books an older run's pending units before recording spent_before.
-            if event["outcome"] == "unsettled_at_load" and event["unit_id"] not in reserved:
-                continue
-            family_id = reserved.pop(event["unit_id"])
-            amount = Decimal(event["booked"])
-            if provider != families[family_id].provider or not amount.is_finite() or amount < 0:
-                raise ValueError(f"invalid settlement for {family_id}")
-            booked[family_id] += amount
-            if event["outcome"] == "ok" and amount > 0:
-                measured.add(family_id)
-    if reserved:
-        raise ValueError("the ledger has unsettled reservations")
-    balances = summary["ledger"]
-    if (
-        not isinstance(balances, dict)
-        or {families[f].provider for f in seconds} - UNMETERED_PROVIDERS - balances.keys()
-    ):
-        raise ValueError("the run summary is missing a metered provider's spend")
-    for provider, balance in balances.items():
-        spend = sum(booked[f] for f in booked if families[f].provider == provider)
-        if spend != Decimal(balance["spent_after"]) - Decimal(balance["spent_before"]):
-            raise ValueError(f"{provider} settlements disagree with the run's spend")
+    booked, measured = units.reconcile(events, summary)
     rates = {
         family_id: ReferenceRate(
             family_id=family_id,
@@ -178,7 +150,7 @@ def _read_reference_rates(run_dir: Path) -> dict[str, ReferenceRate]:
             model_id=families[family_id].model_id,
             api=families[family_id].api,
             cells=len(cells),
-            usd_per_cell=booked[family_id] / len(cells),
+            usd_per_cell=booked.get(family_id, Decimal(0)) / len(cells),
             seconds_per_cell=sum(cells.values()) / len(cells),
         )
         for family_id, cells in seconds.items()

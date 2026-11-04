@@ -155,6 +155,16 @@ pilot to obtain auditable evidence rather than adding an API label to old transc
 Local Ollama timing references need the same identity evidence, even though they are
 unmetered. Grant waits remain excluded, and discarded attempts count toward cost and time.
 
+Every actual model-call attempt must have a unique `unit_id`. For metered providers,
+that ID must join to exactly one reservation and settlement in the summary's `run_id`,
+with the same provider, family/system job and model. Execution identity establishes the
+API; a recorded request model must agree too. Outcomes, usage, booked charges and summary
+balances must reconcile, including retries and discarded trajectories. Mixed pilot
+channels, missing attempt IDs and contradictory accounting are refused before estimation.
+This checks consistency using existing producer IDs; it does not require signed records.
+Local calls have no spend events, and opening recovery settlements for older pending units
+remain part of `spent_before`, outside the current pilot's rate.
+
 Reference summaries, matrices, scored and discarded transcripts, and ledger JSONL are
 scanned as raw bytes and decoded values before validation can quote them. YAML values
 hidden by aliases or merge overrides and overwritten JSON values are included. Both dry
