@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import ssl
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
@@ -35,11 +36,7 @@ from benchmarks.adapters.guard import (
     PROVIDER_API_KEY_ENV,
     require_live_environment,
 )
-from benchmarks.agentic.protocol import (
-    assert_no_key_shaped,
-    assert_no_key_shaped_json,
-    scanned_json_bytes,
-)
+from benchmarks.agentic.protocol import scanned_json_bytes
 from benchmarks.agentic.schemas import (
     to_anthropic,
     to_gemini,
@@ -73,20 +70,37 @@ _LIVE_APIS = {
 }
 
 
-def tool_arguments(value: Any) -> tuple[dict[str, Any], str | None]:
-    """A JSON object passes; anything else is ``({}, raw)`` and never reaches a tool."""
+def _parse_tool_arguments(value: Any) -> tuple[dict[str, Any], str | None]:
+    """Normalize a response without raising a content failure before usage is settled."""
     if isinstance(value, str):
-        assert_no_key_shaped(value, where="tool arguments")
         try:
             parsed = json.loads(value)
         except json.JSONDecodeError:
             return {}, value
-        assert_no_key_shaped_json(parsed, where="tool arguments")
         return (parsed, None) if isinstance(parsed, dict) else ({}, value)
     if isinstance(value, dict):
-        assert_no_key_shaped_json(value, where="tool arguments")
         return value, None
-    return {}, scanned_json_bytes(value, where="tool arguments").decode()
+    return {}, json.dumps(value)
+
+
+# Inspect every quoted JSON token, even in a malformed document or an object whose
+# duplicate keys json.loads will collapse. The original string is replayed unchanged.
+_JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
+def tool_arguments(
+    value: Any, *, check_content: Callable[[bytes], None] | None = None
+) -> tuple[dict[str, Any], str | None]:
+    """Check raw and decoded arguments, then accept only a JSON object for dispatch."""
+    scanned_json_bytes(value, where="tool arguments", check_content=check_content)
+    if isinstance(value, str):
+        for match in _JSON_STRING.finditer(value):
+            try:
+                decoded = json.loads(match.group())
+            except json.JSONDecodeError:
+                continue  # malformed tokens still received the raw check above
+            scanned_json_bytes(decoded, where="tool arguments", check_content=check_content)
+    return _parse_tool_arguments(value)
 
 
 def parse_retry_after(headers: Mapping[str, str]) -> float | None:
@@ -272,6 +286,11 @@ class AnthropicClient:
         check_content: Callable[[bytes], None] | None = None,
     ) -> int:
         messages = self._messages(conv.entries[start:])
+        for message in messages:
+            if message["role"] == "assistant":
+                for block in message["content"]:
+                    if block.get("type") == "tool_use":
+                        tool_arguments(block["input"], check_content=check_content)
         if start:
             return _utf8_len(messages, check_content=check_content)
         tools = to_anthropic(conv.tools)
@@ -300,7 +319,7 @@ class AnthropicClient:
         calls = []
         for block in response.content:
             if isinstance(block, ToolUseBlock):
-                arguments, raw = tool_arguments(block.input)
+                arguments, raw = _parse_tool_arguments(block.input)
                 calls.append(ToolCall(block.id, block.name, arguments, raw))
         usage = response.usage.model_dump(mode="json") if response.usage else None
         return ModelTurn(
@@ -358,6 +377,9 @@ class OpenAIResponsesClient:
         check_content: Callable[[bytes], None] | None = None,
     ) -> int:
         items = self._input(conv.entries[start:])
+        for item in items:
+            if item.get("type") == "function_call":
+                tool_arguments(item["arguments"], check_content=check_content)
         if start:
             return _utf8_len(items, check_content=check_content)
         tools = to_openai_responses(conv.tools)
@@ -391,7 +413,7 @@ class OpenAIResponsesClient:
         calls, texts = [], []
         for item in response.output:
             if item.type == "function_call":
-                arguments, raw = tool_arguments(item.arguments)
+                arguments, raw = _parse_tool_arguments(item.arguments)
                 calls.append(ToolCall(item.call_id, item.name, arguments, raw))
             elif item.type == "message":
                 texts += [part.text for part in item.content if part.type == "output_text"]
@@ -467,6 +489,10 @@ class OllamaChatClient:
         check_content: Callable[[bytes], None] | None = None,
     ) -> int:
         messages = self._messages(conv.entries[start:])
+        for message in messages:
+            for call in message.get("tool_calls", []):
+                if call.get("type") == "function":
+                    tool_arguments(call["function"]["arguments"], check_content=check_content)
         if start:
             return _utf8_len(messages, check_content=check_content)
         system = {"role": "system", "content": conv.system}
@@ -502,7 +528,7 @@ class OllamaChatClient:
             # A call without an id gets one by position; the replay carries the same id, so
             # each tool result pairs with its call.
             call_id = call.id or f"call_{position}"
-            arguments, raw = tool_arguments(call.function.arguments)
+            arguments, raw = _parse_tool_arguments(call.function.arguments)
             calls.append(ToolCall(call_id, call.function.name, arguments, raw))
             replayed.append(
                 {
@@ -668,7 +694,7 @@ class GeminiClient:
         for position, part in enumerate((p for p in parts if p.function_call), 1):
             call = part.function_call
             assert call is not None
-            arguments, raw = tool_arguments(call.args if call.args is not None else {})
+            arguments, raw = _parse_tool_arguments(call.args if call.args is not None else {})
             calls.append(ToolCall(call.id or f"call_{position}", call.name or "", arguments, raw))
         usage = response.usage_metadata.model_dump(mode="json") if response.usage_metadata else None
         reason = candidate.finish_reason if candidate else None

@@ -372,7 +372,7 @@ async def test_worker_literal_check_covers_native_provider_replay(provider, shap
             await _run(client, bridge, ledger, check_content=channel.check_content)
         assert literal not in str(caught.value)
         assert len(recorder.seen) == len(ledger.reserves) == len(ledger.settles) == 1
-        call.assert_awaited_once()
+        call.assert_not_awaited()  # unsafe native replay is checked before MCP dispatch
         if provider != "scripted":
             assert all(literal.encode() not in request.content for request in recorder.seen)
     finally:

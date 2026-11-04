@@ -274,7 +274,12 @@ came from. Container settings:
   including keys embedded in longer tokens or without a provider shape. Only a
   checker callback reaches the content renderers and MCP bridge; the key stays
   in the worker. Every tool call in a turn is checked before the first dispatch,
-  and both the full MCP envelope and the truncated result are checked. Gemini
+  after settling the returned provider usage. Native function arguments are
+  checked both raw and as decoded JSON strings, including scalars, invalid
+  arguments and values hidden by duplicate object keys; replay keeps the raw
+  argument string. A content failure does not replace known usage with a lost
+  worker charge.
+  Both the full MCP envelope and the truncated result are checked. Gemini
   content scanning includes the SDK's ASCII JSON escaping before reservation.
   Provider settings also pass the worker's check before free model-limit discovery.
   Private credential bootstrap frames and SDK authentication headers are outside

@@ -206,6 +206,13 @@ class _Trajectory:
     def scan(self, value: object, *, where: str) -> None:
         scanned_json_bytes(value, where=where, check_content=self.check_content)
 
+    def check_request(self) -> None:
+        self.scan(self.client.request_params(), where="outgoing provider settings")
+        if self.check_content is None:
+            self.client.rendered_bytes(self.conv, 0)
+        else:
+            self.client.rendered_bytes(self.conv, 0, check_content=self.check_content)
+
     def discard(
         self, reason: Literal["budget_stop", "retries_exhausted"], message: str
     ) -> TrajectoryDiscarded:
@@ -273,11 +280,7 @@ class _Trajectory:
             # alone omit earlier native replay; validate the complete rendered request even
             # when usage lets us reserve using only the added entries. Rendering checks both
             # decoded fields and the JSON actually used for provider messages, never SDK auth.
-            self.scan(self.client.request_params(), where="outgoing provider settings")
-            if self.check_content is None:
-                self.client.rendered_bytes(self.conv, 0)
-            else:
-                self.client.rendered_bytes(self.conv, 0, check_content=self.check_content)
+            self.check_request()
             waited = time.perf_counter()
             unit = await self.ledger.reserve(
                 provider=self.client.provider,
@@ -321,6 +324,12 @@ class _Trajectory:
                     "tool_calls_requested": len(turn.tool_calls),
                 }
                 self.conv.entries.append(turn)  # kept even when the clock now ends the trajectory
+                # The response and its usage already exist: settle them before checking
+                # content. Check every call and the actual native argument replay before
+                # any MCP dispatch, model cap, or another paid reservation. The callback
+                # stays local to this bootstrapped worker and never sees SDK auth headers.
+                self.scan([asdict(call) for call in turn.tool_calls], where="outgoing MCP calls")
+                self.check_request()
                 self.use(wall, "model")
                 return turn
             assert error is not None

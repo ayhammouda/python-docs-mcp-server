@@ -127,5 +127,9 @@ class ModelClient(Protocol):
         raise NotImplementedError
 
     async def call(self, conv: Conversation) -> ModelTurn:
-        """One HTTP request; raises :class:`ProviderCallError`."""
+        """One HTTP request; raises :class:`ProviderCallError`.
+
+        Response content is untrusted. Normal adapters return it with usage so the
+        loop can settle the request before checking arguments and native replay.
+        """
         raise NotImplementedError

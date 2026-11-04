@@ -1009,6 +1009,9 @@ def _tool_call(name: str, arguments: str, call_id: str | None) -> dict[str, Any]
 
 @pytest.mark.parametrize("provider", ["anthropic", "openai", "google", "ollama"])
 async def test_provider_refuses_key_in_tool_arguments(provider: str) -> None:
+    from tests.benchmarks.test_agentic_loop import FakeBridge
+    from tests.benchmarks.test_agentic_outgoing import RecordingLedger, _close, _run
+
     key = "AIza" + "g" * 35
     args = {"query": "https://docs.python.org/3/?token=" + key}
     if provider == "anthropic":
@@ -1024,9 +1027,19 @@ async def test_provider_refuses_key_in_tool_arguments(provider: str) -> None:
         calls = [_tool_call("search_docs", json.dumps(args), "id")]
         response = _chat_completion({"role": "assistant", "tool_calls": calls}, "tool_calls")
         client = _ollama(Recorder(_ok(response)))
-    with pytest.raises(KeyLeakError, match="tool arguments") as caught:
-        await client.call(_conv())
-    assert key not in str(caught.value)
+    ledger, bridge = RecordingLedger(), FakeBridge()
+    try:
+        # The normal loop must settle known response usage before rejecting content,
+        # and reject the entire turn before dispatching any MCP call.
+        with pytest.raises(KeyLeakError) as caught:
+            await _run(client, bridge, ledger)
+        assert key not in str(caught.value)
+        assert bridge.calls == []
+        assert len(ledger.reserves) == len(ledger.settles) == 1
+        assert ledger.settles[0]["outcome"] == "ok"
+        assert ledger.settles[0]["buckets"] is not None
+    finally:
+        await _close(client)
 
 
 async def test_ollama_client_round_trips_a_tool_call() -> None:
