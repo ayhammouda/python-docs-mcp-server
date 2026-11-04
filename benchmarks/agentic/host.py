@@ -469,8 +469,17 @@ async def run_jobs(
                 reported = BenchmarkValidationError(f"{reason}: {detail}")
                 raise reported
 
+        pending = sys.exception()
         try:
-            await finish(close(), sys.exception())
+            await finish(close(), pending)
+        except KeyLeakError as leak:
+            if isinstance(pending, Exception):
+                # The CLI prints only the final message. Keep earlier resource IDs visible.
+                earlier = redact_key_shaped_text(str(pending))
+                raise KeyLeakError(
+                    f"{redact_key_shaped_text(str(leak))}; earlier failure: {earlier}"
+                ) from None
+            raise
         except BenchmarkValidationError as exc:
             if not failed or exc is not reported:
                 raise

@@ -1600,3 +1600,44 @@ async def test_repeated_interrupt_during_partial_proxy_recovery_retains_selector
     assert f"id-{box.outside}" in trace
     if cancel_during_create:
         assert f"id-{box.worker_name(job.job_id)}-net" in trace
+
+
+def test_cli_keeps_rollback_ids_when_an_earlier_proxy_log_leaks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from benchmarks.__main__ import main
+
+    first = _job("scripted-anthropic")
+    second = _job("scripted-anthropic", "docs-fetch")
+    docker = FakeDocker()
+    box = _sandbox(tmp_path, docker)
+    failed_proxy = f"id-{box.worker_name(second.job_id)}-proxy"
+    failed_network = f"id-{box.worker_name(second.job_id)}-net"
+    docker.fail = lambda args: (
+        args[-1] in (failed_proxy, failed_network)
+        and (args[:2] == ["network", "connect"] or "rm" in args)
+    )
+
+    async def probe(sandbox: Sandbox, egress: Egress, **kwargs: Any) -> dict[str, Any]:
+        _logs(egress.spool_dir, cache=f"warning {SYNTHETIC}")
+        return {"passed": True}
+
+    def run(*args: Any, **kwargs: Any) -> None:
+        asyncio.run(
+            run_jobs(
+                [first, second],
+                launcher=ContainerLauncher(box, probe=probe, control=Probes().control),
+                ledger=Mock(),
+                on_message=AsyncMock(),
+                log_dir=tmp_path / "logs",
+                cwd=tmp_path,
+            )
+        )
+
+    monkeypatch.setattr("benchmarks.agentic.run.run_agentic", run)
+    with pytest.raises(SystemExit) as stopped:
+        main(["agentic-run", "--corpus", "unused", "--out", str(tmp_path)])
+    assert stopped.value.code == 3
+    message = capsys.readouterr().err
+    assert failed_proxy in message and failed_network in message
+    assert "cache.log" in message and SYNTHETIC not in message
