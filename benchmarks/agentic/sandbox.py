@@ -320,9 +320,20 @@ class Sandbox:
 
     async def remove_container(self, container_id: str) -> None:
         """Finish removing this ID even if the caller is cancelled. --rm may have won."""
-        proc = await _finish(self.docker(["docker", "rm", "-f", container_id]))
-        if proc.returncode != 0 and "No such container" not in _tail(proc):
-            raise BenchmarkValidationError(f"docker rm -f {container_id} failed: {_tail(proc)}")
+
+        async def remove() -> None:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + _CREATE_RECOVERY_S
+            while True:
+                proc = await self.docker(["docker", "rm", "-f", container_id])
+                detail = _tail(proc)
+                if proc.returncode == 0 or "No such container" in detail:
+                    return
+                if "is already in progress" not in detail or loop.time() >= deadline:
+                    raise BenchmarkValidationError(f"docker rm -f {container_id} failed: {detail}")
+                await asyncio.sleep(0.1)
+
+        await _finish(remove())
 
     async def remove_owned(
         self, name: str, *, network: bool = False, wait_for_create: bool = False

@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from decimal import Decimal
@@ -626,31 +627,35 @@ def _scripted_config(tmp_path: Path) -> AgenticConfig:
     )
 
 
+@pytest.fixture
+def default_signal_handlers() -> Iterator[None]:
+    before = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        for signum in before:
+            signal.signal(signum, signal.SIG_DFL)
+        yield
+    finally:
+        for signum, handler in before.items():
+            signal.signal(signum, handler)
+
+
 def test_run_agentic_completes_off_the_main_thread(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], default_signal_handlers: None
 ) -> None:
     # No signal handler can be installed off the main thread: the run goes on without one,
     # and says so.
-    expected = _wanted_signal_names()
     with ThreadPoolExecutor(1) as pool:
         summary = pool.submit(run_agentic, _scripted_config(tmp_path)).result(timeout=60)
     assert summary["status"] == "completed" and summary["succeeded_cells"] == 1
     skipped = [line for line in capsys.readouterr().err.splitlines() if "handler" in line]
-    assert len(skipped) == 1 and expected in skipped[0] and "RuntimeError" in skipped[0]
-
-
-def _wanted_signal_names() -> str:
-    """The names the run installs handlers for: an inherited SIG_IGN (nohup) is left out."""
-    return ", ".join(
-        s.name for s in (signal.SIGTERM, signal.SIGHUP) if signal.getsignal(s) is not signal.SIG_IGN
-    )
+    assert len(skipped) == 1 and "SIGTERM, SIGHUP" in skipped[0] and "RuntimeError" in skipped[0]
 
 
 def test_a_loop_without_signal_support_runs_without_handlers(
     capsys: pytest.CaptureFixture[str],
+    default_signal_handlers: None,
 ) -> None:
     before = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGHUP)}
-    expected = _wanted_signal_names()
     removed: list[int] = []
 
     async def scenario() -> list[str]:
@@ -673,7 +678,7 @@ def test_a_loop_without_signal_support_runs_without_handlers(
     assert removed == []  # nothing was installed, so nothing is removed
     assert {signum: signal.getsignal(signum) for signum in before} == before
     err = capsys.readouterr().err
-    assert expected in err and "NotImplementedError" in err
+    assert "SIGTERM, SIGHUP" in err and "NotImplementedError" in err
 
 
 def test_an_ignored_sighup_is_left_out_of_the_skipped_handlers_line(

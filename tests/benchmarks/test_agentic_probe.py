@@ -92,11 +92,6 @@ def _listener(reply: Callable[[bytes], bytes] | None = None) -> Iterator[tuple[i
         server.close()
 
 
-def _closed_port() -> int:
-    with socket.create_server(("127.0.0.1", 0)) as server:
-        return server.getsockname()[1]
-
-
 def _check(results: list[dict[str, Any]], name: str) -> list[dict[str, Any]]:
     return [r for r in results if r["check"] == name]
 
@@ -110,10 +105,12 @@ def test_direct_check_fails_and_sends_the_token_when_something_listens() -> None
 
 
 def test_direct_check_passes_when_nothing_listens() -> None:
-    port = _closed_port()
-    (direct,) = _check(
-        run_probe_checks({"direct": [["127.0.0.1", port]], "token": TOKEN}), "direct"
-    )
+    with socket.socket() as reserved:
+        reserved.bind(("127.0.0.1", 0))
+        port = reserved.getsockname()[1]
+        (direct,) = _check(
+            run_probe_checks({"direct": [["127.0.0.1", port]], "token": TOKEN}), "direct"
+        )
     assert direct["passed"] is True
 
 

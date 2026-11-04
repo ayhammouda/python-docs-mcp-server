@@ -1068,3 +1068,15 @@ async def test_invalid_second_key_refuses_preparation_after_all_probes(
         assert probes.jobs == ["control", *(job.job_id for job in jobs)]
     finally:
         await launcher.close()
+
+
+async def test_worker_cleanup_waits_for_daemon_auto_removal(tmp_path: Path) -> None:
+    responses = iter(("removal of container owned-id is already in progress", "No such container"))
+
+    async def removing(argv: Sequence[str]) -> Any:
+        assert list(argv) == ["docker", "rm", "-f", "owned-id"]
+        return _done(argv, 1, err=next(responses))
+
+    sandbox = Sandbox(_config(tmp_path), docker=removing, verify=_verified)
+    await sandbox.remove_container("owned-id")
+    assert list(responses) == []
