@@ -26,7 +26,10 @@ add `--live`.
 
 ## 2. Where keys live
 
-- A key exists only in the host process's memory during validation and bootstrap, and in the environment of the one worker process that uses it.
+- The host creates each stopped worker by ID after all isolation probes pass. It attaches
+  stdin to that ID with `docker start -ai` and removes the same ID on teardown.
+- A key exists in the host process's memory during validation and bootstrap, and in the
+  environment of the one worker process that uses it.
 - The host reads the one key a worker needs from the keys file after the authorization
   gate and after every isolation probe passed. It checks every planned key before starting
   any worker, then rereads the matching key for each launch. It writes the key as a bootstrap frame on
@@ -86,7 +89,7 @@ First run: 2026-11-04, Docker Desktop on Apple silicon (context `desktop-linux`,
 | DNS on internal networks | `pypi.org` does not resolve (`gaierror`). The strict DNS check passed: **no #200 ruling 5 fallback was needed.** |
 | `--ipv6=false` on Desktop | Honoured: `EnableIPv6` is false. The isolated gateway mode assigns no IPAM gateway address, so the probe has no gateway to try. |
 | `host.docker.internal` against a 127.0.0.1 bind | Reachable through the proxy: a service bound to the Mac's 127.0.0.1 only answered 200 to a GET through an egress allowing it. Ollama's default bind should work for the air-gapped arm; ruling 7's `OLLAMA_HOST=0.0.0.0` fallback stays for the case where the probe's Ollama check fails. |
-| Large `docker run -i` output | A trajectory frame over 150,000 bytes round-tripped intact through the attached stream. |
+| Large attached worker output | A trajectory frame over 150,000 bytes round-tripped intact through the attached stream. |
 | Attach with `--log-driver none` | Works: every worker frame and reply passed over the attached stdin and stdout. |
 | Squid writing to the bind mount | Works: `access.log` and `cache.log` appear in `egress/<job>/` (mode 640), one line per connection attempt. |
 | Squid's exit after `docker stop` | Exit code 0, `Running` false, "Exiting normally", within `shutdown_lifetime`. |
