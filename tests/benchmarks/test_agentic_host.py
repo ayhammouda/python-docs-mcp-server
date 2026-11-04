@@ -758,6 +758,32 @@ async def test_no_descendant_can_write_a_key_into_the_published_log(
     assert log.read_text() == "worker: started\n"
 
 
+class _Exited:
+    """A worker that has exited but is not yet reaped: its group holds only a zombie."""
+
+    returncode = None
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+
+    async def wait(self) -> int:
+        return 0
+
+
+async def test_teardown_of_an_exited_worker_not_yet_reaped(host: Host, tmp_path: Path) -> None:
+    # macOS answers a group kill with EPERM when the group holds only a zombie.
+    zombie = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+    os.waitid(os.P_PID, zombie.pid, os.WEXITED | os.WNOWAIT)  # exited, left unreaped
+    try:
+        log = tmp_path / "exited.stderr.log"
+        log.write_text("worker: done\n", encoding="utf-8")
+        service = host.service(_job(tmp_path, [ANSWER]).family)
+        pattern = await agentic_host._teardown(_Exited(zombie.pid), log, service, None)  # type: ignore[arg-type]
+        assert pattern is None and log.read_text() == "worker: done\n"
+    finally:
+        zombie.wait()
+
+
 class _Unending:
     """A worker whose wait() never returns, as if it survived its kill.
 

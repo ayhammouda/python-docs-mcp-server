@@ -90,7 +90,8 @@ async def _teardown(
     # The whole group, even after the worker exited: no descendant outlives it to write later.
     # shortcut: reaches only this host's process tree; PR 4's container launcher must give the
     # same guarantee, which removing the container does.
-    with suppress(ProcessLookupError):
+    # ESRCH: the group is gone. EPERM: macOS's answer for a group that holds only zombies.
+    with suppress(ProcessLookupError, PermissionError):
         os.killpg(proc.pid, signal.SIGKILL)
     with suppress(TimeoutError):  # a worker that never exits cannot hang the run
         await asyncio.wait_for(proc.wait(), _EXIT_WAIT_S)
