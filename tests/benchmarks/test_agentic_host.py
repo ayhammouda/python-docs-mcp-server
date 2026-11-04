@@ -1545,16 +1545,6 @@ def test_bootstrap_key_is_redacted_from_worker_output() -> None:
     assert _frames(proc.stdout) == [{"type": "done"}]
 
 
-class _Channel:
-    """A stand-in ProtocolChannel that keeps every frame sent."""
-
-    def __init__(self) -> None:
-        self.sent: list[dict[str, Any]] = []
-
-    def send(self, message: dict[str, Any]) -> None:
-        self.sent.append(message)
-
-
 async def test_worker_refuses_a_live_job_without_its_bootstrap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1575,11 +1565,13 @@ async def test_worker_refuses_a_live_job_without_its_bootstrap(
         "trajectories": [{"corpus_id": "Q1", "prompt": "q", "repeat": 1}],
         "caps": asdict(HOSTED_CAPS),
     }
-    channel = _Channel()
-    code = await worker.run_worker(channel, asyncio.StreamReader(), job)  # type: ignore[arg-type]
-    assert code == 2
-    assert [m["type"] for m in channel.sent] == ["error"]
-    assert "bootstrap" in channel.sent[0]["reason"]
+    with tempfile.TemporaryFile() as output:
+        channel = worker.ProtocolChannel(output.fileno(), (), -1, None, ())
+        assert await worker.run_worker(channel, asyncio.StreamReader(), job) == 2
+        output.seek(0)
+        error = read_frame_fd(output.fileno())
+        assert error and error["type"] == "error" and "bootstrap" in error["reason"]
+        assert read_frame_fd(output.fileno()) is None
 
 
 @pytest.mark.parametrize(
