@@ -234,7 +234,7 @@ def test_worker_argv_carries_the_design_hardening(tmp_path: Path) -> None:
     launcher = ContainerLauncher(
         _sandbox(tmp_path, FakeDocker()), probe=(probes := Probes()), control=probes.control
     )
-    argv, _ = launcher.command(_job("scripted-anthropic"))
+    argv = launcher.worker_create_argv(_job("scripted-anthropic"))
     text = " ".join(argv)
     for flag in (
         "--read-only",
@@ -258,7 +258,7 @@ def test_worker_argv_carries_the_design_hardening(tmp_path: Path) -> None:
     for banned in ("--privileged", "docker.sock", "--network host", "--network=host"):
         assert banned not in text
     assert argv[argv.index(IMAGE) + 1 :] == ["python", "-m", "benchmarks", "agentic-worker"]
-    assert argv[:2] == ["docker", "run"]
+    assert argv[:2] == ["docker", "create"]
 
 
 def test_only_python_docs_jobs_mount_the_index_read_only(tmp_path: Path) -> None:
@@ -267,15 +267,15 @@ def test_only_python_docs_jobs_mount_the_index_read_only(tmp_path: Path) -> None
     )
     index = f"type=bind,src={tmp_path / 'index.db'},dst=/cache/mcp-python-docs/index.db,readonly"
     for system_id, mounted in (("python-docs", True), ("docs-fetch", False), ("no-docs", False)):
-        mounts = _mounts(launcher.command(_job("claude-sonnet-5-5", system_id))[0])
+        mounts = _mounts(launcher.worker_create_argv(_job("claude-sonnet-5-5", system_id)))
         assert (index in mounts) is mounted
         assert "type=tmpfs,dst=/cache/mcp-python-docs,tmpfs-mode=1777" in mounts
     script = str(FIX / "script-anthropic.yml")
-    mounts = _mounts(launcher.command(_job("scripted-anthropic"))[0])
+    mounts = _mounts(launcher.worker_create_argv(_job("scripted-anthropic")))
     assert f"type=bind,src={script},dst={script},readonly" in mounts
 
 
-def test_worker_env_is_the_allowlist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_worker_env_is_the_allowlist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     for name in ("HTTPS_PROXY", "ALL_PROXY", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "LANG"):
         monkeypatch.setenv(name, "http://user:secret@proxy.invalid:1")
     monkeypatch.setenv("DOCKER_CONTEXT", "desktop-linux")
@@ -287,11 +287,18 @@ def test_worker_env_is_the_allowlist(tmp_path: Path, monkeypatch: pytest.MonkeyP
         "BENCHMARK_LIVE_PROVIDERS_ENABLED",
         "OLLAMA_BASE_URL",
     }
+    docker = FakeDocker()
+    keys = _keys(tmp_path, "ANTHROPIC_API_KEY=dummy")
     launcher = ContainerLauncher(
-        _sandbox(tmp_path, FakeDocker()), probe=(probes := Probes()), control=probes.control
+        _sandbox(tmp_path, docker, keys_file=keys),
+        probe=(probes := Probes()),
+        control=probes.control,
     )
-    for family_id in ("scripted-anthropic", "claude-sonnet-5-5", "gemma4-12b"):
-        argv, env = launcher.command(_job(family_id))
+    jobs = [_job(family) for family in ("scripted-anthropic", "claude-sonnet-5-5", "gemma4-12b")]
+    await launcher.prepare(jobs)
+    for job in jobs:
+        (argv,) = [c for c in docker.ran("create") if launcher.sandbox.worker_name(job.job_id) in c]
+        _, env = launcher.command(job)
         assert set(_env_names(argv)) <= allowed
         assert set(env) <= {
             "PATH",
@@ -303,12 +310,13 @@ def test_worker_env_is_the_allowlist(tmp_path: Path, monkeypatch: pytest.MonkeyP
             "DOCKER_TLS_VERIFY",
         }
         assert env["DOCKER_CONTEXT"] == "desktop-linux"
-    gemma = launcher.command(_job("gemma4-12b"))[0]
+    gemma = launcher.worker_create_argv(_job("gemma4-12b"))
     assert "OLLAMA_BASE_URL=http://host.docker.internal:11434/v1" in gemma
     assert "BENCHMARK_LIVE_PROVIDERS_ENABLED=1" in gemma
-    scripted = launcher.command(_job("scripted-anthropic"))[0]
+    scripted = launcher.worker_create_argv(_job("scripted-anthropic"))
     assert "BENCHMARK_LIVE_PROVIDERS_ENABLED=1" not in scripted
     assert "BENCHMARK_EGRESS_URL=http://egress:3128" in scripted
+    await launcher.close()
 
 
 async def test_no_key_in_argv_cli_env_or_container_config(
@@ -413,6 +421,110 @@ class LateCreate(FakeDocker):
         with pytest.raises(asyncio.CancelledError):
             await task
         await asyncio.wait_for(self.published.wait(), 2)
+
+
+async def test_worker_published_after_interrupt_is_removed_by_id(tmp_path: Path) -> None:
+    job = _job("scripted-anthropic")
+    name = f"pdmcp-{RUN}-{job.job_id}"
+    docker = LateCreate(name)
+    probes = Probes()
+    launcher = ContainerLauncher(_sandbox(tmp_path, docker), probes, probes.control)
+
+    async def launch() -> None:
+        try:
+            await launcher.prepare([job])
+            try:
+                await docker(launcher.command(job)[0])
+            finally:
+                await launcher.stop_worker(job)
+        finally:
+            await launcher.close()
+
+    await docker.cancel_create(asyncio.create_task(launch()))
+    assert not docker.resources
+    assert docker.ran("rm", "-f", f"id-{name}")
+    assert not docker.ran("start")
+
+
+async def test_workers_attach_and_stop_independently_after_prepare(tmp_path: Path) -> None:
+    docker, probes = FakeDocker(), Probes()
+    launcher = ContainerLauncher(_sandbox(tmp_path, docker), probes, probes.control)
+    jobs = [_job("scripted-anthropic"), _job("scripted-anthropic", "docs-fetch")]
+    await launcher.prepare(jobs)
+    assert not docker.ran("start")
+    for job in jobs:
+        name = f"pdmcp-{RUN}-{job.job_id}"
+        (create,) = [c for c in docker.ran("create") if name in c]
+        assert "-i" in create and "-t" not in create
+        assert launcher.command(job)[0] == ["docker", "start", "-ai", f"id-{name}"]
+    await launcher.stop_worker(jobs[1])
+    first, second = (f"id-pdmcp-{RUN}-{job.job_id}" for job in jobs)
+    assert second not in docker.resources and first in docker.resources
+    await launcher.close()  # the first worker never started
+    assert not docker.resources
+
+
+async def test_worker_conflict_after_partial_prepare_precedes_key_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    jobs = [_job("scripted-anthropic"), _job("claude-sonnet-5-5")]
+    name = f"pdmcp-{RUN}-{jobs[1].job_id}"
+    docker = FakeDocker(fail=lambda args: name in args and args[0] in {"create", "run"})
+    foreign = {f"id-{name}": {f"{RUN_LABEL}={RUN}"}}
+    docker.resources.update(foreign)
+    probes = Probes()
+    box = _sandbox(tmp_path, docker, keys_file=tmp_path / "unused")
+    launcher = ContainerLauncher(box, probes, probes.control)
+
+    def premature_read(*args: Any) -> str:
+        pytest.fail("the worker create conflict must be detected before reading keys")
+
+    monkeypatch.setattr("benchmarks.agentic.sandbox.read_key", premature_read)
+    try:
+        with pytest.raises(BenchmarkValidationError, match="boom"):
+            await launcher.prepare(jobs)
+    finally:
+        await launcher.close()
+    assert probes.jobs == ["control", *(job.job_id for job in jobs)]
+    assert docker.resources == foreign
+    assert docker.ran("rm", "-f", f"id-{box.worker_name(jobs[0].job_id)}")
+    assert not [c for c in docker.calls if "rm" in c and c[-1] in {name, f"id-{name}"}]
+    assert not docker.ran("start")
+
+
+async def test_keyless_direct_probe_preserves_conflicting_container(tmp_path: Path) -> None:
+    from tests.benchmarks.test_agentic_sandbox_docker import _probe_container
+
+    name = f"pdmcp-{RUN}-direct-probe"
+    docker = FakeDocker(fail=lambda args: name in args and args[0] in {"run", "create"})
+    foreign = {f"id-{name}": {f"{RUN_LABEL}={RUN}"}}
+    docker.resources.update(foreign)
+    box = _sandbox(tmp_path, docker)
+    with pytest.raises(BenchmarkValidationError, match="boom"):
+        await _probe_container(box, "net", {})
+    assert not docker.ran("rm")
+    assert docker.resources == foreign
+
+
+def test_keyless_fixture_cleans_its_outside_network_by_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.benchmarks import test_agentic_sandbox_docker as keyless
+
+    monkeypatch.setattr(keyless, "_sandbox_config", _config)
+    fixture = keyless.sandbox.__wrapped__(tmp_path)
+    box = next(fixture)
+    box.docker = docker = FakeDocker()
+    asyncio.run(box.ensure_outside())
+    assert box.outside_id is not None
+    owned = box.outside_id
+    # A replacement can acquire the same name between creation and fixture teardown.
+    del docker.resources[owned]
+    docker.resources[box.outside] = {"foreign"}
+    with pytest.raises(StopIteration):
+        next(fixture)
+    assert docker.ran("network", "rm", owned)
+    assert docker.resources == {box.outside: {"foreign"}}
 
 
 @pytest.mark.parametrize("resource", ["out", "j-net", "j-proxy"])
@@ -653,21 +765,26 @@ async def test_stop_worker_removes_only_its_own_container(tmp_path: Path) -> Non
     name = launcher.sandbox.worker_name(job.job_id)
     # Even the same run ID from an earlier invocation is not ours.
     other = ContainerLauncher(_sandbox(tmp_path, docker))
-    await docker(other.command(job)[0])
+    foreign_id = await other.sandbox.create_resource(name, *other.worker_create_argv(job)[1:])
     await launcher.stop_worker(job)
     assert not docker.ran("rm")
-    docker.resources.clear()  # its owner removes the conflicting container
-    await docker(launcher.command(job)[0])
+    await other.sandbox.remove_container(foreign_id)
+    initial_removals = len(docker.ran("rm"))
+
+    second = _job("scripted-anthropic", "docs-fetch")
+    await launcher.prepare([job, second])
     await launcher.stop_worker(job)
     assert docker.ran("rm", "-f", f"id-{name}")
-    assert not docker.resources
-    await launcher.stop_worker(job)  # --rm has already removed it
-    assert len(docker.ran("rm")) == 1
+    assert f"id-{name}" not in docker.resources
+    await launcher.stop_worker(job)  # repeated teardown has nothing left to remove
+    assert len(docker.ran("rm")) == initial_removals + 1
 
-    await docker(launcher.command(job)[0])
     docker.fail = lambda args: args[:2] == ["rm", "-f"]
     with pytest.raises(BenchmarkValidationError, match="boom"):
-        await launcher.stop_worker(job)
+        await launcher.stop_worker(second)
+    docker.fail = None
+    await launcher.close()  # retry the failed remove before closing the networks
+    assert not docker.resources
 
 
 # --- collection and close ----------------------------------------------------------------------
@@ -710,7 +827,7 @@ async def test_close_stops_each_proxy_then_removes_what_it_created(tmp_path: Pat
     problems = await launcher.close()
     assert problems == []
     tail = [" ".join(c[1:3]) + " " + c[-1] for c in docker.calls[start:]]
-    expected = []
+    expected = [f"rm -f id-pdmcp-{RUN}-{job.job_id}" for job in jobs]
     for job in jobs:
         proxy, net = f"pdmcp-{RUN}-{job.job_id}-proxy", f"pdmcp-{RUN}-{job.job_id}-net"
         expected += [

@@ -24,7 +24,7 @@ import pytest
 from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
 from benchmarks.agentic.egress import parse_proxy_log
 from benchmarks.agentic.host import WorkerJob
-from benchmarks.agentic.probe import IsolationProbeFailed, isolation_probe
+from benchmarks.agentic.probe import IsolationProbeFailed, _one_shot, _probe_argv, isolation_probe
 from benchmarks.agentic.run import run_agentic
 from benchmarks.agentic.sandbox import (
     RUN_LABEL,
@@ -93,28 +93,16 @@ def sandbox(tmp_path: Path) -> Iterator[Sandbox]:
     async def cleanup() -> None:
         for egress in opened:
             await box.close_egress(egress)
-        if box.outside_created:
-            await box.docker(["docker", "network", "rm", box.outside])
+        if box.outside_id is not None:
+            await box.run("network", "rm", box.outside_id)
 
     asyncio.run(cleanup())
 
 
 async def _probe_container(box: Sandbox, network: str, spec: dict[str, Any]) -> dict[str, Any]:
     name = f"{box.worker_name('direct')}-probe"
-    argv = box.container_argv(
-        name=name,
-        network=network,
-        env={"HOME": "/tmp"},
-        mounts=[],
-        argv=["python", "-m", "benchmarks", "agentic-probe", "--spec", json.dumps(spec)],
-        interactive=False,
-    )
-    try:
-        proc = await box.docker(argv)
-    finally:
-        await box.docker(["docker", "rm", "-f", name])
-    assert proc.returncode == 0, proc.stderr
-    return {c["check"]: c for c in json.loads(proc.stdout)["checks"]}
+    argv = _probe_argv(box, name, network, spec, {"HOME": "/tmp"})
+    return {c["check"]: c for c in await _one_shot(box, argv, name)}
 
 
 def test_image_runs_unprivileged_with_cat_without_node_or_proxy(image: str) -> None:
@@ -144,8 +132,8 @@ def test_a_scripted_run_completes_inside_containers(tmp_path: Path, image: str) 
     )
 
     class CacheCheckingLauncher(ContainerLauncher):
-        def command(self, job: WorkerJob) -> tuple[list[str], dict[str, str]]:
-            argv, env = super().command(job)
+        def worker_create_argv(self, job: WorkerJob) -> list[str]:
+            argv = super().worker_create_argv(job)
             if job.system.id == "python-docs":
                 worker = argv.index(self.sandbox.config.image) + 1
                 argv[worker:] = [
@@ -156,7 +144,7 @@ def test_a_scripted_run_completes_inside_containers(tmp_path: Path, image: str) 
                     "sh",
                     *argv[worker:],
                 ]
-            return argv, env
+            return argv
 
     launcher = CacheCheckingLauncher(Sandbox(_sandbox_config(tmp_path, index)))
     summary = run_agentic(config, launcher=launcher)
@@ -257,7 +245,7 @@ async def test_a_service_bound_to_the_macs_loopback_through_the_proxy(
 
 
 async def test_a_docker_config_with_proxies_fails_the_isolation_probe(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
 ) -> None:
     endpoint = json.loads(_docker("context", "inspect", "--format", "{{json .}}").stdout)
     host = endpoint["Endpoints"]["docker"]["Host"]
@@ -267,16 +255,12 @@ async def test_a_docker_config_with_proxies_fails_the_isolation_probe(
     (config_dir / "config.json").write_text(json.dumps(proxies))
     monkeypatch.setenv("DOCKER_CONFIG", str(config_dir))
     monkeypatch.setenv("DOCKER_HOST", host)  # the same local daemon, without the context store
-    (tmp_path / "run").mkdir()
-    box = Sandbox(_sandbox_config(tmp_path))
+    # Construct the fixture after setting the environment captured by the sandbox CLI.
+    box: Sandbox = request.getfixturevalue("sandbox")
     egress = await box.open_egress("cfg", (("api.anthropic.com", 443),))
     family = _job("scripted-anthropic").family
-    try:
-        with pytest.raises(IsolationProbeFailed, match="HTTPS_PROXY"):
-            await isolation_probe(box, egress, job_id="cfg", family=family, system_id="no-docs")
-    finally:
-        await box.close_egress(egress)
-        await box.docker(["docker", "network", "rm", box.outside])
+    with pytest.raises(IsolationProbeFailed, match="HTTPS_PROXY"):
+        await isolation_probe(box, egress, job_id="cfg", family=family, system_id="no-docs")
 
 
 def test_no_container_or_network_with_the_run_label_remains(image: str) -> None:

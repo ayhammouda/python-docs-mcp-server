@@ -603,11 +603,13 @@ class ContainerLauncher:
         self._probe: ProbeFn = probe or isolation_probe
         self._control: ControlFn = control or control_probe
         self._egresses: list[Egress] = []
+        self._worker_ids: dict[str, str] = {}
 
     def supports(self, family: ModelFamily) -> bool:
         return family.api in KNOWN_APIS  # scripted, and every api make_client builds
 
-    def command(self, job: WorkerJob) -> tuple[list[str], dict[str, str]]:
+    def worker_create_argv(self, job: WorkerJob) -> list[str]:
+        """Configure the stopped worker, including the program that will read host frames."""
         family, config = job.family, self.sandbox.config
         env = worker_env(family)
         mounts = ["type=tmpfs,dst=/cache/mcp-python-docs,tmpfs-mode=1777"]
@@ -618,14 +620,17 @@ class ContainerLauncher:
             script = str(family.raw["script"])
             mounts.append(f"type=bind,src={script},dst={script},readonly")
         name = self.sandbox.worker_name(job.job_id)
-        argv = self.sandbox.container_argv(
+        return self.sandbox.container_argv(
             name=name,
             network=f"{name}-net",
             env=env,
             mounts=mounts,
             argv=["python", "-m", "benchmarks", "agentic-worker"],
+            create_only=True,
         )
-        return argv, cli_env(os.environ)
+
+    def command(self, job: WorkerJob) -> tuple[list[str], dict[str, str]]:
+        return ["docker", "start", "-ai", self._worker_ids[job.job_id]], self.sandbox.env
 
     def bootstrap_frame(self, job: WorkerJob) -> dict[str, Any] | None:
         """The live worker's one key (none for Ollama), read now, after the gate and probes."""
@@ -657,16 +662,34 @@ class ContainerLauncher:
                 self.sandbox, egress, job_id=job.job_id, family=job.family, system_id=job.system.id
             )
 
+        # Own every stopped worker before reading keys or letting any supervisor start one.
+        for job in jobs:
+            argv = self.worker_create_argv(job)
+            self._worker_ids[job.job_id] = await self.sandbox.create_resource(
+                self.sandbox.worker_name(job.job_id), *argv[1:]
+            )
+
         # Validate all required keys after isolation and before any worker can spend.
         for job in jobs:
             self.bootstrap_frame(job)
 
     async def stop_worker(self, job: WorkerJob) -> None:
         """Remove a surviving worker only if this invocation created it."""
-        await self.sandbox.remove_owned(self.sandbox.worker_name(job.job_id))
+        await self._remove_worker(job.job_id)
+
+    async def _remove_worker(self, job_id: str) -> None:
+        if (container_id := self._worker_ids.get(job_id)) is not None:
+            await self.sandbox.remove_container(container_id)
+            del self._worker_ids[job_id]
 
     async def close(self) -> list[str]:
         problems: list[str] = []
+        # Partial prepare and spawn failures can leave workers without a supervisor.
+        for job_id in list(self._worker_ids):
+            try:
+                await self._remove_worker(job_id)
+            except Exception as exc:  # noqa: BLE001 - continue releasing the other resources
+                problems.append(f"{job_id}: {exc}")
         for egress in self._egresses:
             problems += [f"{egress.job_id}: {p}" for p in await self.sandbox.close_egress(egress)]
         if self.sandbox.outside_id is not None:
