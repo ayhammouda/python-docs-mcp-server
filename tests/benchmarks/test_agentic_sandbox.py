@@ -565,6 +565,26 @@ async def test_cancelled_create_that_hits_a_conflict_preserves_cancellation(tmp_
     assert not docker.ran("network", "rm")
 
 
+async def test_cancelled_create_preserves_signal_on_cli_start_error(tmp_path: Path) -> None:
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def unavailable(argv: Sequence[str]) -> Any:
+        if "create" in argv:
+            started.set()
+            await release.wait()
+            raise FileNotFoundError("docker executable unavailable")
+        return _done(argv)
+
+    box = Sandbox(_config(tmp_path), docker=unavailable, verify=_verified)
+    create = asyncio.create_task(box.create_resource("owned", "create", "--name", "owned"))
+    await asyncio.wait_for(started.wait(), 1)
+    create.cancel("operator interrupt")
+    release.set()
+    with pytest.raises(asyncio.CancelledError, match="operator interrupt") as signal_error:
+        await create
+    assert isinstance(signal_error.value.__cause__, FileNotFoundError)
+
+
 async def test_timed_out_create_can_appear_after_the_docker_cli_exits(tmp_path: Path) -> None:
     name = f"pdmcp-{RUN}-out"
 

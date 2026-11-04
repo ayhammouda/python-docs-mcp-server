@@ -371,7 +371,7 @@ class Sandbox:
             resource_id = task.result().strip()
             if not resource_id:
                 raise BenchmarkValidationError(f"Docker returned no ID for {name}")
-        except (subprocess.TimeoutExpired, BenchmarkValidationError) as exc:
+        except (OSError, subprocess.TimeoutExpired, BenchmarkValidationError) as exc:
             # A failed run -d can leave a container even with a nonzero CLI exit.
             await _finish(
                 self.remove_owned(
