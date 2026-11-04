@@ -197,7 +197,9 @@ async def test_an_ip_literal_connect_whose_ptr_names_an_allowlisted_host_is_deni
     assert checks["proxy_denied"]["passed"] is True, checks["proxy_denied"]
     await asyncio.sleep(1)
     events = parse_proxy_log((egress.log_dir / "access.log").read_text())
-    assert [(e.host, e.port, e.result) for e in events] == [("127.0.0.1", 443, "TCP_DENIED")]
+    # TCP_DENIED, or TCP_DENIED_ABORTED when the probe closes after reading the status line.
+    assert [(e.host, e.port, e.allowed) for e in events] == [("127.0.0.1", 443, False)]
+    assert events[0].result.startswith("TCP_DENIED")
 
 
 @pytest.fixture
