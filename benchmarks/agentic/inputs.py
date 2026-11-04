@@ -22,7 +22,7 @@ from benchmarks.agentic.protocol import (
 from benchmarks.runner import BenchmarkValidationError, _require_yaml_mapping
 
 
-def _read_bytes(path: Path, name: str, label: str) -> bytes:
+def read_input_bytes(path: Path, name: str, label: str) -> bytes:
     where = f"input {name}"
     assert_no_key_shaped(str(path), where="input path")
     try:
@@ -43,7 +43,7 @@ class CapturedInput:
 
     @classmethod
     def read(cls, path: Path, name: str, label: str) -> CapturedInput:
-        content = _read_bytes(path, name, label)
+        content = read_input_bytes(path, name, label)
         where = f"input {name}"
         try:
             text = content.decode("utf-8")  # same encoding as the path-based loaders
@@ -94,7 +94,7 @@ class CapturedJSON:
 
     @classmethod
     def read(cls, path: Path, label: str) -> CapturedJSON:
-        content = _read_bytes(path, label, label)
+        content = read_input_bytes(path, label, label)
         return cls(content, _json_mapping(content, label))
 
 
@@ -103,5 +103,5 @@ def read_json(path: Path, label: str) -> dict[str, Any]:
 
 
 def read_jsonl(path: Path, label: str) -> list[dict[str, Any]]:
-    content = _read_bytes(path, label, label)
+    content = read_input_bytes(path, label, label)
     return [_json_mapping(line, label) for line in content.splitlines() if line]

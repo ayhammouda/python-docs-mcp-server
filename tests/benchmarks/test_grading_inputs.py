@@ -7,6 +7,7 @@ source of the panel.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -18,6 +19,7 @@ from urllib.parse import urlsplit
 import pytest
 import yaml
 
+from benchmarks.agentic.protocol import KeyLeakError
 from benchmarks.corpus import validate_corpus
 from benchmarks.grading.inputs import (
     CRITERIA_PATH,
@@ -386,3 +388,14 @@ def test_inputs_manifest_hashes_mapping_and_masking_as_content(tmp_path: Path) -
         criteria_path=CRITERIA_PATH, panel_path=PANEL_PATH, probes_path=probes
     )
     assert with_probes["probes"] == hashlib.sha256(probes.read_bytes()).hexdigest()
+
+
+def test_snapshot_refuses_encoded_input_before_writing_any_artifact(tmp_path: Path) -> None:
+    marker = ("AIza" + "g" * 35).encode()
+    criteria = tmp_path / "criteria.yml"
+    criteria.write_text("note: !!binary " + base64.b64encode(marker).decode())
+    dest = tmp_path / "grading-inputs"
+    with pytest.raises(KeyLeakError) as caught:
+        snapshot_inputs(dest, criteria_path=criteria, panel_path=PANEL_PATH, probes_path=None)
+    assert marker.decode() not in str(caught.value)
+    assert not dest.exists()

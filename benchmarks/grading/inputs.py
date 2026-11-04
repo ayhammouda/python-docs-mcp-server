@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from benchmarks.agentic.inputs import CapturedInput, CapturedJSON, read_input_bytes
+from benchmarks.agentic.protocol import scanned_json_bytes
 from benchmarks.corpus import validate_corpus
 from benchmarks.runner import BenchmarkValidationError, _load_yaml_mapping
 from benchmarks.urls import _URL_RE, _trim
@@ -292,33 +294,46 @@ def _manifest_files(
     return files
 
 
+def scanned_input(path: Path, *, suffix: str) -> bytes:
+    """Read and inspect the same bytes that will be hashed or exported."""
+    if suffix in (".yml", ".yaml"):
+        return CapturedInput.read(path, "grading input", "grading input").content
+    if suffix == ".json":
+        return CapturedJSON.read(path, "grading input").content
+    return read_input_bytes(path, "grading input", "grading input")
+
+
+def _input_bytes(
+    criteria_path: Path, panel_path: Path, probes_path: Path | None
+) -> dict[str, bytes]:
+    files = {
+        name: scanned_input(path, suffix=Path(SNAPSHOT_NAMES[name]).suffix)
+        for name, path in _manifest_files(criteria_path, panel_path, probes_path).items()
+    }
+    files.update(mapping_table=MAPPING_TABLE.encode(), mask_rules=MASK_RULES.encode())
+    return files
+
+
 def inputs_manifest(
     *, criteria_path: Path, panel_path: Path, probes_path: Path | None
 ) -> dict[str, str]:
     """sha256 of every frozen input: file bytes, and the mapping and masking as content."""
-    manifest = {
-        name: _sha256(path.read_bytes())
-        for name, path in _manifest_files(criteria_path, panel_path, probes_path).items()
-    }
-    manifest["mapping_table"] = _sha256(MAPPING_TABLE.encode())
-    manifest["mask_rules"] = _sha256(MASK_RULES.encode())
-    return manifest
+    files = _input_bytes(criteria_path, panel_path, probes_path)
+    return {name: _sha256(body) for name, body in files.items()}
 
 
 def snapshot_inputs(
     dest: Path, *, criteria_path: Path, panel_path: Path, probes_path: Path | None
 ) -> dict[str, str]:
-    """Write ``grading/inputs/`` once (exclusive creates) and return the manifest."""
-    manifest = inputs_manifest(
-        criteria_path=criteria_path, panel_path=panel_path, probes_path=probes_path
-    )
+    """Write the exact checked bytes once, then publish their manifest."""
+    files = _input_bytes(criteria_path, panel_path, probes_path)
+    names = {**SNAPSHOT_NAMES, "mapping_table": "mapping.txt", "mask_rules": "masking.txt"}
+    manifest = {name: _sha256(body) for name, body in files.items()}
+    manifest_body = scanned_json_bytes(manifest, where="input manifest", indent=2, sort_keys=True)
     dest.mkdir(parents=True, exist_ok=True)
-    for name, path in _manifest_files(criteria_path, panel_path, probes_path).items():
-        with (dest / SNAPSHOT_NAMES[name]).open("xb") as file:
-            file.write(path.read_bytes())
-    for name, text in (("mapping.txt", MAPPING_TABLE), ("masking.txt", MASK_RULES)):
-        with (dest / name).open("x", encoding="utf-8") as file:
-            file.write(text)
-    with (dest / "inputs.json").open("x", encoding="utf-8") as file:
-        file.write(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    for name, body in files.items():
+        with (dest / names[name]).open("xb") as file:
+            file.write(body)
+    with (dest / "inputs.json").open("xb") as file:
+        file.write(manifest_body + b"\n")
     return manifest
