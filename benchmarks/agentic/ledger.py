@@ -239,6 +239,7 @@ class Ledger:
         self._caps = caps
         self._lock_fd: int | None = lock_fd
         self._events: list[dict[str, Any]] = []
+        self._invocation_start = 0
         self._spent: dict[str, Decimal] = {}
         self._stops: dict[str, str] = {}
         self._units: dict[str, tuple[str, Decimal]] = {}  # unit id -> (provider, bound)
@@ -291,6 +292,7 @@ class Ledger:
                     pending[event["unit_id"]] = None
                 elif event["event"] == "settle":
                     pending.pop(event["unit_id"], None)
+        self._invocation_start = len(self._events)
         for unit_id in pending:
             provider, _ = self._units[unit_id]
             self._in_flight[provider] = unit_id
@@ -407,6 +409,10 @@ class Ledger:
         if self._stops.get(provider) == "overrun":
             del self._stops[provider]
             self._append(provider, {"event": "resume"})
+
+    def invocation_events(self) -> list[dict[str, Any]]:
+        """Events written since this open, including recovery of earlier pending units."""
+        return [dict(event) for event in self._events[self._invocation_start :]]
 
     def events(self, run_id: str) -> list[dict[str, Any]]:
         return [dict(event) for event in self._events if event["run_id"] == run_id]

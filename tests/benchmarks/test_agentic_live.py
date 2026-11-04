@@ -217,11 +217,14 @@ def test_reference_measurements_must_belong_to_the_snapshot_model(
         reference_rates(tmp_path)
 
 
-def test_reference_spend_excludes_recovery_of_an_earlier_run(tmp_path: Path) -> None:
+@pytest.mark.parametrize("previous_id", ["interrupted", "pilot"])
+def test_reference_spend_excludes_recovery_of_an_earlier_run(
+    tmp_path: Path, previous_id: str
+) -> None:
     from benchmarks.agentic.run import run_agentic
     from tests.benchmarks.test_agentic_run import _config, _matrix_with
 
-    ledger = Ledger.open(tmp_path / "ledger", run_id="interrupted")
+    ledger = Ledger.open(tmp_path / "ledger", run_id=previous_id)
     try:
         unit = ledger.reserve(
             "openai",

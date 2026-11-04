@@ -589,7 +589,7 @@ def run_agentic(
 
     def write_outcome() -> None:
         """ledger-events.jsonl and run-summary.json, for a completed or an aborted run."""
-        run_events = ledger.events(run_id)
+        run_events = ledger.invocation_events()
         events = "".join(json.dumps(e, sort_keys=True) + "\n" for e in run_events)
         # The pilot reads how often reported input passed its bound (design §12).
         exceeded = Counter(
