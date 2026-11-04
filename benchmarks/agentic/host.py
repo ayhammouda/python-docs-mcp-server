@@ -27,6 +27,7 @@ from benchmarks.agentic.cleanup import finish
 from benchmarks.agentic.ledger import LedgerService
 from benchmarks.agentic.loop import Caps
 from benchmarks.agentic.protocol import (
+    KEY_SHAPED,
     MAX_FRAME_BYTES,
     FrameTooLarge,
     KeyLeakError,
@@ -176,12 +177,16 @@ async def _teardown(
     ledger: LedgerService,
     in_flight: str | None,
     stop_worker: Callable[[], Awaitable[None]] | None = None,
-) -> str | None:
-    """Kill the worker's group, stop its worker, scrub its log and book its open unit.
+) -> None:
+    """Kill the worker, scrub its log and book any open unit before teardown returns."""
 
-    Returns the log's key pattern. A failed ``stop_worker`` is re-raised only after the log
-    is scrubbed and the unit settled, so the run aborts with nothing left unbooked.
-    """
+    def report(error: BaseException) -> None:
+        # gather can propagate a sibling's cancellation first. Report while this job still owns it.
+        detail = KEY_SHAPED.sub("[redacted]", str(error))
+        print(
+            f"worker teardown ({log_path.name}): {type(error).__name__}: {detail}", file=sys.stderr
+        )
+
     stop_error: BaseException | None = None
     try:
         # The whole group, even after the worker exited: no descendant outlives it to write.
@@ -196,13 +201,26 @@ async def _teardown(
                 await stop_worker()  # a container's removal ends everything in it
             except BaseException as exc:  # noqa: BLE001 - kept, then re-raised below
                 stop_error = exc
-        pattern = _publish_scrubbed(log_path)  # always, a failed stop_worker included
+        if pattern := _publish_scrubbed(log_path):
+            leak = KeyLeakError(
+                f"a key-shaped string ({pattern} pattern) was found in {log_path}; redacted there"
+            )
+            if stop_error is not None:
+                report(leak)
+                raise stop_error from leak
+            raise leak
+        if stop_error is not None:
+            raise stop_error
+    except Exception as error:
+        report(error)
+        raise
     finally:  # whatever happened to the log
         if in_flight is not None:  # may have been billed: booked at twice its bound
-            await ledger.settle(in_flight, outcome="worker_lost", buckets=None)
-    if stop_error is not None:
-        raise stop_error
-    return pattern
+            try:
+                await ledger.settle(in_flight, outcome="worker_lost", buckets=None)
+            except Exception as error:
+                report(error)
+                raise
 
 
 def _publish_scrubbed(log_path: Path) -> str | None:
@@ -351,15 +369,11 @@ async def _supervise(
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             pass  # the worker died or stalled; handled as a lost worker below
     finally:
-        pattern = await finish(
+        await finish(
             _teardown(
                 proc, anchor, log_path, ledger, in_flight, partial(launcher.stop_worker, job)
             ),
             sys.exception(),
-        )
-    if pattern:
-        raise KeyLeakError(
-            f"a key-shaped string ({pattern} pattern) was found in {log_path}; redacted there"
         )
     if not done:
         for item in job.trajectories:

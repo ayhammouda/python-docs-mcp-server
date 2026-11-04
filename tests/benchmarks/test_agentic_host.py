@@ -1043,9 +1043,10 @@ async def test_a_worker_that_never_exits_cannot_hang_its_teardown(
     log.write_text("debug: sk-ant-api03-" + "z" * 90 + "\n", encoding="utf-8")
     async with asyncio.timeout(5):  # the bound under test is 0.1 s
         worker, anchor = _Unending(group.pid), group
-        pattern = await agentic_host._teardown(worker, anchor, log, service, unit)  # type: ignore[arg-type]
+        with pytest.raises(KeyLeakError, match="anthropic"):
+            await agentic_host._teardown(worker, anchor, log, service, unit)  # type: ignore[arg-type]
     assert group.wait(timeout=5) == -signal.SIGKILL
-    assert pattern is not None and log.read_text() == "debug: [redacted]\n"
+    assert log.read_text() == "debug: [redacted]\n"
     settles = [e for e in host.ledger.events("host-test") if e["event"] == "settle"]
     assert [(s["outcome"], D(s["booked"])) for s in settles] == [
         ("worker_lost", 2 * D("0.002024"))
@@ -1424,8 +1425,10 @@ async def test_a_failing_stop_worker_still_scrubs_the_log_and_settles_the_unit(
     launcher = RecordingLauncher(
         LostLauncher(leaky), stop_error=RuntimeError("docker rm -f failed")
     )
-    with pytest.raises(RuntimeError, match="docker rm -f failed"):
+    with pytest.raises(RuntimeError, match="docker rm -f failed") as error:
         await _run_lost(host, tmp_path, launcher, _job(tmp_path, [ANSWER], job_id="lost"))
+    assert isinstance(error.value.__cause__, KeyLeakError)
+    assert SYNTHETIC_KEY not in str(error.value.__cause__)
     log = tmp_path / "logs" / "lost.stderr.log"
     assert not log.exists() or log.read_text() == "debug: [redacted]\n"
     assert host.ledger.spent("anthropic") == 2 * D("0.002024")
@@ -1506,6 +1509,106 @@ async def test_host_cleanup_preserves_signal_and_waits_for_failure(
     assert still_cleaning
     assert error.value is interrupted[0]
     assert error.value.__cause__ is failure
+
+
+def _fake_host_processes(monkeypatch: pytest.MonkeyPatch, spawn: Any) -> None:
+    monkeypatch.setattr(agentic_host, "_start_anchor", Mock(return_value=Mock(pid=object())))
+    monkeypatch.setattr(agentic_host, "_kill_group", Mock())
+    monkeypatch.setattr(agentic_host, "_reap", AsyncMock())
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+
+
+@pytest.mark.parametrize("during_teardown", [False, True])
+async def test_cancelled_worker_reports_scrubbed_log_and_books_open_unit(
+    host: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, during_teardown: bool
+) -> None:
+    granted, stopping, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def spawn(*args: Any, stderr: Any, **kwargs: Any) -> Mock:
+        stderr.write(f"local debug: {SYNTHETIC_KEY}\n".encode())
+        stdout = asyncio.StreamReader()
+        stdout.feed_data(encode_frame(_reserve_frame(1024)))
+        if during_teardown:
+            stdout.feed_eof()
+
+        def write(frame: bytes) -> None:
+            if _frames(frame)[0]["type"] == "grant":
+                granted.set()
+
+        return Mock(stdin=Mock(write=write, drain=AsyncMock()), stdout=stdout, wait=AsyncMock())
+
+    class Launcher(LocalLauncher):
+        async def stop_worker(self, job: WorkerJob) -> None:
+            stopping.set()
+            await release.wait()
+
+    _fake_host_processes(monkeypatch, spawn)
+    job = _job(tmp_path, [ANSWER], job_id="interrupted")
+    task = asyncio.create_task(host.run([job], launcher=Launcher()))
+    await asyncio.wait_for((stopping if during_teardown else granted).wait(), 2)
+    task.cancel("signal SIGTERM")
+    await asyncio.wait_for(stopping.wait(), 2)
+    release.set()
+    with pytest.raises(asyncio.CancelledError, match="signal SIGTERM") as error:
+        await task
+    log = tmp_path / "logs" / "interrupted.stderr.log"
+    assert log.read_text() == "local debug: [redacted]\n"
+    assert host.ledger.spent("anthropic") == 2 * D("0.002024")
+    leak = error.value.__cause__
+    assert isinstance(leak, KeyLeakError)
+    assert str(log) in str(leak) and "anthropic" in str(leak)
+    assert SYNTHETIC_KEY not in str(leak) and "local debug" not in str(leak)
+
+
+@pytest.mark.parametrize("problem", ["stop", "leak"])
+async def test_later_worker_reports_cleanup_after_clean_sibling_cancellation(
+    host: Host,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    problem: str,
+) -> None:
+    ready = {name: asyncio.Event() for name in ("first", "later")}
+    first_done, release = asyncio.Event(), asyncio.Event()
+
+    async def spawn(*args: Any, stderr: Any, **kwargs: Any) -> Mock:
+        name = Path(stderr.name).name.split(".")[0]
+        if name == "first":
+            supervisor = asyncio.current_task()
+            assert supervisor is not None
+            supervisor.add_done_callback(lambda _: first_done.set())
+        elif problem == "leak":
+            stderr.write(f"local debug: {SYNTHETIC_KEY}\n".encode())
+        ready[name].set()
+        return Mock(stdin=Mock(drain=AsyncMock()), stdout=asyncio.StreamReader(), wait=AsyncMock())
+
+    class Launcher(LocalLauncher):
+        async def stop_worker(self, job: WorkerJob) -> None:
+            if job.job_id == "later":
+                await release.wait()
+                if problem == "stop":
+                    raise RuntimeError("worker removal failed")
+
+    _fake_host_processes(monkeypatch, spawn)
+    jobs = [_job(tmp_path, [ANSWER], job_id=name) for name in ready]
+    task = asyncio.create_task(host.run(jobs, launcher=Launcher()))
+    for event in ready.values():
+        await asyncio.wait_for(event.wait(), 2)
+    task.cancel("signal SIGTERM")
+    await asyncio.wait_for(first_done.wait(), 2)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError, match="signal SIGTERM"):
+        await task
+    stderr = capsys.readouterr().err
+    assert "later" in stderr
+    if problem == "leak":
+        log = tmp_path / "logs" / "later.stderr.log"
+        assert log.read_text() == "local debug: [redacted]\n"
+        assert "KeyLeakError" in stderr and "anthropic" in stderr and str(log) in stderr
+        assert SYNTHETIC_KEY not in stderr and "local debug" not in stderr
+    else:
+        assert "worker removal failed" in stderr
 
 
 async def test_run_jobs_preserves_cancellation_while_draining_other_workers(
