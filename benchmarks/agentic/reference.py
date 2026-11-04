@@ -67,9 +67,7 @@ class ReferenceUnits:
                 if field in call and (type(call[field]) is not int or call[field] < 0):
                     raise ValueError("invalid reference call bound")
             params = call["request_params"]
-            if not isinstance(params, dict) or (
-                "model" in params and params["model"] != family.model_id
-            ):
+            if not isinstance(params, dict) or params.get("model") != family.model_id:
                 raise ValueError("reference request model contradicts executed identity")
             raw = call.get("raw_response")
             if raw is not None and not isinstance(raw, dict):

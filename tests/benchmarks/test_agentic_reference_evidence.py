@@ -382,6 +382,7 @@ def test_scripted_reruns_save_execution_in_every_attempt(tmp_path: Path) -> None
         "foreign_units",
         "foreign_run",
         "request_model",
+        "missing_request_model",
         "duplicate_attempt",
         "missing_attempt",
         "missing_unit",
@@ -428,6 +429,8 @@ def test_unbound_or_inconsistent_units_cannot_authorize_full_run(
             event["run_id"] = "another-pilot"
     elif mutation == "request_model":
         call["request_params"]["model"] = "other-model"
+    elif mutation == "missing_request_model":
+        del call["request_params"]["model"]
     elif mutation == "duplicate_attempt":
         call["attempts"] *= 2
     elif mutation == "missing_attempt":
@@ -768,7 +771,7 @@ def test_every_attempt_outcome_uses_ledger_booking_rules(
     path = _record(tmp_path)
     record = json.loads(path.read_bytes())
     extra = {
-        "request_params": {},
+        "request_params": {"model": "gpt-6.1-sol"},
         "attempts": [{"unit_id": "u2", "outcome": outcome}],
         "buckets": None,
         "raw_response": {} if outcome == "no_usage" else None,
