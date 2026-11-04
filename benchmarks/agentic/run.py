@@ -118,8 +118,17 @@ async def _until_signalled(run: Coroutine[Any, Any, None]) -> None:
     that cannot take signals runs without the handlers, and each disposition the handlers
     replaced is restored afterwards.
     """
-    task = asyncio.ensure_future(run)
+    task = asyncio.create_task(run)
     loop = asyncio.get_running_loop()
+    signal_seen = False
+
+    def interrupt(signum: signal.Signals) -> None:
+        nonlocal signal_seen
+        if not signal_seen:
+            signal_seen = True
+            if not task.cancelling():
+                task.cancel(f"signal {signum.name}")
+
     wanted = [  # an ignored signal stays ignored, as under nohup
         (signum, previous)
         for signum in (signal.SIGTERM, signal.SIGHUP)
@@ -128,7 +137,7 @@ async def _until_signalled(run: Coroutine[Any, Any, None]) -> None:
     installed: list[tuple[signal.Signals, Any]] = []  # each with the disposition it replaced
     try:
         for signum, previous in wanted:
-            loop.add_signal_handler(signum, task.cancel, f"signal {signum.name}")
+            loop.add_signal_handler(signum, interrupt, signum)
             installed.append((signum, previous))
     except (RuntimeError, NotImplementedError, ValueError) as exc:
         # Not the main thread, or a loop without signal support: run without those handlers.

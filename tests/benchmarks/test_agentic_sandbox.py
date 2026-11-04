@@ -1195,3 +1195,31 @@ async def test_cancelled_create_preserves_signal_when_cli_cannot_start(tmp_path:
     with pytest.raises(asyncio.CancelledError, match="signal SIGTERM") as error:
         await task
     assert error.value.__cause__ is failure
+
+
+def test_docker_rollback_helper_isolated_from_the_foreground_group() -> None:
+    # Only this test's new session can receive the group signal.
+    host = """
+import asyncio, json, signal, sys
+from benchmarks.agentic.sandbox import docker_runner
+received = []
+signal.signal(signal.SIGHUP, lambda sig, frame: received.append(sig))
+result = asyncio.run(docker_runner({})([sys.executable, "-c", sys.argv[1]]))
+print(json.dumps([result.returncode, result.stdout.decode().strip(), bool(received)]))
+"""
+    helper = """
+import os, signal
+parent = os.getppid()
+assert parent > 1 and os.getpgid(parent) == os.getsid(parent) == parent
+os.killpg(parent, signal.SIGHUP)
+print("rollback complete")
+"""
+    run = subprocess.run(
+        [sys.executable, "-c", host, helper],
+        start_new_session=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=True,
+    )
+    assert json.loads(run.stdout) == [0, "rollback complete", True]

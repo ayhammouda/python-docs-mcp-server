@@ -1343,3 +1343,36 @@ def test_cli_refuses_live_with_the_local_launcher(tmp_path: Path, extra: tuple[s
     with pytest.raises(SystemExit) as caught:
         main(_cli(tmp_path, *extra))
     assert caught.value.code == 2
+
+
+async def test_first_managed_signal_survives_spawn_unwinding(
+    default_signal_handlers: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = asyncio.get_running_loop()
+    callbacks: dict[int, Any] = {}
+
+    def register(signum: int, callback: Any, *args: Any) -> None:
+        callbacks[signum] = lambda: callback(*args)
+
+    monkeypatch.setattr(loop, "add_signal_handler", register)
+    monkeypatch.setattr(loop, "remove_signal_handler", lambda signum: True)
+    monkeypatch.setattr(signal, "signal", lambda *args: None)
+    ready, unwinding, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def spawning() -> None:
+        ready.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            unwinding.set()
+            await release.wait()
+            raise
+
+    run = asyncio.create_task(_until_signalled(spawning()))
+    await asyncio.wait_for(ready.wait(), 2)
+    callbacks[signal.SIGTERM]()
+    await asyncio.wait_for(unwinding.wait(), 2)
+    callbacks[signal.SIGHUP]()
+    release.set()
+    with pytest.raises(asyncio.CancelledError, match="signal SIGTERM"):
+        await run

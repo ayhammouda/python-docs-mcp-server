@@ -127,6 +127,7 @@ def docker_runner(env: Mapping[str, str]) -> DockerRun:
             list(argv),
             capture_output=True,
             env=dict(env),
+            process_group=0,  # the host's foreground signals must not interrupt rollback
             timeout=_DOCKER_TIMEOUT_S,
         )
 
