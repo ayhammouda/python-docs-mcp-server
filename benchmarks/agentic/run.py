@@ -103,16 +103,24 @@ async def _until_signalled(run: Coroutine[Any, Any, None]) -> None:
     """
     task = asyncio.ensure_future(run)
     loop = asyncio.get_running_loop()
+    wanted = [  # an ignored signal stays ignored, as under nohup
+        (signum, previous)
+        for signum in (signal.SIGTERM, signal.SIGHUP)
+        if (previous := signal.getsignal(signum)) is not signal.SIG_IGN
+    ]
     installed: list[tuple[signal.Signals, Any]] = []  # each with the disposition it replaced
     try:
-        for signum in (signal.SIGTERM, signal.SIGHUP):
-            previous = signal.getsignal(signum)
-            if previous is signal.SIG_IGN:  # as under nohup: it stays ignored
-                continue
+        for signum, previous in wanted:
             loop.add_signal_handler(signum, task.cancel, f"signal {signum.name}")
             installed.append((signum, previous))
-    except (RuntimeError, NotImplementedError, ValueError):
-        pass  # not the main thread, or a loop without signal support: run without handlers
+    except (RuntimeError, NotImplementedError, ValueError) as exc:
+        # Not the main thread, or a loop without signal support: run without those handlers.
+        skipped = ", ".join(signum.name for signum, _ in wanted[len(installed) :])
+        print(
+            f"agentic run: signal handlers not installed for {skipped} "
+            f"({type(exc).__name__}: {exc}); no teardown on those signals",
+            file=sys.stderr,
+        )
     try:
         await task
     finally:

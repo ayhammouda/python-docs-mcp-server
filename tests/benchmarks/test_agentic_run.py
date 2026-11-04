@@ -5,6 +5,7 @@ Every model is scripted and every worker is keyless: no test reaches a network h
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import random
@@ -31,6 +32,7 @@ from benchmarks.agentic.protocol import KEY_SHAPED, KeyLeakError
 from benchmarks.agentic.run import (
     OUTPUT_CAP_STOPS,
     AgenticConfig,
+    _until_signalled,
     cell_id,
     plan_jobs,
     run_agentic,
@@ -446,11 +448,45 @@ def _scripted_config(tmp_path: Path) -> AgenticConfig:
     )
 
 
-def test_run_agentic_completes_off_the_main_thread(tmp_path: Path) -> None:
-    # No signal handler can be installed off the main thread: the run goes on without one.
+def test_run_agentic_completes_off_the_main_thread(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # No signal handler can be installed off the main thread: the run goes on without one,
+    # and says so.
     with ThreadPoolExecutor(1) as pool:
         summary = pool.submit(run_agentic, _scripted_config(tmp_path)).result(timeout=60)
     assert summary["status"] == "completed" and summary["succeeded_cells"] == 1
+    skipped = [line for line in capsys.readouterr().err.splitlines() if "handler" in line]
+    assert len(skipped) == 1 and "SIGTERM, SIGHUP" in skipped[0] and "RuntimeError" in skipped[0]
+
+
+def test_a_loop_without_signal_support_runs_without_handlers(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    before = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGHUP)}
+    removed: list[int] = []
+
+    async def scenario() -> list[str]:
+        loop = asyncio.get_running_loop()
+
+        def unsupported(*args: Any) -> None:
+            raise NotImplementedError
+
+        loop.add_signal_handler = unsupported  # type: ignore[method-assign]
+        loop.remove_signal_handler = removed.append  # type: ignore[method-assign,assignment]
+        ran: list[str] = []
+
+        async def run() -> None:
+            ran.append("ran")
+
+        await _until_signalled(run())
+        return ran
+
+    assert asyncio.run(scenario()) == ["ran"]
+    assert removed == []  # nothing was installed, so nothing is removed
+    assert {signum: signal.getsignal(signum) for signum in before} == before
+    err = capsys.readouterr().err
+    assert "SIGTERM, SIGHUP" in err and "NotImplementedError" in err
 
 
 def test_run_agentic_restores_the_previous_signal_dispositions(tmp_path: Path) -> None:
