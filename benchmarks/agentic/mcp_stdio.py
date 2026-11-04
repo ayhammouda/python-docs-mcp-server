@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import TextIO
 
 import anyio
@@ -96,7 +96,7 @@ async def checked_stdio_client(
         # Drain while shutdown closes stdin/stops the owned process. A blocked
         # delivery is released by read.close(); subsequent lines are still scanned.
         with anyio.CancelScope(shield=True):
-            try:
+            with suppress(anyio.ClosedResourceError, anyio.BrokenResourceError, ConnectionError):
                 async with incoming:
                     async for chunk in process.stdout:
                         for part in chunk.splitlines(keepends=True):
@@ -112,10 +112,8 @@ async def checked_stdio_client(
                                     await incoming.send(item)
                                 except (anyio.ClosedResourceError, anyio.BrokenResourceError):
                                     delivering = False
-                    if buffer:
-                        guard.parse(bytes(buffer), params)
-            except (anyio.ClosedResourceError, anyio.BrokenResourceError, ConnectionError):
-                pass
+            if buffer:
+                guard.parse(bytes(buffer), params)
 
     async def writer() -> None:
         assert process.stdin is not None

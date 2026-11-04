@@ -275,3 +275,34 @@ async def test_stdio_line_limit_bounds_buffer_and_releases_process(monkeypatch):
                 with pytest.raises(BridgeCrash):
                     await bridge.call("search_docs", {})
     assert caught.value.subgroup(FrameTooLarge) is not None
+
+
+async def test_broken_stdio_scans_the_pending_partial_line(monkeypatch):
+    from contextlib import suppress
+    from types import SimpleNamespace
+
+    import anyio
+
+    from benchmarks.agentic.protocol import find_key_leak
+
+    async def broken_stdout():
+        yield b'{"result":"prefixopaque_marker-suffix'
+        raise anyio.BrokenResourceError
+
+    process = SimpleNamespace(stdout=broken_stdout(), stdin=object())
+    monkeypatch.setattr(
+        mcp_stdio, "_create_platform_compatible_process", AsyncMock(return_value=process)
+    )
+    monkeypatch.setattr(mcp_stdio, "_stop_server_process", AsyncMock())
+    channel = worker.ProtocolChannel(-1, (b"opaque_marker",), -1, None, ())
+    guard = mcp_stdio.ReplyGuard(channel.check_content)
+    try:
+        async with mcp_stdio.checked_stdio_client(
+            StdioServerParameters(command="unused"), errlog=sys.stderr, guard=guard
+        ) as (read, _):
+            with suppress(anyio.EndOfStream):
+                await read.receive()
+    except BaseExceptionGroup as group:
+        assert find_key_leak(group) is guard.failure
+    with pytest.raises(KeyLeakError):
+        guard.raise_if_failed()
