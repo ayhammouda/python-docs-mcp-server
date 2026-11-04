@@ -827,6 +827,40 @@ async def test_a_worker_that_never_exits_cannot_hang_its_teardown(
     ]
 
 
+async def test_a_failed_log_publish_still_settles_and_leaves_no_key(
+    host: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    group = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True
+    )
+    real_write = Path.write_bytes
+
+    def full_disk(self: Path, data: bytes) -> int:
+        if self.name.endswith(".tmp"):  # a partial copy, then the disk is full
+            real_write(self, data[:10])
+            raise OSError(28, "No space left on device")
+        return real_write(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", full_disk)
+    service = host.service(_job(tmp_path, [ANSWER]).family)
+    unit = await service.reserve(
+        provider="anthropic", model_id="scripted-1", input_bound=1000, output_bound=1024
+    )
+    log = tmp_path / "full.stderr.log"
+    log.write_text("debug: sk-ant-api03-" + "z" * 90 + "\n", encoding="utf-8")
+    try:
+        with pytest.raises(OSError, match="No space left"):
+            await agentic_host._teardown(_Exited(group.pid), log, service, unit)  # type: ignore[arg-type]
+    finally:
+        group.wait(timeout=5)
+    settles = [e for e in host.ledger.events("host-test") if e["event"] == "settle"]
+    assert [(s["outcome"], D(s["booked"])) for s in settles] == [
+        ("worker_lost", 2 * D("0.002024"))
+    ]
+    assert [path.name for path in tmp_path.glob("*.tmp")] == []
+    assert "sk-ant-api03-" not in log.read_text()
+
+
 async def test_host_aborts_the_run_when_a_worker_frame_holds_a_key_shaped_string(
     host: Host, tmp_path: Path
 ) -> None:

@@ -87,22 +87,37 @@ async def _teardown(
     proc: asyncio.subprocess.Process, log_path: Path, ledger: LedgerService, in_flight: str | None
 ) -> str | None:
     """Kill the worker, scrub its log and book its open unit; the log's key pattern, if any."""
-    # The whole group, even after the worker exited: no descendant outlives it to write later.
-    # shortcut: reaches only this host's process tree; PR 4's container launcher must give the
-    # same guarantee, which removing the container does.
-    # ESRCH: the group is gone. EPERM: macOS's answer for a group that holds only zombies.
-    with suppress(ProcessLookupError, PermissionError):
-        os.killpg(proc.pid, signal.SIGKILL)
-    with suppress(TimeoutError):  # a worker that never exits cannot hang the run
-        await asyncio.wait_for(proc.wait(), _EXIT_WAIT_S)
-    # On every exit, a raise or a cancel included: the leaked bytes never stay on disk. The
-    # scrubbed copy replaces the log, so a writer still holding it writes into an unlinked file.
+    try:
+        # The whole group, even after the worker exited: no descendant outlives it to write.
+        # shortcut: reaches only this host's process tree; PR 4's container launcher must give
+        # the same guarantee, which removing the container does.
+        # ESRCH: the group is gone. EPERM: macOS's answer for a group that holds only zombies.
+        with suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        with suppress(TimeoutError):  # a worker that never exits cannot hang the run
+            await asyncio.wait_for(proc.wait(), _EXIT_WAIT_S)
+        return _publish_scrubbed(log_path)
+    finally:  # whatever happened to the log
+        if in_flight is not None:  # may have been billed: booked at twice its bound
+            await ledger.settle(in_flight, outcome="worker_lost", buckets=None)
+
+
+def _publish_scrubbed(log_path: Path) -> str | None:
+    """Replace the log by its scrubbed snapshot; the key pattern it held, if any.
+
+    On every exit, a raise or a cancel included, the leaked bytes never stay on disk. The copy
+    replaces the log, so a writer still holding it writes into an unlinked file. If the copy
+    cannot be written, the log is emptied instead.
+    """
     redacted, pattern = redact_key_shaped(log_path.read_bytes())
     scrubbed = log_path.with_name(log_path.name + ".tmp")
-    scrubbed.write_bytes(redacted)
-    os.replace(scrubbed, log_path)
-    if in_flight is not None:  # may have been billed: booked at twice its bound
-        await ledger.settle(in_flight, outcome="worker_lost", buckets=None)
+    try:
+        scrubbed.write_bytes(redacted)
+        os.replace(scrubbed, log_path)
+    except OSError:  # a full or read-only disk, say
+        log_path.write_bytes(b"")
+        scrubbed.unlink(missing_ok=True)
+        raise
     return pattern
 
 
