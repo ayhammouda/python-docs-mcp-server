@@ -10,6 +10,7 @@ everywhere: no anti-claim, and ``REQUIRED_WORDING`` for the grading.
 from __future__ import annotations
 
 import json
+import re
 import statistics
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
@@ -25,7 +26,7 @@ from benchmarks.grading.gates import load_egress_evidence, load_offline_evidence
 from benchmarks.grading.inputs import SNAPSHOT_NAMES
 from benchmarks.grading.stats import paired_bootstrap
 from benchmarks.model_matrix import ModelMatrix
-from benchmarks.report import RunBundle, _percentile, _relative_link, _table
+from benchmarks.report import RunBundle, _cell, _percentile, _relative_link, _table
 from benchmarks.runner import BenchmarkValidationError
 
 REQUIRED_WORDING = "LLM-graded, validated against synthetic probes and inter-model agreement"
@@ -113,6 +114,23 @@ def _median(values: Sequence[float]) -> str:
     return _fmt(statistics.median(values), 1) if values else "n/a"
 
 
+def _esc(value: Any) -> str:
+    """One run-data value as literal inline text, escaped exactly as a table cell.
+
+    Run data (error bodies from providers, proxies and MCP servers, model ids, reasons)
+    is attacker-influenced: unescaped in a bullet or a sentence it could add HTML, an
+    image, a link, a code span or a heading, the class #173 closed for table cells.
+    """
+    return _cell(_fmt(value))
+
+
+def _fence(text: str) -> list[str]:
+    """A fenced block that its content cannot close: one backtick more than any run."""
+    runs = [len(run) for run in re.findall(r"`+", text)]
+    fence = "`" * max(3, max(runs, default=0) + 1)
+    return [f"{fence}text", text.rstrip(), fence]
+
+
 class _Run:
     """Everything the report reads, from the run directory only."""
 
@@ -191,13 +209,13 @@ def _header(run: _Run, methodology_path: Path) -> list[str]:
         "",
         DISCLAIMER,
         "",
-        f"Grading outcome: {run.tier} (G1–G4; {REQUIRED_WORDING})",
+        f"Grading outcome: {_esc(run.tier)} (G1–G4; {REQUIRED_WORDING})",
         "",
-        f"- Run `{summary.get('run_id')}` at commit `{summary.get('repo_commit')}`",
+        f"- Run {_esc(summary.get('run_id'))} at commit {_esc(summary.get('repo_commit'))}",
         f"- Methodology: [{methodology_path.name}]({link})",
         f"- Corpus sha256: `{run.bundle.corpus_hash}`",
-        f"- Planned cells: {summary.get('planned_cells')}; scored cells: "
-        f"{summary.get('scored_cells')}",
+        f"- Planned cells: {_esc(summary.get('planned_cells'))}; scored cells: "
+        f"{_esc(summary.get('scored_cells'))}",
         "",
         *_table(["Model family", "Provider", "Model id", "Arm"], rows),
     ]
@@ -269,7 +287,7 @@ def _c1(run: _Run) -> list[str]:
         "",
         "Calls the model made to `lookup_package_docs` are reported apart, as the design "
         "allows; the isolation probe was "
-        f"{run.egress.get('isolation_probe')}.",
+        f"{_esc(run.egress.get('isolation_probe'))}.",
     ]
 
 
@@ -309,7 +327,7 @@ def _claims(run: _Run) -> list[str]:
         lines += [
             "",
             f"Offline evidence: {_verdict(offline.get('ok'))} "
-            f"({offline.get('expected_checks')} check rounds expected).",
+            f"({_esc(offline.get('expected_checks'))} check rounds expected).",
         ]
         denied = offline.get("denied_attempts") or []
         if denied:
@@ -318,7 +336,9 @@ def _claims(run: _Run) -> list[str]:
                 "Denied egress attempts, each refused by the proxy, so nothing left the sandbox:",
             ]
             lines += [
-                f"- {d['job_id']}: {d['host']} (refused; nothing left the sandbox)" for d in denied
+                f"- {_esc(d.get('job_id'))}: {_esc(d.get('host'))} "
+                "(refused; nothing left the sandbox)"
+                for d in denied
             ]
     lines += [
         "",
@@ -346,12 +366,12 @@ def _reported_versions(run: _Run, judge_id: str) -> list[str]:
 def _alpha_line(name: str, gate: Mapping[str, Any]) -> str:
     details = gate.get("details") or {}
     if gate.get("passed") is None and details.get("reason"):
-        return f"- {name}: not evaluated. {details['reason']}"
+        return f"- {name}: not evaluated. {_esc(details['reason'])}"
     return (
-        f"- {name}: {_verdict(gate.get('passed'))}; alpha {_fmt(details.get('alpha'))}, "
-        f"95% interval {_fmt(details.get('low'))} to {_fmt(details.get('high'))}, "
-        f"P(alpha < 0.667) {_fmt(details.get('q_below'))}, undefined draws "
-        f"{details.get('undefined_draws', 'n/a')}"
+        f"- {name}: {_verdict(gate.get('passed'))}; alpha {_esc(details.get('alpha'))}, "
+        f"95% interval {_esc(details.get('low'))} to {_esc(details.get('high'))}, "
+        f"P(alpha below 0.667) {_esc(details.get('q_below'))}, undefined draws "
+        f"{_esc(details.get('undefined_draws', 'n/a'))}"
     )
 
 
@@ -372,8 +392,11 @@ def _disclosure(run: _Run) -> list[str]:
     described = []
     for judge_id, effort in efforts.items():
         model = (run.judges.get(judge_id) or {}).get("model_id", "?")
-        versions = ", ".join(_reported_versions(run, judge_id)) or "n/a"
-        described.append(f"{judge_id} ({model}, reported {versions}, effort {effort or 'default'})")
+        versions = ", ".join(_esc(v) for v in _reported_versions(run, judge_id)) or "n/a"
+        described.append(
+            f"{_esc(judge_id)} ({_esc(model)}, reported {versions}, "
+            f"effort {_esc(effort or 'default')})"
+        )
     lines += [
         DISCLOSURE.format(judges="; ".join(described)),
         "",
@@ -382,7 +405,7 @@ def _disclosure(run: _Run) -> list[str]:
         "Only answering ran in the air-gapped arm; grading ran on the providers' hosted batch "
         "APIs.",
         "",
-        f"The run was graded by the composition {summary.get('composition')}.",
+        f"The run was graded by the composition {_esc(summary.get('composition'))}.",
         "",
         "### Judges and evaluated models",
         "",
@@ -391,29 +414,30 @@ def _disclosure(run: _Run) -> list[str]:
     for judge_id in [*efforts, *([reference] if reference else [])]:
         judge = run.judges.get(judge_id) or {}
         for fid, family in sorted(run.families.items()):
+            judge_text = f"{_esc(judge_id)} ({_esc(judge.get('model_id'))})"
             if judge.get("model_id") == family.get("model_id"):
                 lines.append(
-                    f"- {judge_id} ({judge.get('model_id')}) is the evaluated model "
-                    f"{family.get('model_id')}: it grades its own answers."
+                    f"- {judge_text} is the evaluated model {_esc(family.get('model_id'))}: "
+                    "it grades its own answers."
                 )
             elif judge.get("provider") == family.get("provider"):
                 lines.append(
-                    f"- {judge_id} ({judge.get('model_id')}) shares a provider family "
-                    f"({family.get('provider')}) with the evaluated model {fid}."
+                    f"- {judge_text} shares a provider family ({_esc(family.get('provider'))}) "
+                    f"with the evaluated model {_esc(fid)}."
                 )
     lines += ["", "### Frozen inputs", ""]
     files = {**SNAPSHOT_NAMES, "mapping_table": "mapping.txt", "mask_rules": "masking.txt"}
     for name, sha in sorted(run.inputs.items()):
-        target = files.get(name)
+        target = files.get(name)  # a fixed file name, never run data
         link = f" ([{target}]({run.link('grading', 'inputs', target)}))" if target else ""
-        lines.append(f"- {name}: `{sha}`{link}")
+        lines.append(f"- {_esc(name)}: {_esc(sha)}{link}")
     for title, name in (("Score mapping", "mapping.txt"), ("Link masking", "masking.txt")):
         text = (
             (run.dir / "grading" / "inputs" / name).read_text(encoding="utf-8")
             if (run.dir / "grading" / "inputs" / name).is_file()
             else "(missing)"
         )
-        lines += ["", f"{title}:", "", "```text", text.rstrip(), "```"]
+        lines += ["", f"{title}:", "", *_fence(text)]
     lines += _probe_disclosure(run)
     gates = summary.get("gates") or {}
     breakdowns = summary.get("breakdowns") or {}
@@ -446,7 +470,7 @@ def _disclosure(run: _Run) -> list[str]:
     g4 = gates.get("G4") or {}
     lines.append(
         f"- G4 claim robustness: {_verdict(g4.get('passed'))}; judge-sensitive claims: "
-        f"{', '.join(summary.get('judge_sensitive') or []) or 'none'}"
+        f"{', '.join(_esc(c) for c in summary.get('judge_sensitive') or []) or 'none'}"
     )
     rows = [
         [judge, f"{cid}/{model}", _verdict(c.get("passed"))]
@@ -474,16 +498,15 @@ def _probe_disclosure(run: _Run) -> list[str]:
         "",
     ]
     lines += [
-        f"- {key}: {_verdict((e.get('gate') or {}).get('passed'))}"
+        f"- {_esc(key)}: {_verdict((e.get('gate') or {}).get('passed'))}"
         for key, e in sorted(entries.items())
     ] or ["- none"]
     dropped = entry.get("dropped") or {}
+    dropped_text = ", ".join(f"{_esc(t)} {_esc(n)}" for t, n in sorted(dropped.items()))
+    misses = json.dumps(details.get("misses_by_generator") or {}, sort_keys=True)
     lines += [
         "",
-        f"Dropped probes: {
-            ', '.join(f'{t} {n}' for t, n in sorted(dropped.items())) or 'none'
-        }. Misses by generator: "
-        f"{json.dumps(details.get('misses_by_generator') or {}, sort_keys=True)}.",
+        f"Dropped probes: {dropped_text or 'none'}. Misses by generator: {_esc(misses)}.",
         "",
     ]
     rows = [
@@ -518,11 +541,10 @@ def _probe_disclosure(run: _Run) -> list[str]:
     ]
     for evidence in entry.get("tuning") or []:
         for judge, t in sorted((evidence.get("judges") or {}).items()):
+            tried = ", ".join(_esc(e) for e in t.get("tried") or []) or "none"
             lines.append(
-                f"- Tuning, {judge}: efforts tried {
-                    ', '.join(t.get('tried') or []) or 'none'
-                }; chosen "
-                f"{t.get('chosen') or 'none'}"
+                f"- Tuning, {_esc(judge)}: efforts tried {tried}; chosen "
+                f"{_esc(t.get('chosen') or 'none')}"
             )
     return lines
 
@@ -533,11 +555,11 @@ def _diagnostics(run: _Run) -> list[str]:
     lines = ["### Diagnostics", ""]
     retest = diag.get("test_retest") or {}
     lines += [
-        f"- Test–retest alpha, {j}: {_fmt(r.get('alpha'))}" for j, r in sorted(retest.items())
+        f"- Test–retest alpha, {_esc(j)}: {_esc(r.get('alpha'))}" for j, r in sorted(retest.items())
     ] or ["- Test–retest: no second pass in this run"]
     for key, interval in sorted((diag.get("self_preference") or {}).items()):
-        lines.append(f"- Self-preference index, {key}: {_interval(interval)}")
-    lines.append(f"- Length–grade correlation: {_fmt(diag.get('length_grade_correlation'))}")
+        lines.append(f"- Self-preference index, {_esc(key)}: {_esc(_interval(interval))}")
+    lines.append(f"- Length–grade correlation: {_esc(diag.get('length_grade_correlation'))}")
     shares = diag.get("label_shares") or {}
     lines += [
         "",
@@ -566,30 +588,29 @@ def _diagnostics(run: _Run) -> list[str]:
     lines.append("Grader failures:")
     for judge, stats in sorted((diag.get("per_judge") or {}).items()):
         withheld = stats.get("withheld") or {}
+        withheld_text = json.dumps(withheld, sort_keys=True) if withheld else "none"
         lines.append(
-            f"- {judge}: {stats.get('records')} records; withheld "
-            f"{json.dumps(withheld, sort_keys=True) if withheld else 'none'}"
+            f"- {_esc(judge)}: {_esc(stats.get('records'))} records; withheld {_esc(withheld_text)}"
         )
     for judge, reasons in sorted((diag.get("no_final_record") or {}).items()):
         for reason, items in sorted(reasons.items()):
             lines.append(
-                f"- {judge}: {len(items)} items with no final pass-1 record, last "
-                f"not_run reason {reason}; they block the reference grader until "
-                "fixed"
+                f"- {_esc(judge)}: {len(items)} items with no final pass-1 record, last "
+                f"not_run reason {_esc(reason)}; they block the reference grader until fixed"
             )
     audit = summary.get("key_audit") or {}
-    flagged = audit.get("flagged") or []
+    flagged = ", ".join(_esc(q) for q in audit.get("flagged") or [])
     lines += [
         "",
-        f"Answer-key audit: {audit.get('audited', 0)} keys audited by the reference "
-        f"grader; flagged: {', '.join(flagged) or 'none'}.",
+        f"Answer-key audit: {_esc(audit.get('audited', 0))} keys audited by the reference "
+        f"grader; flagged: {flagged or 'none'}.",
     ]
     if summary.get("claims_without_flagged_keys"):
         for cid, by in sorted(summary["claims_without_flagged_keys"].items()):
             for model, c in sorted(by.items()):
                 lines.append(
-                    f"- Without flagged questions, {cid}/{model}: "
-                    f"{_verdict(c.get('passed'))}, {_interval(c.get('interval'))}"
+                    f"- Without flagged questions, {_esc(cid)}/{_esc(model)}: "
+                    f"{_verdict(c.get('passed'))}, {_esc(_interval(c.get('interval')))}"
                 )
     spend = summary.get("spend") or {}
     lines += [
@@ -705,7 +726,8 @@ def _tokens(run: _Run) -> list[str]:
         "## Normalized tokens",
         "",
         "Claude Tokens (Normalized Payload), counted after the run with the count model "
-        f"{', '.join(sorted(count_models)) or 'n/a'}. The count-tokens endpoint is documented "
+        f"{', '.join(_esc(m) for m in sorted(count_models)) or 'n/a'}. The count-tokens "
+        "endpoint is documented "
         f"as an estimate. These counts are {NOT_COMPARABLE}. Only python-docs and docs-fetch "
         "have token rows: the correctness floor injects no documentation.",
         "",
@@ -720,7 +742,7 @@ def _cost(run: _Run) -> list[str]:
     try:
         snapshot = load_price_snapshot(run.dir / "snapshots" / "price-snapshot.yml")
     except BenchmarkValidationError as exc:
-        return ["## Cost per correct answer", "", f"Not computed: {exc}"]
+        return ["## Cost per correct answer", "", f"Not computed: {_esc(str(exc))}"]
     totals: dict[str, Decimal] = defaultdict(Decimal)
     reasoning: Counter[str] = Counter()
     cached: Counter[str] = Counter()
@@ -858,8 +880,8 @@ def _latency(run: _Run) -> list[str]:
     ]
     if env.get("index_size_bytes") or env.get("index_build_s"):
         lines.append(
-            f"Index size {env.get('index_size_bytes')} bytes; build time "
-            f"{env.get('index_build_s')} s."
+            f"Index size {_esc(env.get('index_size_bytes'))} bytes; build time "
+            f"{_esc(env.get('index_build_s'))} s."
         )
     return lines
 
@@ -875,7 +897,7 @@ def _pilot(run: _Run) -> list[str]:
             if share > OUTPUT_CAP_RULE
             else ""
         )
-        lines.append(f"- {family}: {stops} of {turns} answer turns ({share:.1%}){flag}")
+        lines.append(f"- {_esc(family)}: {stops} of {turns} answer turns ({share:.1%}){flag}")
     ledger = run.bundle.run_summary.get("ledger") or {}
     grading = Counter(
         e.get("provider")
@@ -906,6 +928,10 @@ def _twice(events: Sequence[Mapping[str, Any]]) -> Counter[str]:
     )
 
 
+def _counts(counter: Counter[str]) -> str:
+    return _esc(json.dumps(dict(counter), sort_keys=True)) if counter else "none"
+
+
 def _budget(run: _Run) -> list[str]:
     summary = run.bundle.run_summary
     ledger = summary.get("ledger") or {}
@@ -919,21 +945,16 @@ def _budget(run: _Run) -> list[str]:
     lines = [
         "## Budget events",
         "",
-        f"- Overrun stops: {', '.join(overruns) or 'none'}",
-        f"- Units booked at twice their bound, answering: "
-        f"{json.dumps(dict(answering), sort_keys=True) if answering else 'none'}; grading: "
-        f"{json.dumps(dict(grading), sort_keys=True) if grading else 'none'}",
+        f"- Overrun stops: {', '.join(_esc(p) for p in overruns) or 'none'}",
+        f"- Units booked at twice their bound, answering: {_counts(answering)}; grading: "
+        f"{_counts(grading)}",
     ]
     for d in summary.get("discarded") or []:
-        record = (
-            _read_json(
-                run.dir
-                / "discarded"
-                / str(d.get("cell"))
-                / f"{d.get('corpus_id')}--attempt{d.get('attempt')}.json"
-            )
-            or {}
-        )
+        name = f"{d.get('corpus_id')}--attempt{d.get('attempt')}.json"
+        cell_dir = (run.dir / "discarded" / str(d.get("cell"))).resolve()
+        # a hostile summary must not steer the read outside the run's discarded/ tree
+        inside = cell_dir.parent == (run.dir / "discarded").resolve() and "/" not in name
+        record = (_read_json(cell_dir / name) if inside else None) or {}
         units = {
             a.get("unit_id")
             for c in record.get("model_calls") or []
@@ -941,16 +962,18 @@ def _budget(run: _Run) -> list[str]:
         }
         spend = sum((booked.get(u, Decimal(0)) for u in units), Decimal(0))
         lines.append(
-            f"- Discarded {d.get('cell')}/{d.get('corpus_id')} attempt "
-            f"{d.get('attempt')}: {d.get('reason')}, spend {spend}"
+            f"- Discarded {_esc(d.get('cell'))}/{_esc(d.get('corpus_id'))} attempt "
+            f"{_esc(d.get('attempt'))}: {_esc(d.get('reason'))}, spend {spend}"
         )
     for n in summary.get("not_run") or []:
-        lines.append(f"- Not run {n.get('cell')}/{n.get('corpus_id')}: {n.get('reason')}")
+        lines.append(
+            f"- Not run {_esc(n.get('cell'))}/{_esc(n.get('corpus_id'))}: {_esc(n.get('reason'))}"
+        )
     for w in summary.get("worker_errors") or []:
-        lines.append(f"- Worker error in {w.get('job_id')}: {w.get('reason')}")
+        lines.append(f"- Worker error in {_esc(w.get('job_id'))}: {_esc(w.get('reason'))}")
     for family, stats in sorted((summary.get("families") or {}).items()):
         if float(stats.get("wall_s") or 0) > 24 * 3600:
-            lines.append(f"- {family} ran longer than 24 hours from first to last trajectory")
+            lines.append(f"- {_esc(family)} ran longer than 24 hours from first to last trajectory")
     return [*lines, "", RESIDUAL_RISK]
 
 
@@ -959,10 +982,13 @@ def _failures(run: _Run) -> list[str]:
     for (cell, qid), t in sorted(run.transcripts.items()):
         if t.get("status") == "failed":
             error = t.get("error") or {}
-            lines.append(f"- {cell}/{qid}: {error.get('category')}: {error.get('message')}")
+            lines.append(
+                f"- {_esc(cell)}/{_esc(qid)}: {_esc(error.get('category'))}: "
+                f"{_esc(error.get('message'))}"
+            )
     for (cell, qid), r in sorted(run.tokens.items()):
         if r.get("status") == "failed":
-            lines.append(f"- token count {cell}/{qid}: {r.get('error')}")
+            lines.append(f"- token count {_esc(cell)}/{_esc(qid)}: {_esc(r.get('error'))}")
     return lines if len(lines) > 2 else [*lines, "No failed cell or token count."]
 
 
@@ -984,24 +1010,26 @@ def _reproducibility(run: _Run) -> list[str]:
     count_models = sorted(
         {str(r["count_model"]) for r in run.tokens.values() if r.get("count_model")}
     )
+    sdk = json.dumps(env.get("client_versions") or {}, sort_keys=True)
     lines = [
         "## Reproducibility",
         "",
-        f"- Price snapshot captured {prices.get('captured_on')}, expires "
-        f"{prices.get('expires_on')}",
+        f"- Price snapshot captured {_esc(prices.get('captured_on'))}, expires "
+        f"{_esc(prices.get('expires_on'))}",
         *[
-            f"- Reported model versions, {f}: {', '.join(sorted(v))}"
+            f"- Reported model versions, {_esc(f)}: {', '.join(_esc(x) for x in sorted(v))}"
             for f, v in sorted(versions.items())
         ],
-        f"- SDK versions: {json.dumps(env.get('client_versions') or {}, sort_keys=True)}",
-        f"- Count model: {', '.join(count_models) or 'n/a'}",
-        f"- Index sha256: {', '.join(index) or 'n/a'}",
-        f"- Seed: {env.get('seed')}",
-        f"- Judge prompt sha256: {run.inputs.get('judge_prompt', 'n/a')}; judge schema "
-        f"sha256: {run.inputs.get('judge_schema', 'n/a')}",
+        f"- SDK versions: {_esc(sdk)}",
+        f"- Count model: {', '.join(_esc(m) for m in count_models) or 'n/a'}",
+        f"- Index sha256: {', '.join(_esc(i) for i in index) or 'n/a'}",
+        f"- Seed: {_esc(env.get('seed'))}",
+        f"- Judge prompt sha256: {_esc(run.inputs.get('judge_prompt', 'n/a'))}; judge schema "
+        f"sha256: {_esc(run.inputs.get('judge_schema', 'n/a'))}",
     ]
     if env.get("image_digests"):
-        lines.append(f"- Image digests: {json.dumps(env['image_digests'], sort_keys=True)}")
+        digests = json.dumps(env["image_digests"], sort_keys=True)
+        lines.append(f"- Image digests: {_esc(digests)}")
     return lines
 
 
@@ -1014,16 +1042,17 @@ def _airgap(run: _Run) -> list[str]:
     if evidence is None:
         lines.append("Host checks: no airgap/checks.json in this run.")
     else:
+        hosts = ", ".join(_esc(h) for h in evidence.internet_hosts) or "none"
         lines.append(
             f"Host checks: all passed {evidence.all_passed}, {evidence.checks} rounds, "
-            f"internet hosts reached: {', '.join(evidence.internet_hosts) or 'none'}."
+            f"internet hosts reached: {hosts}."
         )
     for family in sorted(airgap):
         for (f, system), keys in run.groups.items():
             if f == family:
                 scored, pending = _scores(run, keys)
                 mean = _fmt(sum(scored) / len(scored)) if scored and not pending else "pending"
-                lines.append(f"- {family}/{system}: mean score {mean}")
+                lines.append(f"- {_esc(family)}/{_esc(system)}: mean score {mean}")
     return lines
 
 
@@ -1041,7 +1070,7 @@ def render_agentic_readme_summary(
         "",
     ]
     if tier != "Validated":
-        return "\n".join([*lines, f"No public claim: grading outcome is {tier}."]) + "\n"
+        return "\n".join([*lines, f"No public claim: grading outcome is {_esc(tier)}."]) + "\n"
     sensitive = set(summary.get("judge_sensitive") or [])
     claims = [
         (cid, model, c)
@@ -1057,17 +1086,17 @@ def render_agentic_readme_summary(
             + "\n"
         )
     for cid, model, claim in claims:
+        interval = _esc(_interval(claim.get("interval")))
         if cid == "C2":
             lines.append(
-                f"- {model}: python-docs-mcp-server uses fewer normalized tokens per "
-                "correct answer than docs-fetch (ratio "
-                f"{_interval(claim.get('interval'))}). Round 1 supports only "
+                f"- {_esc(model)}: python-docs-mcp-server uses fewer normalized tokens per "
+                f"correct answer than docs-fetch (ratio {interval}). Round 1 supports only "
                 f'"{ROUND_1_SCOPE}".'
             )
         elif cid == "C3":
             lines.append(
-                f"- {model}: with the internet unreachable, the model answers the "
+                f"- {_esc(model)}: with the internet unreachable, the model answers the "
                 "corpus better with python-docs-mcp-server than alone (score "
-                f"difference {_interval(claim.get('interval'))})."
+                f"difference {interval})."
             )
     return "\n".join(lines) + "\n"

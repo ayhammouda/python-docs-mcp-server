@@ -593,7 +593,8 @@ def test_c3_disclosure_shows_a_denied_pypi_attempt_while_c3_passes(
     claims = _section(_render(agentic_bundle_airgap_denied), "## Claims")
     c3 = claims[claims.index("### C3") : claims.index("### S1")]
     assert "gemma4-12b" in c3 and "pass" in c3
-    assert "pypi.org:443" in c3 and "refused" in c3 and "nothing left the sandbox" in c3
+    rendered = re.sub(r"\\([!-/:-@\[-`{-~])", r"\1", c3)  # GFM backslash escapes
+    assert "pypi.org:443" in rendered and "refused" in c3 and "nothing left the sandbox" in c3
     c1 = claims[: claims.index("### C2")]
     assert "| python-docs | no |" in c1 and "lookup_package_docs" in c1
 
@@ -660,3 +661,152 @@ def yaml_matrix() -> Any:
 
     assert yaml.safe_load(MATRIX.read_text())
     return load_model_matrix(MATRIX)
+
+
+# --- Security: run data never becomes Markdown (the class #173 closed for table cells) ---
+
+PAYLOAD = (
+    "<img src=x onerror=alert(1)> [text](https://evil.example) "
+    "![i](https://evil.example/i.png) `code`\n# heading"
+)
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+_LINK = re.compile(r"(?<!\\)\[([^\]\n]*)\]\(([^)\s]*)")
+
+
+def _split_fences(text: str) -> tuple[str, list[str]]:
+    """CommonMark fences: the text outside every fenced block, and each block's content."""
+    outside: list[str] = []
+    blocks: list[str] = []
+    fence: str | None = None
+    content: list[str] = []
+    for line in text.splitlines():
+        match = _FENCE.match(line)
+        if fence is None:
+            if match:
+                fence, content = match.group(1), []
+            else:
+                outside.append(line)
+            continue
+        closes = (
+            match is not None
+            and match.group(1)[0] == fence[0]
+            and len(match.group(1)) >= len(fence)
+            and not line.strip().strip(fence[0])
+        )
+        if closes:
+            blocks.append("\n".join(content))
+            fence = None
+        else:
+            content.append(line)
+    assert fence is None, "a fence was left open"
+    return "\n".join(outside), blocks
+
+
+def _assert_inert(text: str) -> None:
+    outside, _ = _split_fences(text)
+    assert re.search(r"(?<!\\)<[A-Za-z!/?]", outside) is None, "raw HTML"
+    assert re.search(r"(?<!\\)!\[", outside) is None, "an image"
+    for label, target in _LINK.findall(outside):
+        assert "evil" not in target, f"a link from run data: [{label}]({target})"
+    assert re.search(r"(?<!\\)`code", outside) is None, "a code span from run data"
+    assert not any(line.lstrip().startswith("# heading") for line in outside.splitlines())
+    assert "evil.example" in outside.replace("\\", "")  # the payload is shown, as text
+
+
+@pytest.fixture
+def agentic_bundle_hostile(agentic_bundle: Path) -> Path:
+    run = agentic_bundle
+    cell = "python-docs--scripted-anthropic--r1"
+    path = run / "transcripts" / cell / "SYN-EX-001.json"
+    transcript = json.loads(path.read_text())
+    transcript |= {"status": "failed", "error": {"category": PAYLOAD, "message": PAYLOAD}}
+    transcript["model_calls"][0]["reported_model"] = PAYLOAD
+    path.write_text(json.dumps(transcript))
+    token = run / "tokens" / cell / "SYN-EX-002.json"
+    token.write_text(
+        json.dumps({**json.loads(token.read_text()), "status": "failed", "error": PAYLOAD})
+    )
+    summary_path = run / "run-summary.json"
+    summary = json.loads(summary_path.read_text())
+    summary |= {
+        "discarded": [{"cell": PAYLOAD, "corpus_id": PAYLOAD, "reason": PAYLOAD, "attempt": 1}],
+        "not_run": [{"cell": PAYLOAD, "corpus_id": "q", "reason": PAYLOAD}],
+        "worker_errors": [{"job_id": PAYLOAD, "reason": PAYLOAD}],
+    }
+    summary["ledger"]["anthropic"]["stopped"] = "overrun"
+    summary_path.write_text(json.dumps(summary))
+    panel = yaml.safe_load((run / "grading" / "inputs" / "panel.yml").read_text())
+    panel["judges"]["haiku"]["model_id"] = PAYLOAD
+    (run / "grading" / "inputs" / "panel.yml").write_text(yaml.safe_dump(panel))
+    vote = next((run / "grading" / "votes" / "answers" / "luna").rglob("*.json"))
+    vote.write_text(json.dumps({**json.loads(vote.read_text()), "reported_model": PAYLOAD}))
+    (run / "grading" / "inputs" / "mapping.txt").write_text(
+        "````\n# heading\n<img src=x onerror=alert(1)>\n``````` and more\n"
+    )
+    graded = json.loads((run / "grading" / "summary.json").read_text())
+    interval = {"point": 0.5, "low": 0.25, "high": 0.75}
+    _edit_summary(
+        run,
+        gates={**graded["gates"], "G3": {"passed": None, "details": {"reason": PAYLOAD}}},
+        claims={
+            "C2": graded["claims"]["C2"],
+            "C3": {
+                PAYLOAD: {
+                    "id": "C3",
+                    "model": PAYLOAD,
+                    "passed": True,
+                    "interval": interval,
+                    "reason": None,
+                }
+            },
+        },
+        offline={
+            "ok": True,
+            "expected_checks": 9,
+            "airgap_jobs": [PAYLOAD],
+            "denied_attempts": [{"job_id": PAYLOAD, "host": PAYLOAD}],
+        },
+        composition=PAYLOAD,
+        judge_sensitive=[PAYLOAD],
+        key_audit={"audited": 1, "flagged": [PAYLOAD]},
+    )
+    return run
+
+
+def test_no_run_data_value_becomes_markdown_in_the_report(agentic_bundle_hostile: Path) -> None:
+    text = _render(agentic_bundle_hostile)
+    _assert_inert(text)
+    for heading in (
+        "## Failures",
+        "## Budget events",
+        "## Grading disclosure",
+        "## Reproducibility",
+    ):
+        assert "evil.example" in _section(text, heading).replace("\\", "")
+    claims = _section(text, "## Claims")
+    assert "evil.example" in claims[claims.index("### C3") :].replace("\\", "")
+
+
+def test_fenced_input_text_cannot_close_its_fence(agentic_bundle_hostile: Path) -> None:
+    disclosure = _section(_render(agentic_bundle_hostile), "## Grading disclosure")
+    _, blocks = _split_fences(disclosure)
+    mapping = next(b for b in blocks if "# heading" in b)
+    assert "<img src=x onerror=alert(1)>" in mapping and "``````` and more" in mapping
+
+
+def test_no_run_data_value_becomes_markdown_in_the_readme_summary(agentic_bundle: Path) -> None:
+    claim = {
+        "id": "C2",
+        "model": PAYLOAD,
+        "passed": True,
+        "interval": {"point": 0.5, "low": 0.4, "high": 0.6},
+        "reason": None,
+    }
+    _edit_summary(
+        agentic_bundle,
+        tier="Validated",
+        claims={"C2": {PAYLOAD: claim}, "C3": {}},
+        judge_sensitive=[],
+    )
+    text = generate_readme_summary(agentic_bundle, methodology_path=METHODOLOGY).read_text()
+    _assert_inert(text)
