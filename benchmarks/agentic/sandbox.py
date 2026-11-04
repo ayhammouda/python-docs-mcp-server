@@ -145,10 +145,11 @@ async def _settle(task: asyncio.Future[Any]) -> asyncio.CancelledError | None:
 async def _finish[T](operation: Awaitable[T]) -> T:
     task = asyncio.ensure_future(operation)
     cancelled = await _settle(task)
-    result = task.result()
     if cancelled is not None:
-        raise cancelled
-    return result
+        if task.cancelled():
+            raise cancelled
+        raise cancelled from task.exception()
+    return task.result()
 
 
 @dataclass(frozen=True)

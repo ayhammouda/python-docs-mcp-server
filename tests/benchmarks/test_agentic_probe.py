@@ -354,7 +354,7 @@ async def test_probe_waits_for_its_log_before_freezing_query_prefix(
         tmp_path, FakeDocker(), (), allow=(("host.docker.internal", 11434),)
     )
     log = egress.log_dir / "access.log"
-    ollama = "t c GET host.docker.internal 11434 200 TCP_MISS"
+    ollama = "2026-11-04T10:00:03.000Z 172.30.0.3 GET host.docker.internal 11434 200 TCP_MISS"
     prefix = [*PROBE_LINES, ollama]
     if initial == "no_peer_reply":
         prefix = [*(line + " HIER_NONE -" for line in PROBE_LINES), ollama + " HIER_DIRECT -"]

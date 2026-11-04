@@ -167,12 +167,15 @@ keyless container with networking disabled. [Squid log format](https://www.squid
 | `200 TCP_TUNNEL HIER_DIRECT -` | Squid established the CONNECT tunnel. This can corroborate a billed provider call. |
 | `403 TCP_DENIED HIER_NONE -` | The request ACL blocked the attempt. Include the target in `hosts_denied`. |
 
+Squid can append `_TIMEDOUT` and then `_ABORTED` to the result. Either can occur
+before an origin reply arrives. [Squid 6.14 result tags](https://github.com/squid-cache/squid/blob/SQUID_6_14/src/LogTags.cc#L82-L89)
+
 An unconfirmed attempt can pass isolation only if its host, port and method fit that
 job's ACL. In the air-gapped arm this permits plain HTTP to local Ollama. An
 unconfirmed external attempt fails isolation and C3 even when `internet_hosts` is
 empty. Unreadable or unrecognized evidence also fails isolation. Older seven-field
 logs still support established 200 tunnels, forwarded 2xx HTTP responses and request ACL
-denials. An older non-2xx MISS cannot establish who sent the error.
+denials. A recognized older failed MISS or aborted request can preserve isolation for a permitted destination, but cannot establish that it reached that destination.
 
 ## 10. Air-gapped arm
 

@@ -272,11 +272,15 @@ def test_failed_provider_connect_is_not_evidence_of_a_billed_connection(
 
 
 @pytest.mark.parametrize(
-    "attempt",
-    ["CONNECT docs.python.org 443 503 NONE_NONE", "POST host.docker.internal 11434 503 TCP_MISS"],
+    "attempt,isolated",
+    [
+        ("CONNECT docs.python.org 443 503 NONE_NONE", False),
+        ("POST host.docker.internal 11434 503 TCP_MISS", True),
+        ("POST host.docker.internal 11434 0 TCP_MISS_ABORTED", True),
+    ],
 )
-def test_c3_fails_without_claiming_a_failed_request_reached_the_internet(
-    tmp_path: Path, attempt: str
+def test_legacy_failed_attempts_only_preserve_isolation_for_the_permitted_target(
+    tmp_path: Path, attempt: str, isolated: bool
 ) -> None:
     from tests.benchmarks.test_agentic_sandbox import _job
 
@@ -286,8 +290,8 @@ def test_c3_fails_without_claiming_a_failed_request_reached_the_internet(
     _evidence(tmp_path, job.job_id, log=_lines(*PROBE_LINES, ollama, failed))
     summary = write_egress_summary(tmp_path, [job], [])
     checks = write_airgap_evidence(tmp_path, rounds=1, broken=False, job_ids=[job.job_id])
-    assert checks == {"all_passed": False, "checks": 1, "internet_hosts": []}
-    assert summary["isolation_probe"] == "fail"
+    assert checks == {"all_passed": isolated, "checks": 1, "internet_hosts": []}
+    assert summary["isolation_probe"] == ("pass" if isolated else "fail")
     assert summary["jobs"][job.job_id]["hosts_allowed"] == ["host.docker.internal:11434"]
     assert summary["jobs"][job.job_id]["hosts_denied"] == []
 
@@ -443,3 +447,18 @@ def test_lookup_attempts_count_scored_and_discarded_records(tmp_path: Path) -> N
     _record(out / "transcripts" / "python-docs--m-b--r1" / "EX-001.json", [lookup])
     assert lookup_attempts(out, "m", "python-docs") == 3
     assert lookup_attempts(out, "m", "no-docs") == 0
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ["- -", "2026-02-31T10:00:00.123Z 172.30.0.3", "2026-11-04T10:00:00.123Z invalid-client"],
+)
+def test_malformed_log_identity_cannot_corroborate_a_billed_call(
+    tmp_path: Path, prefix: str
+) -> None:
+    line = f"{prefix} CONNECT api.anthropic.com 443 200 TCP_TUNNEL HIER_DIRECT -"
+    probe = [f"{event} HIER_NONE -" for event in PROBE_LINES]
+    _evidence(tmp_path, CLAUDE, log=_lines(*probe, line), prefix=probe)
+    summary = write_egress_summary(tmp_path, [_jobs()[0]], _ok_settle(CLAUDE))
+    assert summary["isolation_probe"] == "fail"
+    assert summary["jobs"][CLAUDE]["hosts_allowed"] == []

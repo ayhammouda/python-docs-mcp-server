@@ -14,6 +14,8 @@ import stat
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
+from datetime import datetime
+from ipaddress import ip_address
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -84,14 +86,15 @@ class ProxyEvent:
         expected = "TCP_TUNNEL" if connect else "TCP_MISS"
         if self.hierarchy is None:  # older logs cannot attribute a non-2xx to the origin
             success = self.status == 200 if connect else 200 <= self.status < 300
-            return "reached" if self.result == expected and success else "unknown"
+            if self.result == expected and success:
+                return "reached"
         if self.hierarchy == "HIER_DIRECT" and tag == expected:
             if connect and self.status == 200 and self.peer_status is None:
                 return "reached"  # Squid established the tunnel, then answered CONNECT itself
             if not connect and self.peer_status is not None:
                 return "reached"  # an HTTP status received from the origin, including errors
         if (
-            self.hierarchy in ("HIER_NONE", "HIER_DIRECT")
+            self.hierarchy in (None, "HIER_NONE", "HIER_DIRECT")
             and self.peer_status is None
             and (self.status == 0 or self.status >= 400)
             and tag in ("TCP_MISS", "NONE_NONE", expected)
@@ -130,6 +133,12 @@ def parse_proxy_log(text: str) -> list[ProxyEvent]:
             at, client, method, host, port, status, result, *extra = fields
             if not all(fields) or len(fields) != width:
                 raise ValueError("empty field or log format changed")
+            if not re.fullmatch(
+                r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z", at
+            ):
+                raise ValueError("invalid timestamp")
+            datetime.fromisoformat(at)
+            ip_address(client)
             hierarchy, peer_status = None, None
             if extra:
                 hierarchy, peer = extra

@@ -501,9 +501,10 @@ def _start_host(tmp_path: Path, prelude: str = "") -> tuple[subprocess.Popen[byt
         "inp.read()\n"
     )
     host_code = (
-        # The host starts from the default SIGHUP disposition even when this test inherits
-        # SIG_IGN (as under nohup); a prelude may still set its own.
-        "import signal\nsignal.signal(signal.SIGHUP, signal.SIG_DFL)\n" + prelude + "import sys\n"
+        # Only this child resets inherited ignores; a prelude can install its own handlers.
+        "import signal\n"
+        "signal.signal(signal.SIGHUP, signal.SIG_DFL)\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_DFL)\n" + prelude + "import sys\n"
         "from pathlib import Path\n"
         "from benchmarks.agentic.host import LocalLauncher\n"
         "from benchmarks.agentic.run import AgenticConfig, run_agentic\n"
@@ -628,15 +629,14 @@ def _scripted_config(tmp_path: Path) -> AgenticConfig:
 
 
 @pytest.fixture
-def default_signal_handlers() -> Iterator[None]:
-    before = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
-    try:
-        for signum in before:
-            signal.signal(signum, signal.SIG_DFL)
-        yield
-    finally:
-        for signum, handler in before.items():
-            signal.signal(signum, handler)
+def default_signal_handlers(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    getsignal = signal.getsignal
+    before = {s: getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
+    monkeypatch.setattr(
+        signal, "getsignal", lambda s: signal.SIG_DFL if s in before else getsignal(s)
+    )
+    yield
+    assert {s: getsignal(s) for s in before} == before
 
 
 def test_run_agentic_completes_off_the_main_thread(
@@ -683,29 +683,28 @@ def test_a_loop_without_signal_support_runs_without_handlers(
 
 def test_an_ignored_sighup_is_left_out_of_the_skipped_handlers_line(
     capsys: pytest.CaptureFixture[str],
+    default_signal_handlers: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    previous = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
-    try:
-        signal.signal(signal.SIGTERM, signal.SIG_DFL)
-        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    getsignal = signal.getsignal
+    monkeypatch.setattr(
+        signal, "getsignal", lambda s: signal.SIG_IGN if s == signal.SIGHUP else getsignal(s)
+    )
 
-        async def scenario() -> None:
-            loop = asyncio.get_running_loop()
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
 
-            def unsupported(*args: Any) -> None:
-                raise NotImplementedError
+        def unsupported(*args: Any) -> None:
+            raise NotImplementedError
 
-            loop.add_signal_handler = unsupported  # type: ignore[method-assign]
+        loop.add_signal_handler = unsupported  # type: ignore[method-assign]
 
-            async def run() -> None:
-                return None
+        async def run() -> None:
+            return None
 
-            await _until_signalled(run())
+        await _until_signalled(run())
 
-        asyncio.run(scenario())
-    finally:
-        for signum, handler in previous.items():
-            signal.signal(signum, handler)
+    asyncio.run(scenario())
     line = next(line for line in capsys.readouterr().err.splitlines() if "handler" in line)
     assert "SIGTERM" in line and "SIGHUP" not in line
 

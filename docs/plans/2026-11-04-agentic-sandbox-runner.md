@@ -773,7 +773,7 @@ Expected: `10001`, `/usr/bin/cat`, `/usr/local/bin/mcp-server-fetch`, `no-env-fi
   - `EGRESS_ALIAS = "egress"`, `EGRESS_PORT = 3128`, `EGRESS_URL = "http://egress:3128"`, `LOG_DIR_IN_PROXY = "/var/log/squid-bench"`.
   - `PROVIDER_HOSTS = {"anthropic": (("api.anthropic.com", 443),), "openai": (("api.openai.com", 443),), "google": (("generativelanguage.googleapis.com", 443),), "ollama": (("host.docker.internal", 11434),)}` and `SYSTEM_HOSTS = {"docs-fetch": (("docs.python.org", 443),)}`. These are the pinned base URLs in `clients.py` (Anthropic, OpenAI, Gemini) and design §7.4.
   - `allowlist(family: ModelFamily, system_id: str | None) -> tuple[tuple[str, int], ...]`: the provider's hosts unless `family.api == "scripted"`, plus `SYSTEM_HOSTS.get(system_id, ())` for hosted jobs only, in that order. The air-gapped arm permits only local Ollama and the `python-docs` and `no-docs` systems.
-  - `@dataclass(frozen=True) class ProxyEvent: at: str; client: str; method: str; host: str; port: int; status: int; result: str`, with property `allowed: bool` (`not result.startswith("TCP_DENIED")`) and property `target: str` (`f"{host}:{port}"`).
+  - `ProxyEvent` records time, client, method, host, port, client status, result, hierarchy and next-hop HTTP status. Seven-field logs predate the last two fields. Its `target` property formats the requested host and port.
   - `parse_proxy_log(text: str) -> list[ProxyEvent]`. It needs every line to end with `\n`. It raises `BenchmarkValidationError` naming the line number on a malformed or unterminated line.
   - `FORBIDDEN_ENV = re.compile(r"(?i)^(?:\w*_proxy|ssl_cert_\w*|requests_ca_bundle)$")` and `forbidden_env_names(environ: Mapping[str, str]) -> list[str]` (sorted names, never values).
 
@@ -1152,14 +1152,14 @@ makes C1 "not evaluable".
 ```
 
   - `jobs` is keyed by `job_id` (`<family id>--<system id>`), with one entry per planned job.
-  - `hosts_allowed` and `hosts_denied` are sorted, unique `"host:port"` strings. They come from the query-time events: the access-log lines after the probe's verified `proxy_prefix`, split by `ProxyEvent.allowed`. Probe traffic never appears.
+  - `hosts_allowed` and `hosts_denied` are sorted, unique `"host:port"` strings. Only events after the verified `proxy_prefix` contribute. A reached target enters `hosts_allowed` and a request ACL denial enters `hosts_denied`. Unconfirmed attempts contribute to neither list.
   - `lookup_package_docs_attempts` counts the model's `lookup_package_docs` tool calls in that job's `transcripts/` and `discarded/` records (cells `<system>--<family>--r<k>`).
   - `isolation_probe` is `"pass"` only when all of these hold (round-2 rulings C5, C6; round-3 items 1, 2):
     - `probe/control.json` and every job's `probe/<job>.json` passed;
     - every job's `collected.json` says `ok`, so no failed collection step and no abnormal proxy end;
-    - every job's `access.log` exists, parses, and starts with exactly its `proxy_prefix`;
+    - every job's `access.log` exists, parses, and starts with its nonempty `proxy_prefix`. Every event is a request ACL denial or a recognized attempt to a destination and method permitted for that job;
     - every `ok` settle in the run's ledger events is attributed: its `unit_id` matches a `reserve` event whose `job_id` is a planned job. An `ok` settle that cannot be attributed fails the evidence;
-    - every hosted live job (`arm == "hosted"`, `api != "scripted"`) with at least one attributed `ok` settle shows an allowed `PROVIDER_HOSTS` line after the prefix. The attribution comes from the ledger alone, so a worker that died before reporting its trajectory still counts.
+    - every hosted live job (`arm == "hosted"`, `api != "scripted"`) with at least one attributed `ok` settle shows an established tunnel to its provider after the prefix. The attribution comes from the ledger alone, so a worker that died before reporting its trajectory still counts.
     Otherwise it is `"fail"`.
 - Produces in `egress.py`:
   - `lookup_attempts(out_dir: Path, family_id: str, system_id: str) -> int`.

@@ -1093,3 +1093,22 @@ async def test_worker_cleanup_reports_stalled_daemon_removal(
     sandbox = Sandbox(_config(tmp_path), docker=stalled, verify=_verified)
     with pytest.raises(BenchmarkValidationError, match="already in progress"):
         await sandbox.remove_container("owned-id")
+
+
+async def test_cleanup_failure_preserves_pending_cancellation(tmp_path: Path) -> None:
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def failing(argv: Sequence[str]) -> Any:
+        started.set()
+        await release.wait()
+        return _done(argv, 1, err="daemon disconnected")
+
+    box = Sandbox(_config(tmp_path), docker=failing, verify=_verified)
+    cleanup = asyncio.create_task(box.remove_container("owned-id"))
+    await asyncio.wait_for(started.wait(), 1)
+    cleanup.cancel("operator interrupt")
+    release.set()
+    with pytest.raises(asyncio.CancelledError, match="operator interrupt") as error:
+        await cleanup
+    assert isinstance(error.value.__cause__, BenchmarkValidationError)
+    assert "daemon disconnected" in str(error.value.__cause__)
