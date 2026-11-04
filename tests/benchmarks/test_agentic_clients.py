@@ -34,6 +34,7 @@ from benchmarks.agentic.clients import (
     OpenAIResponsesClient,
     ScriptedClient,
     anthropic_sdk,
+    fetch_model_limits,
     gemini_sdk,
     make_client,
     ollama_sdk,
@@ -1079,4 +1080,48 @@ async def test_ollama_client_sends_one_request_per_call(status: int) -> None:
     else:
         with pytest.raises(ProviderCallError):
             await client.call(_conv())
+    assert len(recorder.seen) == 1
+
+
+ANTHROPIC_MODEL_INFO = {
+    "id": "claude-sonnet-5-5",
+    "type": "model",
+    "display_name": "Claude Sonnet 5.5",
+    "created_at": "2026-09-01T00:00:00Z",
+    "lifecycle": "active",
+    "max_input_tokens": 1_000_000,
+    "max_tokens": 128_000,
+}
+GEMINI_MODEL = {
+    "name": "models/gemini-3.8-flash",
+    "inputTokenLimit": 1_048_576,
+    "outputTokenLimit": 65_536,
+}
+
+
+@pytest.mark.parametrize("family_id", ["claude-sonnet-5-5", "gemini-3.8-flash"])
+async def test_fetch_model_limits_makes_one_free_get(family_id: str) -> None:
+    if family_id == "claude-sonnet-5-5":
+        recorder: Recorder = Recorder(_ok(ANTHROPIC_MODEL_INFO))
+        client: Any = _anthropic(recorder)
+        expected = {"max_input_tokens": 1_000_000, "max_tokens": 128_000}
+    else:
+        recorder = GeminiRecorder(_gemini_ok(GEMINI_MODEL))
+        client = _gemini(recorder)  # type: ignore[arg-type]
+        expected = {"max_input_tokens": 1_048_576, "max_tokens": 65_536}
+    assert await fetch_model_limits(client) == expected
+    assert [r.method for r in recorder.seen] == ["GET"]
+    assert recorder.seen[0].url.path.endswith(f"/models/{family_id}")
+
+
+async def test_fetch_model_limits_skips_providers_that_report_none() -> None:
+    recorder = Recorder()  # no response queued: any request would fail the test
+    assert await fetch_model_limits(_openai(recorder)) is None
+    assert await fetch_model_limits(_ollama(recorder)) is None
+    assert recorder.seen == []
+
+
+async def test_fetch_model_limits_records_an_error_without_raising() -> None:
+    recorder = Recorder(_ok(ERROR_BODY, 500))
+    assert await fetch_model_limits(_anthropic(recorder)) == {"error": "InternalServerError"}
     assert len(recorder.seen) == 1

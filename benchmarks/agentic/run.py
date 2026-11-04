@@ -129,6 +129,28 @@ async def _until_signalled(run: Coroutine[Any, Any, None]) -> None:
             signal.signal(signum, signal.SIG_DFL if previous is None else previous)
 
 
+def limits_mismatch(reported: Mapping[str, Any] | None, family: ModelFamily) -> list[str]:
+    """Each difference between a worker's reported model limits and the model matrix.
+
+    The maintainer corrects model-matrix.yml by hand; the run itself goes on.
+    """
+    if reported is None:
+        return []
+    if "error" in reported:
+        return [f"model limits could not be read ({reported['error']})"]
+    problems = []
+    max_input = reported.get("max_input_tokens")
+    if max_input is not None and max_input != family.max_input_tokens:
+        problems.append(
+            f"max_input_tokens {max_input} != max_input_tokens {family.max_input_tokens} "
+            "in the model matrix"
+        )
+    max_tokens, cap = reported.get("max_tokens"), family.max_output_tokens
+    if max_tokens is not None and cap is not None and max_tokens < cap:
+        problems.append(f"max_tokens {max_tokens} < max_output_tokens {cap} in the model matrix")
+    return problems
+
+
 def cell_id(system_id: str, family_id: str, repeat: int) -> str:
     return f"{system_id}--{family_id}--r{repeat}"
 
@@ -252,12 +274,17 @@ class _Collector:
         self.discarded: list[dict[str, Any]] = []
         self.not_run: list[dict[str, Any]] = []
         self.worker_errors: list[dict[str, Any]] = []
+        self.limits_mismatch: list[str] = []
 
     async def on_message(self, job: WorkerJob, message: dict[str, Any]) -> None:
         kind = message["type"]
         if kind == "system_info":
             info = {k: v for k, v in message.items() if k != "type"}
             _write(self.out / "systems" / f"{job.job_id}.json", info)
+            self.limits_mismatch += [
+                f"{job.job_id}: {line}"
+                for line in limits_mismatch(message.get("model_limits"), job.family)
+            ]
             return
         if kind == "worker_error":
             self.worker_errors.append({"job_id": job.job_id, "reason": message["reason"]})
@@ -524,6 +551,7 @@ def run_agentic(
                 "discarded": collector.discarded,
                 "not_run": collector.not_run,
                 "worker_errors": collector.worker_errors,
+                "model_limits_mismatch": collector.limits_mismatch,
                 "families": {fid: stats.summary() for fid, stats in collector.families.items()},
                 "ledger": {
                     provider: {

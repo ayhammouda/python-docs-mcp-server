@@ -714,6 +714,28 @@ class ScriptedClient:
         )
 
 
+async def fetch_model_limits(client: ModelClient) -> dict[str, Any] | None:
+    """The model's token limits from its provider's free models endpoint, in one GET.
+
+    Anthropic and Gemini only: the OpenAI and Ollama model endpoints report no limits, so
+    they make no request. It reserves no ledger unit (the endpoint is not billed), and an SDK
+    error is recorded as ``{"error": "<Type>"}``, never raised.
+    """
+    try:
+        if isinstance(client, AnthropicClient):
+            info = await client._sdk.models.retrieve(client.model_id)
+            return {"max_input_tokens": info.max_input_tokens, "max_tokens": info.max_tokens}
+        if isinstance(client, GeminiClient):
+            model = await client._sdk.aio.models.get(model=client.model_id)
+            return {
+                "max_input_tokens": model.input_token_limit,
+                "max_tokens": model.output_token_limit,
+            }
+    except Exception as exc:  # noqa: BLE001 - recorded in system_info, never fatal
+        return {"error": type(exc).__name__}
+    return None
+
+
 def make_client(
     family: ModelFamily, *, timeout_s: float, transport: Any | None = None
 ) -> ModelClient:

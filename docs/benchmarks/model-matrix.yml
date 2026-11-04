@@ -61,8 +61,9 @@ model_families:
       Provider default effort; no sampling parameters (Claude 5.5 rejects
       them). Adaptive thinking is on by default and cannot be disabled; the
       documented default effort is `high`.
-    # Documented as "1M tokens". The exact integer needs the Models API,
-    # which PR 4's smoke run reads.
+    # Documented as "1M tokens". The exact integer needs the Models API: each
+    # live worker reads it at startup, and the smoke run's run-summary.json
+    # lists any difference under model_limits_mismatch.
     max_input_tokens: 1000000
     # Documented maximum 128,000.
     max_output_tokens: 32768

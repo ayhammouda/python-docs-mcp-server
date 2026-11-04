@@ -34,6 +34,7 @@ from benchmarks.agentic.run import (
     AgenticConfig,
     _until_signalled,
     cell_id,
+    limits_mismatch,
     plan_jobs,
     run_agentic,
     tool_model_key,
@@ -290,6 +291,49 @@ def test_every_reserve_event_names_its_job(tmp_path: Path) -> None:
     for event in reserves:
         family_id, system_id = event["job_id"].split("--")
         assert system_id == "no-docs" and providers[family_id] == event["provider"]
+
+
+def test_limits_mismatch_reports_each_difference() -> None:
+    family = {f.id: f for f in load_model_matrix(COMMITTED_MATRIX).model_families}[
+        "claude-sonnet-5-5"
+    ]
+    assert limits_mismatch(None, family) == []
+    assert limits_mismatch({"max_input_tokens": 1_000_000, "max_tokens": 128_000}, family) == []
+    assert limits_mismatch({"max_input_tokens": 999, "max_tokens": 1_024}, family) == [
+        "max_input_tokens 999 != max_input_tokens 1000000 in the model matrix",
+        "max_tokens 1024 < max_output_tokens 32768 in the model matrix",
+    ]
+    assert limits_mismatch({"error": "APIConnectionError"}, family) == [
+        "model limits could not be read (APIConnectionError)"
+    ]
+
+
+class _ReportsLimits(LocalLauncher):
+    """A worker that reports model limits in its system_info, then finishes."""
+
+    def command(self, job: Any) -> tuple[list[str], dict[str, str]]:
+        _, env = super().command(job)
+        info = {"type": "system_info", "model_limits": {"max_input_tokens": 999}}
+        code = (
+            "import json, sys\n"
+            "inp, out = sys.stdin.buffer, sys.stdout.buffer\n"
+            "inp.read(int.from_bytes(inp.read(8), 'big'))\n"
+            f"for frame in ({info!r}, {{'type': 'done'}}):\n"
+            "    body = json.dumps(frame).encode()\n"
+            "    out.write(len(body).to_bytes(8, 'big') + body)\n"
+            "    out.flush()\n"
+        )
+        return [sys.executable, "-c", code], env
+
+
+def test_a_mismatch_reaches_the_run_summary(tmp_path: Path) -> None:
+    summary = run_agentic(_scripted_config(tmp_path), launcher=_ReportsLimits())
+    assert summary["model_limits_mismatch"] == [
+        "scripted-anthropic--no-docs: max_input_tokens 999 != max_input_tokens 200000 in the "
+        "model matrix"
+    ]
+    written = json.loads((tmp_path / "run" / "run-summary.json").read_text())
+    assert written["model_limits_mismatch"] == summary["model_limits_mismatch"]
 
 
 def test_run_summary_counts_retries_and_reruns(tmp_path: Path) -> None:

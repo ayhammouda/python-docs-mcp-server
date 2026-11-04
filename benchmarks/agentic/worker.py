@@ -221,7 +221,12 @@ def _index_sha256() -> str | None:
         return hashlib.file_digest(file, "sha256").hexdigest()
 
 
-def _system_info(system: SystemSpec, provider: str, bridge: Bridge | None) -> dict[str, Any]:
+def _system_info(
+    system: SystemSpec,
+    provider: str,
+    bridge: Bridge | None,
+    model_limits: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     from benchmarks.agentic.schemas import schemas_sha256
 
     tools_raw = bridge.tools_raw if bridge else []
@@ -237,6 +242,7 @@ def _system_info(system: SystemSpec, provider: str, bridge: Bridge | None) -> di
         "index_sha256": _index_sha256() if system.id == "python-docs" else None,
         "client_versions": _client_versions(),
         "fetch_extraction": _fetch_extraction() if system.id == "docs-fetch" else None,
+        "model_limits": model_limits,
     }
 
 
@@ -271,7 +277,7 @@ async def _run_job(
     bootstrapped: bool = False,
 ) -> int:
     # Imported here, after protect_output: the provider SDKs load behind the redactor.
-    from benchmarks.agentic.clients import make_client
+    from benchmarks.agentic.clients import fetch_model_limits, make_client
     from benchmarks.agentic.loop import Caps, TrajectoryDiscarded, run_trajectory
 
     job = first if first is not None else await read_frame(reader)
@@ -283,13 +289,15 @@ async def _run_job(
     if family.api != "scripted" and not bootstrapped:
         raise BenchmarkValidationError("a live job needs its key bootstrap frame first")
     client = make_client(family, timeout_s=caps.model_call_timeout_s)
+    # One free models GET per live worker, outside the ledger (round-2 ruling D10).
+    limits = None if family.api == "scripted" else await fetch_model_limits(client)
     host = _HostLedger(channel, reader)
     queue = deque((item, 1) for item in job["trajectories"])
     seen: set[str] = set()
     stack = AsyncExitStack()
     try:
         bridge = await _open(stack, system)
-        channel.send(_system_info(system, family.provider, bridge))
+        channel.send(_system_info(system, family.provider, bridge, limits))
         while queue:
             item, attempt = queue.popleft()
             ident = {"corpus_id": item["corpus_id"], "repeat": item["repeat"]}
