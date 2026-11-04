@@ -5,7 +5,12 @@ import traceback
 from collections.abc import Awaitable
 from typing import Any
 
-from benchmarks.agentic.protocol import KeyLeakError, redact_key_shaped_text
+from benchmarks.agentic.protocol import (
+    FrameTooLarge,
+    KeyLeakError,
+    find_key_leak,
+    redact_key_shaped_text,
+)
 from benchmarks.runner import BenchmarkValidationError
 
 
@@ -35,7 +40,7 @@ async def finish[T](operation: Awaitable[T], pending: BaseException | None = Non
 
     If the caller is already unwinding a cancellation, leave it to propagate on
     success. On failure, raise that same cancellation with the failure as its cause.
-    A recognized credential failure also survives ordinary cleanup errors, with
+    A recognized credential or frame failure also survives ordinary cleanup errors, with
     a redacted diagnostic copy as its cause; interrupts retain their precedence.
     """
     task = asyncio.ensure_future(operation)
@@ -48,7 +53,11 @@ async def finish[T](operation: Awaitable[T], pending: BaseException | None = Non
         if cancelled is not None and cancelled is not error:
             add_cleanup_cause(cancelled, error)
             raise cancelled
-        if not isinstance(pending, KeyLeakError) or not isinstance(error, Exception):
+        if not isinstance(error, Exception):
+            raise
+        if isinstance(pending, FrameTooLarge) and (leak := find_key_leak(error)):
+            raise leak
+        if not isinstance(pending, (KeyLeakError, FrameTooLarge)):
             raise
         # Copy notes and chains too, without retaining raw secret-bearing exceptions.
         try:

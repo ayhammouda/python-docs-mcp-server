@@ -45,11 +45,17 @@ def checked_line(
 
 
 class ReplyGuard:
-    """Latch a receive-task leak before connection closure wakes a pending SDK call."""
+    """Latch a receive-task failure before connection closure wakes a pending SDK call."""
 
     def __init__(self, check_content: Callable[[bytes], None] | None = None) -> None:
         self.check_content = check_content
-        self.failure: KeyLeakError | None = None
+        self.failure: KeyLeakError | FrameTooLarge | None = None
+
+    def frame_too_large(self) -> None:
+        # Retain one fixed diagnostic, never the offending bytes. A known leak wins.
+        if self.failure is None:
+            self.failure = FrameTooLarge("MCP stdio reply exceeds the frame limit")
+        self.raise_if_failed()
 
     def parse(self, line: bytes, params: StdioServerParameters) -> SessionMessage | Exception:
         self.raise_if_failed()
@@ -61,7 +67,7 @@ class ReplyGuard:
 
     def raise_if_failed(self) -> None:
         failure = self.failure
-        if isinstance(failure, KeyLeakError):
+        if isinstance(failure, (KeyLeakError, FrameTooLarge)):
             raise failure
 
 
@@ -97,7 +103,7 @@ async def checked_stdio_client(
                         for part in chunk.splitlines(keepends=True):
                             buffer.extend(part)
                             if len(buffer) > MAX_FRAME_BYTES:
-                                raise FrameTooLarge("MCP stdio reply exceeds the frame limit")
+                                guard.frame_too_large()
                             if not buffer.endswith(b"\n"):
                                 continue
                             item = guard.parse(bytes(buffer), params)

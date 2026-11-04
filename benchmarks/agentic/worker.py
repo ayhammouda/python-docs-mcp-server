@@ -31,6 +31,7 @@ from benchmarks.agentic.protocol import (
     WORKER_LEAK_REASON,
     KeyLeakError,
     encode_frame,
+    find_frame_too_large,
     find_key_leak,
     read_frame,
     read_frame_fd,
@@ -166,6 +167,7 @@ class _HostLedger:
 
     def __init__(self, channel: ProtocolChannel, reader: asyncio.StreamReader) -> None:
         self._channel, self._reader = channel, reader
+        self.check_failure: Callable[[], None] | None = None
 
     async def request(self, message: dict[str, Any]) -> dict[str, Any]:
         self._channel.send(message)
@@ -183,6 +185,8 @@ class _HostLedger:
         output_bound: int,
         kind: str = "model_call",
     ) -> str | None:
+        if self.check_failure is not None:
+            self.check_failure()
         reply = await self.request(
             {
                 "type": "reserve",
@@ -193,6 +197,8 @@ class _HostLedger:
                 "kind": kind,
             }
         )
+        if self.check_failure is not None:
+            self.check_failure()
         return reply["unit_id"] if reply.get("type") == "grant" else None
 
     async def settle(self, unit_id: str, *, outcome: Outcome, buckets: Buckets | None) -> None:
@@ -279,7 +285,7 @@ async def _open(
     return await stack.enter_async_context(open_bridge(system, check_content=check_content))
 
 
-async def _close(stack: AsyncExitStack) -> None:
+async def _close(stack: AsyncExitStack, pending: BaseException | None = None) -> None:
     try:
         await stack.aclose()
     except BaseException as exc:
@@ -287,6 +293,13 @@ async def _close(stack: AsyncExitStack) -> None:
             raise leak
         if not isinstance(exc, Exception):
             raise
+        if pending is not None:
+            if leak := find_key_leak(pending):
+                raise leak
+            if not isinstance(pending, Exception):
+                raise pending from exc
+        if frame := find_frame_too_large(exc):
+            raise frame
         print(f"closing the MCP bridge failed: {exc!r}", file=sys.stderr)
 
 
@@ -328,6 +341,7 @@ async def _run_job(
         bridge = await _open(stack, system, check_content=channel.check_content)
         if bridge is not None:
             bridge.check_content = channel.check_content
+            host.check_failure = bridge.raise_if_failed
         channel.send(_system_info(system, family.provider, bridge, limits))
         while queue:
             item, attempt = queue.popleft()
@@ -344,6 +358,8 @@ async def _run_job(
                     check_content=channel.check_content,
                 )
             except TrajectoryDiscarded as discarded:
+                if bridge is not None:
+                    bridge.raise_if_failed()
                 await host.request(
                     {
                         "type": "discarded",
@@ -376,6 +392,8 @@ async def _run_job(
                         }
                     )
                 continue
+            if bridge is not None:
+                bridge.raise_if_failed()
             record["execution"] = execution
             trajectory = {"type": "trajectory", "record": record, **ident, "attempt": attempt}
             await host.request(trajectory)
@@ -385,8 +403,9 @@ async def _run_job(
                 bridge = await _open(stack, system, check_content=channel.check_content)
                 if bridge is not None:
                     bridge.check_content = channel.check_content
+                host.check_failure = bridge.raise_if_failed if bridge is not None else None
     finally:
-        await _close(stack)  # the MCP server exits and drops its copy of fd 2
+        await _close(stack, sys.exception())  # the MCP server exits and drops its copy of fd 2
     channel.send({"type": "done"})
     return 0
 
@@ -414,6 +433,8 @@ async def run_worker(
             return _report(channel, WORKER_LEAK_REASON, 3)
         if not isinstance(exc, Exception):
             raise
+        if frame := find_frame_too_large(exc):
+            return _report(channel, f"FrameTooLarge: {frame}", 2)
         return _report(channel, f"{type(exc).__name__}: {exc}", 2)
 
 

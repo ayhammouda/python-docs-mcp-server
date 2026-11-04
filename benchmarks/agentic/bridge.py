@@ -20,7 +20,12 @@ from mcp.types import CONNECTION_CLOSED, CallToolResult, PaginatedRequestParams,
 
 from benchmarks.adapters.guard import EGRESS_URL_ENV, PROVIDER_API_KEY_ENV
 from benchmarks.agentic.mcp_stdio import ReplyGuard, checked_stdio_client
-from benchmarks.agentic.protocol import assert_no_key_shaped, find_key_leak, scanned_json_bytes
+from benchmarks.agentic.protocol import (
+    assert_no_key_shaped,
+    find_frame_too_large,
+    find_key_leak,
+    scanned_json_bytes,
+)
 from benchmarks.agentic.types import ToolSpec
 from benchmarks.runner import (
     _SAFE_ID,
@@ -174,15 +179,17 @@ class Bridge:
         ]
 
     async def call(self, name: str, arguments: dict[str, Any]) -> ToolOutcome:
+        self.raise_if_failed()
         try:
             result = await self._session.call_tool(name, arguments)
         except BaseException as exc:
-            if self._reply_guard is not None:
-                self._reply_guard.raise_if_failed()
             if leak := find_key_leak(exc):
                 raise leak
             if not isinstance(exc, Exception):
                 raise
+            self.raise_if_failed()
+            if frame := find_frame_too_large(exc):
+                raise frame
             if isinstance(exc, MCPError):
                 scanned_json_bytes(
                     exc.error.model_dump(mode="json"),
@@ -197,10 +204,16 @@ class Bridge:
             )
             failure = cell_failure_from(exc, timeout_seconds=0.0, label=f"MCP tool {name}")
             raise BridgeCrash(str(failure)) from exc
+        self.raise_if_failed()
         return ToolOutcome(
             text=canonical_text(result, check_content=self.check_content),
             is_error=bool(result.is_error),
         )
+
+    def raise_if_failed(self) -> None:
+        """Check the receive task before dispatch, reservation or publication."""
+        if self._reply_guard is not None:
+            self._reply_guard.raise_if_failed()
 
 
 def server_env(system: SystemSpec, environ: Mapping[str, str]) -> dict[str, str]:

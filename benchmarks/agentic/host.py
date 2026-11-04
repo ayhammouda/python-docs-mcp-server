@@ -288,6 +288,7 @@ async def _supervise(
     log_dir: Path,
     cwd: Path,
     max_frame_bytes: int,
+    aborted: asyncio.Event,
 ) -> None:
     argv, env = launcher.command(job)
     log_path = log_dir / f"{job.job_id}.stderr.log"
@@ -377,8 +378,11 @@ async def _supervise(
                     reply = {"type": "ack"}
                 elif kind == "error":
                     reason = str(message.get("reason"))
-                    if reason in (WORKER_LEAK_REASON, "own key found in output"):
+                    if reason in (
+                        WORKER_LEAK_REASON, "own key found in output"
+                    ) or reason.startswith("FrameTooLarge:"):
                         ledger.stop_grants()
+                        aborted.set()
                     with suppress(TimeoutError):  # its drain writes the last lines to the log
                         await asyncio.wait_for(proc.wait(), 5)
                     if reason in (WORKER_LEAK_REASON, "own key found in output"):
@@ -395,7 +399,8 @@ async def _supervise(
                         # A retries_exhausted discard still owes its rerun or a final not_run.
                         if kind != "discarded" or message["reason"] == "budget_stop":
                             reported.add(coordinates)
-                    await on_message(job, message)
+                    if not aborted.is_set():
+                        await on_message(job, message)
                     done = done or kind == "done"
                     if kind in ("trajectory", "discarded"):
                         reply = {"type": "ack"}
@@ -404,8 +409,9 @@ async def _supervise(
                     await proc.stdin.drain()
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             pass  # the worker died or stalled; handled as a lost worker below
-    except KeyLeakError:
+    except (KeyLeakError, FrameTooLarge):
         ledger.stop_grants()
+        aborted.set()
         raise
     finally:
         await finish(
@@ -414,7 +420,7 @@ async def _supervise(
             ),
             sys.exception(),
         )
-    if not done:
+    if not done and not aborted.is_set():
         for item in job.trajectories:
             if (item["corpus_id"], item["repeat"]) not in reported:
                 await on_message(
@@ -450,6 +456,7 @@ async def run_jobs(
     failed = True
     try:
         await launcher.prepare(jobs)  # raises before any worker starts
+        aborted = asyncio.Event()
         tasks = [
             asyncio.create_task(
                 _supervise(
@@ -460,6 +467,7 @@ async def run_jobs(
                     log_dir=log_dir,
                     cwd=cwd,
                     max_frame_bytes=max_frame_bytes,
+                    aborted=aborted,
                 )
             )
             for job in jobs

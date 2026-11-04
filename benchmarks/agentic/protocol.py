@@ -44,6 +44,10 @@ class KeyLeakError(BenchmarkValidationError):
 
 def find_key_leak(error: BaseException) -> KeyLeakError | None:
     """Find a recognized leak through task groups and MCP/cleanup exception chains."""
+    return _find_failure(error, KeyLeakError)
+
+
+def _find_failure[T: BaseException](error: BaseException, kind: type[T]) -> T | None:
     pending = [error]
     visited: set[int] = set()
     while pending:
@@ -51,7 +55,7 @@ def find_key_leak(error: BaseException) -> KeyLeakError | None:
         if id(current) in visited:
             continue
         visited.add(id(current))
-        if isinstance(current, KeyLeakError):
+        if isinstance(current, kind):
             return current
         if isinstance(current, BaseExceptionGroup):
             pending.extend(current.exceptions)
@@ -63,6 +67,11 @@ def find_key_leak(error: BaseException) -> KeyLeakError | None:
 
 class FrameTooLarge(BenchmarkValidationError):
     """A frame over the size limit: a harness error, never a model failure."""
+
+
+def find_frame_too_large(error: BaseException) -> FrameTooLarge | None:
+    """Retain structural frame failures through SDK and teardown exception groups."""
+    return _find_failure(error, FrameTooLarge)
 
 
 def encode_frame(

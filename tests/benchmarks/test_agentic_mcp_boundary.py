@@ -275,7 +275,7 @@ async def test_stdio_line_limit_bounds_buffer_and_releases_process(monkeypatch):
     with pytest.raises(BaseExceptionGroup) as caught:
         async with asyncio.timeout(5):
             async with open_bridge(_system("oversize", "clean")) as bridge:
-                with pytest.raises(BridgeCrash):
+                with pytest.raises(FrameTooLarge):
                     await bridge.call("search_docs", {})
     assert caught.value.subgroup(FrameTooLarge) is not None
 
