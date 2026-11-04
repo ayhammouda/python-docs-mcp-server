@@ -128,6 +128,10 @@ class Probes:
             raise BenchmarkValidationError(f"isolation probe failed for {kwargs['job_id']}")
         return {"passed": True}
 
+    async def control(self, sandbox: Sandbox) -> dict[str, Any]:
+        self.jobs.append("control")
+        return {"passed": True}
+
 
 def _config(tmp_path: Path, keys_file: Path | None = None, **overrides: Any) -> SandboxConfig:
     values: dict[str, Any] = {
@@ -215,7 +219,9 @@ def test_read_key_errors_never_hold_a_value(tmp_path: Path, name: str) -> None:
 
 
 def test_worker_argv_carries_the_design_hardening(tmp_path: Path) -> None:
-    launcher = ContainerLauncher(_sandbox(tmp_path, FakeDocker()), probe=Probes())
+    launcher = ContainerLauncher(
+        _sandbox(tmp_path, FakeDocker()), probe=(probes := Probes()), control=probes.control
+    )
     argv, _ = launcher.command(_job("scripted-anthropic"))
     text = " ".join(argv)
     for flag in (
@@ -244,7 +250,9 @@ def test_worker_argv_carries_the_design_hardening(tmp_path: Path) -> None:
 
 
 def test_only_python_docs_jobs_mount_the_index_read_only(tmp_path: Path) -> None:
-    launcher = ContainerLauncher(_sandbox(tmp_path, FakeDocker()), probe=Probes())
+    launcher = ContainerLauncher(
+        _sandbox(tmp_path, FakeDocker()), probe=(probes := Probes()), control=probes.control
+    )
     index = f"type=bind,src={tmp_path / 'index.db'},dst=/cache/mcp-python-docs/index.db,readonly"
     for system_id, mounted in (("python-docs", True), ("docs-fetch", False), ("no-docs", False)):
         mounts = _mounts(launcher.command(_job("claude-sonnet-5-5", system_id))[0])
@@ -267,7 +275,9 @@ def test_worker_env_is_the_allowlist(tmp_path: Path, monkeypatch: pytest.MonkeyP
         "BENCHMARK_LIVE_PROVIDERS_ENABLED",
         "OLLAMA_BASE_URL",
     }
-    launcher = ContainerLauncher(_sandbox(tmp_path, FakeDocker()), probe=Probes())
+    launcher = ContainerLauncher(
+        _sandbox(tmp_path, FakeDocker()), probe=(probes := Probes()), control=probes.control
+    )
     for family_id in ("scripted-anthropic", "claude-sonnet-5-5", "gemma4-12b"):
         argv, env = launcher.command(_job(family_id))
         assert set(_env_names(argv)) <= allowed
@@ -297,7 +307,7 @@ async def test_no_key_in_argv_cli_env_or_container_config(
     keys = _keys(tmp_path, f"ANTHROPIC_API_KEY={SYNTHETIC}\n")
     docker = FakeDocker()
     sandbox = _sandbox(tmp_path, docker, keys_file=keys)
-    launcher = ContainerLauncher(sandbox, probe=Probes())
+    launcher = ContainerLauncher(sandbox, probe=(probes := Probes()), control=probes.control)
     job = _job("claude-sonnet-5-5", "python-docs")
     await launcher.prepare([job])
     argv, env = launcher.command(job)
@@ -313,7 +323,11 @@ async def test_no_key_in_argv_cli_env_or_container_config(
 
 def test_each_live_bootstrap_holds_only_its_own_providers_key(tmp_path: Path) -> None:
     keys = _keys(tmp_path, "ANTHROPIC_API_KEY=sk-a\nOPENAI_API_KEY=sk-o\nGOOGLE_API_KEY=g-k\n")
-    launcher = ContainerLauncher(_sandbox(tmp_path, FakeDocker(), keys_file=keys), probe=Probes())
+    launcher = ContainerLauncher(
+        _sandbox(tmp_path, FakeDocker(), keys_file=keys),
+        probe=(probes := Probes()),
+        control=probes.control,
+    )
     assert launcher.bootstrap_frame(_job("gpt-6.1-sol")) == {
         "type": "bootstrap",
         "env": {"OPENAI_API_KEY": "sk-o"},
@@ -324,7 +338,9 @@ def test_each_live_bootstrap_holds_only_its_own_providers_key(tmp_path: Path) ->
 
 
 def test_a_live_family_without_a_keys_file_is_refused(tmp_path: Path) -> None:
-    launcher = ContainerLauncher(_sandbox(tmp_path, FakeDocker()), probe=Probes())
+    launcher = ContainerLauncher(
+        _sandbox(tmp_path, FakeDocker()), probe=(probes := Probes()), control=probes.control
+    )
     with pytest.raises(BenchmarkValidationError, match="keys file"):
         launcher.bootstrap_frame(_job("claude-sonnet-5-5"))
 
@@ -368,7 +384,7 @@ async def test_prepare_builds_one_network_and_proxy_per_job_with_a_file_log(
 ) -> None:
     docker = FakeDocker()
     probes = Probes()
-    launcher = ContainerLauncher(_sandbox(tmp_path, docker), probe=probes)
+    launcher = ContainerLauncher(_sandbox(tmp_path, docker), probe=probes, control=probes.control)
     jobs = [_job("claude-sonnet-5-5", "docs-fetch"), _job("scripted-anthropic", "no-docs")]
     await launcher.prepare(jobs)
     outside = f"pdmcp-{RUN}-out"
@@ -390,7 +406,7 @@ async def test_prepare_builds_one_network_and_proxy_per_job_with_a_file_log(
         for flag in ("--read-only", "--cap-drop ALL", "--user proxy", "--pull never", "-d"):
             assert flag in text
         assert run[-3:] == ["-N", "-f", "/etc/squid/squid.conf"]
-    assert probes.jobs == [job.job_id for job in jobs]
+    assert probes.jobs == ["control", *[job.job_id for job in jobs]]
     await launcher.close()
 
 
@@ -425,12 +441,16 @@ async def test_prepare_refuses_a_daemon_that_is_not_local(
 ) -> None:
     repo = _git_repo(tmp_path / "repo")
     remote = FakeDocker(context_host="tcp://10.0.0.5:2376")
-    launcher = ContainerLauncher(_real(tmp_path, remote, repo), probe=Probes())
+    launcher = ContainerLauncher(
+        _real(tmp_path, remote, repo), probe=(probes := Probes()), control=probes.control
+    )
     with pytest.raises(BenchmarkValidationError, match="unix://"):
         await launcher.prepare([_job("scripted-anthropic")])
     monkeypatch.setenv("DOCKER_HOST", "tcp://10.0.0.5:2376")
     local = FakeDocker()
-    launcher = ContainerLauncher(_real(tmp_path, local, repo), probe=Probes())
+    launcher = ContainerLauncher(
+        _real(tmp_path, local, repo), probe=(probes := Probes()), control=probes.control
+    )
     with pytest.raises(BenchmarkValidationError, match="DOCKER_HOST"):
         await launcher.prepare([_job("scripted-anthropic")])
     for docker in (remote, local):
@@ -452,7 +472,10 @@ async def test_the_real_check_refuses_a_dirty_tree(tmp_path: Path) -> None:
 
 async def test_prepare_refuses_an_image_from_another_commit(tmp_path: Path) -> None:
     docker = FakeDocker(revision="d" * 40)
-    launcher = ContainerLauncher(_real(tmp_path, docker, _git_repo(tmp_path / "r")), Probes())
+    probes = Probes()
+    launcher = ContainerLauncher(
+        _real(tmp_path, docker, _git_repo(tmp_path / "r")), probes, probes.control
+    )
     with pytest.raises(BenchmarkValidationError, match="d" * 40):
         await launcher.prepare([_job("scripted-anthropic")])
     assert not docker.ran("run")
@@ -483,11 +506,15 @@ def test_sandbox_config_refuses_a_tag(tmp_path: Path) -> None:
 
 async def test_stop_worker_removes_only_its_own_container(tmp_path: Path) -> None:
     docker = FakeDocker()
-    launcher = ContainerLauncher(_sandbox(tmp_path, docker), probe=Probes())
+    launcher = ContainerLauncher(
+        _sandbox(tmp_path, docker), probe=(probes := Probes()), control=probes.control
+    )
     await launcher.stop_worker(_job("scripted-anthropic"))
     assert docker.calls == [["docker", "rm", "-f", f"pdmcp-{RUN}-scripted-anthropic--no-docs"]]
     gone = FakeDocker(fail=lambda args: args[:2] == ["rm", "-f"])
-    launcher = ContainerLauncher(_sandbox(tmp_path, gone), probe=Probes())
+    launcher = ContainerLauncher(
+        _sandbox(tmp_path, gone), probe=(probes := Probes()), control=probes.control
+    )
     with pytest.raises(BenchmarkValidationError, match="boom"):
         await launcher.stop_worker(_job("scripted-anthropic"))
 
@@ -495,7 +522,9 @@ async def test_stop_worker_removes_only_its_own_container(tmp_path: Path) -> Non
         return _done(argv, 1, err="Error response from daemon: No such container: x")
 
     sandbox = Sandbox(_config(tmp_path), docker=no_such, verify=_verified)
-    await ContainerLauncher(sandbox, probe=Probes()).stop_worker(_job("scripted-anthropic"))
+    await ContainerLauncher(
+        sandbox, probe=(probes := Probes()), control=probes.control
+    ).stop_worker(_job("scripted-anthropic"))
 
 
 # --- collection and close ----------------------------------------------------------------------
@@ -524,7 +553,9 @@ def _logs(log_dir: Path, access: str = PARTIAL, cache: str = "squid started\n") 
 
 async def test_close_stops_each_proxy_then_removes_what_it_created(tmp_path: Path) -> None:
     docker = FakeDocker()
-    launcher = ContainerLauncher(_sandbox(tmp_path, docker), probe=Probes())
+    launcher = ContainerLauncher(
+        _sandbox(tmp_path, docker), probe=(probes := Probes()), control=probes.control
+    )
     jobs = [_job("claude-sonnet-5-5", "no-docs"), _job("scripted-anthropic", "no-docs")]
     await launcher.prepare(jobs)
     for job in jobs:
@@ -590,7 +621,9 @@ async def test_close_redacts_a_key_shaped_proxy_log_and_raises_after_cleanup(
     tmp_path: Path,
 ) -> None:
     docker = FakeDocker()
-    launcher = ContainerLauncher(_sandbox(tmp_path, docker), probe=Probes())
+    launcher = ContainerLauncher(
+        _sandbox(tmp_path, docker), probe=(probes := Probes()), control=probes.control
+    )
     job = _job("scripted-anthropic")
     await launcher.prepare([job])
     log_dir = tmp_path / "run" / "egress" / job.job_id
@@ -613,7 +646,9 @@ async def test_close_keeps_going_after_a_failed_step(tmp_path: Path) -> None:
 
 
 def test_container_launcher_supports_scripted_and_every_live_api(tmp_path: Path) -> None:
-    launcher = ContainerLauncher(_sandbox(tmp_path, FakeDocker()), probe=Probes())
+    launcher = ContainerLauncher(
+        _sandbox(tmp_path, FakeDocker()), probe=(probes := Probes()), control=probes.control
+    )
     assert all(launcher.supports(family) for family in FAMILIES.values())
 
 

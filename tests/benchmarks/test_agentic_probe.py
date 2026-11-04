@@ -1,0 +1,416 @@
+"""The isolation probe: in-container checks, the host verdict and the probe containers.
+
+Listeners and fake proxies bind 127.0.0.1 only; every docker command goes to FakeDocker.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import socket
+import subprocess
+import threading
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from decimal import Decimal
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+import benchmarks.agentic.probe as probe
+from benchmarks.agentic.egress import ProxyEvent
+from benchmarks.agentic.host import run_jobs
+from benchmarks.agentic.ledger import Ledger, LedgerService
+from benchmarks.agentic.probe import (
+    IsolationProbeFailed,
+    control_probe,
+    host_addresses,
+    isolation_probe,
+    probe_verdict,
+    run_probe_checks,
+)
+from benchmarks.agentic.sandbox import ContainerLauncher, Sandbox
+from tests.benchmarks.test_agentic_sandbox import FakeDocker, _config, _done, _job, _verified
+
+TOKEN = "probe-token-0123456789abcdef"
+
+
+@pytest.fixture(autouse=True)
+def _loopback_canary(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(probe, "_CANARY_BIND", "127.0.0.1")  # never every interface in a test
+
+
+DENIED = ("example.com", 443)
+CANARY = ("host.docker.internal", 50000)
+
+
+@contextmanager
+def _listener(reply: Callable[[bytes], bytes] | None = None) -> Iterator[tuple[int, list[bytes]]]:
+    """A TCP server on 127.0.0.1 that records what each connection sends, and may answer."""
+    server = socket.create_server(("127.0.0.1", 0))
+    received: list[bytes] = []
+    stop = threading.Event()
+
+    def serve() -> None:
+        server.settimeout(0.1)
+        while not stop.is_set():
+            try:
+                conn, _ = server.accept()
+            except TimeoutError:
+                continue
+            with conn:
+                conn.settimeout(2)
+                data = b""
+                try:
+                    while b"\r\n\r\n" not in data and (chunk := conn.recv(4096)):
+                        data += chunk
+                except TimeoutError:
+                    pass
+                received.append(data)
+                if reply is not None:
+                    conn.sendall(reply(data))
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        yield server.getsockname()[1], received
+    finally:
+        stop.set()
+        thread.join(5)
+        server.close()
+
+
+def _closed_port() -> int:
+    with socket.create_server(("127.0.0.1", 0)) as server:
+        return server.getsockname()[1]
+
+
+def _check(results: list[dict[str, Any]], name: str) -> list[dict[str, Any]]:
+    return [r for r in results if r["check"] == name]
+
+
+def test_direct_check_fails_and_sends_the_token_when_something_listens() -> None:
+    with _listener() as (port, received):
+        results = run_probe_checks({"direct": [["127.0.0.1", port]], "token": TOKEN})
+    (direct,) = _check(results, "direct")
+    assert direct["passed"] is False and direct["target"] == f"127.0.0.1:{port}"
+    assert any(f"Bearer {TOKEN}".encode() in data for data in received)
+
+
+def test_direct_check_passes_when_nothing_listens() -> None:
+    port = _closed_port()
+    (direct,) = _check(
+        run_probe_checks({"direct": [["127.0.0.1", port]], "token": TOKEN}), "direct"
+    )
+    assert direct["passed"] is True
+
+
+def test_dns_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unresolvable(*args: Any, **kwargs: Any) -> Any:
+        raise socket.gaierror(socket.EAI_NONAME, "no name")
+
+    monkeypatch.setattr(probe.socket, "getaddrinfo", unresolvable)
+    (dns,) = _check(run_probe_checks({"dns_name": "pypi.org"}), "dns")
+    assert dns["passed"] is True and dns["target"] == "pypi.org"
+    monkeypatch.setattr(probe.socket, "getaddrinfo", lambda *a, **k: [("x",)])
+    (dns,) = _check(run_probe_checks({"dns_name": "pypi.org"}), "dns")
+    assert dns["passed"] is False
+
+
+def test_host_addresses_work_offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_name(name: str) -> Any:
+        raise socket.gaierror(socket.EAI_NONAME, "offline")
+
+    class NoRoute:
+        def __init__(self, *args: Any) -> None:
+            pass
+
+        def __enter__(self) -> NoRoute:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            return None
+
+        def connect(self, address: Any) -> None:
+            raise OSError(51, "Network is unreachable")
+
+        def getsockname(self) -> Any:
+            raise AssertionError("unreachable")
+
+    monkeypatch.setattr(probe.socket, "gethostbyname_ex", no_name)
+    monkeypatch.setattr(probe.socket, "socket", NoRoute)
+    assert host_addresses() == []
+
+    class Routed(NoRoute):
+        def connect(self, address: Any) -> None:
+            return None
+
+        def getsockname(self) -> Any:
+            return ("192.168.1.20", 50123)
+
+    monkeypatch.setattr(probe.socket, "socket", Routed)
+    assert host_addresses() == ["192.168.1.20"]
+
+
+def _proxy_reply(statuses: dict[str, int]) -> Callable[[bytes], bytes]:
+    def reply(request: bytes) -> bytes:
+        method = request.split(b" ", 1)[0].decode()
+        is_version = b"/api/version" in request.split(b"\r\n", 1)[0]
+        status = statuses["version"] if is_version else statuses[method]
+        return f"HTTP/1.1 {status} X\r\nContent-Length: 0\r\n\r\n".encode()
+
+    return reply
+
+
+def test_proxy_checks_read_the_status_line() -> None:
+    spec = {
+        "token": TOKEN,
+        "denied": list(DENIED),
+        "canary_via_proxy": list(CANARY),
+        "allowed_http": ["http://host.docker.internal:11434/api/version"],
+    }
+    deny = _proxy_reply({"CONNECT": 403, "GET": 403, "version": 200})
+    with _listener(deny) as (port, received):
+        results = run_probe_checks(spec, proxy=("127.0.0.1", port))
+    for name in ("proxy_denied", "proxy_canary", "allowed_http"):
+        assert [r["passed"] for r in _check(results, name)] == [True], name
+    assert any(f"Bearer {TOKEN}".encode() in data for data in received)  # the canary request
+    allow = _proxy_reply({"CONNECT": 200, "GET": 200, "version": 403})
+    with _listener(allow) as (port, _):
+        results = run_probe_checks(spec, proxy=("127.0.0.1", port))
+    for name in ("proxy_denied", "proxy_canary", "allowed_http"):
+        assert [r["passed"] for r in _check(results, name)] == [False], name
+
+
+def test_env_check_names_forbidden_variables_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://user:secret@x:1")
+    (env,) = _check(run_probe_checks({}), "env")
+    assert env["passed"] is False and "HTTPS_PROXY" in env["detail"]
+    assert "secret" not in json.dumps(env)
+
+
+def _passing() -> list[dict[str, Any]]:
+    return [{"check": "dns", "target": "pypi.org", "passed": True, "detail": "gaierror"}]
+
+
+def _denials(*, canary: bool = True) -> list[ProxyEvent]:
+    events = [ProxyEvent("t", "172.30.0.2", "CONNECT", *DENIED, 403, "TCP_DENIED")]
+    if canary:
+        events.append(ProxyEvent("t", "172.30.0.2", "GET", *CANARY, 403, "TCP_DENIED"))
+    return events
+
+
+def _verdict(**overrides: Any) -> list[str]:
+    values: dict[str, Any] = {
+        "canary_received": [],
+        "token": TOKEN,
+        "proxy_events": _denials(),
+        "denied": DENIED,
+        "canary": CANARY,
+    }
+    return probe_verdict(_passing(), **(values | overrides))
+
+
+def test_verdict_fails_when_the_canary_saw_the_token() -> None:
+    assert _verdict(canary_received=[f"Bearer {TOKEN}".encode()]) == ["canary_saw_token"]
+
+
+def test_verdict_needs_both_denials_logged() -> None:
+    assert _verdict(proxy_events=_denials(canary=False)) == ["denial_not_logged"]
+    allowed = [ProxyEvent("t", "c", "CONNECT", *DENIED, 200, "TCP_TUNNEL"), _denials()[1]]
+    assert _verdict(proxy_events=allowed) == ["denial_not_logged"]
+
+
+def test_verdict_passes_with_every_check_and_both_denials() -> None:
+    assert _verdict() == []
+    failed = [{"check": "direct", "target": "h:1", "passed": False, "detail": "connected"}]
+    assert probe_verdict(failed, **_verdict_args()) == ["direct h:1"]
+
+
+def _verdict_args() -> dict[str, Any]:
+    return {
+        "canary_received": [],
+        "token": TOKEN,
+        "proxy_events": _denials(),
+        "denied": DENIED,
+        "canary": CANARY,
+    }
+
+
+class ProbeDocker(FakeDocker):
+    """A FakeDocker whose probe container 'runs': it logs both denials and reports checks."""
+
+    def __init__(self, log_dir: Callable[[], Path], *, passed: bool = True, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.log_dir, self.passed = log_dir, passed
+        self.specs: list[dict[str, Any]] = []
+
+    async def __call__(self, argv: Sequence[str]) -> Any:
+        argv = list(argv)
+        if argv[1:2] != ["run"] or "agentic-probe" not in argv:
+            return await super().__call__(argv)
+        self.calls.append(argv)
+        spec = json.loads(argv[argv.index("--spec") + 1])
+        self.specs.append(spec)
+        if "control" in spec:
+            checks = [{"check": "control", "target": "x", "passed": self.passed, "detail": ""}]
+            return _done(argv, out=json.dumps({"checks": checks}))
+        lines = [
+            f"2026-11-04T10:00:00.001Z 172.30.0.2 CONNECT {spec['denied'][0]} "
+            f"{spec['denied'][1]} 403 TCP_DENIED",
+            f"2026-11-04T10:00:00.002Z 172.30.0.2 GET {spec['canary_via_proxy'][0]} "
+            f"{spec['canary_via_proxy'][1]} 403 TCP_DENIED",
+        ]
+        (self.log_dir() / "access.log").write_text("".join(f"{line}\n" for line in lines))
+        checks = [{"check": "env", "target": "", "passed": self.passed, "detail": ""}]
+        return _done(argv, out=json.dumps({"checks": checks}))
+
+
+async def _egress(tmp_path: Path, docker: FakeDocker, gateways: Sequence[str]) -> Any:
+    (tmp_path / "run").mkdir(exist_ok=True)
+    docker.gateways = gateways
+    sandbox = Sandbox(_config(tmp_path), docker=docker, verify=_verified)
+    return sandbox, await sandbox.open_egress("j", (("api.anthropic.com", 443),))
+
+
+async def test_the_probe_targets_every_ipam_gateway_and_records_the_inspect(
+    tmp_path: Path,
+) -> None:
+    docker = ProbeDocker(lambda: tmp_path / "run" / "egress" / "j")
+    sandbox, egress = await _egress(tmp_path, docker, ("172.30.0.1", "fd00::1"))
+    job = _job("claude-sonnet-5-5")
+    record = await isolation_probe(
+        sandbox, egress, job_id="j", family=job.family, system_id="no-docs"
+    )
+    (spec,) = docker.specs
+    hosts = {host for host, _ in spec["direct"]}
+    assert {"172.30.0.1", "fd00::1", "host.docker.internal", "gateway.docker.internal"} <= hosts
+    assert {port for _, port in spec["direct"]} >= {11434}
+    assert spec["dns_name"] == "pypi.org" and spec["denied"] == list(DENIED)
+    assert spec["allowed_http"] == []
+    assert record["passed"] is True and record["failed"] == []
+    assert record["network_inspect"] == egress.inspect
+    log = (egress.log_dir / "access.log").read_text().splitlines()
+    assert record["proxy_prefix"] == log and len(log) == 2
+    written = json.loads((tmp_path / "run" / "probe" / "j.json").read_text())
+    assert written == record
+    (run,) = docker.ran("run")[-1:]
+    assert "-i" not in run and "--rm" in run and run[run.index("--name") + 1].endswith("-j-probe")
+    assert not [arg for arg in run if "API_KEY" in arg]
+    assert docker.ran("rm", "-f", "pdmcp-r1-j-probe")
+
+
+async def test_an_ollama_probe_checks_its_version_url(tmp_path: Path) -> None:
+    docker = ProbeDocker(lambda: tmp_path / "run" / "egress" / "j")
+    sandbox, egress = await _egress(tmp_path, docker, ("172.30.0.1",))
+    family = _job("gemma4-12b").family
+    await isolation_probe(sandbox, egress, job_id="j", family=family, system_id="no-docs")
+    assert docker.specs[0]["allowed_http"] == ["http://host.docker.internal:11434/api/version"]
+
+
+async def test_a_failed_check_raises_and_still_writes_the_record(tmp_path: Path) -> None:
+    docker = ProbeDocker(lambda: tmp_path / "run" / "egress" / "j", passed=False)
+    sandbox, egress = await _egress(tmp_path, docker, ("172.30.0.1",))
+    family = _job("claude-sonnet-5-5").family
+    with pytest.raises(IsolationProbeFailed, match="env"):
+        await isolation_probe(sandbox, egress, job_id="j", family=family, system_id="no-docs")
+    assert json.loads((tmp_path / "run" / "probe" / "j.json").read_text())["passed"] is False
+
+
+async def test_a_timed_out_or_cancelled_probe_container_is_removed(tmp_path: Path) -> None:
+    name = "pdmcp-r1-j-probe"
+    family = _job("claude-sonnet-5-5").family
+
+    class Timeout(FakeDocker):
+        async def __call__(self, argv: Sequence[str]) -> Any:
+            if list(argv[1:2]) == ["run"] and "agentic-probe" in argv:
+                self.calls.append(list(argv))
+                raise subprocess.TimeoutExpired(list(argv), 120)
+            return await super().__call__(argv)
+
+    docker = Timeout()
+    sandbox, egress = await _egress(tmp_path, docker, ("172.30.0.1",))
+    with pytest.raises(subprocess.TimeoutExpired):
+        await isolation_probe(sandbox, egress, job_id="j", family=family, system_id="no-docs")
+    assert docker.calls[-1] == ["docker", "rm", "-f", name]
+
+    started = asyncio.Event()
+
+    class Hangs(FakeDocker):
+        async def __call__(self, argv: Sequence[str]) -> Any:
+            if list(argv[1:2]) == ["run"] and "agentic-probe" in argv:
+                self.calls.append(list(argv))
+                started.set()
+                await asyncio.Event().wait()
+            return await super().__call__(argv)
+
+    (tmp_path / "second").mkdir()
+    docker = Hangs()
+    sandbox, egress = await _egress(tmp_path / "second", docker, ("172.30.0.1",))
+    task = asyncio.ensure_future(
+        isolation_probe(sandbox, egress, job_id="j", family=family, system_id="no-docs")
+    )
+    await asyncio.wait_for(started.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0)  # the shielded removal finishes
+    assert docker.calls[-1] == ["docker", "rm", "-f", name]
+
+
+async def test_a_failed_control_makes_the_probe_inconclusive(tmp_path: Path) -> None:
+    (tmp_path / "run").mkdir()
+    docker = ProbeDocker(lambda: tmp_path, passed=False)
+    sandbox = Sandbox(_config(tmp_path), docker=docker, verify=_verified)
+    with pytest.raises(IsolationProbeFailed, match="inconclusive"):
+        await control_probe(sandbox)
+    (spec,) = docker.specs
+    assert spec["control"][0] == "host.docker.internal"
+    run = docker.ran("run")[-1]
+    assert run[run.index("--network") + 1] == "pdmcp-r1-out"
+    assert docker.calls[-1] == ["docker", "rm", "-f", "pdmcp-r1-control"]
+    assert json.loads((tmp_path / "run" / "probe" / "control.json").read_text())["passed"] is False
+
+
+async def test_no_worker_starts_when_a_probe_fails(tmp_path: Path) -> None:
+    started: list[str] = []
+
+    class Recording(ContainerLauncher):
+        def command(self, job: Any) -> tuple[list[str], dict[str, str]]:
+            started.append(job.job_id)
+            raise AssertionError("no worker may start")
+
+        async def close(self) -> list[str]:
+            started.append("close")
+            return await super().close()
+
+    async def failing(sandbox: Sandbox, egress: Any, **kwargs: Any) -> dict[str, Any]:
+        raise IsolationProbeFailed(f"isolation probe failed for {kwargs['job_id']}: direct")
+
+    async def control(sandbox: Sandbox) -> dict[str, Any]:
+        return {"passed": True}
+
+    (tmp_path / "run").mkdir()
+    docker = FakeDocker()
+    sandbox = Sandbox(_config(tmp_path), docker=docker, verify=_verified)
+    launcher = Recording(sandbox, probe=failing, control=control)
+    ledger = Ledger.open(tmp_path / "ledger", run_id="r1", caps={"anthropic": Decimal(1)})
+
+    async def ignore(job: Any, message: dict[str, Any]) -> None:
+        return None
+
+    try:
+        with pytest.raises(IsolationProbeFailed):
+            await run_jobs(
+                [_job("scripted-anthropic")],
+                launcher=launcher,
+                ledger=LedgerService(ledger, {}, {}),
+                on_message=ignore,
+                log_dir=tmp_path / "logs",
+                cwd=tmp_path,
+            )
+    finally:
+        ledger.close()
+    assert started == ["close"]
+    assert not [c for c in docker.calls if "agentic-worker" in c]

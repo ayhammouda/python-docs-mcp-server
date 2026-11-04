@@ -154,6 +154,22 @@ class Egress:
 
 VerifyFn = Callable[["Sandbox"], Awaitable[dict[str, str]]]
 ProbeFn = Callable[..., Awaitable[dict[str, Any]]]
+ControlFn = Callable[["Sandbox"], Awaitable[dict[str, Any]]]
+
+
+def worker_env(family: ModelFamily) -> dict[str, str]:
+    """A worker container's whole environment (Global Constraints allowlist): never a key."""
+    env = {
+        "HOME": "/tmp",
+        "XDG_CACHE_HOME": "/cache",
+        "PYTHON_DOCS_MCP_DISABLE_AUTO_INDEX": "1",
+        EGRESS_URL_ENV: EGRESS_URL,
+    }
+    if family.api != "scripted":
+        env[LIVE_PROVIDERS_ENABLED_ENV] = "1"
+    if family.provider in LIVE_LATCH_ENV:
+        env[LIVE_LATCH_ENV[family.provider]] = OLLAMA_URL_IN_SANDBOX
+    return env
 
 
 def _tail(proc: subprocess.CompletedProcess[bytes]) -> str:
@@ -266,11 +282,15 @@ class Sandbox:
     async def output(self, *args: str) -> str:
         return (await self.run(*args)).stdout.decode("utf-8", errors="replace")
 
-    async def open_egress(self, job_id: str, allow: Sequence[tuple[str, int]]) -> Egress:
-        """The job's internal network and its proxy, logging to ``out_dir/egress/<job_id>/``."""
+    async def ensure_outside(self) -> None:
+        """The run's one outside network, for the proxies and the control probe."""
         if not self.outside_created:
             await self.run("network", "create", *self._label(), self.outside)
             self.outside_created = True
+
+    async def open_egress(self, job_id: str, allow: Sequence[tuple[str, int]]) -> Egress:
+        """The job's internal network and its proxy, logging to ``out_dir/egress/<job_id>/``."""
+        await self.ensure_outside()
         name = self.worker_name(job_id)
         network, proxy = f"{name}-net", f"{name}-proxy"
         await self.run(
@@ -469,9 +489,14 @@ class Sandbox:
 class ContainerLauncher:
     """Implements host.Launcher: each job's worker in its own hardened, keyless container."""
 
-    def __init__(self, sandbox: Sandbox, probe: ProbeFn | None = None) -> None:
+    def __init__(
+        self, sandbox: Sandbox, probe: ProbeFn | None = None, control: ControlFn | None = None
+    ) -> None:
+        from benchmarks.agentic.probe import control_probe, isolation_probe
+
         self.sandbox = sandbox
-        self._probe = probe
+        self._probe: ProbeFn = probe or isolation_probe
+        self._control: ControlFn = control or control_probe
         self._egresses: list[Egress] = []
 
     def supports(self, family: ModelFamily) -> bool:
@@ -479,16 +504,7 @@ class ContainerLauncher:
 
     def command(self, job: WorkerJob) -> tuple[list[str], dict[str, str]]:
         family, config = job.family, self.sandbox.config
-        env = {
-            "HOME": "/tmp",
-            "XDG_CACHE_HOME": "/cache",
-            "PYTHON_DOCS_MCP_DISABLE_AUTO_INDEX": "1",
-            EGRESS_URL_ENV: EGRESS_URL,
-        }
-        if family.api != "scripted":
-            env[LIVE_PROVIDERS_ENABLED_ENV] = "1"
-        if family.provider in LIVE_LATCH_ENV:
-            env[LIVE_LATCH_ENV[family.provider]] = OLLAMA_URL_IN_SANDBOX
+        env = worker_env(family)
         mounts = ["type=tmpfs,dst=/cache/mcp-python-docs,tmpfs-mode=1777"]
         if job.system.id == "python-docs":
             index = "/cache/mcp-python-docs/index.db"
@@ -522,16 +538,14 @@ class ContainerLauncher:
         return {"type": "bootstrap", "env": {name: read_key(keys_file, name)}}
 
     async def prepare(self, jobs: Sequence[WorkerJob]) -> None:
-        probe = self._probe
-        if probe is None:
-            raise BenchmarkValidationError("the container launcher has no isolation probe")
+        """Verify, run the control probe once, then open and probe every job's egress."""
         await self.sandbox.verify(self.sandbox)
+        await self._control(self.sandbox)  # writes probe/control.json
         for job in jobs:
-            egress = await self.sandbox.open_egress(
-                job.job_id, allowlist(job.family, job.system.id)
-            )
+            allow = allowlist(job.family, job.system.id)
+            egress = await self.sandbox.open_egress(job.job_id, allow)
             self._egresses.append(egress)
-            await probe(
+            await self._probe(
                 self.sandbox, egress, job_id=job.job_id, family=job.family, system_id=job.system.id
             )
 

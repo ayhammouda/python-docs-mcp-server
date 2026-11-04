@@ -191,6 +191,11 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "agentic-worker", help="Internal: run one agentic (model, system) job for the host."
     )
+    # Run by the container launcher in a keyless probe container, never by hand.
+    probe = subparsers.add_parser(
+        "agentic-probe", help="Internal: check a sandbox network's isolation from inside it."
+    )
+    probe.add_argument("--spec", required=True, help="The probe's checks, as JSON.")
     return parser
 
 
@@ -203,6 +208,11 @@ def main(argv: list[str] | None = None) -> int:
         from benchmarks.agentic.worker import main_worker
 
         return main_worker()
+
+    if args.command == "agentic-probe":
+        from benchmarks.agentic.probe import probe_main
+
+        return probe_main(["--spec", args.spec])
 
     if args.command == "agentic-run":
         # Lazy, like agentic-worker: only agentic commands load the provider SDKs.
