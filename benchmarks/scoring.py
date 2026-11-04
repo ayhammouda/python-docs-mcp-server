@@ -29,6 +29,13 @@ file and writes those scores back as finalized records -- once a record
 carries ``scoring_method: "human"``, a later :func:`score_run` call always
 skips it (a human verdict is never overwritten by the automatic pass).
 
+Agentic runs (``environment.json`` ``mode: "agentic"``) are never graded by a
+human (design §9.3): the LLM panel grades them. :func:`apply_llm_grades` writes
+the panel's grades with ``scoring_method`` ``"llm_panel"`` or
+``"llm_reference"`` and their provenance, :func:`score_run` never rewrites
+those records, and :func:`ingest_adjudication_verdicts` refuses an agentic run.
+An agentic run's pending cells await LLM grading, not a human.
+
 Grounding: the methodology also asks that an answer which "appears correct
 but lacks evidence from the supplied docs" be flagged and reported
 separately from its score. This module computes a purely structural
@@ -50,6 +57,7 @@ per ``run-summary.json``'s ``correctness_denominator_cells`` /
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -70,6 +78,13 @@ VALID_SCORES = (1.0, 0.5, 0.0)
 #: record already tagged ``SCORING_METHOD_HUMAN``.
 SCORING_METHOD_AUTOMATIC = "automatic"
 SCORING_METHOD_HUMAN = "human"
+#: LLM grades of an agentic run (design §9.1): the panel's majority, or a grade with
+#: at least one field settled by the reference grader.
+SCORING_METHOD_LLM_PANEL = "llm_panel"
+SCORING_METHOD_LLM_REFERENCE = "llm_reference"
+LLM_SCORING_METHODS = frozenset({SCORING_METHOD_LLM_PANEL, SCORING_METHOD_LLM_REFERENCE})
+#: Records score_run never rewrites.
+_FINAL_METHODS = LLM_SCORING_METHODS | {SCORING_METHOD_HUMAN}
 
 _SCORING_REQUIRED_FIELDS = ("competitor_id", "corpus_id", "status")
 _TRANSCRIPT_REQUIRED_FIELDS = ("competitor_id", "corpus_id", "status")
@@ -119,8 +134,9 @@ def score_run(
     :func:`benchmarks.corpus.validate_corpus`). A ``corpus_path`` is only
     accepted when its sha256 matches that snapshot. For each cell:
 
-    - A record already carrying a human verdict (``scoring_method:
-      "human"``) is left untouched.
+    - A record already carrying a human verdict or an LLM grade
+      (``scoring_method`` ``"human"``, ``"llm_panel"`` or ``"llm_reference"``)
+      is left untouched.
     - A failed cell is re-emitted with its existing ``score: 0.0`` (see
       module docstring; this is a passthrough, not a new decision).
     - A succeeded cell with an empty/blank answer is automatically scored
@@ -162,13 +178,14 @@ def score_run(
     automatic_decided = 0
     already_human = 0
     queued = 0
+    agentic = _is_agentic(run_dir)
 
     for key in sorted(scoring_records):
         path, record = scoring_records[key]
         competitor_id, corpus_id = key
 
-        if record.get("scoring_method") == SCORING_METHOD_HUMAN:
-            already_human += 1
+        if record.get("scoring_method") in _FINAL_METHODS:
+            already_human += record.get("scoring_method") == SCORING_METHOD_HUMAN
             finalized.append(record)
             continue
 
@@ -215,7 +232,9 @@ def score_run(
         _write_json(path, pending)
         finalized.append(pending)
         queued += 1
-        queue_entries.append(_build_queue_entry(pending, answer_keys, paths.transcripts_dir))
+        queue_entries.append(
+            _build_queue_entry(pending, answer_keys, paths.transcripts_dir, agentic=agentic)
+        )
 
     _write_json(
         paths.queue_path,
@@ -270,6 +289,11 @@ def ingest_adjudication_verdicts(
     snapshot's ``corpus_sha256``), so both stay consistent with the latest
     finalized records.
     """
+    if _is_agentic(run_dir):
+        raise BenchmarkValidationError(
+            f"{run_dir} is an agentic run: no human grades an agentic run (design §9.3); "
+            "the LLM panel grades its answers"
+        )
     paths = ScoringPaths(run_dir)
     verdicts = _load_verdicts(verdicts_path)
     corpus_snapshot, corpus_sha256 = _run_corpus(run_dir, corpus_path)
@@ -352,6 +376,94 @@ def ingest_adjudication_verdicts(
         "rollups_path": str(paths.rollups_path),
         "rollups": rollups,
     }
+
+
+def apply_llm_grades(
+    run_dir: Path,
+    grades: Mapping[tuple[str, str], Mapping[str, Any]],
+    *,
+    grounded: Mapping[tuple[str, str], bool],
+    corpus_path: Path | None = None,
+    schema_path: Path,
+) -> dict[str, Any]:
+    """Write LLM grades (design §9.1) and grounding (§9.2), then the queue and rollups.
+
+    ``grades`` maps ``(competitor_id, corpus_id)`` to ``{"score", "label", "method",
+    "adjudicator", "grading"}``. Every grade is checked before any file is written: a
+    score outside ``VALID_SCORES``, a method outside ``LLM_SCORING_METHODS``, an unknown
+    cell or a failed cell is refused. ``grounded`` and ``correct_but_ungrounded`` are
+    written on every other scored cell too.
+    """
+    paths = ScoringPaths(run_dir)
+    corpus_snapshot, corpus_sha256 = _run_corpus(run_dir, corpus_path)
+    answer_keys = _load_answer_keys(corpus_snapshot, schema_path)
+    records = _load_cell_dir(paths.scoring_dir, _SCORING_REQUIRED_FIELDS, "scoring")
+    for (competitor_id, corpus_id), grade in grades.items():
+        cell = f"{competitor_id}/{corpus_id}"
+        if (competitor_id, corpus_id) not in records:
+            raise BenchmarkValidationError(f"LLM grade for {cell}: no scoring record")
+        if records[(competitor_id, corpus_id)][1].get("status") == "failed":
+            raise BenchmarkValidationError(f"LLM grade for {cell}: a failed cell stays at 0.0")
+        if grade.get("score") not in VALID_SCORES:
+            raise BenchmarkValidationError(
+                f"LLM grade for {cell} has score {grade.get('score')!r}; "
+                f"must be one of {VALID_SCORES}"
+            )
+        if grade.get("method") not in LLM_SCORING_METHODS:
+            raise BenchmarkValidationError(
+                f"LLM grade for {cell} has scoring_method {grade.get('method')!r}; "
+                f"must be one of {sorted(LLM_SCORING_METHODS)}"
+            )
+
+    now = _utc_now()
+    for key, (path, record) in records.items():
+        if key in grades:
+            grade = grades[key]
+            updated = {
+                **record,
+                "status": "scored",
+                "score": float(grade["score"]),
+                "label": grade.get("label"),
+                "requires_manual_scoring": False,
+                "scoring_method": grade["method"],
+                "adjudicator": grade.get("adjudicator"),
+                "grading": grade.get("grading"),
+                "queued_for_adjudication": False,
+                "scored_at": now,
+            }
+        elif record.get("score") is not None:
+            updated = dict(record)
+        else:
+            continue
+        is_grounded = bool(grounded.get(key, False))
+        updated["grounded"] = is_grounded
+        updated["correct_but_ungrounded"] = updated["score"] > 0.0 and not is_grounded
+        _write_json(path, updated)
+        records[key] = (path, updated)
+
+    finalized = [record for _, record in records.values()]
+    pending = [record for record in finalized if record.get("score") is None]
+    queue_entries = [
+        _build_queue_entry(record, answer_keys, paths.transcripts_dir, agentic=True)
+        for record in pending
+    ]
+    _write_json(
+        paths.queue_path, {"run_dir": str(run_dir), "generated_at": now, "cells": queue_entries}
+    )
+    rollups = _compute_rollups(finalized, answer_keys)
+    rollups["corpus_sha256"] = corpus_sha256
+    _write_json(paths.rollups_path, rollups)
+    return {
+        "run_dir": str(run_dir),
+        "llm_graded_cells": len(grades),
+        "pending_cells": len(pending),
+        "rollups": rollups,
+    }
+
+
+def _is_agentic(run_dir: Path) -> bool:
+    environment = run_dir / "environment.json"
+    return environment.is_file() and _read_json(environment).get("mode") == "agentic"
 
 
 # --- Automatic decision logic -------------------------------------------------
@@ -441,7 +553,11 @@ def _annotate_pending(
 
 
 def _build_queue_entry(
-    record: dict[str, Any], answer_keys: dict[str, CorpusQuestion], transcripts_dir: Path
+    record: dict[str, Any],
+    answer_keys: dict[str, CorpusQuestion],
+    transcripts_dir: Path,
+    *,
+    agentic: bool = False,
 ) -> dict[str, Any]:
     competitor_id = record["competitor_id"]
     corpus_id = record["corpus_id"]
@@ -465,7 +581,11 @@ def _build_queue_entry(
         "citations": question.citations if question is not None else None,
         "expected_properties": question.expected_properties if question is not None else None,
         "ambiguity_notes": question.ambiguity_notes if question is not None else None,
-        "reason": "non_empty_answer_requires_human_correctness_judgment",
+        "reason": (
+            "non_empty_answer_awaits_llm_grading"
+            if agentic
+            else "non_empty_answer_requires_human_correctness_judgment"
+        ),
     }
 
 
@@ -517,6 +637,12 @@ def _rollup_stats(records: list[dict[str, Any]]) -> dict[str, Any]:
         "correct_but_ungrounded_cells": ungrounded,
         "human_scored_cells": human_scored,
         "automatic_scored_cells": automatic_scored,
+        "llm_panel_scored_cells": sum(
+            1 for record in records if record.get("scoring_method") == SCORING_METHOD_LLM_PANEL
+        ),
+        "llm_reference_scored_cells": sum(
+            1 for record in records if record.get("scoring_method") == SCORING_METHOD_LLM_REFERENCE
+        ),
     }
 
 

@@ -901,7 +901,7 @@ class ItemSource:
     def note_paid_no_result(self, unit_id: str) -> None   # the unit's items had a take booked at 2x with no result
     def paid_no_result(self, item_id: str) -> bool
     max_attempts: int
-    def not_run(self) -> list[dict[str, Any]]                  # {item_id, reason, attempts}
+    def not_run(self) -> list[dict[str, Any]]                  # {item_id, reason, attempt} (amendment 3)
 WHOLE_BATCH_FAILURE_LIMIT = 2   # a job's second no-result batch unit stops that job's provider
 
 GRADING_SYSTEM: SystemSpec      # id "grading", transport "none": the provider host is the only egress
@@ -945,7 +945,7 @@ Frame protocol (new frame types only; trajectory jobs are unchanged):
   Each books twice its bound, per the rulings, and each calls `source.note_paid_no_result(unit)`: every counted no-result unit is a paid no-result take for its items, so an item exhausted later, even by $0 submit failures, is terminal. At the job's `WHOLE_BATCH_FAILURE_LIMIT`-th (second) such unit, the host denies every later reserve of that job instead of retrying again. The provider then carries two bookings of twice the bound (4× in all), not three. The remaining and released items go to `not_run` with reason `whole_batch_failures`. Their records, if any, have `terminal: false`, so a later invocation can rerun them after the maintainer looks.
 - **The job frame** always carries `task` and `payload`; a worker reads `job.get("task", "trajectories")`. The host remembers whether its in-flight unit is a batch unit.
 - **A lost worker** (it dies or stalls) gets its in-flight unit settled `worker_lost` by the existing teardown. Then `source.lose(unit, "worker_lost")` moves that unit's taken items and every pending item to `not_run`. A rerun picks them up (Task 8).
-- **When a job ends**, the host sends `on_message(job, {"type": "item_not_run", "item_id", "reason", "attempt"})` for every `source.not_run()` entry. `attempt` is the item's take count in this invocation (`source.attempts(item)`), and the collector persists it in `runs/<grading_run_id>.json` `not_run[]`, with the target, judge, effort and pass, so takes that left no vote file still count. The reason is one of `retries_exhausted`, `batch_failed`, `submit_rejected`, `budget_stop` (a deny), `whole_batch_failures` or `worker_lost`.
+- **When a job ends**, the host sends `on_message(job, {"type": "item_not_run", "item_id", "reason", "attempt"})` for every `source.not_run()` entry. `attempt` is the item's take count in this invocation (`source.attempts(item)`), and the collector persists it in `runs/<grading_run_id>.json` `not_run[]` as `{item_id, reason, attempt, target, judge_id, effort, pass}` (one field name, `attempt`, everywhere: #199 amendment 3), so takes that left no vote file still count. The reason is one of `retries_exhausted`, `batch_failed`, `submit_rejected`, `budget_stop` (a deny), `whole_batch_failures` or `worker_lost`.
 - **No bootstrap, no live task.** The task dispatch sits after PR 4's bootstrap refusal in `_run_job` (#200 Task 5). A live batch or count job without its bootstrap frame is therefore refused before any client is built.
 - **Worker.** `_run_job` dispatches on `job.get("task", "trajectories")`: `batches` imports `run_batch_task` after `protect_output`; `items` is added by Task 9. `run_batch_task`:
   1. builds the client from `job["family"]` and `job["payload"]["effort"]`;
@@ -1673,7 +1673,7 @@ Rules the tests pin:
 - **Planning.**
   - Item ids come from `safe_id`; for answers, `safe_id(competitor_id, corpus_id)`.
   - Each item's `PlannedItem`: `input_bound = len((system + user + json.dumps(schema)).encode()) + 2 * framing`, `output_bound = max_output_tokens`, `size_bytes` = the request's UTF-8 size. Bounds are priced at the standard rate (ruling 8).
-  - Before any job starts, each item's input is written to `items/<target>/<item_id>.json`: `system_sha256`, the full `user` text, `schema_sha256` and `meta`. The full user text is kept because it is the exact bytes the judge received; the disclosure (design §11.3) needs them to show what was graded.
+  - Before any job starts, each item's input is written to `items/<target>/<item_id>.json`: `system_sha256`, the full `user` text, `schema_sha256` and `meta`. The full user text is kept because it is the exact bytes the judge received; the disclosure (design §11.3) needs them to show what was graded. For `answers`, `meta` holds `competitor_id`, `corpus_id` and `suspect`, which Task 6's `load_answer_votes` reads.
   - The first invocation in a run directory calls `snapshot_inputs` into `grading/inputs/`. A later invocation whose manifest differs is refused, so every vote of a directory comes from the same frozen inputs.
   - `plan_grading` returns, per judge, the item count, the items skipped as finished, the batches `split_batch` makes at the provider's margin, and the total reservation bound. It also returns the total bound per provider and overall.
 - **Before the ledger opens:**
