@@ -758,10 +758,102 @@ async def test_no_descendant_can_write_a_key_into_the_published_log(
     assert log.read_text() == "worker: started\n"
 
 
-class _Exited:
-    """A worker that has exited but is not yet reaped: its group holds only a zombie."""
+@pytest.fixture
+def spawned(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """Every process the host spawns, in order."""
+    real = asyncio.create_subprocess_exec
+    processes: list[Any] = []
 
-    returncode = None
+    async def spy(*args: Any, **kwargs: Any) -> Any:
+        process = await real(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(agentic_host.asyncio, "create_subprocess_exec", spy)
+    return processes
+
+
+async def test_teardown_kills_the_anchors_live_group_after_the_worker_is_reaped(
+    host: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spawned: list[Any]
+) -> None:
+    # Codex's case: an escaped descendant holds the host's pipe, so the host reads on after
+    # the worker exited and was reaped. The group it then kills must still be the anchor's.
+    signals = tmp_path / "signals"
+    signals.mkdir()
+    holder = (
+        "import os, sys, time\n"
+        "from pathlib import Path\n"
+        "signals = Path(sys.argv[1])\n"
+        "os.setsid()\n"
+        "(signals / 'escaped').touch()\n"
+        "deadline = time.monotonic() + 10\n"
+        "while not (signals / 'done').exists() and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
+    )
+    code = (
+        "import os, subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        "sys.stdin.buffer.read(int.from_bytes(sys.stdin.buffer.read(8), 'big'))\n"
+        f"signals = Path({str(signals)!r})\n"
+        "(signals / 'worker').write_text(f'{os.getpid()} {os.getpgid(0)}')\n"
+        "quiet = {'stdin': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL}  # keeps fd 1\n"
+        f"subprocess.Popen([sys.executable, '-c', {holder!r}, str(signals)], **quiet)\n"
+        "deadline = time.monotonic() + 10\n"
+        "while not (signals / 'escaped').exists():\n"
+        "    if time.monotonic() > deadline:\n"
+        "        sys.exit('worker: the holder never left the group')\n"
+        "    time.sleep(0.01)\n"
+        "sys.exit(1)\n"
+    )
+    real_killpg, calls = os.killpg, []
+
+    def killpg(pgid: int, sig: int) -> None:
+        worker_pid = int((signals / "worker").read_text().split()[0])
+        calls.append((pgid, _alive(pgid), _alive(worker_pid)))
+        # Never a group this test did not see the host create and not yet reap.
+        if len(spawned) == 2 and pgid == spawned[0].pid and spawned[0].returncode is None:
+            real_killpg(pgid, sig)
+
+    monkeypatch.setattr(os, "killpg", killpg)
+    monkeypatch.setattr(agentic_host, "_EXIT_WAIT_S", 0.5)  # the held pipe delays wait()
+    job = replace(_job(tmp_path, [ANSWER]), caps=Caps(trajectory_s=0.2, model_call_timeout_s=0.3))
+    try:
+        await host.run([job], launcher=KeyedLauncher(code, key=""))
+    finally:
+        (signals / "done").touch()
+    ((pgid, group_alive, worker_alive),) = calls
+    assert (group_alive, worker_alive) == (True, False), "a live group; the worker reaped"
+    anchor, worker = spawned
+    assert pgid == anchor.pid and (signals / "worker").read_text() == f"{worker.pid} {pgid}"
+    assert anchor.returncode == -signal.SIGKILL and worker.returncode is not None
+
+
+async def test_no_anchor_outlives_its_job(
+    host: Host, tmp_path: Path, spawned: list[Any]
+) -> None:
+    await host.run([_job(tmp_path, [ANSWER])])
+    assert len(spawned) == 2 and all(p.returncode is not None for p in spawned)
+
+
+class _Missing(LocalLauncher):
+    def command(self, job: WorkerJob) -> tuple[list[str], dict[str, str]]:
+        return [str(Path(job.family.raw["script"]).parent / "missing-worker")], {}
+
+
+async def test_no_anchor_outlives_a_worker_that_never_started(
+    host: Host, tmp_path: Path, spawned: list[Any]
+) -> None:
+    with pytest.raises(FileNotFoundError):
+        await host.run([_job(tmp_path, [ANSWER])], launcher=_Missing())
+    assert len(spawned) == 1 and spawned[0].returncode is not None
+
+
+class _Exited:
+    """A worker or anchor that has exited: wait() returns at once.
+
+    Its pid is always a throwaway process the test created, never 0 (os.killpg(0) is the
+    caller's own group), so nothing else can be signalled through it, even by a bug.
+    """
 
     def __init__(self, pid: int) -> None:
         self.pid = pid
@@ -770,33 +862,23 @@ class _Exited:
         return 0
 
 
-async def test_teardown_of_an_exited_worker_not_yet_reaped(host: Host, tmp_path: Path) -> None:
-    # macOS answers a group kill with EPERM when the group holds only a zombie.
+async def test_teardown_of_an_anchor_that_died_early(host: Host, tmp_path: Path) -> None:
+    # Its group holds only a zombie, and macOS answers a group kill with EPERM.
     zombie = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
     os.waitid(os.P_PID, zombie.pid, os.WEXITED | os.WNOWAIT)  # exited, left unreaped
     try:
         log = tmp_path / "exited.stderr.log"
         log.write_text("worker: done\n", encoding="utf-8")
         service = host.service(_job(tmp_path, [ANSWER]).family)
-        pattern = await agentic_host._teardown(_Exited(zombie.pid), log, service, None)  # type: ignore[arg-type]
+        worker = anchor = _Exited(zombie.pid)
+        pattern = await agentic_host._teardown(worker, anchor, log, service, None)  # type: ignore[arg-type]
         assert pattern is None and log.read_text() == "worker: done\n"
     finally:
         zombie.wait()
 
 
-class _Unending:
-    """A worker whose wait() never returns, as if it survived its kill.
-
-    Its pid leads a real process group of its own, so the group kill hits only that group.
-    """
-
-    returncode = None
-
-    def __init__(self, pid: int) -> None:
-        self.pid = pid
-
-    def kill(self) -> None:
-        pass
+class _Unending(_Exited):
+    """A worker whose wait() never returns, as if it survived its kill."""
 
     async def wait(self) -> int:
         await asyncio.Event().wait()
@@ -818,7 +900,8 @@ async def test_a_worker_that_never_exits_cannot_hang_its_teardown(
     log = tmp_path / "never-exits.stderr.log"
     log.write_text("debug: sk-ant-api03-" + "z" * 90 + "\n", encoding="utf-8")
     async with asyncio.timeout(5):  # the bound under test is 0.1 s
-        pattern = await agentic_host._teardown(_Unending(group.pid), log, service, unit)  # type: ignore[arg-type]
+        worker, anchor = _Unending(group.pid), _Exited(group.pid)
+        pattern = await agentic_host._teardown(worker, anchor, log, service, unit)  # type: ignore[arg-type]
     assert group.wait(timeout=5) == -signal.SIGKILL
     assert pattern is not None and log.read_text() == "debug: [redacted]\n"
     settles = [e for e in host.ledger.events("host-test") if e["event"] == "settle"]
@@ -850,7 +933,8 @@ async def test_a_failed_log_publish_still_settles_and_leaves_no_key(
     log.write_text("debug: sk-ant-api03-" + "z" * 90 + "\n", encoding="utf-8")
     try:
         with pytest.raises(OSError, match="No space left"):
-            await agentic_host._teardown(_Exited(group.pid), log, service, unit)  # type: ignore[arg-type]
+            worker = anchor = _Exited(group.pid)
+            await agentic_host._teardown(worker, anchor, log, service, unit)  # type: ignore[arg-type]
     finally:
         group.wait(timeout=5)
     settles = [e for e in host.ledger.events("host-test") if e["event"] == "settle"]

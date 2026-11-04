@@ -40,6 +40,9 @@ from benchmarks.runner import BenchmarkValidationError
 _LOCAL_ENV = ("PATH", "HOME", "LANG", "TMPDIR", "XDG_CACHE_HOME", "VIRTUAL_ENV")
 #: How long teardown waits for a killed worker to exit before it scrubs and settles anyway.
 _EXIT_WAIT_S = 30.0
+#: Leads each worker's process group and lives until teardown, so the group id that teardown
+#: kills is never reused meanwhile, even once the worker itself has exited and been reaped.
+_ANCHOR = (sys.executable, "-c", "import signal; signal.pause()")
 
 
 @dataclass(frozen=True)
@@ -84,18 +87,24 @@ def refuse_host_keys(environ: Mapping[str, str]) -> None:
 
 
 async def _teardown(
-    proc: asyncio.subprocess.Process, log_path: Path, ledger: LedgerService, in_flight: str | None
+    proc: asyncio.subprocess.Process,
+    anchor: asyncio.subprocess.Process,
+    log_path: Path,
+    ledger: LedgerService,
+    in_flight: str | None,
 ) -> str | None:
-    """Kill the worker, scrub its log and book its open unit; the log's key pattern, if any."""
+    """Kill the worker's group, scrub its log and book its open unit; the log's key pattern."""
     try:
-        # The whole group, even after the worker exited: no descendant outlives it to write.
+        # The anchor's whole group, even after the worker exited: no descendant outlives it to
+        # write. The anchor is alive until here, so the group id is still this job's.
         # shortcut: reaches only this host's process tree; PR 4's container launcher must give
-        # the same guarantee, which removing the container does.
-        # ESRCH: the group is gone. EPERM: macOS's answer for a group that holds only zombies.
+        # the same guarantee, which removing the container does, and signal only what it holds.
+        # ESRCH or EPERM (macOS, a group of zombies): the anchor died early, and its group too.
         with suppress(ProcessLookupError, PermissionError):
-            os.killpg(proc.pid, signal.SIGKILL)
-        with suppress(TimeoutError):  # a worker that never exits cannot hang the run
-            await asyncio.wait_for(proc.wait(), _EXIT_WAIT_S)
+            os.killpg(anchor.pid, signal.SIGKILL)
+        for process in (proc, anchor):  # reaped, so neither pid is signalled again
+            with suppress(TimeoutError):  # a process that never exits cannot hang the run
+                await asyncio.wait_for(process.wait(), _EXIT_WAIT_S)
         return _publish_scrubbed(log_path)
     finally:  # whatever happened to the log
         if in_flight is not None:  # may have been billed: booked at twice its bound
@@ -133,16 +142,29 @@ async def _supervise(
 ) -> None:
     argv, env = launcher.command(job)
     log_path = log_dir / f"{job.job_id}.stderr.log"
-    with log_path.open("wb") as log:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            env=env,
-            cwd=cwd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=log,
-            start_new_session=True,  # its own process group, which teardown kills whole
-        )
+    # A group of its own in this session: the worker cannot join a group of another session.
+    anchor = await asyncio.create_subprocess_exec(
+        *_ANCHOR,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+        process_group=0,
+    )
+    try:
+        with log_path.open("wb") as log:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                env=env,
+                cwd=cwd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=log,
+                process_group=anchor.pid,  # the anchor's group, which teardown kills whole
+            )
+    except BaseException:
+        anchor.kill()
+        await anchor.wait()
+        raise
     assert proc.stdin is not None and proc.stdout is not None
     in_flight: str | None = None
     reported: set[tuple[str, int]] = set()
@@ -232,7 +254,7 @@ async def _supervise(
             pass  # the worker died or stalled; handled as a lost worker below
     finally:
         # Runs to its end even when a second abort cancels this task meanwhile; then re-raise.
-        teardown = asyncio.ensure_future(_teardown(proc, log_path, ledger, in_flight))
+        teardown = asyncio.ensure_future(_teardown(proc, anchor, log_path, ledger, in_flight))
         cancelled: asyncio.CancelledError | None = None
         while not teardown.done():
             try:
