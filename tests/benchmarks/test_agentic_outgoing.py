@@ -452,3 +452,35 @@ def test_cli_worker_withholds_transcript_and_never_reserves_again(
     ]
     assert sum(e["event"] == "reserve" for e in events) == 1
     assert sum(e["event"] == "settle" for e in events) == 1
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai", "google", "ollama"])
+async def test_provider_refuses_key_in_tool_arguments(provider: str) -> None:
+    key = "AIza" + "g" * 35
+    args = {"query": "https://docs.python.org/3/?token=" + key}
+    if provider == "anthropic":
+        block = {"type": "tool_use", "id": "id", "name": "search_docs", "input": args}
+        client = _anthropic(Recorder(_ok({**ANTHROPIC_TOOL_TURN, "content": [block]})))
+    elif provider == "openai":
+        response = _openai_response([{**OPENAI_CALL, "arguments": json.dumps(args)}])
+        client = _openai(Recorder(_ok(response)))
+    elif provider == "google":
+        response = _gemini_response([{"functionCall": {"name": "search_docs", "args": args}}])
+        client = _gemini(GeminiRecorder(_gemini_ok(response)))
+    else:
+        calls = [_tool_call("search_docs", json.dumps(args), "id")]
+        response = _chat_completion({"role": "assistant", "tool_calls": calls}, "tool_calls")
+        client = _ollama(Recorder(_ok(response)))
+    ledger, bridge = RecordingLedger(), FakeBridge()
+    try:
+        # The normal loop must settle known response usage before rejecting content,
+        # and reject the entire turn before dispatching any MCP call.
+        with pytest.raises(KeyLeakError) as caught:
+            await _run(client, bridge, ledger)
+        assert key not in str(caught.value)
+        assert bridge.calls == []
+        assert len(ledger.reserves) == len(ledger.settles) == 1
+        assert ledger.settles[0]["outcome"] == "ok"
+        assert ledger.settles[0]["buckets"] is not None
+    finally:
+        await _close(client)
