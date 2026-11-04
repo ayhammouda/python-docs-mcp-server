@@ -154,7 +154,7 @@ the spec implies and no other task pins.
 5. **The proxy log loses lines or gains a stale prefix.** Tests:
    - Task 9 `test_squid_conf_matches_the_template` (file log, no rotation);
    - Task 12 `test_a_truncated_or_reprefixed_log_invalidates_the_evidence` and `test_a_missing_log_invalidates_the_evidence`.
-6. **A false clean summary.** Log collection failed, the proxy ended abnormally (exit 137, OOM), or a hosted job billed `ok` calls but its log shows no provider host, including a job whose worker died before reporting the trajectory. Tests:
+6. **A false clean summary.** Log collection failed; the proxy ended abnormally (exit 137 or OOM before our stop, or any non-zero exit after it, the forced kill of a hung Squid included); or a hosted job billed `ok` calls but its log shows no provider host, including a job whose worker died before reporting the trajectory. Tests:
    - Task 10 `test_an_abnormal_proxy_exit_fails_the_collection`;
    - Task 12 `test_no_false_clean_when_collection_failed_or_the_provider_never_appears`, `test_an_ok_settle_from_a_worker_that_died_early_fails_the_evidence` and `test_an_unattributed_ok_settle_fails_the_evidence`.
 7. **A denied attempt counted as an internet host.** Test: Task 15 `test_a_denied_pypi_attempt_keeps_all_passed_true`.
@@ -530,7 +530,7 @@ at the seam (Global Constraints, "Shared files with PR 5").
 - Modify: `benchmarks/agentic/host.py` (`Launcher`, `LocalLauncher`, `_supervise`, `_teardown`, `run_jobs`; rewrite both `shortcut:` comments)
 - Modify: `benchmarks/agentic/worker.py` (`BOOTSTRAP`, `apply_bootstrap`, `main_worker`, `_serve`, `run_worker`, `_run_job`)
 - Modify: `benchmarks/agentic/ledger.py` (`Ledger.reserve`, `LedgerService.reserve`: a defaulted `job_id`)
-- Test: `tests/benchmarks/test_agentic_host.py`, `tests/benchmarks/test_agentic_ledger.py`
+- Test: `tests/benchmarks/test_agentic_host.py`, `tests/benchmarks/test_agentic_ledger.py`, `tests/benchmarks/test_agentic_run.py`
 
 **Interfaces:**
 - Produces: `protocol.read_frame_fd(fd: int, *, limit: int = MAX_FRAME_BYTES) -> dict[str, Any] | None`. It reads exactly one frame with unbuffered `os.read`, so no byte of the next frame is consumed. It returns `None` at EOF.
@@ -599,14 +599,19 @@ async def test_a_failing_stop_worker_still_scrubs_the_log_and_settles_the_unit(t
     # stop_worker raises; the worker log held a key shape: the published log holds "[redacted]" (or is
     # removed), the unit is booked at twice its bound, and the stop_worker error propagates
 async def test_close_problems_fail_a_clean_run(tmp_path) -> None
-async def test_every_reserve_event_names_its_job(tmp_path) -> None
-    # a scripted two-job run: every "reserve" event in ledger-events.jsonl has job_id equal to the
-    # job that reserved it; Ledger.reserve without job_id still writes job_id None (old callers)
+# tests/benchmarks/test_agentic_run.py (ledger-events.jsonl is written only by write_outcome)
+def test_every_reserve_event_names_its_job(tmp_path) -> None
+    # a scripted two-job run_agentic: every "reserve" event in the run's ledger-events.jsonl has job_id
+    # equal to the job that reserved it
+# tests/benchmarks/test_agentic_ledger.py
+def test_reserve_events_without_job_id_still_load(tmp_path) -> None
+    # Ledger.reserve without job_id writes job_id None; and a <provider>.jsonl whose reserve lines lack
+    # the job_id key entirely (the pre-PR-4 format) loads with the same spent() and stops
 ```
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `uv run --locked pytest tests/benchmarks/test_agentic_host.py -k "prepare or bootstrap or stop_worker or close_problems or environ_is_unchanged" -q`
+Run: `uv run --locked pytest tests/benchmarks/test_agentic_host.py tests/benchmarks/test_agentic_ledger.py tests/benchmarks/test_agentic_run.py -k "prepare or bootstrap or stop_worker or close_problems or environ_is_unchanged or job_id or names_its_job" -q`
 Expected: FAIL (`AttributeError: prepare`, no `apply_bootstrap`).
 
 - [ ] **Step 3: Implement the interfaces above**
@@ -619,7 +624,7 @@ Expected: PASS, with every existing teardown and anchor test unchanged.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add benchmarks/agentic/protocol.py benchmarks/agentic/host.py benchmarks/agentic/worker.py benchmarks/agentic/ledger.py tests/benchmarks/test_agentic_host.py tests/benchmarks/test_agentic_ledger.py
+git add benchmarks/agentic/protocol.py benchmarks/agentic/host.py benchmarks/agentic/worker.py benchmarks/agentic/ledger.py tests/benchmarks/test_agentic_host.py tests/benchmarks/test_agentic_ledger.py tests/benchmarks/test_agentic_run.py
 git commit -m "feat(benchmarks): launcher seam with a stdin key bootstrap, prepare, stop-worker and close"
 ```
 
@@ -907,25 +912,26 @@ git commit -m "feat(benchmarks): Squid config with lookup-free allowlists and a 
   - `cli_env(environ: Mapping[str, str]) -> dict[str, str]`: the docker CLI allowlist in Global Constraints. It never holds a key.
   - `@dataclass(frozen=True) class SandboxConfig: image: str; run_id: str; out_dir: Path; index_path: Path; keys_file: Path | None; repo_commit: str`. `__post_init__` refuses an `image` that does not match `^sha256:[0-9a-f]{64}$`.
   - `@dataclass(frozen=True) class Egress: job_id: str; network: str; proxy: str; allow: tuple[tuple[str, int], ...]; log_dir: Path; gateways: tuple[str, ...]; inspect: dict[str, Any]`.
-  - `class Sandbox(config, docker: DockerRun | None = None)`:
-    - `async verify_image() -> dict[str, str]`. All of these must hold, checked before any container starts:
-      - `docker context inspect --format '{{.Endpoints.docker.Host}}'` (the active context) gives an endpoint starting `unix://`, and `DOCKER_HOST`, when set in `cli_env`, also starts `unix://` (round-3 item 4);
-      - `docker image inspect` gives `Id == config.image` and the label `org.opencontainers.image.revision == config.repo_commit`;
-      - `docker version` gives a server version ≥ `MIN_ENGINE`;
-      - `git status --porcelain` is empty (the only dirty-tree check; `run.sh` has none).
-      It writes `out_dir/sandbox.json` (image, revision, proxy image, engine version, docker context and endpoint).
+  - `VerifyFn = Callable[[Sandbox], Awaitable[dict[str, str]]]`.
+  - `async verify_image(sandbox: Sandbox, *, repo_root: Path = REPO_ROOT) -> dict[str, str]`, the real check, as a module function (`REPO_ROOT` is the checkout root, computed like `run._REPO_ROOT`). All of these must hold, checked before any container starts:
+    - `docker context inspect --format '{{.Endpoints.docker.Host}}'` (the active context) gives an endpoint starting `unix://`, and `DOCKER_HOST`, when set in `cli_env`, also starts `unix://` (round-3 item 4);
+    - `docker image inspect` gives `Id == config.image` and the label `org.opencontainers.image.revision == config.repo_commit`;
+    - `docker version` gives a server version ≥ `MIN_ENGINE`;
+    - `git -C <repo_root> status --porcelain` is empty (the only dirty-tree check; `run.sh` has none).
+    It writes `out_dir/sandbox.json` (image, revision, proxy image, engine version, docker context and endpoint).
+  - `class Sandbox(config, docker: DockerRun | None = None, verify: VerifyFn = verify_image)`. `verify` is the test seam (round-4 item 2): production keeps the real check, and tests that only need to reach `prepare` pass a stub, so they work on a dirty checkout. PR 5's tests use the same seam.
     - `async open_egress(job_id: str, allow) -> Egress`:
       1. Create the outside network once per run.
       2. Create the internal network with `docker network create --internal --ipv6=false -o com.docker.network.bridge.gateway_mode_ipv4=isolated --label ...`.
-      3. Run `docker network inspect`. If `EnableIPv6` is still true, raise `BenchmarkValidationError` naming the network (round-3 item 8; no IPv6 fallback). Keep every `IPAM.Config[].Gateway` and the inspect output in the `Egress`.
-      4. Create `log_dir = out_dir/egress/<job_id>/` with `mkdir(parents=True)`, then `log_dir.chmod(0o777)`, because `mkdir(mode=...)` is cut by the umask and Squid's uid differs from the host user's (round-3 item 3). Write `squid.conf` into it.
+      3. Run `docker network inspect`. If `EnableIPv6` is still true, run `docker network rm <internal>` and then raise `BenchmarkValidationError` naming the network (round-3 item 8, round-4 item 3: no IPv6 fallback and no orphan network). Keep every `IPAM.Config[].Gateway` and the inspect output in the `Egress`.
+      4. Create `log_dir = out_dir/egress/<job_id>/` with `mkdir(parents=True)`, then `log_dir.chmod(0o777)`, because `mkdir(mode=...)` is cut by the umask and Squid's uid differs from the host user's (round-3 item 3). Write `squid.conf` into it, then `chmod(0o644)` it, so Squid running as `proxy` can read it under umask 077 (round-4 item 4).
       5. Start the proxy: `docker run -d --pull never --name <proxy> --label RUN_LABEL=<run_id> --network <outside> --read-only --tmpfs /run --tmpfs /var/spool/squid --cap-drop ALL --security-opt no-new-privileges --user proxy --memory 256m --cpus 0.5 --entrypoint /usr/sbin/squid --mount type=bind,src=<log_dir>/squid.conf,dst=/etc/squid/squid.conf,readonly --mount type=bind,src=<log_dir>,dst=/var/log/squid-bench SQUID_IMAGE -N -f /etc/squid/squid.conf`.
       6. Run `docker network connect --alias egress <internal> <proxy>`.
     - `container_argv(*, name: str, network: str, env: Mapping[str, str], mounts: Sequence[str], argv: Sequence[str], interactive: bool = True) -> list[str]`: the full `docker run` argv with the Global Constraints hardening, `--log-driver none` included (`-i` only when `interactive`). `env` becomes `-e NAME=VALUE` and each mount a `--mount`, then the image ID, then `argv`. It has no key parameter.
     - `async close_egress(egress: Egress) -> list[str]`:
       1. `docker inspect --format '{{json .State}}' <proxy>`, before our stop (round-3 item 1). The proxy ended abnormally when it is no longer `Running` (it ended on its own, for example exit 137 from a kill or an OOM) or `OOMKilled` is true.
       2. `docker stop -t 5 <proxy>`. Squid closes its log within `shutdown_lifetime`, and the access log is already on the host.
-      3. Inspect `State` again: `OOMKilled` true is abnormal too. A non-zero exit caused by our own stop is not abnormal by itself; a truncated log still fails Task 12's checks.
+      3. Inspect `State` again. It must show `ExitCode == 0` and `OOMKilled` false (round-4 item 1). A healthy Squid exits 0 within `shutdown_lifetime 1 seconds`, well inside `-t 5` (sandbox note §C, from the Squid 6.6 source). Any non-zero exit after our stop is abnormal, including 137 from `docker stop`'s forced kill of a hung Squid, because the log may then be partial even when it is well formed.
       4. Check the key shape of `access.log` and `cache.log` with `redact_key_shaped`, rewriting a file in place when a pattern is found.
       5. `docker rm -f <proxy>`, then `docker network rm <internal>`.
       6. Write `egress/<job_id>/collected.json` as `{"ok": bool, "problems": [...], "state_before_stop": {...}, "state_after_stop": {...}}`. `ok` is false after any failed step or an abnormal end.
@@ -937,7 +943,7 @@ git commit -m "feat(benchmarks): Squid config with lookup-free allowlists and a 
       - Worker env: `HOME=/tmp`, `XDG_CACHE_HOME=/cache`, `PYTHON_DOCS_MCP_DISABLE_AUTO_INDEX=1`, `BENCHMARK_EGRESS_URL=EGRESS_URL`. A live family adds `BENCHMARK_LIVE_PROVIDERS_ENABLED=1`; Ollama adds `OLLAMA_BASE_URL=http://host.docker.internal:11434/v1`.
       - Mounts: tmpfs `/cache/mcp-python-docs` (`tmpfs-mode=1777`). A `python-docs` job adds `index_path` read-only at `/cache/mcp-python-docs/index.db`. A scripted family adds its script read-only at its own absolute path.
     - `bootstrap_frame(job)`: `None` for a scripted family. For every live family it returns `{"type": "bootstrap", "env": {...}}`. For a metered family `env` is `{name: read_key(keys_file, name)}` with `name = PROVIDER_API_KEY_ENV[family.provider]`; for Ollama it is `{}`. A missing `keys_file` refuses.
-    - `async prepare(jobs)`: `verify_image()`, then for every job `open_egress(job_id, allowlist(job.family, job.system.id))` and `probe(...)`. It raises on the first failure. Task 11 adds the run's control probe before the per-job probes.
+    - `async prepare(jobs)`: `await sandbox.verify(sandbox)`, then for every job `open_egress(job_id, allowlist(job.family, job.system.id))` and `probe(...)`. It raises on the first failure. Task 11 adds the run's control probe before the per-job probes.
     - `async stop_worker(job)`: `docker rm -f pdmcp-<run_id>-<job_id>`. It ignores "No such container" only.
     - `async close()`: `close_egress` for every egress it opened, then `docker network rm` of the outside network. It returns problems and raises `KeyLeakError` last.
 
@@ -967,14 +973,18 @@ def test_a_live_family_without_a_keys_file_is_refused(tmp_path) -> None
 async def test_internal_networks_are_ipv4_only_with_an_isolated_gateway(tmp_path) -> None
     # "network create --internal --ipv6=false -o com.docker.network.bridge.gateway_mode_ipv4=isolated";
     # Egress.gateways == every IPAM Config Gateway; a FakeDocker inspect with EnableIPv6 still true ->
-    # BenchmarkValidationError, and no proxy or worker run follows
+    # "docker network rm <internal>" is recorded, then BenchmarkValidationError; no proxy or worker run follows
 async def test_prepare_builds_one_network_and_proxy_per_job_with_a_file_log(tmp_path, monkeypatch) -> None
-    # one outside network; per job one squid run with the conf and the log dir bind-mounted, and one
-    # "network connect --alias egress"; egress/<job>/squid.conf == squid_conf(allowlist(...)); probe per job;
-    # with os.umask(0o077) in force, egress/<job>/ is still mode 0o777
+    # verify stubbed; one outside network; per job one squid run with the conf and the log dir
+    # bind-mounted, and one "network connect --alias egress"; egress/<job>/squid.conf ==
+    # squid_conf(allowlist(...)); probe per job; with os.umask(0o077) in force, egress/<job>/ is still
+    # mode 0o777 and egress/<job>/squid.conf is mode 0o644
+# The verify_image tests call the real check with FakeDocker and repo_root = a clean `git init` repo in tmp_path.
 async def test_prepare_refuses_a_daemon_that_is_not_local(tmp_path, monkeypatch) -> None
     # FakeDocker context endpoint "tcp://10.0.0.5:2376" -> refused; DOCKER_HOST=tcp://... with a unix
     # context -> refused; in both, FakeDocker recorded no "run" and no "network create"
+async def test_the_real_check_refuses_a_dirty_tree(tmp_path) -> None
+    # repo_root = a `git init` repo in tmp_path with one untracked file -> refused, naming the dirty tree
 async def test_prepare_refuses_an_image_from_another_commit(tmp_path) -> None
 async def test_prepare_refuses_an_engine_older_than_28(tmp_path) -> None
 def test_sandbox_config_refuses_a_tag(tmp_path) -> None                       # "python-docs:latest"
@@ -983,12 +993,16 @@ async def test_stop_worker_removes_only_its_own_container(tmp_path) -> None
 async def test_close_stops_each_proxy_then_removes_what_it_created(tmp_path) -> None
     # per egress in order: inspect, stop, inspect, rm -f, network rm; collected.json ok true with no
     # problems; then the outside network
-@pytest.mark.parametrize("state", [{"Running": False, "ExitCode": 137, "OOMKilled": False},
-                                   {"Running": True, "ExitCode": 0, "OOMKilled": True}])
-async def test_an_abnormal_proxy_exit_fails_the_collection(tmp_path, state) -> None
-    # every cleanup command succeeds and the access log is well formed but partial; the pre-stop
-    # inspect returns `state` -> collected.json ok false naming the exit code or OOMKilled; Task 12's
-    # summary over this run dir says isolation_probe "fail"
+@pytest.mark.parametrize("before,after", [
+    ({"Running": False, "ExitCode": 137, "OOMKilled": False}, {"Running": False, "ExitCode": 137, "OOMKilled": False}),
+    ({"Running": True, "ExitCode": 0, "OOMKilled": True}, {"Running": False, "ExitCode": 0, "OOMKilled": True}),
+    ({"Running": True, "ExitCode": 0, "OOMKilled": False}, {"Running": False, "ExitCode": 137, "OOMKilled": False}),
+])
+async def test_an_abnormal_proxy_exit_fails_the_collection(tmp_path, before, after) -> None
+    # every cleanup command succeeds; the access log is well formed but partial (the probe prefix, an
+    # earlier api.anthropic.com line, a final newline); the inspects return `before` and `after` ->
+    # collected.json ok false, naming the exit code or OOMKilled. The third case is the forced kill
+    # after our own stop (round-4 item 1).
 async def test_close_redacts_a_key_shaped_proxy_log_and_raises_after_cleanup(tmp_path) -> None
 async def test_close_keeps_going_after_a_failed_step(tmp_path) -> None       # collected.json ok false
 def test_container_launcher_supports_scripted_and_every_live_api() -> None
@@ -1003,6 +1017,8 @@ Expected: FAIL (module missing).
 
 It must not import a provider SDK, because `run.sh` imports `SQUID_IMAGE`
 from it. Tests pass a stub `probe`; Task 11 supplies the real default.
+Every test that reaches `prepare`, in this task and in Tasks 11–13, also
+passes a stub `verify`. Only the `verify_image` tests run the real check.
 
 - [ ] **Step 4: Run the tests**
 
@@ -1167,7 +1183,9 @@ def test_a_truncated_or_reprefixed_log_invalidates_the_evidence(tmp_path) -> Non
     # an unterminated last line -> "fail"; a log whose first lines differ from proxy_prefix -> "fail"
 def test_a_missing_log_invalidates_the_evidence(tmp_path) -> None
 def test_no_false_clean_when_collection_failed_or_the_provider_never_appears(tmp_path) -> None
-    # FakeDocker-built run dirs: (a) collected.json ok false -> "fail"; (b) a hosted job whose reserve
+    # FakeDocker-built run dirs: (a) collected.json ok false from a forced kill after our stop
+    # (state_after_stop ExitCode 137, OOMKilled false) with a well-formed partial log (probe prefix, an
+    # earlier api.anthropic.com line, a final newline) -> "fail"; (b) a hosted job whose reserve
     # (job_id set) has an "ok" settle but whose log shows no api.anthropic.com line -> "fail"
 def test_an_ok_settle_from_a_worker_that_died_early_fails_the_evidence(tmp_path) -> None
     # ledger events: reserve {job_id: "claude-sonnet-5-5--python-docs"} + settle ok; no transcript or
@@ -1657,5 +1675,12 @@ From #200 (round 1), as amended by the round-2 message on #200:
     - workers run with `--log-driver none` (Task 10);
     - a network that keeps IPv6 is refused, with no fallback (Task 10);
     - sandbox note §§B.2 and B.3 are corrected.
+15. **Round 4 (reviews of `32bbb17`):**
+    - after our stop the proxy must show `ExitCode == 0`, so a forced kill of a hung Squid (137) fails the collection; the Squid 6.6 source shows a graceful SIGTERM exits 0 (Task 10, sandbox note §C);
+    - `Sandbox` takes an injectable `verify`, with the real `verify_image` as its default, and a test proves the real check refuses a dirty tree (Task 10);
+    - the IPv6 refusal removes its network first (Task 10);
+    - `squid.conf` is set to mode 0o644 (Task 10);
+    - Task 10's abnormal-exit test asserts `collected.json` only; Task 12 owns the summary verdict;
+    - the reserve-event test reads the run's `ledger-events.jsonl` in `test_agentic_run.py`, and old `<provider>.jsonl` lines without `job_id` still load (Task 5).
 
 No open question remains for this plan.

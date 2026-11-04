@@ -132,6 +132,16 @@ https://www.squid-cache.org/Versions/v6/cfgman/).
   caching; `shutdown_lifetime` (default 30 s) is how long Squid waits for
   open clients after SIGTERM; `cache_effective_user` applies only when
   Squid starts as root.
+- **Exit status after SIGTERM.** The directive docs do not state it; the
+  Squid 6.6 source does (`src/main.cc` at tag `SQUID_6_6`,
+  https://github.com/squid-cache/squid/blob/SQUID_6_6/src/main.cc):
+  - `shutdown_status` starts as `EXIT_SUCCESS` (line 154);
+  - the SIGTERM/SIGINT handler `shut_down()` sets `EXIT_FAILURE` only for `SIGTTIN` (lines 756–763);
+  - `SquidShutdown()` ends with `exit(shutdown_status)` (line 2142).
+  So a Squid that shuts down on SIGTERM within `shutdown_lifetime` exits
+  0. Run with `-N`, Squid is PID 1 in its container and installs that
+  handler itself, so `docker stop` reaches it. Ubuntu's 6.6 package may
+  carry patches; the opt-in docker test observes the real exit code.
 - Why not tinyproxy 1.11.3 (https://github.com/tinyproxy/tinyproxy/releases/tag/1.11.3):
   its log format is not configurable, and its `Filter` does not bind a
   host to a port for plain HTTP, so it cannot give one line per
