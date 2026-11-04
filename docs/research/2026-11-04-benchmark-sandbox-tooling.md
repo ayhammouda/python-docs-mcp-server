@@ -52,9 +52,12 @@ Notes on the pins:
 3. **DNS on internal networks.** Engine 26.0.0 and 25.0.5 stopped
    forwarding external names for containers attached only to internal
    networks (CVE-2024-29018, moby/moby#47589). The advisory says "Docker
-   Desktop is not affected", because Desktop always runs its own resolver.
-   So on Desktop an internal-network container **may still resolve
-   external names**. https://docs.docker.com/engine/release-notes/26.0/ ,
+   Desktop is not affected", because Desktop runs its own internal
+   resolver on a private address. A container attached only to an
+   internal network has no route to that resolver, so external names
+   should not resolve from it. That is an expectation, not a documented
+   guarantee; the isolation probe's DNS check decides.
+   https://docs.docker.com/engine/release-notes/26.0/ ,
    https://github.com/moby/moby/security/advisories/GHSA-mq39-4gv4-mvpx
 4. **`host.docker.internal`** "Resolves to the internal IP address of your
    host" on Docker Desktop. Whether it reaches a Mac service bound only to
@@ -100,9 +103,18 @@ Directive pages: https://www.squid-cache.org/Doc/config/ (they describe v7;
 every directive and format code used here is also in the v6 manual,
 https://www.squid-cache.org/Versions/v6/cfgman/).
 
-- `acl NAME dstdomain host` matches the URL host "[fast]", with no DNS
-  lookup for a named host. `acl NAME port N` and `acl NAME method CONNECT`
-  are also fast. The `dst` type is slow and resolves names; avoid it.
+- `acl NAME dstdomain [-n] host` matches the URL host "[fast]", with no
+  DNS lookup for a named host. But "a reverse lookup is tried if a IP
+  based URL is used and no match is found", so a CONNECT to an IP literal
+  whose PTR names an allowlisted host could match. `-n` will "Disable
+  lookups and address type conversions": the ACL then declares a
+  mismatch. Every allowlist ACL uses `-n`. `acl NAME port N` and
+  `acl NAME method CONNECT` are also fast. The `dst` type is slow and
+  resolves names; avoid it. https://www.squid-cache.org/Doc/config/acl/
+- `logfile_rotate 0` disables file-name rotation on `squid -k rotate`.
+  From Squid 4 it is only the default for `stdio:` access logs, which
+  also take their own `rotate=N` option.
+  https://www.squid-cache.org/Doc/config/logfile_rotate/
 - `http_access` lines are checked in order; with no match the default is
   the opposite of the last line, so the config ends with
   `http_access deny all`.
@@ -174,8 +186,8 @@ https://www.squid-cache.org/Versions/v6/cfgman/).
 - Whether an internal-network container reaches the Mac through
   `host.docker.internal` or the LAN address (B.1, B.4): the isolation
   probe tests it before every run.
-- Whether Desktop resolves external names for internal-network
-  containers (B.3): the probe's DNS check.
+- Whether an internal-network container can still resolve external
+  names on Desktop (B.3): the probe's DNS check.
 - Whether `host.docker.internal` reaches Ollama bound to 127.0.0.1 (B.4):
   the probe's allowed-host check on the air-gapped arm.
 - Binary safety of `docker run -i` stdout for frames over 100,000 bytes
