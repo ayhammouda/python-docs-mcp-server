@@ -205,10 +205,11 @@ def probe_verdict(
 
 async def _one_shot(sandbox: Sandbox, argv: list[str], name: str) -> list[dict[str, Any]]:
     """Run a probe container to its end; it is removed even on a timeout or a cancellation."""
+    container_id = await sandbox.create_resource(name, *argv[1:])
     try:
-        proc = await sandbox.docker(argv)
+        proc = await sandbox.docker(["docker", "start", "--attach", container_id])
     finally:
-        await asyncio.shield(sandbox.docker(["docker", "rm", "-f", name]))
+        await sandbox.remove_container(container_id)
     try:
         if proc.returncode != 0:
             raise ValueError(f"exit {proc.returncode}")
@@ -228,6 +229,7 @@ def _probe_argv(
         mounts=[],
         argv=["python", "-m", "benchmarks", "agentic-probe", "--spec", json.dumps(spec)],
         interactive=False,
+        create_only=True,
     )
 
 

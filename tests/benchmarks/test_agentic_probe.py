@@ -31,7 +31,15 @@ from benchmarks.agentic.probe import (
     run_probe_checks,
 )
 from benchmarks.agentic.sandbox import ContainerLauncher, Sandbox
-from tests.benchmarks.test_agentic_sandbox import FakeDocker, _config, _done, _job, _verified
+from benchmarks.runner import BenchmarkValidationError
+from tests.benchmarks.test_agentic_sandbox import (
+    FakeDocker,
+    LateCreate,
+    _config,
+    _done,
+    _job,
+    _verified,
+)
 
 TOKEN = "probe-token-0123456789abcdef"
 
@@ -251,10 +259,11 @@ class ProbeDocker(FakeDocker):
 
     async def __call__(self, argv: Sequence[str]) -> Any:
         argv = list(argv)
-        if argv[1:2] != ["run"] or "agentic-probe" not in argv:
+        if argv[1:3] != ["start", "--attach"]:
             return await super().__call__(argv)
         self.calls.append(argv)
-        spec = json.loads(argv[argv.index("--spec") + 1])
+        (create,) = [c for c in self.ran("create") if f"id-{c[c.index('--name') + 1]}" == argv[-1]]
+        spec = json.loads(create[create.index("--spec") + 1])
         self.specs.append(spec)
         if "control" in spec:
             checks = [{"check": "control", "target": "x", "passed": self.passed, "detail": ""}]
@@ -298,10 +307,10 @@ async def test_the_probe_targets_every_ipam_gateway_and_records_the_inspect(
     assert record["proxy_prefix"] == log and len(log) == 2
     written = json.loads((tmp_path / "run" / "probe" / "j.json").read_text())
     assert written == record
-    (run,) = docker.ran("run")[-1:]
+    (run,) = docker.ran("create")[-1:]
     assert "-i" not in run and "--rm" in run and run[run.index("--name") + 1].endswith("-j-probe")
     assert not [arg for arg in run if "API_KEY" in arg]
-    assert docker.ran("rm", "-f", "pdmcp-r1-j-probe")
+    assert docker.ran("rm", "-f", "id-pdmcp-r1-j-probe")
 
 
 async def test_an_ollama_probe_checks_its_version_url(tmp_path: Path) -> None:
@@ -321,45 +330,78 @@ async def test_a_failed_check_raises_and_still_writes_the_record(tmp_path: Path)
     assert json.loads((tmp_path / "run" / "probe" / "j.json").read_text())["passed"] is False
 
 
-async def test_a_timed_out_or_cancelled_probe_container_is_removed(tmp_path: Path) -> None:
-    name = "pdmcp-r1-j-probe"
-    family = _job("claude-sonnet-5-5").family
+async def test_a_completed_probe_accepts_docker_auto_removal(tmp_path: Path) -> None:
+    name = "pdmcp-r1-control"
+    checks = [{"check": "control", "passed": True}]
 
-    class Timeout(FakeDocker):
+    class AutoRemove(FakeDocker):
         async def __call__(self, argv: Sequence[str]) -> Any:
-            if list(argv[1:2]) == ["run"] and "agentic-probe" in argv:
-                self.calls.append(list(argv))
-                raise subprocess.TimeoutExpired(list(argv), 120)
+            if argv[1:3] == ["start", "--attach"]:
+                assert argv[-1] == f"id-{name}"
+                del self.resources[argv[-1]]
+                return _done(argv, out=json.dumps({"checks": checks}))
+            if argv[1:3] == ["rm", "-f"]:
+                assert argv[-1] == f"id-{name}"
+                return _done(argv, 1, err="Error response from daemon: No such container")
             return await super().__call__(argv)
 
-    docker = Timeout()
-    sandbox, egress = await _egress(tmp_path, docker, ("172.30.0.1",))
-    with pytest.raises(subprocess.TimeoutExpired):
-        await isolation_probe(sandbox, egress, job_id="j", family=family, system_id="no-docs")
-    assert docker.calls[-1] == ["docker", "rm", "-f", name]
+    docker = AutoRemove()
+    sandbox = Sandbox(_config(tmp_path), docker=docker)
+    argv = probe._probe_argv(sandbox, name, "test-net", {}, {})
+    assert await probe._one_shot(sandbox, argv, name) == checks
+    assert not docker.resources
 
+
+async def test_probe_create_conflict_does_not_remove_the_existing_container(tmp_path: Path) -> None:
+    name = "pdmcp-r1-j-probe"
+    docker = FakeDocker(fail=lambda args: name in args and args[0] in {"run", "create"})
+    docker.resources[f"id-{name}"] = {"a different invocation"}
+    sandbox = Sandbox(_config(tmp_path), docker=docker)
+    argv = probe._probe_argv(sandbox, name, "test-net", {}, {})
+    with pytest.raises(BenchmarkValidationError):
+        await probe._one_shot(sandbox, argv, name)
+    assert not docker.ran("rm")
+    assert f"id-{name}" in docker.resources
+
+
+async def test_probe_creation_finishes_before_cancellation_removes_it(tmp_path: Path) -> None:
+    name = "pdmcp-r1-j-probe"
+    docker = LateCreate(name)
+    sandbox = Sandbox(_config(tmp_path), docker=docker)
+    argv = probe._probe_argv(sandbox, name, "test-net", {}, {})
+    await docker.cancel_create(asyncio.create_task(probe._one_shot(sandbox, argv, name)))
+    assert not docker.resources
+    assert not docker.ran("start")
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+async def test_a_timed_out_or_cancelled_probe_container_is_removed(
+    tmp_path: Path, timeout: bool
+) -> None:
+    name = "pdmcp-r1-j-probe"
     started = asyncio.Event()
 
     class Hangs(FakeDocker):
         async def __call__(self, argv: Sequence[str]) -> Any:
-            if list(argv[1:2]) == ["run"] and "agentic-probe" in argv:
-                self.calls.append(list(argv))
+            if argv[1:3] == ["start", "--attach"]:
+                assert argv[-1] == f"id-{name}"
                 started.set()
+                if timeout:
+                    raise subprocess.TimeoutExpired(list(argv), 120)
                 await asyncio.Event().wait()
             return await super().__call__(argv)
 
-    (tmp_path / "second").mkdir()
     docker = Hangs()
-    sandbox, egress = await _egress(tmp_path / "second", docker, ("172.30.0.1",))
-    task = asyncio.ensure_future(
-        isolation_probe(sandbox, egress, job_id="j", family=family, system_id="no-docs")
-    )
-    await asyncio.wait_for(started.wait(), 5)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
+    sandbox = Sandbox(_config(tmp_path), docker=docker)
+    argv = probe._probe_argv(sandbox, name, "test-net", {}, {})
+    task = asyncio.create_task(probe._one_shot(sandbox, argv, name))
+    await asyncio.wait_for(started.wait(), 2)
+    if not timeout:
+        task.cancel()
+    with pytest.raises(subprocess.TimeoutExpired if timeout else asyncio.CancelledError):
         await task
-    await asyncio.sleep(0)  # the shielded removal finishes
-    assert docker.calls[-1] == ["docker", "rm", "-f", name]
+    assert docker.calls[-1] == ["docker", "rm", "-f", f"id-{name}"]
+    assert not docker.resources
 
 
 async def test_a_failed_control_makes_the_probe_inconclusive(tmp_path: Path) -> None:
@@ -370,9 +412,9 @@ async def test_a_failed_control_makes_the_probe_inconclusive(tmp_path: Path) -> 
         await control_probe(sandbox)
     (spec,) = docker.specs
     assert spec["control"][0] == "host.docker.internal"
-    run = docker.ran("run")[-1]
+    run = docker.ran("create")[-1]
     assert run[run.index("--network") + 1] == "pdmcp-r1-out"
-    assert docker.calls[-1] == ["docker", "rm", "-f", "pdmcp-r1-control"]
+    assert docker.calls[-1] == ["docker", "rm", "-f", "id-pdmcp-r1-control"]
     assert json.loads((tmp_path / "run" / "probe" / "control.json").read_text())["passed"] is False
 
 

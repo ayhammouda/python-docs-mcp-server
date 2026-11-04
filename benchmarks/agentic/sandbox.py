@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import re
+import secrets
 import subprocess
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -68,6 +69,7 @@ _CLI_ENV = (
     "DOCKER_TLS_VERIFY",
 )
 _DOCKER_TIMEOUT_S = 120
+_CREATE_RECOVERY_S = 5.0
 
 DockerRun = Callable[[Sequence[str]], Awaitable[subprocess.CompletedProcess[bytes]]]
 
@@ -126,6 +128,26 @@ def docker_runner(env: Mapping[str, str]) -> DockerRun:
     return run
 
 
+async def _settle(task: asyncio.Future[Any]) -> asyncio.CancelledError | None:
+    """Wait for Docker across repeated cancellations, leaving its result for the caller."""
+    cancelled = None
+    while not task.done():
+        try:
+            await asyncio.wait((task,))  # cancellation of wait does not cancel task
+        except asyncio.CancelledError as exc:
+            cancelled = exc
+    return cancelled
+
+
+async def _finish[T](operation: Awaitable[T]) -> T:
+    task = asyncio.ensure_future(operation)
+    cancelled = await _settle(task)
+    result = task.result()
+    if cancelled is not None:
+        raise cancelled
+    return result
+
+
 @dataclass(frozen=True)
 class SandboxConfig:
     image: str  # the worker image's ID, never a tag
@@ -151,6 +173,8 @@ class Egress:
     log_dir: Path  # out_dir/egress/<job_id>/: squid.conf, access.log, cache.log, collected.json
     gateways: tuple[str, ...]  # every IPAM gateway of the internal network
     inspect: dict[str, Any]  # its `docker network inspect` record
+    network_id: str
+    proxy_id: str
 
 
 VerifyFn = Callable[["Sandbox"], Awaitable[dict[str, str]]]
@@ -261,7 +285,12 @@ class Sandbox:
         self.docker = docker or docker_runner(self.env)
         self.verify = verify  # the test seam (round-4 item 2); production keeps the real check
         self.leaks: list[str] = []  # key shapes found and redacted in a proxy's logs
-        self.outside_created = False
+        self.outside_id: str | None = None
+        self._invocation = secrets.token_hex(16)
+
+    @property
+    def outside_created(self) -> bool:
+        return self.outside_id is not None
 
     @property
     def outside(self) -> str:
@@ -270,8 +299,11 @@ class Sandbox:
     def worker_name(self, job_id: str) -> str:
         return f"pdmcp-{self.config.run_id}-{job_id}"
 
-    def _label(self) -> list[str]:
-        return ["--label", f"{RUN_LABEL}={self.config.run_id}"]
+    def _ownership(self, name: str) -> str:
+        return f"org.python-docs-mcp.benchmark-resource={self._invocation}.{name}"
+
+    def _label(self, name: str) -> list[str]:
+        return ["--label", f"{RUN_LABEL}={self.config.run_id}", "--label", self._ownership(name)]
 
     async def run(self, *args: str) -> subprocess.CompletedProcess[bytes]:
         """One docker command; raises BenchmarkValidationError when it fails."""
@@ -283,29 +315,92 @@ class Sandbox:
     async def output(self, *args: str) -> str:
         return (await self.run(*args)).stdout.decode("utf-8", errors="replace")
 
+    async def remove_container(self, container_id: str) -> None:
+        """Finish removing this ID even if the caller is cancelled. --rm may have won."""
+        proc = await _finish(self.docker(["docker", "rm", "-f", container_id]))
+        if proc.returncode != 0 and "No such container" not in _tail(proc):
+            raise BenchmarkValidationError(f"docker rm -f {container_id} failed: {_tail(proc)}")
+
+    async def remove_owned(
+        self, name: str, *, network: bool = False, wait_for_create: bool = False
+    ) -> None:
+        """Recover a partial create or worker by its invocation label, never by its name."""
+        ls = ("network", "ls") if network else ("container", "ls", "--all")
+        label_filter = f"label={self._ownership(name)}"
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _CREATE_RECOVERY_S
+        while True:
+            ids = await self.output(*ls, "--no-trunc", "--quiet", "--filter", label_filter)
+            if ids.strip() or not wait_for_create:
+                break
+            # Killing a timed-out CLI does not roll back a POST already sent to the daemon.
+            if loop.time() >= deadline:
+                raise BenchmarkValidationError(
+                    f"Docker create timed out for {name} and its outcome is unknown; "
+                    f"check the daemon for {label_filter}"
+                )
+            await asyncio.sleep(0.1)
+        for resource_id in ids.split():
+            if network:
+                await self.run("network", "rm", resource_id)
+            else:
+                await self.remove_container(resource_id)
+
+    async def create_resource(self, name: str, *args: str) -> str:
+        """Wait for create before handing off its ID or rolling it back on cancellation."""
+        network = args[0] == "network"
+        task = asyncio.create_task(self.output(*args))
+        cancelled = await _settle(task)
+        try:
+            resource_id = task.result().strip()
+            if not resource_id:
+                raise BenchmarkValidationError(f"Docker returned no ID for {name}")
+        except (subprocess.TimeoutExpired, BenchmarkValidationError) as exc:
+            # A failed run -d can leave a container even with a nonzero CLI exit.
+            await _finish(
+                self.remove_owned(
+                    name,
+                    network=network,
+                    wait_for_create=isinstance(exc, subprocess.TimeoutExpired),
+                )
+            )
+            if cancelled is not None:
+                raise cancelled from exc
+            raise
+        if cancelled is not None:
+            if network:
+                await _finish(self.run("network", "rm", resource_id))
+            else:
+                await self.remove_container(resource_id)
+            raise cancelled
+        return resource_id
+
     async def ensure_outside(self) -> None:
         """The run's one outside network, for the proxies and the control probe."""
         if not self.outside_created:
-            await self.run("network", "create", *self._label(), self.outside)
-            self.outside_created = True
+            self.outside_id = await self.create_resource(
+                self.outside, "network", "create", *self._label(self.outside), self.outside
+            )
 
     async def open_egress(self, job_id: str, allow: Sequence[tuple[str, int]]) -> Egress:
         """The job's internal network and its proxy, logging to ``out_dir/egress/<job_id>/``."""
         await self.ensure_outside()
         name = self.worker_name(job_id)
         network, proxy = f"{name}-net", f"{name}-proxy"
-        await self.run(
+        network_id = await self.create_resource(
+            network,
             "network",
             "create",
             "--internal",
             "--ipv6=false",
             "-o",
             "com.docker.network.bridge.gateway_mode_ipv4=isolated",
-            *self._label(),
+            *self._label(network),
             network,
         )
+        proxy_id = None
         try:
-            (inspect,) = json.loads(await self.output("network", "inspect", network))
+            (inspect,) = json.loads(await self.output("network", "inspect", network_id))
             if inspect.get("EnableIPv6"):
                 raise BenchmarkValidationError(
                     f"network {network} kept IPv6 despite --ipv6=false: refused, no fallback"
@@ -329,14 +424,15 @@ class Sandbox:
                 # Readable by `proxy` under any umask (round-4 item 4).
                 os.fchmod(dir_fd, 0o777)
                 write_new(dir_fd, conf.name, squid_conf(allow).encode("utf-8"), mode=0o644)
-            await self.run(
+            proxy_id = await self.create_resource(
+                proxy,
                 "run",
                 "-d",
                 "--pull",
                 "never",
                 "--name",
                 proxy,
-                *self._label(),
+                *self._label(proxy),
                 "--network",
                 self.outside,
                 "--read-only",
@@ -365,13 +461,20 @@ class Sandbox:
                 "-f",
                 "/etc/squid/squid.conf",
             )
-            await self.run("network", "connect", "--alias", EGRESS_ALIAS, network, proxy)
+            await _finish(
+                self.run("network", "connect", "--alias", EGRESS_ALIAS, network_id, proxy_id)
+            )
         except BaseException:
             # Nothing of this job's may outlive the failure (amendment 2).
-            for cleanup in (["rm", "-f", proxy], ["network", "rm", network]):
-                await self.docker(["docker", *cleanup])
+            try:
+                if proxy_id is not None:
+                    await self.remove_container(proxy_id)
+            finally:
+                await _finish(self.run("network", "rm", network_id))
             raise
-        return Egress(job_id, network, proxy, tuple(allow), log_dir, gateways, inspect)
+        return Egress(
+            job_id, network, proxy, tuple(allow), log_dir, gateways, inspect, network_id, proxy_id
+        )
 
     def container_argv(
         self,
@@ -382,14 +485,15 @@ class Sandbox:
         mounts: Sequence[str],
         argv: Sequence[str],
         interactive: bool = True,
+        create_only: bool = False,
     ) -> list[str]:
         """``docker run`` with the design §7.2 hardening. It has no key parameter."""
         return [
             "docker",
-            "run",
+            "create" if create_only else "run",
             "--name",
             name,
-            *self._label(),
+            *self._label(name),
             "--network",
             network,
             "--read-only",
@@ -435,17 +539,17 @@ class Sandbox:
         to ``collected.json``, whose ``ok`` is false after any of them.
         """
         problems: list[str] = []
-        before = await self._state(egress.proxy, problems, "before")
+        before = await self._state(egress.proxy_id, problems, "before")
         if before and (not before.get("Running") or before.get("OOMKilled")):
             problems.append(
                 f"the proxy ended before our stop (exit {before.get('ExitCode')}, "
                 f"OOMKilled {before.get('OOMKilled')})"
             )
         try:
-            await self.run("stop", "-t", "5", egress.proxy)
+            await self.run("stop", "-t", "5", egress.proxy_id)
         except Exception as exc:  # noqa: BLE001
             problems.append(f"docker stop of the proxy failed: {exc}")
-        after = await self._state(egress.proxy, problems, "after")
+        after = await self._state(egress.proxy_id, problems, "after")
         if after and after.get("Running"):
             problems.append("the proxy was still running after our stop")
         elif after and (after.get("ExitCode") != 0 or after.get("OOMKilled")):
@@ -453,7 +557,7 @@ class Sandbox:
                 f"the proxy exited {after.get('ExitCode')} after our stop "
                 f"(OOMKilled {after.get('OOMKilled')}): its log may be partial"
             )
-        for args in (["rm", "-f", egress.proxy], ["network", "rm", egress.network]):
+        for args in (["rm", "-f", egress.proxy_id], ["network", "rm", egress.network_id]):
             try:
                 await self.run(*args)
             except Exception as exc:  # noqa: BLE001
@@ -548,19 +652,17 @@ class ContainerLauncher:
             )
 
     async def stop_worker(self, job: WorkerJob) -> None:
-        """Remove this job's own container, by its name, and nothing else."""
-        name = self.sandbox.worker_name(job.job_id)
-        proc = await self.sandbox.docker(["docker", "rm", "-f", name])
-        if proc.returncode != 0 and "No such container" not in _tail(proc):
-            raise BenchmarkValidationError(f"docker rm -f {name} failed: {_tail(proc)}")
+        """Remove a surviving worker only if this invocation created it."""
+        await self.sandbox.remove_owned(self.sandbox.worker_name(job.job_id))
 
     async def close(self) -> list[str]:
         problems: list[str] = []
         for egress in self._egresses:
             problems += [f"{egress.job_id}: {p}" for p in await self.sandbox.close_egress(egress)]
-        if self.sandbox.outside_created:
+        if self.sandbox.outside_id is not None:
             try:
-                await self.sandbox.run("network", "rm", self.sandbox.outside)
+                await self.sandbox.run("network", "rm", self.sandbox.outside_id)
+                self.sandbox.outside_id = None
             except Exception as exc:  # noqa: BLE001
                 problems.append(f"docker network rm {self.sandbox.outside} failed: {exc}")
         if self.sandbox.leaks:

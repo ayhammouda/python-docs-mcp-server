@@ -80,6 +80,7 @@ class FakeDocker:
         self.image_id, self.ipv6, self.gateways = image_id, ipv6, gateways
         self.states, self.squid_present, self.fail = states, squid_present, fail
         self._inspected: dict[str, int] = {}
+        self.resources: dict[str, set[str]] = {}
 
     async def __call__(self, argv: Sequence[str]) -> Any:
         argv = list(argv)
@@ -87,6 +88,17 @@ class FakeDocker:
         args = argv[1:]
         if self.fail is not None and self.fail(args):
             return _done(argv, 1, err="Error response from daemon: boom")
+        if args[:2] == ["network", "create"] or args[0] in {"create", "run"}:
+            name = args[args.index("--name") + 1] if "--name" in args else args[-1]
+            resource_id = f"id-{name}"
+            self.resources[resource_id] = {v for k, v in zip(args, args[1:]) if k == "--label"}
+            return _done(argv, out=resource_id + "\n")
+        if args[:2] in (["container", "ls"], ["network", "ls"]):
+            label = args[args.index("--filter") + 1].removeprefix("label=")
+            ids = [i for i, labels in self.resources.items() if label in labels]
+            return _done(argv, out="\n".join(ids))
+        if args[:2] in (["rm", "-f"], ["network", "rm"]):
+            self.resources.pop(args[-1], None)
         if args[:2] == ["context", "inspect"]:
             ctx = {"Name": "desktop-linux", "Endpoints": {"docker": {"Host": self.context_host}}}
             return _done(argv, out=json.dumps(ctx))
@@ -364,19 +376,143 @@ async def test_internal_networks_are_ipv4_only_with_an_isolated_gateway(tmp_path
     sandbox = _sandbox(tmp_path / "v6", docker)
     with pytest.raises(BenchmarkValidationError, match=net):
         await sandbox.open_egress("j", ())
-    assert docker.ran("network", "rm", net)
+    assert docker.ran("network", "rm", f"id-{net}")
     assert not docker.ran("run") and not docker.ran("network", "connect")
+
+
+class LateCreate(FakeDocker):
+    """The daemon finishes creating the resource even if the CLI awaiter is cancelled."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__()
+        self.name = name
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.published = asyncio.Event()
+
+    async def __call__(self, argv: Sequence[str]) -> Any:
+        if self.name in argv and ("create" in argv or "run" in argv):
+            return await asyncio.shield(asyncio.create_task(self._publish(argv)))
+        return await super().__call__(argv)
+
+    async def _publish(self, argv: Sequence[str]) -> Any:
+        self.started.set()
+        await self.release.wait()
+        result = await super().__call__(argv)
+        self.published.set()
+        return result
+
+    async def cancel_create(self, task: asyncio.Task[Any]) -> None:
+        await asyncio.wait_for(self.started.wait(), 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        self.release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.wait_for(self.published.wait(), 2)
+
+
+@pytest.mark.parametrize("resource", ["out", "j-net", "j-proxy"])
+async def test_cancel_waits_for_docker_to_publish_the_created_resource(
+    tmp_path: Path, resource: str
+) -> None:
+    name = f"pdmcp-{RUN}-{resource}"
+    docker = LateCreate(name)
+    sandbox = _sandbox(tmp_path, docker)
+    await docker.cancel_create(asyncio.create_task(sandbox.open_egress("j", ())))
+    await ContainerLauncher(sandbox).close()
+    assert docker.resources == {}
+    assert any("rm" in argv and argv[-1] == f"id-{name}" for argv in docker.calls)
+
+
+@pytest.mark.parametrize("resource", ["out", "j-net", "j-proxy"])
+async def test_create_conflict_never_removes_the_existing_resource(
+    tmp_path: Path, resource: str
+) -> None:
+    name = f"pdmcp-{RUN}-{resource}"
+    docker = FakeDocker(fail=lambda args: name in args and ("create" in args or "run" in args))
+    foreign_id = f"id-{name}"
+    docker.resources[foreign_id] = {f"{RUN_LABEL}={RUN}"}
+    sandbox = _sandbox(tmp_path, docker)
+    with pytest.raises(BenchmarkValidationError, match="boom"):
+        await sandbox.open_egress("j", ())
+    await ContainerLauncher(sandbox).close()
+    assert docker.resources == {foreign_id: {f"{RUN_LABEL}={RUN}"}}
+    assert not [c for c in docker.calls if "rm" in c and c[-1] in {name, foreign_id}]
+
+
+async def test_cancelled_create_that_hits_a_conflict_preserves_cancellation(tmp_path: Path) -> None:
+    name = f"pdmcp-{RUN}-out"
+    docker = LateCreate(name)
+    docker.fail = lambda args: args[:2] == ["network", "create"]
+    sandbox = _sandbox(tmp_path, docker)
+    await docker.cancel_create(asyncio.create_task(sandbox.ensure_outside()))
+    assert not docker.ran("network", "rm")
+
+
+async def test_timed_out_create_can_appear_after_the_docker_cli_exits(tmp_path: Path) -> None:
+    name = f"pdmcp-{RUN}-out"
+
+    class TimeoutDocker(FakeDocker):
+        pending: Sequence[str] = ()
+
+        async def __call__(self, argv: Sequence[str]) -> Any:
+            if argv[1:3] == ["network", "create"]:
+                self.pending = argv
+                raise subprocess.TimeoutExpired(argv, 120)
+            result = await super().__call__(argv)
+            if self.pending and argv[1:3] == ["network", "ls"]:
+                # The first list snapshots an empty daemon, then the original POST lands.
+                await super().__call__(self.pending)
+                self.pending = ()
+            return result
+
+    docker = TimeoutDocker()
+    sandbox = _sandbox(tmp_path, docker)
+    with pytest.raises(subprocess.TimeoutExpired):
+        await sandbox.ensure_outside()
+    assert docker.ran("network", "rm", f"id-{name}")
+    assert not docker.resources
+
+
+async def test_unobserved_create_timeout_reports_the_ownership_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("benchmarks.agentic.sandbox._CREATE_RECOVERY_S", 0)
+
+    class TimeoutDocker(FakeDocker):
+        async def __call__(self, argv: Sequence[str]) -> Any:
+            if argv[1:3] == ["network", "create"]:
+                raise subprocess.TimeoutExpired(argv, 120)
+            return await super().__call__(argv)
+
+    docker = TimeoutDocker()
+    with pytest.raises(BenchmarkValidationError, match="outcome is unknown") as caught:
+        await _sandbox(tmp_path, docker).ensure_outside()
+    assert docker.ran("network", "ls")[0][-1] in str(caught.value)
+    assert not docker.ran("network", "rm")
 
 
 async def test_a_failed_proxy_start_removes_the_proxy_and_the_network(tmp_path: Path) -> None:
     for step in (["run"], ["network", "connect"]):
         root = tmp_path / step[-1]
         root.mkdir()
-        docker = FakeDocker(fail=lambda args, step=step: args[: len(step)] == step)
+
+        class FailedStart(FakeDocker):
+            async def __call__(self, argv: Sequence[str]) -> Any:
+                result = await super().__call__(argv)
+                if list(argv[1 : 1 + len(step)]) == step:
+                    # docker run -d can fail its start after the daemon created the proxy.
+                    return _done(argv, 1, err="cannot start or connect")
+                return result
+
+        docker = FailedStart()
         with pytest.raises(BenchmarkValidationError):
             await _sandbox(root, docker).open_egress("j", (("api.openai.com", 443),))
-        assert docker.ran("rm", "-f", f"pdmcp-{RUN}-j-proxy")
-        assert docker.ran("network", "rm", f"pdmcp-{RUN}-j-net")
+        assert docker.ran("rm", "-f", f"id-pdmcp-{RUN}-j-proxy")
+        assert docker.ran("network", "rm", f"id-pdmcp-{RUN}-j-net")
 
 
 async def test_prepare_builds_one_network_and_proxy_per_job_with_a_file_log(
@@ -509,22 +645,25 @@ async def test_stop_worker_removes_only_its_own_container(tmp_path: Path) -> Non
     launcher = ContainerLauncher(
         _sandbox(tmp_path, docker), probe=(probes := Probes()), control=probes.control
     )
-    await launcher.stop_worker(_job("scripted-anthropic"))
-    assert docker.calls == [["docker", "rm", "-f", f"pdmcp-{RUN}-scripted-anthropic--no-docs"]]
-    gone = FakeDocker(fail=lambda args: args[:2] == ["rm", "-f"])
-    launcher = ContainerLauncher(
-        _sandbox(tmp_path, gone), probe=(probes := Probes()), control=probes.control
-    )
+    job = _job("scripted-anthropic")
+    name = launcher.sandbox.worker_name(job.job_id)
+    # Even the same run ID from an earlier invocation is not ours.
+    other = ContainerLauncher(_sandbox(tmp_path, docker))
+    await docker(other.command(job)[0])
+    await launcher.stop_worker(job)
+    assert not docker.ran("rm")
+    docker.resources.clear()  # its owner removes the conflicting container
+    await docker(launcher.command(job)[0])
+    await launcher.stop_worker(job)
+    assert docker.ran("rm", "-f", f"id-{name}")
+    assert not docker.resources
+    await launcher.stop_worker(job)  # --rm has already removed it
+    assert len(docker.ran("rm")) == 1
+
+    await docker(launcher.command(job)[0])
+    docker.fail = lambda args: args[:2] == ["rm", "-f"]
     with pytest.raises(BenchmarkValidationError, match="boom"):
-        await launcher.stop_worker(_job("scripted-anthropic"))
-
-    async def no_such(argv: Sequence[str]) -> Any:
-        return _done(argv, 1, err="Error response from daemon: No such container: x")
-
-    sandbox = Sandbox(_config(tmp_path), docker=no_such, verify=_verified)
-    await ContainerLauncher(
-        sandbox, probe=(probes := Probes()), control=probes.control
-    ).stop_worker(_job("scripted-anthropic"))
+        await launcher.stop_worker(job)
 
 
 # --- collection and close ----------------------------------------------------------------------
@@ -568,11 +707,11 @@ async def test_close_stops_each_proxy_then_removes_what_it_created(tmp_path: Pat
     for job in jobs:
         proxy, net = f"pdmcp-{RUN}-{job.job_id}-proxy", f"pdmcp-{RUN}-{job.job_id}-net"
         expected += [
-            f"inspect --format {proxy}",
-            f"stop -t {proxy}",
-            f"inspect --format {proxy}",
-            f"rm -f {proxy}",
-            f"network rm {net}",
+            f"inspect --format id-{proxy}",
+            f"stop -t id-{proxy}",
+            f"inspect --format id-{proxy}",
+            f"rm -f id-{proxy}",
+            f"network rm id-{net}",
         ]
         collected = json.loads(
             (tmp_path / "run" / "egress" / job.job_id / "collected.json").read_text()
@@ -583,7 +722,7 @@ async def test_close_stops_each_proxy_then_removes_what_it_created(tmp_path: Pat
             "state_before_stop": RUNNING,
             "state_after_stop": STOPPED,
         }
-    assert tail == [*expected, f"network rm pdmcp-{RUN}-out"]
+    assert tail == [*expected, f"network rm id-pdmcp-{RUN}-out"]
     assert docker.ran("stop", "-t", "5")
 
 
@@ -632,8 +771,8 @@ async def test_close_redacts_a_key_shaped_proxy_log_and_raises_after_cleanup(
     with pytest.raises(KeyLeakError, match="cache.log"):
         await launcher.close()
     assert (log_dir / "cache.log").read_text() == "WARNING: header [redacted]\n"
-    assert docker.ran("rm", "-f", f"pdmcp-{RUN}-{job.job_id}-proxy")
-    assert docker.ran("network", "rm", f"pdmcp-{RUN}-out")
+    assert docker.ran("rm", "-f", f"id-pdmcp-{RUN}-{job.job_id}-proxy")
+    assert docker.ran("network", "rm", f"id-pdmcp-{RUN}-out")
     assert json.loads((log_dir / "collected.json").read_text())["ok"] is False
 
 
@@ -642,7 +781,8 @@ async def test_close_keeps_going_after_a_failed_step(tmp_path: Path) -> None:
     sandbox, egress = await _opened(tmp_path, docker)
     problems = await sandbox.close_egress(egress)
     assert problems and any("stop" in p for p in problems)
-    assert docker.ran("rm", "-f", egress.proxy) and docker.ran("network", "rm", egress.network)
+    assert docker.ran("rm", "-f", egress.proxy_id)
+    assert docker.ran("network", "rm", egress.network_id)
     assert json.loads((egress.log_dir / "collected.json").read_text())["ok"] is False
 
 
