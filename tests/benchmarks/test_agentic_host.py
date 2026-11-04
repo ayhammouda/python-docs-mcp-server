@@ -599,12 +599,15 @@ async def test_every_worker_log_is_scrubbed_when_a_frame_leak_aborts_the_run(
         assert log.read_text() == "debug: [redacted]\n"
 
 
-# Holds A's pipes, so A's teardown waits on it. Marks when A is killed, which happens only in
-# A's teardown, then exits once the test releases it. Each wait is bounded and fails loudly.
+# Holds A's pipes, so A's teardown waits on it; it leaves A's process group first, so the
+# group kill spares it. Marks when A is killed, which happens only in A's teardown, then exits
+# once the test releases it. Each wait is bounded and fails loudly.
 _GRANDCHILD = (
     "import os, sys, time\n"
     "from pathlib import Path\n"
     "parent, entered, release = int(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])\n"
+    "os.setsid()\n"
+    "(entered.parent / 'escaped').touch()\n"
     "deadline = time.monotonic() + 10\n"
     "while os.getppid() == parent:\n"
     "    if time.monotonic() > deadline:\n"
@@ -632,7 +635,8 @@ async def test_a_teardown_cancelled_by_a_second_abort_still_scrubs_and_settles(
     host: Host, tmp_path: Path
 ) -> None:
     # A holds a unit, then leaks a key; its teardown waits on a grandchild holding its pipes.
-    # Only then does B leak, and B's abort cancels A mid-teardown.
+    # Only then does B leak, and B's abort cancels A mid-teardown. If A's teardown ends before
+    # that, A is never cancelled and the bounded wait fails.
     leaked = "sk-ant-api03-" + "z" * 90
     entered, release = tmp_path / "a-in-teardown", tmp_path / "release"
     code = (
@@ -653,6 +657,11 @@ async def test_a_teardown_cancelled_by_a_second_abort_still_scrubs_and_settles(
         "    read()\n"
         f"    signals = [str(os.getpid()), {str(entered)!r}, {str(release)!r}]\n"
         f"    subprocess.Popen([sys.executable, '-c', {_GRANDCHILD!r}, *signals])\n"
+        "    deadline = time.monotonic() + 10\n"
+        f"    while not Path({str(tmp_path / 'escaped')!r}).exists():\n"
+        "        if time.monotonic() > deadline:\n"
+        "            sys.exit('A: the grandchild never left the group')\n"
+        "        time.sleep(0.01)\n"
         "else:\n"
         "    deadline = time.monotonic() + 10\n"
         f"    while not Path({str(entered)!r}).exists():\n"
@@ -668,7 +677,7 @@ async def test_a_teardown_cancelled_by_a_second_abort_still_scrubs_and_settles(
         async with asyncio.timeout(10):  # bounded: a missed signal fails loudly
             while (a := _supervisor("a")) is None:
                 await asyncio.sleep(0.01)
-            while not (a.done() or a.cancelling()):  # B's abort has reached A
+            while not a.cancelling():  # B's abort has reached A, mid-teardown
                 await asyncio.sleep(0.01)
     finally:
         release.touch()
