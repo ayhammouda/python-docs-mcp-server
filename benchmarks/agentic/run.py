@@ -466,7 +466,24 @@ def run_agentic(
             "the air-gapped arm runs alone, with the host offline: name only air-gapped "
             "families, or only others, in --models"
         )
-    systems = _select(load_systems(config.manifest_path), config.systems, "system")
+    requested_systems = config.systems
+    if families[0].arm == "air-gapped":
+        for family in families:
+            if family.api != "scripted" and (
+                family.provider != "ollama" or family.api != "openai-chat-completions"
+            ):
+                raise BenchmarkValidationError(
+                    f"the air-gapped arm requires local Ollama for live family {family.id!r}"
+                )
+        offline_systems = ("python-docs", "no-docs")
+        if requested_systems is None:
+            requested_systems = offline_systems
+        elif not requested_systems or not set(requested_systems).issubset(offline_systems):
+            raise BenchmarkValidationError(
+                f"the air-gapped arm permits only {offline_systems} in --systems, "
+                f"got {requested_systems}"
+            )
+    systems = _select(load_systems(config.manifest_path), requested_systems, "system")
     snapshot = load_price_snapshot(config.prices_path)
     for family in families:
         if family.output_cap_includes_reasoning is False:

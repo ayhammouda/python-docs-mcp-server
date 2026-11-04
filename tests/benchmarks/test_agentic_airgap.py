@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from benchmarks.__main__ import main
 from benchmarks.agentic.airgap import (
     MIN_OLLAMA,
     REQUIRED_CONTEXT,
@@ -20,9 +21,17 @@ from benchmarks.agentic.airgap import (
     ollama_preflight,
     write_airgap_evidence,
 )
+from benchmarks.agentic.egress import allowlist
 from benchmarks.agentic.run import run_agentic
+from benchmarks.model_matrix import load_model_matrix
 from benchmarks.runner import BenchmarkValidationError
-from tests.benchmarks.test_agentic_run import _config
+from tests.benchmarks.test_agentic_run import (
+    COMMITTED_MATRIX,
+    _cli,
+    _config,
+    _EveryFamily,
+    _live_config,
+)
 
 FIX = Path(__file__).parent / "fixtures" / "agentic"
 
@@ -87,6 +96,65 @@ def test_offline_checks_need_both_a_name_and_an_address_to_fail() -> None:
     offline = host_offline_checks(connect=_connect(set()), routes=lambda: ["default x UGScg en0"])
     route = {c["check"]: c for c in offline}["no_default_route"]
     assert route["passed"] is False and route["detail"] == ["default x UGScg en0"]
+
+
+def test_failed_netstat_is_a_failed_offline_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    netstat = tmp_path / "netstat"
+    netstat.write_text("#!/bin/sh\nexit 7\n")
+    netstat.chmod(0o700)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    checks = host_offline_checks(
+        connect=_connect(set()), routes=lambda: default_routes(system="Darwin")
+    )
+    route = next(check for check in checks if check["check"] == "no_default_route")
+    assert route["passed"] is False
+    assert "7" in str(route["detail"])
+
+
+def test_gemma_cli_defaults_to_the_two_offline_systems(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = _cli(
+        tmp_path,
+        "--launcher",
+        "container",
+        "--image",
+        "sha256:" + "0" * 64,
+        "--matrix",
+        str(COMMITTED_MATRIX),
+        "--models",
+        "gemma4-12b",
+        "--index",
+        str(tmp_path / "index"),
+    )
+    assert main(args) == 0
+    assert set(json.loads(capsys.readouterr().out)["systems"]) == {"python-docs", "no-docs"}
+
+
+def test_air_gapped_run_refuses_an_explicit_online_system(tmp_path: Path) -> None:
+    config = _live_config(tmp_path, models=("gemma4-12b",), systems=("python-docs", "docs-fetch"))
+    with pytest.raises(BenchmarkValidationError, match="docs-fetch"):
+        run_agentic(
+            config, launcher=_EveryFamily(), confirm=lambda _: pytest.fail("confirmation reached")
+        )
+    assert not config.out_dir.exists()
+
+
+def test_air_gapped_run_refuses_a_hosted_provider_in_a_custom_matrix(tmp_path: Path) -> None:
+    matrix = tmp_path / "matrix.yml"
+    matrix.write_text(COMMITTED_MATRIX.read_text().replace("arm: hosted", "arm: air-gapped"))
+    config = _live_config(tmp_path, matrix_path=matrix, models=("gpt-6.1-sol",), dry_run=True)
+    with pytest.raises(BenchmarkValidationError, match="Ollama"):
+        run_agentic(config, launcher=_EveryFamily())
+
+
+def test_air_gapped_proxy_never_adds_a_system_upstream() -> None:
+    gemma = next(
+        f for f in load_model_matrix(COMMITTED_MATRIX).model_families if f.id == "gemma4-12b"
+    )
+    assert allowlist(gemma, "docs-fetch") == (("host.docker.internal", 11434),)
 
 
 def _ollama(version: str = "0.40.14", context: int = REQUIRED_CONTEXT, present: bool = True):

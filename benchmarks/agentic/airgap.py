@@ -33,7 +33,7 @@ Fetch = Callable[[str, bytes | None], dict[str, Any]]
 
 def _read_routes(system: str) -> str:
     if system == "Darwin":
-        return subprocess.run(["netstat", "-rn"], capture_output=True, text=True).stdout
+        return subprocess.run(["netstat", "-rn"], capture_output=True, text=True, check=True).stdout
     return "".join(Path(p).read_text() for p in ("/proc/net/route", "/proc/net/ipv6_route"))
 
 
@@ -78,9 +78,14 @@ def host_offline_checks(
         records.append(
             {"check": f"outside_connect:{host}", "passed": passed, "detail": detail, "at": _now()}
         )
-    lines = routes()
+    try:
+        lines = routes()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        passed, route_detail = False, str(exc)
+    else:
+        passed, route_detail = not lines, lines
     records.append(
-        {"check": "no_default_route", "passed": not lines, "detail": lines, "at": _now()}
+        {"check": "no_default_route", "passed": passed, "detail": route_detail, "at": _now()}
     )
     return records
 

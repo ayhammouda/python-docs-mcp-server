@@ -45,7 +45,9 @@ FORBIDDEN_ENV = re.compile(r"(?i)^(?:\w*_proxy|ssl_cert_\w*|requests_ca_bundle)$
 
 
 def allowlist(family: ModelFamily, system_id: str | None) -> tuple[tuple[str, int], ...]:
-    """The job's provider hosts (none for a scripted model), then its system's hosts."""
+    """Air-gapped jobs may reach only local Ollama. Hosted jobs also get their system's hosts."""
+    if family.arm == "air-gapped":
+        return () if family.api == "scripted" else PROVIDER_HOSTS["ollama"]
     provider = () if family.api == "scripted" else PROVIDER_HOSTS.get(family.provider, ())
     return provider + SYSTEM_HOSTS.get(system_id or "", ())
 
