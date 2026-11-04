@@ -75,6 +75,8 @@ SNAPSHOT_NAMES = {
     "probes": "probes.yml",
 }
 
+SNAPSHOT_FILES = {**SNAPSHOT_NAMES, "mapping_table": "mapping.txt", "mask_rules": "masking.txt"}
+
 
 @dataclass(frozen=True)
 class Criterion:
@@ -159,7 +161,17 @@ def load_criteria(
     path: Path, *, corpus_path: Path, schema_path: Path
 ) -> dict[str, GradingQuestion]:
     """Join the criteria file to the corpus it was derived from, in corpus order."""
-    data = _load_yaml_mapping(path, "grading criteria")
+    return criteria_from_mapping(
+        _load_yaml_mapping(path, "grading criteria"),
+        path,
+        corpus_path=corpus_path,
+        schema_path=schema_path,
+    )
+
+
+def criteria_from_mapping(
+    data: dict[str, Any], path: Path, *, corpus_path: Path, schema_path: Path
+) -> dict[str, GradingQuestion]:
     if data.get("schema_version") != 1:
         raise BenchmarkValidationError(f"grading criteria {path} must set schema_version: 1")
     if data.get("corpus_sha256") != _sha256(corpus_path.read_bytes()):
@@ -329,12 +341,11 @@ def snapshot_inputs(
 ) -> dict[str, str]:
     """Write the exact checked bytes once, then publish their manifest."""
     files = _input_bytes(criteria_path, panel_path, probes_path)
-    names = {**SNAPSHOT_NAMES, "mapping_table": "mapping.txt", "mask_rules": "masking.txt"}
     manifest = {name: _sha256(body) for name, body in files.items()}
     manifest_body = scanned_json_bytes(manifest, where="input manifest", indent=2, sort_keys=True)
     dest.mkdir(parents=True, exist_ok=True)
     for name, body in files.items():
-        with (dest / names[name]).open("xb") as file:
+        with (dest / SNAPSHOT_FILES[name]).open("xb") as file:
             file.write(body)
     with (dest / "inputs.json").open("xb") as file:
         file.write(manifest_body + b"\n")

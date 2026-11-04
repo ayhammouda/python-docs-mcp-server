@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.corpus import validate_corpus
+from benchmarks.grading.stats import GATE_RESAMPLES
 from benchmarks.report import generate_readme_summary, generate_report
 from benchmarks.runner import BenchmarkConfig, BenchmarkValidationError, run_benchmark
 from benchmarks.scoring import ingest_adjudication_verdicts, score_run
@@ -231,12 +232,22 @@ def _build_parser() -> argparse.ArgumentParser:
         help="A g1.json from a held-out workspace (repeatable).",
     )
     agentic_score.add_argument("--step", choices=("assemble-probes", "tuning", "g1"))
-    agentic_score.add_argument("--criteria", type=Path, default=_DEFAULT_GRADING_CRITERIA)
-    agentic_score.add_argument("--panel", type=Path, default=_DEFAULT_GRADING_PANEL)
+    agentic_score.add_argument(
+        "--criteria",
+        type=Path,
+        help="Workspace criteria, or a copy to check against a run's frozen criteria.",
+    )
+    agentic_score.add_argument(
+        "--panel",
+        type=Path,
+        help="Workspace panel, or a copy to check against a run's frozen panel.",
+    )
     agentic_score.add_argument("--schema", type=Path, default=_DEFAULT_CORPUS_SCHEMA)
     agentic_score.add_argument("--tuning", type=Path, default=_DEFAULT_TUNING_QUESTIONS)
     agentic_score.add_argument("--index", type=Path, help="Docs index (default: the server's).")
-    agentic_score.add_argument("--resamples", type=int, default=10_000)
+    agentic_score.add_argument(
+        "--resamples", type=int, choices=[GATE_RESAMPLES], default=GATE_RESAMPLES
+    )
 
     # Spawned by the agentic host, never by hand: it reads its job as frames on stdin.
     subparsers.add_parser(
@@ -443,19 +454,25 @@ def _agentic_score(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
 
             path = score.assemble_workspace_probes(
                 args.workspace,
-                criteria_path=args.criteria,
+                criteria_path=args.criteria or _DEFAULT_GRADING_CRITERIA,
                 tuning_path=args.tuning,
-                panel_path=args.panel,
+                panel_path=args.panel or _DEFAULT_GRADING_PANEL,
                 index_path=args.index or get_index_path(),
             )
             result = {"probes": str(path)}
         elif args.step == "tuning":
             path = score.write_tuning(
-                args.workspace, panel_path=args.panel, tuning_path=args.tuning
+                args.workspace,
+                panel_path=args.panel or _DEFAULT_GRADING_PANEL,
+                tuning_path=args.tuning,
             )
             result = {"tuning": str(path)}
         elif args.step == "g1":
-            path = score.write_g1(args.workspace, panel_path=args.panel, tuning_path=args.tuning)
+            path = score.write_g1(
+                args.workspace,
+                panel_path=args.panel or _DEFAULT_GRADING_PANEL,
+                tuning_path=args.tuning,
+            )
             result = {"g1": str(path)}
         else:
             parser.error("--workspace needs --step")

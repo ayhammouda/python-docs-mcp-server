@@ -16,6 +16,8 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+GATE_RESAMPLES = 10_000
+
 Unit = Sequence[float | None]  # one value per coder; None = missing
 Metric = Literal["interval", "nominal"]
 
@@ -80,7 +82,7 @@ def bootstrap_alpha(
     clusters: Mapping[str, Sequence[Unit]],
     *,
     seed: str,
-    resamples: int = 10_000,
+    resamples: int = GATE_RESAMPLES,
     minimum: float = 0.667,
     metric: str = "interval",
 ) -> AlphaResult:
@@ -142,7 +144,7 @@ def paired_bootstrap(
     statistic: Callable[[Sequence[str]], float],
     *,
     seed: str,
-    resamples: int = 10_000,
+    resamples: int = GATE_RESAMPLES,
 ) -> Interval:
     """Resample question ids with replacement; ``statistic`` keeps every repeat of each."""
     point = statistic(questions)

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from benchmarks.__main__ import main
 from tests.benchmarks import test_grading_score as runs
@@ -27,8 +29,6 @@ def _score(run: Path, *paths: Path) -> int:
             str(run),
             "--criteria",
             str(runs.CRITERIA),
-            "--panel",
-            str(runs.PANEL_PATH),
             *(arg for path in paths for arg in ("--g1", str(path))),
         ]
     )
@@ -86,13 +86,16 @@ def test_unpinned_legacy_probes_cannot_validate_either_gate(
     (manifest.parent / "probes.yml").unlink()
     if not entry_is_pinned:
         runs._g1_file(run, path)
-    assert _score(run, path) == 0
+    before = _files(run)
+    with pytest.raises(SystemExit) as refused:
+        _score(run, path)
+    assert refused.value.code == 2
+    assert _files(run) == before
+    assert _score(run) == 0
     summary = json.loads((run / "grading/summary.json").read_bytes())
     assert summary["gates"]["G1"]["passed"] is None
-    assert "probes" in summary["gates"]["G1"]["details"]["reason"]
     assert summary["reference_check"]["passed"] is None
-    entries = json.loads((run / "grading/disclosure/g1-entries.json").read_bytes())
-    assert entries[PRIMARY]["gate"]["passed"] is None
+    assert not (run / "grading/disclosure/g1-entries.json").exists()
 
 
 def test_rescore_publishes_only_current_g1_evidence(run: Path, tmp_path: Path) -> None:
@@ -130,19 +133,28 @@ def test_rescore_publishes_only_current_g1_evidence(run: Path, tmp_path: Path) -
     assert summary["gates"]["G1"]["passed"] is None
     assert summary["reference_check"]["passed"] is None
     assert set(json.loads(entries_file.read_bytes())) == {FALLBACK}
-    assert list((disclosure / "g1").glob("*.json")) == copies[:1]
+    assert set((disclosure / "g1").glob("*.json")) == set(copies)
     assert not (disclosure / "tuning.json").exists()
 
     assert _score(run) == 0
     summary = json.loads((grading / "summary.json").read_bytes())
     assert summary["gates"]["G1"]["passed"] is None and summary["disclosure"]["g1_files"] == []
     assert not entries_file.exists() or json.loads(entries_file.read_bytes()) == {}
-    assert not list((disclosure / "g1").glob("*.json"))
+    assert set((disclosure / "g1").glob("*.json")) == set(copies)
 
 
 def test_fallback_uses_recorded_efforts_and_its_own_reference_check(
     run: Path, tmp_path: Path
 ) -> None:
+    # The fallback effort is frozen before held-out grading.
+    frozen = run / "grading/inputs"
+    panel_path = frozen / "panel.yml"
+    panel = yaml.safe_load(panel_path.read_bytes())
+    panel["judges"]["flash"]["effort"] = "medium"
+    panel_path.write_text(yaml.safe_dump(panel), encoding="utf-8")
+    manifest = json.loads((frozen / "inputs.json").read_bytes())
+    manifest["panel"] = hashlib.sha256(panel_path.read_bytes()).hexdigest()
+    runs._json(frozen / "inputs.json", manifest)
     primary = runs._g1_file(run, tmp_path / "primary.json")
     entry = json.loads(primary.read_bytes())["entries"][PRIMARY]
     composition = entry["binding"]["composition"]

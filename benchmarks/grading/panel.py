@@ -100,7 +100,10 @@ def _one_per_provider(judges: dict[str, JudgeSpec], role: str) -> tuple[str, str
 
 
 def load_panel(path: Path) -> Panel:
-    data = _load_yaml_mapping(path, "grading panel")
+    return panel_from_mapping(_load_yaml_mapping(path, "grading panel"), path)
+
+
+def panel_from_mapping(data: dict[str, Any], path: Path) -> Panel:
     entries = data.get("judges")
     if data.get("schema_version") != 1 or not isinstance(entries, dict):
         raise BenchmarkValidationError(f"grading panel {path} needs schema_version: 1 and judges")

@@ -26,7 +26,6 @@ def _score(run: Path, *g1_paths: Path) -> dict:
         panel_path=runs.PANEL_PATH,
         schema_path=runs.SCHEMA,
         g1_paths=g1_paths,
-        resamples=20,
     )
 
 

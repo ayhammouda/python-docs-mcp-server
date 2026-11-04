@@ -184,17 +184,20 @@ def pass1_composition(
     for judge, spec in composition.items():
         if not isinstance(spec, dict):
             raise BenchmarkValidationError(f"invalid composition.{judge}")
-        if spec.get("model_id") and spec["model_id"] != panel.judges[judge].model_id:
+        if spec.get("model_id") != panel.judges[judge].model_id:
             raise BenchmarkValidationError(f"unregistered composition.{judge}.model_id")
-        if spec.get("effort") and spec["effort"] not in panel.judges[judge].effort_levels:
+        if not spec.get("effort") or spec["effort"] != panel.judges[judge].effort:
             raise BenchmarkValidationError(f"unregistered composition.{judge}.effort")
     return {j: composition[j] for j in judges if j is not None}
 
 
-def run_binding(run_dir: Path, panel: Panel | None = None) -> G1Binding:
+def run_binding(
+    run_dir: Path, panel: Panel | None = None, *, inputs: Mapping[str, str] | None = None
+) -> G1Binding:
     """The run's frozen inputs and the composition (with efforts) that graded pass 1."""
     grading = run_dir / "grading"
-    inputs = read_json(grading / "inputs" / "inputs.json", "grading input manifest")
+    if inputs is None:
+        inputs = read_json(grading / "inputs" / "inputs.json", "grading input manifest")
     return G1Binding(
         composition=pass1_composition(grading, "answers", panel),
         inputs={name: inputs.get(name) for name in BINDING_INPUTS},

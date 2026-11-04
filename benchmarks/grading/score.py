@@ -20,7 +20,8 @@ from typing import Any
 
 import yaml
 
-from benchmarks.agentic.inputs import read_input_bytes
+from benchmarks.agentic.egress import open_log_dir, read_log_at
+from benchmarks.agentic.inputs import CapturedInput, read_input_bytes, read_json
 from benchmarks.agentic.protocol import (
     assert_no_key_shaped_json,
     scanned_json_bytes,
@@ -62,14 +63,18 @@ from benchmarks.grading.grounding import is_grounded
 from benchmarks.grading.inputs import (
     PROBE_SPEC_PATH,
     REPO_ROOT,
+    SNAPSHOT_FILES,
     TUNING_PATH,
+    GradingQuestion,
     Weight,
+    criteria_from_mapping,
     load_criteria,
     load_tuning_questions,
     safe_id,
+    scanned_input,
 )
 from benchmarks.grading.mapping import Vote, grade, panel_fields
-from benchmarks.grading.panel import composition_key, load_panel
+from benchmarks.grading.panel import Panel, composition_key, load_panel, panel_from_mapping
 from benchmarks.grading.probes import (
     MAX_ROUNDS,
     Probe,
@@ -80,6 +85,7 @@ from benchmarks.grading.probes import (
     reference_subset,
     write_probe_file,
 )
+from benchmarks.grading.stats import GATE_RESAMPLES
 from benchmarks.runner import BenchmarkValidationError
 from benchmarks.scoring import apply_llm_grades, score_run
 
@@ -243,25 +249,66 @@ def _no_final_record(
     return result
 
 
+def _scoring_inputs(
+    run_dir: Path, criteria_path: Path | None, panel_path: Path | None, schema_path: Path
+) -> tuple[dict[str, str], dict[str, GradingQuestion], Panel]:
+    root = run_dir / "grading" / "inputs"
+    manifest = read_json(root / "inputs.json", "grading input manifest")
+    if manifest.keys() - SNAPSHOT_FILES.keys():
+        raise BenchmarkValidationError("unrecognized entries in grading input manifest")
+    overrides = {"criteria": criteria_path, "panel": panel_path}
+    settings = {}
+    for name, filename in SNAPSHOT_FILES.items():
+        path = root / filename
+        if name == "probes" and name not in manifest and not path.exists():
+            continue  # An older run without probes can still be scored without G1.
+        if name in overrides:
+            captured = CapturedInput.read(path, name, name)
+            settings[name] = captured.mapping
+            body = captured.content
+        else:
+            body = scanned_input(path, suffix=path.suffix)
+        if hashlib.sha256(body).hexdigest() != manifest.get(name):
+            raise BenchmarkValidationError(f"frozen {name} differs from the grading input manifest")
+        override = overrides.get(name)
+        if (
+            override is not None
+            and override != path
+            and scanned_input(override, suffix=path.suffix) != body
+        ):
+            raise BenchmarkValidationError(f"--{name} differs from the run's frozen {name}")
+
+    questions = criteria_from_mapping(
+        settings["criteria"],
+        root / SNAPSHOT_FILES["criteria"],
+        corpus_path=run_dir / "snapshots" / "corpus.yml",
+        schema_path=schema_path,
+    )
+    panel = panel_from_mapping(settings["panel"], root / SNAPSHOT_FILES["panel"])
+    return manifest, questions, panel
+
+
 def score_run_dir(
     run_dir: Path,
     *,
-    criteria_path: Path,
-    panel_path: Path,
+    criteria_path: Path | None = None,
+    panel_path: Path | None = None,
     schema_path: Path,
     g1_paths: Sequence[Path] = (),
-    resamples: int = 10_000,
+    resamples: int = GATE_RESAMPLES,
 ) -> dict[str, Any]:
     """Score, grade, gate and claim one run; write ``grading/summary.json`` and disclosure."""
+    if resamples != GATE_RESAMPLES:
+        raise BenchmarkValidationError(
+            f"gate scoring requires {GATE_RESAMPLES} bootstrap resamples"
+        )
     grading = run_dir / "grading"
     seed = str(_read(run_dir / "environment.json").get("seed"))
-    manifest = _read(grading / "inputs" / "inputs.json")
-    questions = load_criteria(
-        criteria_path, corpus_path=run_dir / "snapshots" / "corpus.yml", schema_path=schema_path
-    )
-    panel = load_panel(panel_path)
-    binding = run_binding(run_dir, panel)
+    manifest, questions, panel = _scoring_inputs(run_dir, criteria_path, panel_path, schema_path)
+    binding = run_binding(run_dir, panel, inputs=manifest)
     entries, bodies, copies = _g1_inputs(g1_paths)
+    if entries and binding.missing_field():
+        raise BenchmarkValidationError(f"G1 input cannot bind missing {binding.missing_field()}")
     g1_result = (
         select_g1(entries, binding)
         if entries
@@ -269,10 +316,9 @@ def score_run_dir(
     )
     key = composition_key(list(binding.composition))
     entry = entries.get(key, {})
-    if entry and binding.missing_field():
-        # Keep the supplied bytes for provenance. The report reads this derived entry.
-        entry = entries[key] = {**entry, "gate": _gate(g1_result), "reference_check": None}
     check = entry.get("reference_check") or {}
+    if not isinstance(check, dict) or not isinstance(check.get("details", {}), dict):
+        raise BenchmarkValidationError("G1 reference check must contain gate details")
     reference_check = GateResult(
         "reference_probe_check", check.get("passed"), dict(check.get("details") or {})
     )
@@ -281,9 +327,9 @@ def score_run_dir(
     raw_g1 = disclosure / "g1"
     if any(p.is_symlink() for p in (grading, disclosure, raw_g1)):
         raise BenchmarkValidationError("G1 disclosure directory must be within the run")
-    score_run(run_dir, schema_path=schema_path)
     efforts = {judge: spec.get("effort") for judge, spec in binding.composition.items()}
     answer_votes = load_answer_votes(grading, panel=panel, judges=efforts)
+    pass2 = load_answer_votes(grading, panel=panel, judges=efforts, pass_number=2)
     transcripts = _cells(run_dir / "transcripts")
 
     # 2. LLM grades: an item waits until every panel judge has a final pass-1 record.
@@ -303,6 +349,7 @@ def score_run_dir(
         key: is_grounded(t.get("answer") or "", t.get("tool_calls") or [])
         for key, t in transcripts.items()
     }
+    score_run(run_dir, schema_path=schema_path)
     apply_llm_grades(run_dir, finals, grounded=grounded, schema_path=schema_path)
     scoring = _cells(run_dir / "scoring")
     pending = sorted(f"{c}/{q}" for (c, q), r in scoring.items() if r.get("score") is None)
@@ -474,7 +521,6 @@ def score_run_dir(
     # 8. The tier and the diagnostics.
     tier = outcome_tier(g1_result, g2_result, g3_result, g4_result)
     group_key = {i: f"{family_of.get(i)}/{system_of.get(i)}" for i in by_item}
-    pass2 = load_answer_votes(grading, panel=panel, judges=efforts, pass_number=2)
     own2 = {
         av.item_id: {j: _own(av, j, weights[av.corpus_id]) for j in efforts}
         for av in pass2.values()
@@ -578,16 +624,20 @@ def score_run_dir(
             _write(path, value)
     if bodies:
         raw_g1.mkdir(parents=True, exist_ok=True)
-    for path in raw_g1.glob("*.json"):
-        if len(path.stem) == 64 and all(c in "0123456789abcdef" for c in path.stem):
-            path.unlink()
     for sha, body in bodies.items():
-        with (raw_g1 / f"{sha}.json").open("xb") as f:
-            f.write(body)
+        path = raw_g1 / f"{sha}.json"
+        try:
+            with path.open("xb") as f:
+                f.write(body)
+        except FileExistsError:
+            with open_log_dir(raw_g1) as directory:
+                if read_log_at(directory, path.name, max_bytes=len(body)) != body:
+                    raise BenchmarkValidationError("archived G1 bytes differ from their digest")
 
     summary = {
         "run_dir": str(run_dir),
         "seed": seed,
+        "resamples": resamples,
         "tier": tier,
         "composition": composition_key(list(binding.composition)),
         "efforts": efforts,

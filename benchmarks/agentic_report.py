@@ -513,6 +513,8 @@ def _disclosure(run: _Run) -> list[str]:
         "",
         "### Reliability (G2, G3) and robustness (G4)",
         "",
+        f"Gate and claim bootstrap resamples: {_esc(summary.get('resamples', 'not recorded'))}.",
+        "",
         _alpha_line("G2 panel reliability", gates.get("G2") or {}),
         _alpha_line("G3 reference agreement", gates.get("G3") or {}),
         "",

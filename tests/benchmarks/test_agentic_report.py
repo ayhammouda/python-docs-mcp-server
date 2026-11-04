@@ -387,7 +387,6 @@ def _score(run: Path, tmp_path: Path) -> Path:
         panel_path=GFIX / "panel.yml",
         schema_path=SCHEMA,
         g1_paths=[g1],
-        resamples=200,
     )
     return run
 

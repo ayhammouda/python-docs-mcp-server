@@ -252,7 +252,6 @@ def _score(run: Path, tmp_path: Path, **kwargs: Any) -> dict[str, Any]:
         panel_path=PANEL_PATH,
         schema_path=SCHEMA,
         g1_paths=[_g1_file(run, tmp_path / "g1.json")],
-        resamples=200,
         **kwargs,
     )
 
@@ -543,7 +542,7 @@ def test_cli_agentic_score_needs_no_network_and_exits_2_on_bad_input(
         "--panel",
         str(PANEL_PATH),
         "--resamples",
-        "100",
+        "10000",
     ]
     assert main(argv) == 0
     printed = json.loads(capsys.readouterr().out)

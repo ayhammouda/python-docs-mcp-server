@@ -23,6 +23,7 @@ from benchmarks.grading.batch import BatchItemResult
 from benchmarks.grading.inputs import VOTE_FIELDS, GradingQuestion
 from benchmarks.grading.mapping import Vote, grade, panel_fields, parse_object, parse_vote
 from benchmarks.grading.panel import JudgeSpec, Panel
+from benchmarks.runner import BenchmarkValidationError
 
 Withheld = Literal["parse_failure", "refusal", "output_cap", "errored", "expired", "canceled",
                    "missing"]  # fmt: skip
@@ -223,7 +224,22 @@ class AnswerVotes:
     reference_record: dict[str, Any] | None
 
 
-def _summary(root: Path, path: Path, record: dict[str, Any], **where: Any) -> dict[str, Any]:
+def _summary(
+    root: Path, path: Path, record: dict[str, Any], *, judge: JudgeSpec, **where: Any
+) -> dict[str, Any]:
+    expected = {
+        "judge_id": judge.id,
+        "model_id": judge.model_id,
+        "effort": where["effort"],
+        "pass": where["pass_number"],
+        "target": where["target"],
+        "item_id": where["item_id"],
+    }
+    for field, value in expected.items():
+        if record.get(field) != value:
+            raise BenchmarkValidationError(
+                f"{judge.id} vote differs from scoring inputs at {field}"
+            )
     return {
         "path": str(path),
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
@@ -268,7 +284,7 @@ def load_answer_votes(
             chosen = _chosen(root, **where)
             votes[judge_id] = None if chosen is None else _vote_of(chosen[1])
             if chosen is not None:
-                records[judge_id] = _summary(root, *chosen, **where)
+                records[judge_id] = _summary(root, *chosen, judge=panel.judges[judge_id], **where)
         where = {
             "target": "reference",
             "judge_id": reference.id,
@@ -285,7 +301,9 @@ def load_answer_votes(
             records=records,
             suspect=bool(meta.get("suspect")),
             reference=None if chosen is None else _vote_of(chosen[1]),
-            reference_record=None if chosen is None else _summary(root, *chosen, **where),
+            reference_record=None
+            if chosen is None
+            else _summary(root, *chosen, judge=reference, **where),
         )
     return loaded
 
