@@ -48,6 +48,9 @@ PROVIDER_API_KEY_ENV = {
     "context7": "CONTEXT7_API_KEY",
 }
 
+#: The model providers' keys: they pay for every call, and no docs system ever receives one.
+PAID_KEY_ENVS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY")
+
 _TRUTHY = {"1", "true", "yes"}
 #: Every provider key is made of these; anything else could be quoted by an HTTP error.
 _KEY_CHARACTERS = re.compile(r"[A-Za-z0-9_.-]+")

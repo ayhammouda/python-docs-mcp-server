@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from mcp.types import CallToolResult, ImageContent, TextContent
 
+from benchmarks.adapters.guard import PAID_KEY_ENVS
 from benchmarks.agentic.bridge import (
     TRUNCATION_MARKER,
     BridgeCrash,
@@ -129,6 +130,40 @@ def test_a_system_never_receives_a_provider_key(
     with pytest.raises(BenchmarkValidationError, match=match) as caught:
         system_spec_from_raw(raw)
     assert _KEY_SHAPE not in str(caught.value)
+
+
+@pytest.mark.parametrize("system_id", ["python-docs", "ref-tools", "context7"])
+@pytest.mark.parametrize("name", PAID_KEY_ENVS)
+@pytest.mark.parametrize("through", ["env", "pass_env"])
+def test_a_paid_key_reaches_no_system(system_id: str, name: str, through: str) -> None:
+    from benchmarks.runner import BenchmarkValidationError
+
+    raw = {"id": system_id, "adapter": "mcp-stdio", "command": ["a"], "env": {}, "pass_env": []}
+    raw[through] = {name: "x"} if through == "env" else [name]
+    with pytest.raises(BenchmarkValidationError, match=name):
+        system_spec_from_raw(raw)
+
+
+@pytest.mark.parametrize(
+    "system_id,name,allowed",
+    [
+        ("ref-tools", "REF_API_KEY", True),
+        ("python-docs", "REF_API_KEY", False),
+        ("context7", "CONTEXT7_API_KEY", True),
+        ("ref-tools", "CONTEXT7_API_KEY", False),
+    ],
+)
+def test_a_competitor_key_reaches_only_its_own_system(
+    system_id: str, name: str, allowed: bool
+) -> None:
+    from benchmarks.runner import BenchmarkValidationError
+
+    raw = {"id": system_id, "adapter": "mcp-stdio", "command": ["a"], "pass_env": [name]}
+    if allowed:
+        assert system_spec_from_raw(raw).pass_env == (name,)
+    else:
+        with pytest.raises(BenchmarkValidationError, match=name):
+            system_spec_from_raw(raw)
 
 
 async def test_bridge_lists_the_real_server_tools_unfiltered(python_docs: SystemSpec) -> None:

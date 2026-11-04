@@ -19,9 +19,8 @@ import httpx2
 import pytest
 import yaml
 
-from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV, LiveProviderDisabledError
+from benchmarks.adapters.guard import PAID_KEY_ENVS, PROVIDER_API_KEY_ENV, LiveProviderDisabledError
 from benchmarks.agentic.clients import (
-    PAID_KEY_ENVS,
     AnthropicClient,
     GeminiClient,
     OpenAIResponsesClient,

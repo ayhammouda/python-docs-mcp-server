@@ -25,7 +25,11 @@ from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 
-from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV, require_live_environment
+from benchmarks.adapters.guard import (
+    PAID_KEY_ENVS,
+    PROVIDER_API_KEY_ENV,
+    require_live_environment,
+)
 from benchmarks.agentic.schemas import to_anthropic, to_gemini, to_openai_responses
 from benchmarks.agentic.types import (
     Conversation,
@@ -39,8 +43,6 @@ from benchmarks.agentic.types import (
 from benchmarks.agentic.usage import anthropic_buckets, gemini_buckets, openai_buckets
 from benchmarks.model_matrix import ModelFamily
 from benchmarks.runner import BenchmarkValidationError, _load_yaml_mapping
-
-PAID_KEY_ENVS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY")
 
 #: Live API -> the one provider whose key it may carry.
 _LIVE_APIS = {

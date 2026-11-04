@@ -34,6 +34,8 @@ from benchmarks.runner import (
 TRUNCATION_MARKER = "\n[benchmark harness: tool result truncated at {limit} UTF-8 bytes]"
 
 _TRANSPORTS: dict[str, Literal["stdio", "none"]] = {"mcp-stdio": "stdio", "none": "none"}
+#: System id -> its own competitor key, the only provider key a system may receive.
+_OWN_KEYS = {"ref-tools": PROVIDER_API_KEY_ENV["ref"], "context7": PROVIDER_API_KEY_ENV["context7"]}
 
 
 @dataclass(frozen=True)
@@ -92,7 +94,9 @@ def system_spec_from_raw(raw: Mapping[str, Any]) -> SystemSpec:
     ):
         raise BenchmarkValidationError(f"system {system_id!r} 'env' must map strings to strings")
     pass_env = _strings(raw.get("pass_env") or [], f"system {system_id!r} 'pass_env'")
-    keys = sorted(set(PROVIDER_API_KEY_ENV.values()) & (set(pass_env) | set(env)))
+    # Every provider key, the paid ones always, except a competitor's key for its own system.
+    refused = set(PROVIDER_API_KEY_ENV.values()) - {_OWN_KEYS.get(system_id)}
+    keys = sorted(refused & (set(pass_env) | set(env)))
     if keys:
         raise BenchmarkValidationError(
             f"system {system_id!r} must not receive provider keys {keys} through env or pass_env"

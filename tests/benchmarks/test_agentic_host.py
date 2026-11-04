@@ -18,9 +18,8 @@ from typing import Any
 import pytest
 import yaml
 
-from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
+from benchmarks.adapters.guard import PAID_KEY_ENVS, PROVIDER_API_KEY_ENV
 from benchmarks.agentic.bridge import system_spec_from_raw
-from benchmarks.agentic.clients import PAID_KEY_ENVS
 from benchmarks.agentic.host import LocalLauncher, WorkerJob, refuse_host_keys, run_jobs
 from benchmarks.agentic.ledger import Ledger, LedgerService, ModelPrice, Rates, Tier
 from benchmarks.agentic.loop import HOSTED_CAPS, Caps
