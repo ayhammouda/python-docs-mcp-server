@@ -113,9 +113,11 @@ def test_rescore_publishes_only_current_g1_evidence(run: Path, tmp_path: Path) -
     runs._json(fallback, {"entries": {FALLBACK: entry}})
     assert _score(run, fallback, primary) == 0
     summary = json.loads((grading / "summary.json").read_bytes())
-    assert summary["gates"]["G1"]["passed"] is True
-    assert summary["reference_check"]["passed"] is True
+    assert summary["gates"]["G1"]["passed"] is None
+    assert summary["reference_check"]["passed"] is None
     entries_file = disclosure / "g1-entries.json"
+    selected = json.loads(entries_file.read_bytes())[PRIMARY]
+    assert selected["gate"]["passed"] is None and selected["reference_check"]["passed"] is None
     assert set(json.loads(entries_file.read_bytes())) == {PRIMARY, FALLBACK}
     copies = [grading / copy["path"] for copy in summary["disclosure"]["g1_files"]]
     assert [p.read_bytes() for p in copies] == [fallback.read_bytes(), primary.read_bytes()]
@@ -176,7 +178,7 @@ def test_fallback_uses_recorded_efforts_and_its_own_reference_check(
     assert summary["composition"] == FALLBACK
     assert summary["efforts"]["flash"] == "medium" and summary["pending_cells"] == []
     assert summary["gates"]["G1"]["passed"] is False
-    assert summary["reference_check"]["passed"] is True
+    assert summary["reference_check"]["passed"] is None
 
 
 def test_unregistered_pass1_composition_cannot_register_itself(run: Path, tmp_path: Path) -> None:

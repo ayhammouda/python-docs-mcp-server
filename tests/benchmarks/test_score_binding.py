@@ -35,7 +35,8 @@ def test_cli_replays_the_frozen_bundle(scripted_graded_run: Path, tmp_path: Path
     summary = json.loads((run / "grading/summary.json").read_bytes())
     assert split["score"] == 0.5
     assert summary["claims"]["C2"][runs.FAMILY]["interval"]["point"] == pytest.approx(2 / 3)
-    assert summary["gates"]["G1"]["passed"] is True
+    assert summary["gates"]["G1"]["passed"] is None
+    assert summary["gates"]["G1"]["details"]["reason"]
     assert summary["resamples"] == 10_000
 
 

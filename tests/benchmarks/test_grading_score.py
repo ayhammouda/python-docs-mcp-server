@@ -582,7 +582,6 @@ def test_assemble_workspace_probes_and_write_g1_are_separate_steps(
         panel_path=PANEL_PATH,
         schema_path=SCHEMA,
         g1_paths=[g1_path],
-        resamples=100,
     )
     assert summary["gates"]["G1"]["passed"] is True
     entry["gate"]["details"]["by_type"]["foreign"] = {"n": 1}
@@ -593,7 +592,6 @@ def test_assemble_workspace_probes_and_write_g1_are_separate_steps(
         panel_path=PANEL_PATH,
         schema_path=SCHEMA,
         g1_paths=[g1_path],
-        resamples=100,
     )
     assert replay["gates"]["G1"]["passed"] is None
     # Even 349 perfect comparisons cannot stand in for the registered 350.

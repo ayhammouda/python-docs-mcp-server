@@ -364,6 +364,12 @@ def score_run_dir(
                 subset, reference_check.details.get("scores") or {}
             )
 
+    if entry:
+        # The raw export is archived separately. Display only the verdicts this run can support.
+        entries[key] = {
+            **entry, "gate": _gate(g1_result), "reference_check": _gate(reference_check)
+        }
+
     disclosure = grading / "disclosure"
     raw_g1 = disclosure / "g1"
     if any(p.is_symlink() for p in (grading, disclosure, raw_g1)):
