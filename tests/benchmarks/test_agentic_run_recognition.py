@@ -55,10 +55,13 @@ async def test_sibling_storage_failure_cannot_displace_recognition(
     error_type: type[Exception],
     reason: str,
 ) -> None:
-    jobs = [_job(tmp_path, [ANSWER], job_id=name) for name in ("recognized", "storage")]
+    jobs = [
+        _job(tmp_path, [ANSWER], job_id=name) for name in ("recognized", "storage", "late-storage")
+    ]
     service = harness.service(jobs[0].family)
     recognized, draining, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
     failure = _storage_error(secret)
+    late_failure = OSError("later storage failure during cancellation")
     pending = []
     stopped = set()
     reserve, stop_grants = service.reserve, service.stop_grants
@@ -96,6 +99,8 @@ async def test_sibling_storage_failure_cannot_displace_recognition(
                     "body = json.dumps({'type': 'ready'}).encode()\n"
                     "os.write(1, len(body).to_bytes(8, 'big') + body)\n"
                 )
+                if job.job_id == "late-storage":
+                    code += "import time; time.sleep(30)\n"
             return [sys.executable, "-I", "-c", code], {}
 
         async def stop_worker(self, job: WorkerJob) -> None:
@@ -103,6 +108,8 @@ async def test_sibling_storage_failure_cannot_displace_recognition(
             if job.job_id == "recognized":
                 draining.set()
                 await release.wait()
+            if job.job_id == "late-storage":
+                await draining.wait()
 
         async def close(self) -> list[str]:
             self.closed = True
@@ -113,6 +120,8 @@ async def test_sibling_storage_failure_cannot_displace_recognition(
     def publish_or_fail(data: bytes, path: Path) -> None:
         if path.name.startswith("storage."):
             raise failure
+        if path.name.startswith("late-storage."):
+            raise late_failure
         publish(data, path)
 
     monkeypatch.setattr(service, "reserve", reserve_and_queue)
@@ -141,12 +150,14 @@ async def test_sibling_storage_failure_cannot_displace_recognition(
             with pytest.raises(asyncio.CancelledError if interrupted else error_type) as caught:
                 await task
         trace = _assert_safe_chain(caught.value, failure)
+        _assert_safe_chain(caught.value, late_failure)
         assert "artifact volume full" in trace
+        assert "later storage failure during cancellation" in trace
         if interrupted:
             assert str(caught.value) == "operator interrupt"
         else:
             assert reason in str(caught.value)
-        assert stopped == {"recognized", "storage"} and launcher.closed
+        assert stopped == {"recognized", "storage", "late-storage"} and launcher.closed
         events = harness.ledger.invocation_events()
         assert [event["event"] for event in events] == ["reserve", "settle"]
         assert events[1]["outcome"] == "worker_lost"

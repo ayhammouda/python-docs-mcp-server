@@ -35,7 +35,6 @@ from benchmarks.agentic.protocol import (
     FrameTooLarge,
     KeyLeakError,
     encode_frame,
-    find_key_leak,
     read_frame,
     redact_key_shaped,
     redact_key_shaped_text,
@@ -530,7 +529,17 @@ async def run_jobs(
         except BaseException as exc:
             for task in tasks:
                 task.cancel()  # each supervisor kills its worker on the way out
-            drained = asyncio.gather(*tasks, return_exceptions=True)
+
+            async def outcome(task: asyncio.Task[None]) -> BaseException | None:
+                try:
+                    await task
+                except BaseException as error:
+                    # gather(return_exceptions=True) substitutes a fresh CancelledError,
+                    # losing any teardown failure chained to the original cancellation.
+                    return error
+                return None
+
+            drained = asyncio.gather(*(outcome(task) for task in tasks))
             try:
                 await finish(drained, exc)
             except BaseException as interrupted:
@@ -541,10 +550,15 @@ async def run_jobs(
                 # Preserve interrupts, then credential failures, then structural frame failures,
                 # even when the recognizing supervisor was cancelled during cleanup.
                 selected = failure if not isinstance(failure, Exception) else primary
+                prior = selected.__cause__ if selected is not primary else None
+                if prior is not None and prior is not primary:
+                    selected.__cause__ = None
                 seen = {id(selected)}
-                if find_key_leak(selected) is primary:
+                if selected.__cause__ is primary:
                     seen.add(id(primary))
-                for error in (failure, primary, selected.__context__, *drained.result()):
+                for error in (failure, primary, prior, selected.__context__, *drained.result()):
+                    if isinstance(error, asyncio.CancelledError):
+                        error = error.__cause__ or error.__context__
                     if isinstance(error, Exception) and id(error) not in seen:
                         seen.add(id(error))
                         add_safe_cleanup_cause(selected, error)
