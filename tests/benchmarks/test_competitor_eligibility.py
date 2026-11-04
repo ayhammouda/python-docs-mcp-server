@@ -288,7 +288,7 @@ def test_exclusions_block_passes_validation_and_survives_snapshot_byte_for_byte(
 # --- The committed template manifest ----------------------------------------
 
 
-def test_template_states_the_ref_tools_session_requirement_for_round_2() -> None:
+def test_template_does_not_claim_the_ref_tools_session_requirement_is_met() -> None:
     data = yaml.safe_load(_TEMPLATE_MANIFEST_PATH.read_text(encoding="utf-8"))
     (ref,) = [c for c in data["competitors"] if c["id"] == "ref-tools"]
     conditions = " ".join(ref["eligibility"]["conditions"])
