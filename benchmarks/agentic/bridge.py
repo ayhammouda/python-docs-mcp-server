@@ -19,7 +19,7 @@ from typing import Any, Literal, Protocol
 from mcp import ClientSession, MCPError, StdioServerParameters, stdio_client
 from mcp.types import CONNECTION_CLOSED, CallToolResult, PaginatedRequestParams, TextContent
 
-from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
+from benchmarks.adapters.guard import EGRESS_URL_ENV, PROVIDER_API_KEY_ENV
 from benchmarks.agentic.protocol import assert_no_key_shaped
 from benchmarks.agentic.types import ToolSpec
 from benchmarks.runner import (
@@ -32,6 +32,8 @@ from benchmarks.runner import (
 )
 
 TRUNCATION_MARKER = "\n[benchmark harness: tool result truncated at {limit} UTF-8 bytes]"
+#: A manifest env value replaced by the run's egress proxy URL, or dropped without one.
+EGRESS_PLACEHOLDER = "{egress}"
 
 _TRANSPORTS: dict[str, Literal["stdio", "none"]] = {"mcp-stdio": "stdio", "none": "none"}
 #: System id -> its own competitor key, the only provider key a system may receive.
@@ -164,14 +166,30 @@ class Bridge:
         return ToolOutcome(text=canonical_text(result), is_error=bool(result.is_error))
 
 
+def server_env(system: SystemSpec, environ: Mapping[str, str]) -> dict[str, str]:
+    """The MCP server's environment: its manifest ``env``, then its ``pass_env`` names.
+
+    An ``env`` value of ``{egress}`` becomes the worker's ``BENCHMARK_EGRESS_URL``, and the
+    variable is dropped when that is unset: no other proxy ever reaches a server.
+    """
+    env: dict[str, str] = {}
+    for name, value in system.env.items():
+        if value != EGRESS_PLACEHOLDER:
+            env[name] = value
+        elif egress := environ.get(EGRESS_URL_ENV):
+            env[name] = egress
+    env.update({name: environ[name] for name in system.pass_env if name in environ})
+    return env
+
+
 @asynccontextmanager
 async def open_bridge(system: SystemSpec) -> AsyncIterator[Bridge]:
     if system.transport != "stdio":
         raise BenchmarkValidationError(f"system {system.id!r} has no MCP server to open")
     command = [sys.executable if part == "{python}" else part for part in system.command]
-    env = dict(system.env)
-    env.update({name: os.environ[name] for name in system.pass_env if name in os.environ})
-    params = StdioServerParameters(command=command[0], args=command[1:], env=env)
+    params = StdioServerParameters(
+        command=command[0], args=command[1:], env=server_env(system, os.environ)
+    )
     # errlog read now, not at import: the worker points sys.stderr at its redactor.
     async with stdio_client(params, errlog=sys.stderr) as (read, write):
         async with ClientSession(read, write) as session:

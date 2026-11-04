@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import io
 import os
+import shutil
 import sys
 import threading
 from collections import deque
@@ -212,7 +213,13 @@ def _system_info(system: SystemSpec, provider: str, bridge: Bridge | None) -> di
         "gemini_dropped": dropped,
         "index_sha256": _index_sha256() if system.id == "python-docs" else None,
         "client_versions": _client_versions(),
+        "fetch_extraction": _fetch_extraction() if system.id == "docs-fetch" else None,
     }
+
+
+def _fetch_extraction() -> str:
+    """readabilipy uses Readability.js only when node is on PATH (design §5.1)."""
+    return "readability-js" if shutil.which("node") else "pure-python"
 
 
 def _client_versions() -> dict[str, str]:

@@ -214,3 +214,11 @@ def test_release_build_job_never_builds_the_project_with_an_unpinned_backend() -
         "UV_BUILD_CONSTRAINT": ".github/build-constraints.txt",
         "UV_REQUIRE_HASHES": "1",
     }
+
+
+def test_security_audit_covers_the_sandbox_fetch_requirements() -> None:
+    workflow = PROJECT_ROOT / ".github" / "workflows" / "security.yml"
+    job = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]["dependency-audit"]
+    (step,) = [s for s in job["steps"] if s.get("name") == "Audit dependencies"]
+    assert "--requirement requirements-audit.txt" in step["run"]
+    assert "--requirement benchmarks/sandbox/fetch-requirements.txt" in step["run"]

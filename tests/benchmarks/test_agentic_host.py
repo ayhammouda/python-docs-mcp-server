@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 import benchmarks.agentic.host as agentic_host
+import benchmarks.agentic.worker as worker
 from benchmarks.adapters.guard import PAID_KEY_ENVS, PROVIDER_API_KEY_ENV
 from benchmarks.agentic.bridge import system_spec_from_raw
 from benchmarks.agentic.host import LocalLauncher, WorkerJob, refuse_host_keys, run_jobs
@@ -1064,3 +1065,14 @@ async def test_retries_exhausted_trajectory_is_rerun_at_most_twice(
         ("done", None),
     ]
     assert host.ledger.spent("anthropic") == 0  # every 429 books zero
+
+
+def test_system_info_records_the_fetch_extraction_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    fetch = system_spec_from_raw(
+        {"id": "docs-fetch", "adapter": "mcp-stdio", "command": ["mcp-server-fetch"]}
+    )
+    monkeypatch.setattr(worker.shutil, "which", lambda name: None)
+    assert worker._system_info(fetch, "anthropic", None)["fetch_extraction"] == "pure-python"
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/node")
+    assert worker._system_info(fetch, "anthropic", None)["fetch_extraction"] == "readability-js"
+    assert worker._system_info(NO_DOCS, "anthropic", None)["fetch_extraction"] is None
