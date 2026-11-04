@@ -114,7 +114,9 @@ def _client_args(transport: Any | None) -> dict[str, Any]:
     The Anthropic SDK mounts env proxies even then, so each proxy route is mounted direct.
     Tests inject only a transport; every other client setting is the production one.
     """
-    # shortcut: no proxy from the env; PR 4's egress proxy must be passed explicitly (proxy=...)
+    # shortcut: no proxy from the env; PR 4's egress proxy must be passed explicitly (proxy=...),
+    # and PR 4's container launcher must build the worker env from an allowlist with no
+    # *_PROXY, SSL_CERT_* or REQUESTS_CA_BUNDLE (a SOCKS ALL_PROXY crashes the Anthropic SDK).
     return {
         "follow_redirects": False,
         "trust_env": False,

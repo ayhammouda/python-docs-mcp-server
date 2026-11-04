@@ -2114,7 +2114,12 @@ Open PR B with `gh pr create` against `main`:
 - **PR 4:**
   - the Dockerfile and the container launcher (`--env-file`, one key per
     container, `--read-only`, tmpfs, `--cap-drop ALL`);
-  - the per-worker egress proxy and its logs;
+  - the per-worker egress proxy and its logs, passed to each SDK client
+    explicitly (the clients ignore proxy and CA variables);
+  - the container launcher's worker environment as an allowlist that
+    excludes every `*_PROXY`, `SSL_CERT_*` and `REQUESTS_CA_BUNDLE`
+    variable (a SOCKS `ALL_PROXY` crashes the Anthropic SDK at
+    construction; #197 round 4);
   - the isolation probe and the run script;
   - the Ollama client (`OllamaChatClient`), `to_openai_chat`,
     `ollama_buckets`, the unmetered `ollama` ledger provider and the

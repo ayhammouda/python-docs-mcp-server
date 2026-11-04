@@ -182,6 +182,24 @@ def test_local_launcher_passes_no_provider_key_and_runs_only_scripted_models(
     assert LocalLauncher().supports(job.family) is True
 
 
+def test_local_launcher_passes_no_proxy_or_ca_variable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A SOCKS ALL_PROXY crashes the Anthropic client; a CA variable swaps the trust store.
+    for name in ("HTTPS_PROXY", "http_proxy", "ALL_PROXY", "NO_PROXY", "SSL_CERT_FILE"):
+        monkeypatch.setenv(name, "socks5://proxy.invalid:1080")
+    monkeypatch.setenv("SSL_CERT_DIR", "/nonexistent")
+    monkeypatch.setenv("REQUESTS_CA_BUNDLE", "/nonexistent/ca.pem")
+    _, env = LocalLauncher().command(_job(tmp_path, [ANSWER]))
+    assert not [
+        name
+        for name in env
+        if name.upper().endswith("_PROXY")
+        or name.startswith("SSL_CERT_")
+        or name == "REQUESTS_CA_BUNDLE"
+    ]
+
+
 ANTHROPIC_SHAPE = "sk-ant-api03-" + "a" * 90
 
 
