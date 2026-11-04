@@ -20,11 +20,11 @@ from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, BinaryIO, Protocol
 
 from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
 from benchmarks.agentic.bridge import SystemSpec
-from benchmarks.agentic.cleanup import finish
+from benchmarks.agentic.cleanup import add_cleanup_cause, finish
 from benchmarks.agentic.ledger import LedgerService
 from benchmarks.agentic.loop import Caps
 from benchmarks.agentic.protocol import (
@@ -185,6 +185,7 @@ async def _teardown(
     ledger: LedgerService,
     in_flight: str | None,
     stop_worker: Callable[[], Awaitable[None]] | None = None,
+    worker_log: BinaryIO | None = None,
 ) -> None:
     """Kill the worker, scrub its log and book any open unit before teardown returns."""
 
@@ -193,19 +194,11 @@ async def _teardown(
 
     @contextmanager
     def attempt() -> Iterator[None]:
-        # All five steps run independently. Report each job's failures before gather drains it.
+        # Report each job's failures before gather drains it, and attempt every cleanup step.
         try:
             yield
         except BaseException as exc:  # noqa: BLE001 - propagate after all cleanup steps
-            detail = f"{location}: {type(exc).__name__}: {exc}"
-            if KEY_SHAPED.search("".join(traceback.format_exception(exc, limit=0))):
-                # An outer exception may be clean while its notes or chained daemon error leak.
-                safe = KeyLeakError(KEY_SHAPED.sub("[redacted]", detail) + " (key shape redacted)")
-                errors.append(safe)
-            else:
-                exc.add_note(location)
-                errors.append(exc)
-            _diagnostic(detail)
+            errors.append(exc)
 
     with attempt():
         _kill_group(anchor)
@@ -217,6 +210,9 @@ async def _teardown(
     if stop_worker is not None:
         with attempt():
             await stop_worker()
+    if worker_log is not None and not worker_log.closed:
+        with attempt():
+            worker_log.close()
     with attempt():
         if pattern := _publish_scrubbed(log_path):
             raise KeyLeakError(
@@ -226,9 +222,23 @@ async def _teardown(
         with attempt():
             await ledger.settle(in_flight, outcome="worker_lost", buckets=None)
 
+    # Formatting failures must never interrupt mandatory scrubbing or accounting.
+    for i, exc in enumerate(errors):
+        try:
+            detail = f"{location}: {type(exc).__name__}: {exc}"
+            if KEY_SHAPED.search("".join(traceback.format_exception(exc, limit=0))):
+                # An outer exception may be clean while its notes or chained daemon error leak.
+                errors[i] = KeyLeakError(
+                    KEY_SHAPED.sub("[redacted]", detail) + " (key shape redacted)"
+                )
+            else:
+                exc.add_note(location)
+            _diagnostic(detail)
+        except Exception:  # noqa: BLE001 - an unscannable failure must not enter the traceback
+            errors[i] = KeyLeakError(f"{location}: could not safely report {type(exc).__name__}")
     if errors:
         for primary, secondary in zip(errors, errors[1:]):
-            primary.__cause__ = secondary
+            add_cleanup_cause(primary, secondary)
         raise errors[0]
 
 
@@ -244,7 +254,7 @@ def _publish_scrubbed(log_path: Path) -> str | None:
         redacted, pattern = redact_key_shaped(log_path.read_bytes())
         scrubbed.write_bytes(redacted)
         os.replace(scrubbed, log_path)
-    except OSError:  # a full or read-only disk, say
+    except BaseException:  # an I/O or allocation failure must not publish the original bytes
         log_path.unlink(missing_ok=True)
         scrubbed.unlink(missing_ok=True)
         raise
@@ -263,31 +273,29 @@ async def _supervise(
 ) -> None:
     argv, env = launcher.command(job)
     log_path = log_dir / f"{job.job_id}.stderr.log"
-    with log_path.open("wb") as log:
+    log = log_path.open("wb")
+    try:
         anchor = _start_anchor()
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                env=env,
-                cwd=cwd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=log,
-                process_group=anchor.pid,  # the anchor's group, which teardown kills whole
-            )
-        except BaseException as exc:
-            # A child may already have written stderr before its pipe transport is ready.
-            await finish(
-                _teardown(None, anchor, log_path, ledger, None, partial(launcher.stop_worker, job)),
-                exc,
-            )
-            raise
-    assert proc.stdin is not None and proc.stdout is not None
+    except BaseException:
+        log.close()
+        raise
+    proc = None
     in_flight: str | None = None
     reported: set[tuple[str, int]] = set()
     done = False
     lost_reason = "worker_lost"
     try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            env=env,
+            cwd=cwd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=log,
+            process_group=anchor.pid,  # the anchor's group, which teardown kills whole
+        )
+        log.close()  # the child has its descriptor; a failed close still runs full teardown
+        assert proc.stdin is not None and proc.stdout is not None
         try:
             # The private key frame first, then the job. The frame is never logged or kept.
             if (bootstrap := launcher.bootstrap_frame(job)) is not None:
@@ -377,7 +385,7 @@ async def _supervise(
     finally:
         await finish(
             _teardown(
-                proc, anchor, log_path, ledger, in_flight, partial(launcher.stop_worker, job)
+                proc, anchor, log_path, ledger, in_flight, partial(launcher.stop_worker, job), log
             ),
             sys.exception(),
         )

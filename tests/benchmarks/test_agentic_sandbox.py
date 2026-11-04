@@ -10,17 +10,19 @@ import json
 import os
 import subprocess
 import sys
+import traceback
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
 from benchmarks.agentic.bridge import SystemSpec, load_systems
 from benchmarks.agentic.egress import allowlist, squid_conf, write_egress_summary
-from benchmarks.agentic.host import WorkerJob
+from benchmarks.agentic.host import WorkerJob, run_jobs
 from benchmarks.agentic.loop import HOSTED_CAPS
 from benchmarks.agentic.protocol import KeyLeakError
 from benchmarks.agentic.sandbox import (
@@ -829,6 +831,26 @@ async def test_network_remove_failure_names_the_owned_id_and_scrubs_daemon_stder
     assert SYNTHETIC not in problems[0]
 
 
+@pytest.mark.parametrize("kind", ["container", "network"])
+async def test_remove_cli_start_failure_identifies_owned_resource_and_scrubs_error(
+    tmp_path: Path, kind: str
+) -> None:
+    sandbox = _sandbox(tmp_path, FakeDocker())
+    owned = "a" * 64
+
+    async def unavailable(argv: Sequence[str]) -> Any:
+        raise OSError(f"cannot start CLI: {SYNTHETIC}")
+
+    sandbox.docker = unavailable
+    with pytest.raises(BenchmarkValidationError, match=owned) as error:
+        if kind == "container":
+            await sandbox.remove_container(owned)
+        else:
+            await sandbox.run("network", "rm", owned)
+    trace = "".join(traceback.format_exception(error.value))
+    assert SYNTHETIC not in trace and "cannot start CLI: [redacted]" in trace
+
+
 async def test_close_stops_each_proxy_then_removes_what_it_created(tmp_path: Path) -> None:
     docker = FakeDocker()
     keys = _keys(tmp_path, "ANTHROPIC_API_KEY=dummy")
@@ -1194,6 +1216,47 @@ async def test_cancelled_open_egress_finishes_both_removals(tmp_path: Path, fail
     assert "boom" in str(error.value.__cause__)
     assert docker.ran("rm", "-f", "id-pdmcp-r1-j-proxy")
     assert docker.ran("network", "rm", "id-pdmcp-r1-j-net")
+
+
+async def test_launcher_close_preserves_both_failed_network_ids_on_cancellation(
+    tmp_path: Path,
+) -> None:
+    job = _job("scripted-anthropic")
+    network = f"pdmcp-{RUN}-{job.job_id}-net"
+    docker = LateCreate(network)
+    docker.fail = lambda args: args[:2] == ["network", "rm"]
+    sandbox = _sandbox(tmp_path, docker)
+    probes = Probes()
+    interrupted: list[asyncio.CancelledError] = []
+
+    class Launcher(ContainerLauncher):
+        async def prepare(self, jobs: Sequence[WorkerJob]) -> None:
+            try:
+                await super().prepare(jobs)
+            except asyncio.CancelledError as exc:
+                interrupted.append(exc)
+                raise
+
+    task = asyncio.create_task(
+        run_jobs(
+            [job],
+            launcher=Launcher(sandbox, probe=probes, control=probes.control),
+            ledger=Mock(),
+            on_message=AsyncMock(),
+            log_dir=tmp_path / "logs",
+            cwd=tmp_path,
+        )
+    )
+    await asyncio.wait_for(docker.started.wait(), 2)
+    task.cancel("signal SIGTERM")
+    docker.release.set()
+    with pytest.raises(asyncio.CancelledError, match="signal SIGTERM") as error:
+        await task
+    assert error.value is interrupted[0]
+    trace = "".join(traceback.format_exception(error.value))
+    for name in (network, sandbox.outside):
+        assert docker.ran("network", "rm", f"id-{name}")
+        assert f"id-{name}" in trace
 
 
 async def test_cancelled_create_preserves_signal_when_cli_cannot_start(tmp_path: Path) -> None:

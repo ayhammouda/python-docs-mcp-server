@@ -17,6 +17,15 @@ async def settle(task: asyncio.Future[Any]) -> asyncio.CancelledError | None:
     return cancelled
 
 
+def add_cleanup_cause(primary: BaseException, failure: BaseException) -> None:
+    """Retain each rollback failure on the exception already being propagated."""
+    prior = primary.__cause__
+    if primary is not failure and prior is not failure:
+        primary.__cause__ = (
+            failure if prior is None else BaseExceptionGroup("cleanup failures", [prior, failure])
+        )
+
+
 async def finish[T](operation: Awaitable[T], pending: BaseException | None = None) -> T:
     """Finish the operation before propagating cancellation.
 
@@ -31,7 +40,8 @@ async def finish[T](operation: Awaitable[T], pending: BaseException | None = Non
         result = task.result()
     except BaseException as error:
         if cancelled is not None and cancelled is not error:
-            raise cancelled from error
+            add_cleanup_cause(cancelled, error)
+            raise cancelled
         raise
     if cancelled is not None and cancelled is not pending:
         raise cancelled

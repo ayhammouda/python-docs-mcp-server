@@ -41,7 +41,7 @@ from benchmarks.agentic.egress import (
     squid_conf,
     write_new,
 )
-from benchmarks.agentic.protocol import KeyLeakError, redact_key_shaped
+from benchmarks.agentic.protocol import KEY_SHAPED, KeyLeakError, redact_key_shaped
 from benchmarks.model_matrix import KNOWN_APIS, ModelFamily
 from benchmarks.runner import BenchmarkValidationError, _write_json
 
@@ -190,6 +190,15 @@ def _tail(proc: subprocess.CompletedProcess[bytes]) -> str:
     return lines[-1] if lines else f"exit {proc.returncode}"
 
 
+async def _remove(docker: DockerRun, *args: str) -> subprocess.CompletedProcess[bytes]:
+    # Even if the CLI cannot start or times out, the operator needs the immutable ID.
+    try:
+        return await docker(["docker", *args])
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        detail = KEY_SHAPED.sub("[redacted]", str(exc))
+        raise BenchmarkValidationError(f"docker {' '.join(args)} failed: {detail}") from None
+
+
 def _engine(version: str) -> tuple[int, int]:
     match = re.match(r"(\d+)\.(\d+)", version.strip())
     return (int(match[1]), int(match[2])) if match else (0, 0)
@@ -295,9 +304,12 @@ class Sandbox:
 
     async def run(self, *args: str) -> subprocess.CompletedProcess[bytes]:
         """One docker command; raises BenchmarkValidationError when it fails."""
-        proc = await self.docker(["docker", *args])
+        removing = args[:2] in (("network", "rm"), ("rm", "-f"))
+        proc = (
+            await _remove(self.docker, *args) if removing else await self.docker(["docker", *args])
+        )
         if proc.returncode != 0:
-            operation = args[:3] if args[:2] in (("network", "rm"), ("rm", "-f")) else args[:2]
+            operation = args if removing else args[:2]
             raise BenchmarkValidationError(f"docker {' '.join(operation)} failed: {_tail(proc)}")
         return proc
 
@@ -313,7 +325,7 @@ class Sandbox:
             loop = asyncio.get_running_loop()
             deadline = loop.time() + _RESOURCE_RECOVERY_S
             while True:
-                proc = await self.docker(["docker", "rm", "-f", container_id])
+                proc = await _remove(self.docker, "rm", "-f", container_id)
                 detail = _tail(proc)
                 if proc.returncode == 0 or "No such container" in detail:
                     return

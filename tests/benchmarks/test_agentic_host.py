@@ -6,6 +6,7 @@ Workers are real subprocesses; models are scripted, so nothing reaches a network
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import signal
@@ -1497,6 +1498,56 @@ async def test_cleanup_scrubs_and_accounts_even_with_a_broken_stderr(
     assert host.ledger.spent("anthropic") == (0 if phase == "spawn" else 2 * D("0.002024"))
 
 
+@pytest.mark.parametrize("cancel_spawn", [False, True])
+async def test_parent_log_close_failure_still_cleans_the_spawned_worker(
+    host: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel_spawn: bool
+) -> None:
+    opened = asyncio.Event()
+    log = tmp_path / "logs" / "interrupted.stderr.log"
+    original_open = Path.open
+
+    class FailingClose(io.FileIO):
+        def close(self) -> None:
+            super().close()
+            raise OSError("log close failed")
+
+    def open_file(path: Path, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+        if path == log and mode == "wb":
+            return FailingClose(path, mode)
+        return original_open(path, mode, *args, **kwargs)
+
+    async def spawn(*args: Any, stderr: Any, **kwargs: Any) -> Mock:
+        os.write(stderr.fileno(), SYNTHETIC_KEY.encode())
+        opened.set()
+        if cancel_spawn:
+            await asyncio.Event().wait()
+        return Mock(wait=AsyncMock())
+
+    _fake_host_processes(monkeypatch, spawn)
+    kill = Mock()
+    reap = AsyncMock()
+    monkeypatch.setattr(agentic_host, "_kill_group", kill)
+    monkeypatch.setattr(agentic_host, "_reap", reap)
+    monkeypatch.setattr(Path, "open", open_file)
+    launcher = RecordingLauncher()
+    job = _job(tmp_path, [ANSWER], job_id="interrupted")
+    task = asyncio.create_task(host.run([job], launcher=launcher))
+    await asyncio.wait_for(opened.wait(), 2)
+    if cancel_spawn:
+        task.cancel("signal SIGTERM")
+    with pytest.raises((asyncio.CancelledError, OSError, KeyLeakError)) as error:
+        await task
+    kill.assert_called_once()
+    reap.assert_awaited_once()
+    assert "stop_worker:interrupted" in launcher.events
+    assert log.read_text() == "[redacted]"
+    trace = "".join(traceback.format_exception(error.value))
+    assert "log close failed" in trace and SYNTHETIC_KEY not in trace
+    if cancel_spawn:
+        assert isinstance(error.value, asyncio.CancelledError)
+        assert str(error.value) == "signal SIGTERM"
+
+
 def test_unreadable_worker_log_is_unlinked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     log = tmp_path / "worker.stderr.log"
     log.write_text(SYNTHETIC_KEY)
@@ -1504,6 +1555,41 @@ def test_unreadable_worker_log_is_unlinked(tmp_path: Path, monkeypatch: pytest.M
     with pytest.raises(OSError, match="read failed"):
         agentic_host._publish_scrubbed(log)
     assert not log.exists()
+
+
+async def test_scrub_allocation_failure_unlinks_the_log_and_settles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = tmp_path / "worker.stderr.log"
+    log.write_text(SYNTHETIC_KEY)
+    failure = MemoryError("redaction allocation failed")
+    monkeypatch.setattr(agentic_host, "redact_key_shaped", Mock(side_effect=failure))
+    monkeypatch.setattr(agentic_host, "_kill_group", Mock())
+    monkeypatch.setattr(agentic_host, "_reap", AsyncMock())
+    ledger = Mock(settle=AsyncMock())
+    with pytest.raises(MemoryError, match="redaction allocation failed") as error:
+        await agentic_host._teardown(None, Mock(), log, ledger, "reserved")
+    assert error.value is failure
+    assert not log.exists() and not log.with_suffix(".log.tmp").exists()
+    ledger.settle.assert_awaited_once_with("reserved", outcome="worker_lost", buckets=None)
+
+
+async def test_unformattable_removal_error_cannot_skip_scrub_or_settlement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = tmp_path / "worker.stderr.log"
+    log.write_text(SYNTHETIC_KEY)
+    monkeypatch.setattr(agentic_host, "_kill_group", Mock())
+    monkeypatch.setattr(agentic_host, "_reap", AsyncMock())
+    ledger = Mock(settle=AsyncMock())
+    stop = AsyncMock(side_effect=RuntimeError(f"removal failed: {SYNTHETIC_KEY}"))
+    with monkeypatch.context() as formatting, pytest.raises(KeyLeakError) as error:
+        formatting.setattr(traceback, "format_exception", Mock(side_effect=MemoryError()))
+        await agentic_host._teardown(None, Mock(), log, ledger, "reserved", stop)
+    assert log.read_text() == "[redacted]"
+    ledger.settle.assert_awaited_once_with("reserved", outcome="worker_lost", buckets=None)
+    trace = "".join(traceback.format_exception(error.value))
+    assert log.name in trace and SYNTHETIC_KEY not in trace
 
 
 async def test_close_problems_fail_a_clean_run(host: Host, tmp_path: Path) -> None:
