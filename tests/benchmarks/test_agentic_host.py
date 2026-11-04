@@ -2105,7 +2105,9 @@ async def test_credential_failure_denies_sibling_grants_during_teardown(
         "        time.sleep(0.01)\n"
         f"    os.write(1, {encode_frame(_reserve_frame(1024))!r})\n"
         "    reply = read_frame_fd(0)\n"
-        f"    Path({str(response)!r}).write_text(json.dumps(reply))\n"
+        f"    stage = Path({str(response.with_suffix('.tmp'))!r})\n"
+        "    stage.write_text(json.dumps(reply))\n"
+        f"    stage.replace({str(response)!r})\n"
     )
 
     class Launcher(KeyedLauncher):
