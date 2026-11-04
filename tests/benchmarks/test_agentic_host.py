@@ -716,8 +716,12 @@ def _alive(pid: int) -> bool:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    stat = Path(f"/proc/{pid}/stat")  # Linux: a zombie is dead, whoever has yet to reap it
-    return not (stat.exists() and stat.read_text().rsplit(")", 1)[1].split()[0] == "Z")
+    if not Path("/proc").is_dir():  # macOS: launchd reaps an orphan at once
+        return True
+    try:  # Linux: a zombie is dead, whoever has yet to reap it
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+    except FileNotFoundError:  # reaped between the two reads
+        return False
 
 
 async def test_no_descendant_can_write_a_key_into_the_published_log(
