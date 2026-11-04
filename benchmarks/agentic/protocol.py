@@ -198,7 +198,14 @@ def check_json_text(
         raise KeyLeakError(f"content inspection limit exceeded in {where}")
     assert_no_key_shaped_json(text, where=where, check_content=check_content)
     position = 0
-    while (start := text.find('"', position)) != -1:
+    while position < len(text):
+        start = text.find('"', position)
+        # Escapes outside a string have no unambiguous JSON interpretation.
+        gap_end = start if start != -1 else len(text)
+        if text.find("\\", position, gap_end) != -1:
+            raise KeyLeakError(f"uninspectable JSON escape in {where}")
+        if start == -1:
+            break
         end = start + 1
         while match := _JSON_STRING_PART.match(text, end):
             end = match.end()
