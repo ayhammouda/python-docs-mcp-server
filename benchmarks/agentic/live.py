@@ -9,16 +9,17 @@ remaining budget and estimate.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
 
-from benchmarks.agentic.ledger import PROVIDER_MARGINS
+from benchmarks.agentic.ledger import PROVIDER_MARGINS, UNMETERED_PROVIDERS
 from benchmarks.runner import BenchmarkValidationError
 
 if TYPE_CHECKING:
@@ -55,34 +56,94 @@ def reference_rates(run_dir: Path) -> dict[str, ReferenceRate]:
     A logical cell is one (cell, corpus_id) over the family's scored and discarded records,
     every attempt included, so a retry-heavy pilot never halves the estimate.
     """
+    try:
+        return _read_reference_rates(run_dir)
+    except (OSError, ValueError, KeyError, TypeError, DecimalException, OverflowError) as exc:
+        raise BenchmarkValidationError(f"invalid reference run {run_dir}: {exc}") from exc
+
+
+def _read_reference_rates(run_dir: Path) -> dict[str, ReferenceRate]:
+    summary = json.loads((run_dir / "run-summary.json").read_text(encoding="utf-8"))
+    if summary["status"] != "completed":
+        raise ValueError("the run did not complete")
+    # Budget stops and worker errors can leave status "completed" with cells unscored.
+    if not summary["scored_cells"] or summary["scored_cells"] != summary["planned_cells"]:
+        raise ValueError("the run did not score every planned cell")
     seconds: dict[str, dict[tuple[str, str], float]] = defaultdict(lambda: defaultdict(float))
     providers: dict[str, str] = {}
+    job_families: dict[tuple[str, str], str] = {}
+    scored: set[tuple[str, str]] = set()
+    discarded = {
+        (d["cell"], f"{d['corpus_id']}--attempt{d['attempt']}.json") for d in summary["discarded"]
+    }
     for kind in ("transcripts", "discarded"):
         for path in sorted((run_dir / kind).glob("*/*.json")):
             record = json.loads(path.read_text(encoding="utf-8"))
             family_id = record["model_family_id"]
-            providers[family_id] = record["provider"]
+            provider = record["provider"]
+            if providers.setdefault(family_id, provider) != provider:
+                raise ValueError(f"inconsistent provider for {family_id}")
+            job_families[provider, f"{family_id}--{record['system_id']}"] = family_id
             timing = record["timing"]
             cell = (record["competitor_id"], record["corpus_id"])
-            seconds[family_id][cell] += (timing["wall_ms"] - timing["grant_wait_ms"]) / 1000
-    booked: dict[str, Decimal] = defaultdict(Decimal)
+            elapsed = (timing["wall_ms"] - timing["grant_wait_ms"]) / 1000
+            if not math.isfinite(elapsed) or elapsed < 0 or timing["grant_wait_ms"] < 0:
+                raise ValueError(f"invalid timing for {family_id} {cell}")
+            seconds[family_id][cell] += elapsed
+            if kind == "transcripts":
+                scored.add(cell)
+            else:
+                discarded.remove((path.parent.name, path.name))
+    if discarded:
+        raise ValueError("missing discarded attempts from the reference run")
+    if len(scored) != summary["scored_cells"] or any(
+        cells.keys() - scored for cells in seconds.values()
+    ):
+        raise ValueError("scored transcripts do not cover the reference cells")
+
+    booked: dict[str, Decimal] = defaultdict(Decimal)  # includes charges for failed attempts
+    measured: set[str] = set()
+    reserved: dict[str, str] = {}
     events = (run_dir / "ledger-events.jsonl").read_text(encoding="utf-8").splitlines()
     for event in map(json.loads, filter(None, events)):
-        if event["event"] == "settle":
-            booked[event["provider"]] += Decimal(event["booked"])
-    provider_cells: dict[str, int] = defaultdict(int)
-    for family_id, cells in seconds.items():
-        provider_cells[providers[family_id]] += len(cells)
-    return {
+        provider = event["provider"]
+        if event["event"] == "reserve":
+            reserved[event["unit_id"]] = job_families[provider, event["job_id"]]
+        elif event["event"] == "settle":
+            family_id = reserved.pop(event["unit_id"])
+            amount = Decimal(event["booked"])
+            if provider != providers[family_id] or not amount.is_finite() or amount < 0:
+                raise ValueError(f"invalid settlement for {family_id}")
+            booked[family_id] += amount
+            if event["outcome"] == "ok" and amount > 0:
+                measured.add(family_id)
+    if reserved:
+        raise ValueError("the ledger has unsettled reservations")
+    balances = summary["ledger"]
+    if (
+        not isinstance(balances, dict)
+        or set(providers.values()) - UNMETERED_PROVIDERS - balances.keys()
+    ):
+        raise ValueError("the run summary is missing a metered provider's spend")
+    for provider, balance in balances.items():
+        spend = sum(booked[f] for f in booked if providers[f] == provider)
+        if spend != Decimal(balance["spent_after"]) - Decimal(balance["spent_before"]):
+            raise ValueError(f"{provider} settlements disagree with the run's spend")
+    rates = {
         family_id: ReferenceRate(
             family_id=family_id,
             provider=providers[family_id],
             cells=len(cells),
-            usd_per_cell=booked[providers[family_id]] / provider_cells[providers[family_id]],
+            usd_per_cell=booked[family_id] / len(cells),
             seconds_per_cell=sum(cells.values()) / len(cells),
         )
         for family_id, cells in seconds.items()
+        if providers[family_id] in UNMETERED_PROVIDERS or family_id in measured
+        if sum(cells.values()) > 0
     }
+    if not rates:
+        raise ValueError("no family has usable cost and timing measurements")
+    return rates
 
 
 def _live_counts(jobs: Sequence[WorkerJob]) -> dict[str, dict[str, int]]:
@@ -108,7 +169,9 @@ def provider_plans(
             plans.append(ProviderPlan(provider, trajectories, None, None, None))
             continue
         estimate = None
-        if rates is not None and all(f in rates for f in families):
+        if rates is not None and all(
+            f in rates and rates[f].provider == provider for f in families
+        ):
             estimate = sum(
                 (n * rates[f].usd_per_cell for f, n in families.items()), start=Decimal(0)
             )
@@ -130,11 +193,18 @@ def full_run_gate(
     The per-graded-answer term of design §12 comes from PR 5's grading/summary.json.
     """
     problems = []
+    counts = _live_counts(jobs)
     for plan in plans:
         if plan.cap is None or plan.spent is None:
             continue
         if plan.estimate is None:
-            if plan.trajectories > PILOT_TRAJECTORIES_PER_PROVIDER:
+            if rates is not None:
+                families = ", ".join(counts[plan.provider])
+                problems.append(
+                    f"{plan.provider}: the reference needs usable measurements for each "
+                    f"requested family ({families})"
+                )
+            elif plan.trajectories > PILOT_TRAJECTORIES_PER_PROVIDER:
                 problems.append(
                     f"{plan.provider}: {plan.trajectories} trajectories is more than the "
                     f"{PILOT_TRAJECTORIES_PER_PROVIDER}-trajectory pilot; pass --reference-run "
@@ -147,7 +217,7 @@ def full_run_gate(
                 f"{plan.provider}: the estimate ${plan.estimate} x {SAFETY} = "
                 f"${plan.estimate * SAFETY} is over the ${remaining} left under its cap"
             )
-    for provider_families in _live_counts(jobs).values():
+    for provider_families in counts.values():
         for family_id, trajectories in provider_families.items():
             rate = (rates or {}).get(family_id)
             if rate is not None and trajectories * rate.seconds_per_cell * float(SAFETY) > WINDOW_S:
@@ -167,11 +237,10 @@ def confirmation_text(plans: Sequence[ProviderPlan]) -> str:
         if plan.cap is None or plan.spent is None:
             lines.append(f"{head}; local, unmetered")
             continue
-        estimate = (
-            "no reference run (the remaining cap is the worst case)"
-            if plan.estimate is None
-            else f"estimate ${plan.estimate:.2f} (x {SAFETY} = ${plan.estimate * SAFETY:.2f})"
-        )
+        estimate = "no reference run (the remaining cap is the worst case)"
+        if plan.estimate is not None:
+            scaled = _dollars(plan.estimate * SAFETY)
+            estimate = f"estimate {_dollars(plan.estimate)} (x {SAFETY} = {scaled})"
         margin = PROVIDER_MARGINS.get(plan.provider)
         lines.append(
             f"{head}; spent ${plan.spent} of cap ${plan.cap}, ${plan.cap - plan.spent} "
@@ -179,6 +248,10 @@ def confirmation_text(plans: Sequence[ProviderPlan]) -> str:
             f"${margin} margin"
         )
     return "\n".join(lines)
+
+
+def _dollars(amount: Decimal) -> str:
+    return "<$0.01" if 0 < amount < Decimal("0.01") else f"${amount:.2f}"
 
 
 def interactive_confirm(

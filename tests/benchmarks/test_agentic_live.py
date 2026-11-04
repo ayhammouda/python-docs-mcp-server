@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import json
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -65,12 +66,35 @@ def _write_record(
     cell, corpus = path.parent.name, path.name.split("--")[0].removesuffix(".json")
     record = {
         "competitor_id": cell,
+        "system_id": "no-docs",
         "corpus_id": corpus,
         "model_family_id": family_id,
         "provider": provider,
         "timing": {"wall_ms": wall_ms, "grant_wait_ms": wait_ms},
     }
     path.write_text(json.dumps(record), encoding="utf-8")
+
+
+def _pilot_summary(run: Path, status: str, planned: int, scored: int, openai_spend: str) -> None:
+    summary = {
+        "status": status,
+        "planned_cells": planned,
+        "scored_cells": scored,
+        "discarded": [
+            {"cell": path.parent.name, "corpus_id": path.name.split("--")[0], "attempt": 1}
+            for path in (run / "discarded").glob("*/*.json")
+        ],
+        "ledger": {"openai": {"spent_before": "4", "spent_after": str(D(4) + D(openai_spend))}},
+    }
+    (run / "run-summary.json").write_text(json.dumps(summary))
+
+
+def _settled_unit(unit_id: str, family: str, booked: str, outcome: str) -> list[dict[str, str]]:
+    unit = {"provider": "openai", "unit_id": unit_id}
+    return [
+        {**unit, "event": "reserve", "job_id": f"{family}--no-docs"},
+        {**unit, "event": "settle", "booked": booked, "outcome": outcome},
+    ]
 
 
 def test_reference_rates_aggregate_every_attempt_of_a_cell(tmp_path: Path) -> None:
@@ -83,15 +107,100 @@ def test_reference_rates_aggregate_every_attempt_of_a_cell(tmp_path: Path) -> No
             )
             discarded = run / "discarded" / cell / f"{q}--attempt1.json"
             _write_record(discarded, "gpt-6.1-sol", "openai", 1000, 0)
-    events = [
-        {"event": "settle", "provider": "openai", "booked": "0.05", "unit_id": f"u{i}"}
-        for i in range(180)
-    ]
+    _pilot_summary(run, "completed", 90, 90, "9")
+    events = []
+    for i in range(180):
+        outcome = "ok" if i % 2 else "timeout"
+        events.extend(_settled_unit(f"u{i}", "gpt-6.1-sol", "0.05", outcome))
     (run / "ledger-events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
     (rate,) = reference_rates(run).values()
     assert (rate.family_id, rate.provider, rate.cells) == ("gpt-6.1-sol", "openai", 90)
     assert rate.usd_per_cell == D("0.10")  # $9 over 90 logical cells, not over 180 records
     assert rate.seconds_per_cell == pytest.approx(2.5)  # (2.0 - 0.5) + 1.0, per cell
+    # A partial copy still has all scored cells and spend, but loses some retry time.
+    (run / "discarded/no-docs--gpt-6.1-sol--r1/Q1--attempt1.json").unlink()
+    with pytest.raises(BenchmarkValidationError, match="discarded"):
+        reference_rates(run)
+
+
+@pytest.mark.parametrize(
+    ("status", "scored", "booked", "outcome", "wall_ms"),
+    [
+        ("aborted", False, None, None, 200),
+        ("aborted", True, "0.20", "ok", 200),
+        ("completed", False, "0.20", "timeout", 200),
+        ("completed", True, None, None, 200),
+        ("completed", True, "0", "rejected", 200),
+        ("completed", True, "0.20", "timeout", 200),
+        ("completed", True, "0.20", "ok", 100),
+    ],
+)
+def test_unusable_reference_is_refused_before_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    scored: bool,
+    booked: str | None,
+    outcome: str | None,
+    wall_ms: int,
+) -> None:
+    from benchmarks.agentic.run import run_agentic
+    from tests.benchmarks.test_agentic_run import _container, _live_config
+
+    family = "gpt-6.1-sol"
+    pilot = tmp_path / "pilot"
+    kind, filename = ("transcripts", "Q1.json") if scored else ("discarded", "Q1--attempt1.json")
+    _write_record(
+        pilot / kind / f"no-docs--{family}--r1" / filename, family, "openai", wall_ms, 100
+    )
+    _pilot_summary(pilot, status, 1, int(scored), booked or "0")
+    events = []
+    if booked is not None and outcome is not None:
+        events = _settled_unit("u1", family, booked, outcome)
+    (pilot / "ledger-events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+    launcher, docker = _container(tmp_path)
+    config = _live_config(tmp_path, models=(family,), repeats=91, reference_run=pilot)
+    monkeypatch.delenv("CI", raising=False)
+    with pytest.raises(BenchmarkValidationError, match="reference"):
+        run_agentic(
+            config,
+            launcher=launcher,
+            today=date(2026, 11, 4),
+            confirm=lambda text: pytest.fail(f"unexpected confirmation: {text}"),
+        )
+    assert docker.calls == []
+
+
+def test_reference_spend_and_time_follow_the_family_that_incurred_them(tmp_path: Path) -> None:
+    events = []
+    for family, price, wall in [("cheap", "0.01", 200), ("expensive", "3.00", 4000)]:
+        record = tmp_path / "transcripts" / f"no-docs--{family}--r1" / "Q1.json"
+        _write_record(record, family, "openai", wall, 100)
+        events.extend(_settled_unit(family, family, price, "ok"))
+    (tmp_path / "ledger-events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+    _pilot_summary(tmp_path, "completed", 2, 2, "3.01")
+    rates = reference_rates(tmp_path)
+    assert rates["cheap"] == ReferenceRate("cheap", "openai", 1, D("0.01"), 0.1)
+    assert rates["expensive"] == ReferenceRate("expensive", "openai", 1, D(3), 3.9)
+    # Losing even a suffix of complete ledger lines can leave positive but understated rates.
+    _pilot_summary(tmp_path, "completed", 2, 2, "3.02")
+    with pytest.raises(BenchmarkValidationError, match="reference"):
+        reference_rates(tmp_path)
+
+
+def test_positive_subcent_estimate_does_not_display_as_zero() -> None:
+    plan = ProviderPlan("openai", 1, D(0), D(65), D("0.001"))
+    text = confirmation_text([plan])
+    assert "estimate <$0.01" in text and "$0.00" not in text
+
+
+@pytest.mark.parametrize("rates", [{}, {"gpt-6.1-sol": _rate("gpt-6.1-sol", "google", "1")}])
+def test_explicit_reference_must_cover_the_requested_metered_family(
+    rates: dict[str, ReferenceRate],
+) -> None:
+    jobs = _jobs(**{"gpt-6.1-sol": 1})
+    plans = provider_plans(jobs, {}, PROVIDER_CAPS, rates)
+    assert any("gpt-6.1-sol" in reason for reason in full_run_gate(plans, jobs, rates))
 
 
 def test_reference_rates_from_a_finished_scripted_run(tmp_path: Path) -> None:
