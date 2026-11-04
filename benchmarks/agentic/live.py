@@ -223,17 +223,18 @@ def full_run_gate(
     """
     problems = []
     counts = _live_counts(jobs)
+    matching = _matching_rates(jobs, rates)
     for plan in plans:
+        if rates is not None and (missing := counts[plan.provider].keys() - matching.keys()):
+            problems.append(
+                f"{plan.provider}: the reference needs measurements from the same model ID "
+                f"and live API for each requested family ({', '.join(sorted(missing))})"
+            )
+            continue
         if plan.cap is None or plan.spent is None:
             continue
         if plan.estimate is None:
-            if rates is not None:
-                families = ", ".join(counts[plan.provider])
-                problems.append(
-                    f"{plan.provider}: the reference needs measurements from the same model ID "
-                    f"and live API for each requested family ({families})"
-                )
-            elif plan.trajectories > PILOT_TRAJECTORIES_PER_PROVIDER:
+            if plan.trajectories > PILOT_TRAJECTORIES_PER_PROVIDER:
                 problems.append(
                     f"{plan.provider}: {plan.trajectories} trajectories is more than the "
                     f"{PILOT_TRAJECTORIES_PER_PROVIDER}-trajectory pilot; pass --reference-run "
@@ -246,7 +247,6 @@ def full_run_gate(
                 f"{plan.provider}: the estimate ${plan.estimate} x {SAFETY} = "
                 f"${plan.estimate * SAFETY} is over the ${remaining} left under its cap"
             )
-    matching = _matching_rates(jobs, rates)
     for provider_families in counts.values():
         for family_id, trajectories in provider_families.items():
             rate = matching.get(family_id)

@@ -178,7 +178,9 @@ this order:
 
    If tool calls fail often, stop and report: design §14 names `gemma4:e4b` or a stronger
    machine.
-7. Then run the arm: the same command with all 50 questions, k = 3, and a new `--out`.
+7. Run the arm with all 50 questions, k = 3, a new `--out`, and
+   `--reference-run <local smoke dir>` to check the 24-hour window. If the model changes,
+   run its smoke sample first and use that directory as the reference.
 
 If the probe's Ollama check fails, set `OLLAMA_HOST=0.0.0.0:11434` for this arm only,
 while the Mac is offline, and revert it afterwards (#200 ruling 7).

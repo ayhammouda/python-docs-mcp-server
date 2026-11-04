@@ -8,6 +8,7 @@ from __future__ import annotations
 import io
 import json
 import shutil
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -497,3 +498,16 @@ def test_the_confirmation_prompt_never_reaches_stdout(
     assert captured.out == ""
     assert "anthropic: 90 trajectories" in captured.err
     assert "Type yes to start this live run: " in captured.err
+
+
+def test_local_fallback_requires_its_own_timing_reference() -> None:
+    jobs = _jobs(**{"gemma4-12b": 300})
+    original = jobs[0]
+    jobs[0] = replace(original, family=replace(original.family, model_id="gemma4:e4b"))
+    rate = _rate(original.family.id, "ollama", "0")
+    rates = {rate.family_id: rate}
+    plans = provider_plans(jobs, {}, PROVIDER_CAPS, rates)
+    problems = full_run_gate(plans, jobs, rates)
+    assert len(problems) == 1 and "gemma4-12b" in problems[0]
+    smoke = _jobs(**{"gemma4-12b": 10})
+    assert full_run_gate(provider_plans(smoke, {}, PROVIDER_CAPS, None), smoke, None) == []
