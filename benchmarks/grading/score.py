@@ -147,8 +147,11 @@ def _evidence_bytes(path: Path, data: Any, *, calibration: bool = False) -> byte
             entries = data
         else:
             entries = data.get("entries", {"tuning": data})
-        check_calibration_metadata(entries)
-        scan_calibration_sources({"entries": entries})
+        archive = data if isinstance(data, dict) and "entries" in data else {"entries": entries}
+        check_calibration_metadata(
+            entries, archive_metadata={k: v for k, v in archive.items() if k != "entries"},
+        )
+        scan_calibration_sources(archive)
     body = scanned_json_bytes(_jsonable(data), where="grading evidence", indent=2, sort_keys=True)
     if len(body) + 1 > (MAX_CALIBRATION_BYTES if calibration else MAX_FRAME_BYTES):
         raise BenchmarkValidationError("grading evidence exceeds the artifact size limit")
@@ -162,8 +165,15 @@ def _write(root: Path, path: Path, data: Any, *, calibration: bool = False) -> A
     return json.loads(body)
 
 
+def _required_calibration_bytes(root: Path, path: Path) -> bytes:
+    try:
+        return calibration_bytes(root, path)
+    except FileNotFoundError:
+        raise BenchmarkValidationError(f"calibration file does not exist: {path}") from None
+
+
 def _read_g1(path: Path) -> tuple[bytes, dict[str, Any]]:
-    body = calibration_bytes(path.parent, path)
+    body = _required_calibration_bytes(path.parent, path)
     return body, g1_entries(body)
 
 
@@ -934,7 +944,7 @@ def _handoff_inputs(
     for name in sorted(handoff.keys() - {"probes.yml"}):
         if meta["kind"] != "held-out" or not re.fullmatch(r"tuning-[1-9][0-9]*\.json", name):
             raise BenchmarkValidationError("invalid workspace handoff entry")
-        body = calibration_bytes(workspace, directory / name)
+        body = _required_calibration_bytes(workspace, directory / name)
         record = CapturedJSON(body, json_mapping(body, "tuning handoff"))
         if hashlib.sha256(record.content).hexdigest() != handoff[name]:
             raise BenchmarkValidationError("workspace tuning handoff differs")

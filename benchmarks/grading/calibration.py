@@ -68,7 +68,9 @@ def g1_entries(body: bytes, *, projection: bool = False) -> dict[str, Any]:
     if not isinstance(data, dict) or not isinstance(data.get("entries"), dict):
         raise BenchmarkValidationError("G1 evidence needs an entries object")
     if len(body) > MAX_FRAME_BYTES:
-        check_calibration_metadata(data["entries"])
+        check_calibration_metadata(
+            data["entries"], archive_metadata={k: v for k, v in data.items() if k != "entries"},
+        )
     scan_calibration_sources(data)
     return data["entries"]
 

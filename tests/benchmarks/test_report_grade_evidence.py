@@ -510,10 +510,12 @@ def test_live_grade_verification_uses_each_captured_artifact_once(recording, mon
 def test_unknown_grade_retains_a_recorded_failed_comparison_as_a_diagnostic(recording):
     # Recompute an actual failing comparison from the recording before breaking
     # its grade evidence; do not invent a saved verdict to exercise the report.
-    for path in (recording / "tokens").glob("python-docs*/*.json"):
+    for path in (recording / "grading/votes").glob("*/*/*/pass1/python-docs*/*.json"):
         record = _read(path)
-        record["client_wrapped_tokens"] *= 4
+        record["vote"]["p2_met"] = False
+        record["text"] = json.dumps(record["vote"])
         _json(path, record)
+    rebuild_grading(recording)
     grading = recording / "grading"
     _score(
         recording,

@@ -111,12 +111,19 @@ def test_unissued_repeats_do_not_claim_lost_evidence(tmp_path):
     assert "test_retest_unavailable" not in summary["diagnostics"]
 
 
-def test_rescored_missing_repeat_keeps_report_and_readme_comparisons(validated_bundle):
+@pytest.mark.parametrize(
+    "judge,google_total,google_rate",
+    [("luna", "3.00", "0.010000"), ("flash-lite", "3.01", "0.010033")],
+)
+def test_rescored_missing_repeat_keeps_report_and_readme_comparisons(
+    validated_bundle, judge, google_total, google_rate
+):
     from benchmarks.agentic_report import _RunMetadata
     from benchmarks.report import _load_run_bundle
 
     run = validated_bundle
-    repeat = _additional_execution(run, _issued_vote(run), run_id="repeat", pass_number=2)
+    original = next((run / "grading/votes/answers" / judge).glob("*/pass1/*/*.json"))
+    repeat = _additional_execution(run, original, run_id="repeat", pass_number=2)
     archives = sorted((run / "grading/disclosure/g1").glob("*.json"))
     intact = score_run_dir(run, schema_path=runs.SCHEMA, g1_paths=archives)
     assert intact["tier"] == "Validated"
@@ -140,8 +147,8 @@ def test_rescored_missing_repeat_keeps_report_and_readme_comparisons(validated_b
     assert metadata.tier == "Validated" and metadata.retest_unknown
     assert metadata.summary["diagnostics"] == json.loads(json.dumps(current["diagnostics"]))
     assert metadata.grading_spend["graded_answers"] == 300
-    assert metadata.grading_spend["by_provider"]["google"] == "3.00"
-    assert metadata.grading_spend["per_graded_answer"]["google"] == "0.010000"
+    assert metadata.grading_spend["by_provider"]["google"] == google_total
+    assert metadata.grading_spend["per_graded_answer"]["google"] == google_rate
     text = _render(run)
     assert "Real-answer test–retest: unknown (unverified pass-2 evidence)" in text
     assert "Real-answer test–retest: no paired scores reported" not in text

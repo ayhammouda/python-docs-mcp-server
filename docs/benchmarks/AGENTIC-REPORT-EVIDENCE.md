@@ -60,9 +60,11 @@ measurement or evidence for a positive or negative public comparison. It may
 differ from current persisted scores; neither the saved interval nor its verdict
 repairs missing votes, supplies G4, establishes a paid-answer denominator, or
 enters the README. Replayed quantities take precedence when independently
-available. Both displays require matching compared coordinates and a complete,
-valid scalar inventory; C2 needs counts and C3 still needs verified local offline
-evidence. Invalid booleans, non-finite intervals and invalid scores/counts cannot
+available, including legitimate unbounded C2 intervals. Both displays require
+matching compared coordinates and a complete, valid scalar inventory.
+C2 requires matching count receipts even when saved resampling metadata leaves
+the gates unavailable. C3 requires verified local offline evidence.
+Invalid booleans, non-finite historical intervals and invalid scores/counts cannot
 supply a diagnostic comparison. The recorded verdict must also agree with its
 interval under the existing pass rule. Reporting does not rewrite the saved summary.
 
@@ -208,7 +210,9 @@ Frozen YAML readers allow ordinary aliases and merges within finite construction
 limits: 64 MiB per document, 100,000 nodes including alias references, 64 levels
 of nesting or merge dependencies, and 10,000 inherited mapping pairs across all
 merges. Merge sizes are checked on the shared node graph before any mapping is
-flattened, including pairs later discarded by an override. Inputs exceeding
+flattened, including pairs later discarded by an override. Original binary
+scalars are inspected before duplicate keys or merge overrides can discard them.
+Inputs exceeding
 these limits fail with a content-free validation error during production or
 replay; a bounded credential scan alone does not establish safe construction.
 

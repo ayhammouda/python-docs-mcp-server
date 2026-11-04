@@ -178,7 +178,9 @@ def pack_files(files: Mapping[str, str]) -> dict[str, Any]:
     return {"version": 2, "files": names, "blobs": blobs}
 
 
-def check_calibration_metadata(entries: Mapping[str, Any]) -> None:
+def check_calibration_metadata(
+    entries: Mapping[str, Any], *, archive_metadata: Mapping[str, Any] | None = None,
+) -> None:
     """Only packed file payloads get the larger calibration transport allowance."""
     def source(proof: Any) -> Any:
         if isinstance(proof, dict) and proof.get("version") == 2:
@@ -196,6 +198,8 @@ def check_calibration_metadata(entries: Mapping[str, Any]) -> None:
         return result
 
     metadata = {k: entry(v) for k, v in entries.items()}
+    if archive_metadata:
+        metadata = {"entries": metadata, "archive_metadata": archive_metadata}
     size = 0
     for chunk in json.JSONEncoder(ensure_ascii=True).iterencode(metadata):
         size += len(chunk)

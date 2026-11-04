@@ -184,6 +184,7 @@ def test_ambiguous_history_stays_unknown_in_renderer_and_scorer(recording, missi
 def test_g1_replays_actual_historical_receipt_and_rejects_corruption(tmp_path, monkeypatch, broken):
     held = runs._workspace(tmp_path / "held", "held-out", {"probes.yml": runs.PROBES})
     _json(held / "runs/run-1.json", {
+        "grading_run_id": "run-1",
         "target": "probes", "pass": 1, "composition": runs.COMPOSITION,
     })
     item = "KEY--SYN-EX-001"

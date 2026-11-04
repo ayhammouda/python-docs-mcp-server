@@ -8,7 +8,8 @@ import pytest
 from benchmarks.agentic_report import _RunMetadata
 from benchmarks.grading.publication import reconcile_gates
 from benchmarks.report import _load_run_bundle
-from tests.benchmarks.test_agentic_report import _json, _live_like_run, _readme, _render
+from tests.benchmarks.accepted_report_fixture import rebuild_grading
+from tests.benchmarks.test_agentic_report import _json, _live_like_run, _readme, _render, _score
 from tests.benchmarks.test_agentic_report import current_offline_export as current_offline_export
 
 MODEL = "scripted-anthropic"
@@ -83,6 +84,52 @@ def test_failed_reconciliation_cannot_reuse_previous_measurements(diagnostic_tem
     gates = reconcile_gates(metadata)
     assert all(gate.passed is None for gate in gates.values())
     assert metadata.replayed_claims == {}
+
+
+def test_unregistered_resamples_preserve_only_receipt_backed_history(diagnostic_run):
+    run = diagnostic_run
+    path = run / "grading/summary.json"
+    summary = json.loads(path.read_bytes())
+    summary["resamples"] = 2000
+    _json(path, summary)
+    metadata = _RunMetadata(_load_run_bundle(run))
+    assert metadata.tier != "Validated" and metadata.replayed_claims == {}
+    assert not metadata.summary["claims"]
+    row = _c2_row(_render(run))
+    assert "0.500, 95% CI" in row and "recorded diagnostic" in row
+    assert "fewer normalized tokens" not in _readme(run)
+    token = json.loads((run / "tokens" / f"docs-fetch--{MODEL}--r1/SYN-EX-002.json").read_bytes())
+    (run / "grading/count-runs" / f"{token['count_run_id']}.json").unlink()
+    assert "0.500" not in _c2_row(_render(run))
+
+
+def test_replayed_unbounded_comparison_takes_precedence_over_saved_history(
+    diagnostic_template, tmp_path
+):
+    run = shutil.copytree(diagnostic_template, tmp_path / "run")
+    grading = run / "grading"
+    stale = json.loads((grading / "summary.json").read_bytes())["claims"]["C2"][MODEL]
+    for path in (grading / "votes").glob("*/*/*/pass1/python-docs*/*.json"):
+        vote = json.loads(path.read_bytes())
+        if vote["item_id"].endswith("SYN-EX-001"):
+            continue
+        vote["vote"]["contradicts_key"] = True
+        vote["text"] = json.dumps(vote["vote"])
+        _json(path, vote)
+    rebuild_grading(run)
+    _score(
+        run, tmp_path, panel_path=grading / "inputs/panel.yml",
+        composition=json.loads((grading / "runs/run-1.json").read_bytes())["composition"],
+    )
+    summary = json.loads((grading / "summary.json").read_bytes())
+    fresh = summary["claims"]["C2"][MODEL]
+    assert fresh["passed"] is False and fresh["interval"]["high"] == "inf"
+    for saved in (fresh, stale):
+        summary["claims"]["C2"][MODEL] = saved
+        _json(grading / "summary.json", summary)
+        row = _c2_row(_render(run))
+        assert "to inf" in row and "replayed from captured grades" in row
+        assert "recorded diagnostic" not in row
 
 
 @pytest.mark.parametrize("point,passed", [(0.25, True), (2.0, False)])

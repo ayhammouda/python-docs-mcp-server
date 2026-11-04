@@ -734,7 +734,11 @@ class _RunMetadata:
         references = [j.get("api") for j in self.judges.values() if j.get("role") == "reference"]
         panel_complete = len(active) == 3 and len(references) == 1
         declared_grading = _execution_kind([*active, *references], grading=True)
-        self.scripted_panel = declared_grading == "scripted"
+        composition = self.summary.get("composition")
+        named = composition.split("+") if isinstance(composition, str) else []
+        self.scripted_panel = declared_grading == "scripted" or any(
+            self.judges.get(judge, {}).get("api") == "scripted" for judge in named
+        )
         self.grading = declared_grading if panel_complete else "unknown"
         self.scoring = bundle.scoring
         self.tokens = bundle.tokens
@@ -1056,7 +1060,9 @@ def _claim_rows(
     for model, claim in sorted(claims.items()):
         data_available = run.claim_data_available(claim_id, model)
         recorded = False
-        if data_available and not _finite_claim(claim, claim_id, model):
+        # Replayed C2 intervals may be unbounded; finite validation applies to saved history.
+        replayed = isinstance(claim, dict) and isinstance(claim.get("interval"), dict)
+        if data_available and not replayed:
             by_model = (
                 run.recorded_claims.get(claim_id) if isinstance(run.recorded_claims, dict) else {}
             )
@@ -1071,7 +1077,7 @@ def _claim_rows(
         )
         interval = (
             claim.get("interval")
-            if data_available and _finite_claim(claim, claim_id, model) else None
+            if data_available and (replayed or recorded) else None
         )
         if not data_available:
             passed = None

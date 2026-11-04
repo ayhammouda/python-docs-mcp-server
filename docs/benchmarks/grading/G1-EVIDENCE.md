@@ -53,10 +53,30 @@ Before scoring or copying a supplied archive, credential inspection covers every
 composition's source and tuning source, including unselected fallback history.
 It inspects declared JSON vote and receipt replies, including strings retained
 inside a structured provider text block, and frozen JSON/YAML inputs.
-Ordinary historical summaries remain text. A refused archive leaves existing
+Declared regex slots in the frozen judge schema and Responses schema configuration
+retain their regex syntax. Inspection covers literal credentials, Unicode and hex
+character escapes, and explicit attachments in those slots, including
+`patternProperties` keys.
+All retained metadata keys and string values receive the same inspection,
+including archive/entry notes, source extensions and tuning history.
+Inspection decodes quoted JSON strings and supported `data:` attachments locally.
+Supported attachments are `text/plain` and `application/json`,
+with percent encoding or strict standard base64 and optional `charset=utf-8`
+or `charset=us-ascii`. Unsupported media types, encoding parameters, invalid
+encoding and non-text bytes are refused. Decoded JSON retains inspection of
+duplicate keys and recoverable quoted strings, including nested attachments.
+Each metadata string admits at most four combined quote/attachment decoding
+steps, 64 MiB of original UTF-8 and 64 MiB of total decoded UTF-8; overlapping
+quote and attachment scans share that decoded-byte budget. Ordinary prose,
+URL/`data:` mentions and literal prompt/regex inputs do not imply an encoding.
+Responses `text.format` schema strings use metadata inspection; actual reply
+strings also receive reply recovery. Safe attachments and source files keep
+their exact original bytes.
+
+A refused archive leaves existing
 grading outputs and immutable archive copies unchanged. The same inspection
-applies when publication reads an original archive. Inspection does not expand
-YAML alias or merge graphs.
+applies when publication reads an original archive or its entry projection.
+Inspection does not expand YAML alias or merge graphs.
 
 Large source captures use source version 2: digest-addressed bzip2 members,
 with original UTF-8 byte sizes and file-name references. Identical files share

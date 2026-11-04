@@ -409,7 +409,14 @@ def reconcile_gates(run: PublicationRun) -> dict[str, GateResult]:
     gates = {
         name: GateResult(name, None, {"reason": "missing current gate evidence"}) for name in saved
     }
-    run.summary = {**summary, "claims_by_judge": {}, "judge_sensitive": []} if summary else {}
+    if not summary:
+        return gates
+    run.summary = {**summary, "claims": {}, "claims_by_judge": {}, "judge_sensitive": []}
+    # Recorded diagnostics also require count evidence when grading gates are unavailable.
+    run.counts = run.count_capture.admitted_counts(
+        run.transcripts, run.tokens,
+        scripted_models=[fid for fid, f in run.families.items() if f.get("api") == "scripted"],
+    )
     try:
         if summary.get("resamples") != GATE_RESAMPLES:
             raise ValueError("gate scoring requires the registered bootstrap method")
@@ -432,13 +439,6 @@ def reconcile_gates(run: PublicationRun) -> dict[str, GateResult]:
     except (KeyError, TypeError, ValueError):
         # These identities and frozen inputs are shared by every gate.
         return gates
-
-    # Unsafe count sources must abort publication, outside the optional-gate
-    # fallback below. All later comparisons reuse this same bounded capture.
-    run.counts = run.count_capture.admitted_counts(
-        run.transcripts, run.tokens,
-        scripted_models=[fid for fid, f in run.families.items() if f.get("api") == "scripted"],
-    )
 
     reference = GateResult("reference_probe_check", None, {})
     try:

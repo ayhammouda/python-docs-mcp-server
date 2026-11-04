@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from yaml.nodes import MappingNode, Node, SequenceNode
+from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 from yaml.tokens import ScalarToken
 
 from benchmarks.agentic.protocol import (
@@ -92,6 +92,14 @@ class _CapturedLoader(yaml.SafeLoader):
                     pending.extend((key, value))
             elif isinstance(current, SequenceNode):
                 pending.extend(current.value)
+            elif isinstance(current, ScalarNode):
+                assert_no_key_shaped(current.value, where="input YAML scalar")
+                if current.tag == "tag:yaml.org,2002:binary":
+                    # Decode before duplicate/merge construction drops values.
+                    # Only construct scalars; shared aliases are visited once.
+                    assert_no_key_shaped_json(
+                        self.construct_object(current), where="input YAML scalar"
+                    )
         return super().construct_document(node)
 
 

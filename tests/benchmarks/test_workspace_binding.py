@@ -166,10 +166,13 @@ def test_workspace_vote_requires_the_frozen_judge_model(
 
 
 def _replace_after_open(monkeypatch, source, replacement):
-    if source.parent.name == "inputs":
+    if source.parent.name == "inputs" or (
+        source.parent.name == "handoff" and source.suffix == ".json"
+    ):
         from benchmarks.grading import score
 
-        capture = score.artifact_bytes
+        reader = "artifact_bytes" if source.parent.name == "inputs" else "calibration_bytes"
+        capture = getattr(score, reader)
 
         def swap_after_capture(root, path):
             body = capture(root, path)
@@ -177,7 +180,7 @@ def _replace_after_open(monkeypatch, source, replacement):
                 replacement.replace(path)
             return body
 
-        monkeypatch.setattr(score, "artifact_bytes", swap_after_capture)
+        monkeypatch.setattr(score, reader, swap_after_capture)
         return
     original_open = Path.open
 

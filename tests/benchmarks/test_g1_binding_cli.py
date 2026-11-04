@@ -242,3 +242,22 @@ def test_duplicate_json_member_cannot_hide_a_second_verdict(run: Path, tmp_path:
         _score(run, path)
     assert refused.value.code == 2
     assert _files(run) == before
+
+
+def test_missing_declared_tuning_file_refuses_before_replacing_g1(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    tuning = tmp_path / "tuning.json"
+    tuning.write_text("{}")
+    held = runs._workspace(
+        tmp_path / "held", "held-out", {"probes.yml": runs.PROBES, "tuning-1.json": tuning}
+    )
+    (held / "handoff/tuning-1.json").unlink()
+    (held / "g1.json").write_text("previous export")
+    before = _files(held)
+    with pytest.raises(SystemExit) as refused:
+        main(["agentic-score", "--workspace", str(held), "--step", "g1"])
+    assert refused.value.code == 2
+    error = capsys.readouterr().err
+    assert "calibration file does not exist" in error and "tuning-1.json" in error
+    assert _files(held) == before

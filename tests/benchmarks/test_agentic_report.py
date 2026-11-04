@@ -1069,7 +1069,10 @@ def test_one_active_scripted_adapter_blocks_public_claim(
 
 
 @pytest.mark.parametrize("reference_count", [0, 2])
-def test_incomplete_scripted_panel_withholds_grades_and_renders(live_like_bundle, reference_count):
+@pytest.mark.parametrize("efforts", ["complete", "missing_luna", "missing"])
+def test_incomplete_scripted_panel_withholds_grades_and_renders(
+    live_like_bundle, reference_count, efforts
+):
     from benchmarks.agentic_report import _RunMetadata
 
     run = live_like_bundle
@@ -1082,6 +1085,13 @@ def test_incomplete_scripted_panel_withholds_grades_and_renders(live_like_bundle
         panel["judges"]["extra-reference"] = dict(panel["judges"]["reference"])
     path.write_text(yaml.safe_dump(panel))
     _refresh_manifest(run)
+    summary_path = run / "grading/summary.json"
+    summary = json.loads(summary_path.read_bytes())
+    if efforts == "missing_luna":
+        del summary["efforts"]["luna"]
+    elif efforts == "missing":
+        del summary["efforts"]
+    _json(summary_path, summary)
 
     metadata = _RunMetadata(_load_run_bundle(run))
     assert metadata.grading == "unknown" and not metadata.grade_capture.reconciled

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -92,8 +93,9 @@ def test_score_refuses_leak_in_raw_g1_even_outside_entries(tmp_path: Path, body:
     assert not list((run / "grading" / "disclosure" / "g1").glob("*.json"))
 
 
+@pytest.mark.parametrize("descriptor_reader", [True, False])
 def test_raw_g1_digest_and_copy_use_the_original_bytes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, descriptor_reader: bool
 ) -> None:
     run = runs._build_run(tmp_path)
     path = runs._g1_file(run, tmp_path / "g1.json")
@@ -114,7 +116,27 @@ def test_raw_g1_digest_and_copy_use_the_original_bytes(
                 replacement.replace(path)
         return handle
 
-    monkeypatch.setattr(Path, "open", replace_after_open)
+    if descriptor_reader:
+        descriptor_open = os.open
+        parent_info = path.parent.stat()
+
+        def replace_after_descriptor_open(source, flags, *args, **kwargs):
+            nonlocal reads
+            fd = descriptor_open(source, flags, *args, **kwargs)
+            directory = kwargs.get("dir_fd")
+            if source == path.name and directory is not None and os.path.samestat(
+                os.fstat(directory), parent_info
+            ):
+                reads += 1
+                if reads == 1:
+                    replacement.replace(path)
+            return fd
+
+        monkeypatch.setattr(os, "open", replace_after_descriptor_open)
+        monkeypatch.setattr(os, "supports_dir_fd", {*os.supports_dir_fd, os.open})
+    else:
+        monkeypatch.setattr(os, "supports_dir_fd", set())
+        monkeypatch.setattr(Path, "open", replace_after_open)
     summary = _score(run, path)
     assert reads == 1
     gate = summary["gates"]["G1"]
