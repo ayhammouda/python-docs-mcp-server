@@ -14,7 +14,7 @@ questions:
 - id: TUNE-001
   category: exact_symbol
   python_version: '3.13'
-  prompt: In Python 3.13, where does bisect.bisect_left(a, x) place x when x is already present in the sorted list a?
+  prompt: In Python 3.13, which index does bisect.bisect_left(a, x) return when x is already present in the sorted list a?
   answer_key: It returns the insertion point that keeps a sorted; when x is already present, that point is before (to the left of) any existing entries equal to x.
   citations:
   - https://docs.python.org/3.13/library/bisect.html#bisect.bisect_left
@@ -32,17 +32,17 @@ questions:
 - id: TUNE-002
   category: exact_symbol
   python_version: '3.13'
-  prompt: What does heapq.nsmallest(n, iterable, key=None) return in Python 3.13?
-  answer_key: It returns a list of the n smallest elements of the iterable, compared by key when key is given; it is equivalent to sorted(iterable, key=key)[:n].
+  prompt: For a nonnegative integer n, what does heapq.nsmallest(n, iterable, key=None) return in Python 3.13?
+  answer_key: It returns a list of up to n smallest elements in sorted order, using the supplied key if given. The result is equivalent to sorted(iterable, key=key)[:n].
   citations:
   - https://docs.python.org/3.13/library/heapq.html#heapq.nsmallest
   expected_properties:
-  - list of the n smallest
+  - list of up to n smallest elements
   - sorted slice equivalence
   ambiguity_notes: null
   criteria:
-  - property: list of the n smallest
-    criterion: States that it returns a list holding the n smallest elements of the iterable, compared by key when one is given.
+  - property: list of up to n smallest elements
+    criterion: States that it returns a list of up to n smallest elements of the iterable, compared by key when one is given.
     weight: core
   - property: sorted slice equivalence
     criterion: States that the result is equivalent to sorted(iterable, key=key)[:n].
@@ -50,25 +50,26 @@ questions:
 - id: TUNE-003
   category: concept
   python_version: '3.13'
-  prompt: What does frozen=True change about a dataclass in Python 3.13?
-  answer_key: Assigning to a field of an instance raises dataclasses.FrozenInstanceError, which emulates read-only instances; with the default eq=True, the class also gets a __hash__ method.
+  prompt: In Python 3.13, what does frozen=True change about field assignment and default hash generation for a dataclass with eq=True and no explicit hash definition?
+  answer_key: Assigning to a field of an instance raises dataclasses.FrozenInstanceError, which emulates read-only instances. With eq=True and no explicit hash definition, a frozen dataclass generates __hash__ by default.
   citations:
   - https://docs.python.org/3.13/library/dataclasses.html#dataclasses.dataclass
+  - https://docs.python.org/3.13/library/dataclasses.html#frozen-instances
   expected_properties:
   - field assignment raises
-  - hashable with eq
+  - default hash generation
   ambiguity_notes: null
   criteria:
   - property: field assignment raises
     criterion: States that assigning to a field of an instance raises an exception, dataclasses.FrozenInstanceError, so instances behave as read-only.
     weight: core
-  - property: hashable with eq
-    criterion: States that with eq=True, the default, a frozen dataclass also gets a generated __hash__ method.
+  - property: default hash generation
+    criterion: States that the dataclass generates a __hash__ method by default under these conditions.
     weight: nuance
 - id: TUNE-004
   category: concept
   python_version: '3.13'
-  prompt: How does threading.RLock differ from threading.Lock when the same thread acquires it twice?
+  prompt: How does threading.RLock differ from threading.Lock when the same thread calls acquire() twice with the default blocking behavior?
   answer_key: An RLock is reentrant, so the thread that holds it can acquire it again without blocking, and it must release it once for each acquisition; a plain Lock blocks on a second acquire by the same thread.
   citations:
   - https://docs.python.org/3.13/library/threading.html#rlock-objects
@@ -110,8 +111,8 @@ questions:
   python_version:
   - '3.12'
   - '3.13'
-  prompt: Which os function for the number of CPUs usable by the current process was added between Python 3.12 and 3.13?
-  answer_key: Python 3.13 adds os.process_cpu_count(), which returns the number of logical CPUs usable by the calling thread of the current process, or None when it cannot be determined; 3.12 only has os.cpu_count(), which counts the CPUs in the system.
+  prompt: Which os function for the number of CPUs usable by the calling thread was added between Python 3.12 and 3.13, and how does it differ from os.cpu_count()?
+  answer_key: Python 3.13 adds os.process_cpu_count(). By default it reports the logical CPUs usable by the calling thread of the current process, or None if undetermined. os.cpu_count() reports the system count by default.
   citations:
   - https://docs.python.org/3.12/library/os.html#os.cpu_count
   - https://docs.python.org/3.13/library/os.html#os.process_cpu_count
@@ -124,7 +125,7 @@ questions:
     criterion: Names os.process_cpu_count() as the function Python 3.13 adds.
     weight: core
   - property: usable rather than system CPUs
-    criterion: States that it counts the CPUs usable by the current process, unlike os.cpu_count(), which counts the CPUs in the system.
+    criterion: Distinguishes the logical CPUs usable by the calling thread from the system count reported by os.cpu_count() under the default settings.
     weight: nuance
 - id: TUNE-007
   category: pep_adjacent
@@ -160,41 +161,42 @@ questions:
     criterion: States that collections.abc.Buffer is an abstract base class for objects that implement the buffer protocol.
     weight: core
   - property: __buffer__ method
-    criterion: States that a class counts as a Buffer by providing the __buffer__() method, from PEP 688.
+    criterion: States that a class counts as a Buffer by providing the __buffer__() method.
     weight: nuance
 - id: TUNE-009
   category: applied
   python_version: '3.13'
-  prompt: Which stdlib function should compare a received message authentication code with the expected one without leaking timing information?
-  answer_key: Use hmac.compare_digest(a, b), which returns a == b while avoiding content-based short-circuiting, so the comparison time does not reveal where the values differ.
+  prompt: Which stdlib function should compare a received message authentication code with the expected one while reducing the risk of timing attacks?
+  answer_key: Use hmac.compare_digest(a, b) to test equality while avoiding content-based short-circuiting.
   citations:
   - https://docs.python.org/3.13/library/hmac.html#hmac.compare_digest
   expected_properties:
   - hmac.compare_digest
   - resists timing analysis
-  ambiguity_notes: secrets.compare_digest is the same function; an answer naming it meets the first criterion.
+  ambiguity_notes: An answer naming secrets.compare_digest also meets the first criterion.
   criteria:
   - property: hmac.compare_digest
-    criterion: Recommends hmac.compare_digest(a, b), or the same function as secrets.compare_digest.
+    criterion: Recommends hmac.compare_digest() or secrets.compare_digest().
     weight: core
   - property: resists timing analysis
-    criterion: States that the comparison avoids content-based short-circuiting, so its timing does not reveal where the values differ.
+    criterion: States that the comparison avoids content-based short-circuiting.
     weight: nuance
 - id: TUNE-010
   category: applied
   python_version: '3.13'
-  prompt: A program must run a cleanup function when the interpreter exits normally. Which stdlib API registers it, and in what order do such functions run?
-  answer_key: Use atexit.register(func, *args, **kwargs); registered functions run at normal interpreter termination in the reverse order of registration, and they are not run when the process is killed by an unhandled signal or exits through os._exit().
+  prompt: A program must run a cleanup function when the interpreter exits normally. Which stdlib API registers it, and will the handler run if the process calls os._exit()?
+  answer_key: Use atexit.register() to register the function for normal interpreter termination. Calling os._exit() skips the registered handlers.
   citations:
   - https://docs.python.org/3.13/library/atexit.html#atexit.register
+  - https://docs.python.org/3.13/library/atexit.html#module-atexit
   expected_properties:
   - atexit.register
-  - reverse registration order
+  - os._exit skips handlers
   ambiguity_notes: null
   criteria:
   - property: atexit.register
     criterion: Recommends atexit.register() to register the function for normal interpreter termination.
     weight: core
-  - property: reverse registration order
-    criterion: States that registered functions run in the reverse order of their registration.
+  - property: os._exit skips handlers
+    criterion: States that the handler does not run when the process calls os._exit().
     weight: core

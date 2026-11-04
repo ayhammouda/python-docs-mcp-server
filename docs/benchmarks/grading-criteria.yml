@@ -15,10 +15,10 @@ corpus_sha256: 79ac86b444a8a2487fe342223af372bbed8ff6f98bd5faba302ad618da67caa6
 questions:
   EX-001:
     - property: running accumulated results
-      criterion: States that it yields a sequence of successive running accumulated results, one per input item, rather than a single total.
+      criterion: States that it yields successive accumulated results.
       weight: core
     - property: addition default and func override
-      criterion: States that addition is the default operation and that the optional func argument supplies a different binary operation.
+      criterion: States that addition is the default and that supplying a binary function changes the operation.
       weight: core
   EX-002:
     - property: overlapping consecutive pairs
@@ -32,7 +32,7 @@ questions:
       criterion: States that groupby groups only consecutive runs of items that share a key, so equal keys separated by other keys form separate groups.
       weight: core
     - property: sorting caveat
-      criterion: States that the input should be sorted by the same key first when all equal keys must end up in one group.
+      criterion: States that one group per key requires equal keys to be contiguous (for example, by sorting on the grouping key).
       weight: nuance
   EX-004:
     - property: unbounded
@@ -43,10 +43,10 @@ questions:
       weight: nuance
   EX-005:
     - property: first-access computation
-      criterion: States that the decorated method's value is computed on the first attribute access.
+      criterion: States that the getter computes the value on first lookup if the same-named instance attribute is absent.
       weight: core
     - property: subsequent stored value
-      criterion: States that the computed value is stored on the instance and returned by later accesses until the attribute is deleted.
+      criterion: States that the result is stored on the instance and later reads use the current attribute value.
       weight: core
   EX-006:
     - property: first-argument type
@@ -67,14 +67,14 @@ questions:
       criterion: States that read_text() returns the file's decoded contents as a str.
       weight: core
     - property: explicit/default encoding
-      criterion: States that an encoding argument can be given explicitly and that otherwise the platform-dependent default encoding is used.
+      criterion: States that an explicit encoding selects the decoder and otherwise the default for text-mode open() applies.
       weight: core
   EX-009:
     - property: lexical comparison
       criterion: States that is_relative_to() reports whether the path is relative to other by a purely lexical comparison of the paths.
       weight: core
     - property: does not resolve filesystem
-      criterion: States that it does not access the filesystem and does not resolve symlinks or .. components.
+      criterion: States that it does not access the filesystem or resolve .. components.
       weight: nuance
   EX-010:
     - property: sum of counts
@@ -120,7 +120,7 @@ questions:
       weight: nuance
   CO-001:
     - property: pure versus concrete
-      criterion: States that Path is a concrete subclass that extends PurePath.
+      criterion: Distinguishes PurePath as the pure path type and Path as the concrete path type.
       weight: nuance
     - property: filesystem I/O distinction
       criterion: States that PurePath manipulates paths without filesystem I/O, so it fits path-only work, while Path adds operations that touch the filesystem such as stat or open.
@@ -130,7 +130,7 @@ questions:
       criterion: States that suppress() silences only the exception types passed to it, inside its with block.
       weight: core
     - property: unmatched propagation
-      criterion: States that exceptions not named in it propagate normally.
+      criterion: States that exceptions that do not match a supplied exception type propagate.
       weight: core
   CO-003:
     - property: temporary context
@@ -144,14 +144,14 @@ questions:
       criterion: States that the remaining sibling tasks in the group are cancelled.
       weight: core
     - property: grouped exception
-      criterion: States that once all tasks finish, the non-cancellation failures are raised together as an ExceptionGroup or BaseExceptionGroup.
+      criterion: States that once all tasks finish, non-cancellation failures are normally raised together as an ExceptionGroup or BaseExceptionGroup.
       weight: nuance
   CO-005:
     - property: completion order
       criterion: States that as_completed() yields futures as they complete.
       weight: core
     - property: not input order
-      criterion: States that the yield order is not the input order and that futures already completed when it is called come first.
+      criterion: States that input order is not guaranteed and that futures already complete when the function is called come first.
       weight: nuance
   CO-006:
     - property: header row
@@ -169,14 +169,14 @@ questions:
       weight: nuance
   CO-008:
     - property: attempts metadata preservation
-      criterion: States that copy2() copies the file data and attempts to preserve its metadata, as copystat() does.
+      criterion: States that copy2() copies the file data and attempts to preserve its metadata.
       weight: nuance
     - property: no cross-platform guarantee
       criterion: Answers that preservation of every metadata item is not guaranteed on every platform, and that copy2() does not fail only because some metadata cannot be preserved.
       weight: core
   CO-009:
     - property: bound parameters
-      criterion: States that values should be bound through placeholders in the SQL and passed separately to execute().
+      criterion: States that values are bound through placeholders and passed separately from the SQL text.
       weight: core
     - property: no string formatting
       criterion: States that values should not be formatted into the SQL string.
@@ -200,7 +200,7 @@ questions:
       criterion: States that Python 3.12's copy module has no copy.replace().
       weight: core
     - property: 3.13 replace protocol
-      criterion: States that Python 3.13 adds copy.replace(obj, **changes) and the __replace__ protocol that supported objects implement.
+      criterion: States that Python 3.13 adds copy.replace() for field replacement and the __replace__ protocol for supported objects.
       weight: core
   XV-003:
     - property: new module
@@ -218,7 +218,7 @@ questions:
       weight: nuance
   XV-005:
     - property: both flags
-      criterion: States that in Python 3.13 the default verify flags include both VERIFY_X509_PARTIAL_CHAIN and VERIFY_X509_STRICT, which were not both defaults in 3.12.
+      criterion: States that Python 3.13 adds both VERIFY_X509_PARTIAL_CHAIN and VERIFY_X509_STRICT to the default verification flags of ssl.create_default_context().
       weight: core
     - property: strictness caveat
       criterion: States that the stricter verification may reject malformed or older certificates that 3.12 accepted.
@@ -256,7 +256,7 @@ questions:
       criterion: States that from Python 3.12 venv no longer installs setuptools in new environments by default, whereas 3.11 did.
       weight: core
     - property: explicit installation
-      criterion: States that projects that need setuptools must install it explicitly.
+      criterion: States that projects needing setuptools at runtime must arrange for it to be installed.
       weight: nuance
   XV-011:
     - property: python -m sqlite3
@@ -288,7 +288,7 @@ questions:
       weight: nuance
   XV-015:
     - property: delete_on_close parameter
-      criterion: States that Python 3.12 adds the delete_on_close parameter, which controls whether the file is deleted when it is closed or only when the context manager exits.
+      criterion: States that Python 3.12 adds delete_on_close to control whether automatic deletion occurs on close or can be deferred until context exit.
       weight: core
     - property: 3.11 absence
       criterion: States that Python 3.11's NamedTemporaryFile has no delete_on_close parameter.
@@ -305,14 +305,14 @@ questions:
       criterion: Names TypeVar, ParamSpec and TypeVarTuple as the type-parameter objects that gained the feature.
       weight: core
     - property: defaults
-      criterion: States that the feature is default values for type parameters, from PEP 696.
+      criterion: States that the feature is default values for type parameters.
       weight: nuance
   PE-003:
     - property: deprecation marker for type checkers
       criterion: States that warnings.deprecated is a decorator that marks a function, class or overload as deprecated for static type checkers.
       weight: core
     - property: runtime warning
-      criterion: States that using the decorated object at runtime emits a DeprecationWarning.
+      criterion: States that runtime use can trigger a warning, which defaults to DeprecationWarning.
       weight: core
   PE-004:
     - property: per-item TypedDict annotation
@@ -323,7 +323,7 @@ questions:
       weight: nuance
   PE-005:
     - property: both branches for TypeIs
-      criterion: States that TypeIs narrows the true branch to the given type and can also narrow the false branch by excluding that type.
+      criterion: States that TypeIs narrows the original type to the part compatible with the specified type on true and excludes the specified type on false.
       weight: core
     - property: true-only TypeGuard
       criterion: States that TypeGuard narrows only the true branch.
@@ -333,7 +333,7 @@ questions:
       criterion: Recommends secrets.token_urlsafe() to generate the token.
       weight: core
     - property: cryptographic randomness
-      criterion: States that the token comes from cryptographically strong randomness, unlike the random module, which must not be used for this.
+      criterion: States that the token comes from cryptographically strong randomness.
       weight: nuance
   AP-002:
     - property: contextlib.closing
@@ -344,7 +344,7 @@ questions:
       weight: nuance
   AP-003:
     - property: explicit UTF-8
-      criterion: Opens the file with an explicit encoding="utf-8" argument, through open() or Path.open().
+      criterion: Describes opening the file in text mode with UTF-8 explicitly selected.
       weight: core
     - property: context manager
       criterion: Uses a with statement so the file is closed automatically when the block exits.
