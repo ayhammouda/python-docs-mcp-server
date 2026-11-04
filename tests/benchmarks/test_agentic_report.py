@@ -17,6 +17,7 @@ import pytest
 import yaml
 
 import benchmarks.grading.inputs as grading_inputs
+from benchmarks.agentic.protocol import KeyLeakError
 from benchmarks.agentic_report import (
     FORBIDDEN_PHRASES,
     OUTPUT_CAP_RULE,
@@ -904,3 +905,34 @@ def test_no_run_data_value_becomes_markdown_in_the_readme_summary(live_like_bund
     )
     text = generate_readme_summary(live_like_bundle, methodology_path=METHODOLOGY).read_text()
     _assert_inert(text)
+
+
+@pytest.mark.parametrize("field", ["reported_model", "legacy_extra"])
+def test_report_rejects_sensitive_fields_in_old_votes_before_publication(
+    agentic_bundle: Path, field: str
+) -> None:
+    marker = "AIza" + "g" * 35
+    path = next((agentic_bundle / "grading/votes/answers/haiku").rglob("*.json"))
+    record = json.loads(path.read_bytes())
+    record[field] = marker
+    path.write_text(json.dumps(record).replace(marker, r"\u0041" + marker[1:]))
+    out = agentic_bundle / "REPORT.md"
+    out.write_text("previous report")
+    with pytest.raises(KeyLeakError) as caught:
+        _render(agentic_bundle)
+    assert marker not in str(caught.value)
+    assert out.read_text() == "previous report"
+
+
+def test_readme_refuses_sensitive_rendered_text_before_publication(
+    agentic_bundle: Path, tmp_path: Path
+) -> None:
+    marker = "AIza" + "g" * 35
+    methodology = tmp_path / (marker + ".md")
+    methodology.write_text("fixture methodology")
+    out = agentic_bundle / "README-SUMMARY.md"
+    out.write_text("previous summary")
+    with pytest.raises(KeyLeakError) as caught:
+        generate_readme_summary(agentic_bundle, methodology_path=methodology)
+    assert marker not in str(caught.value)
+    assert out.read_text() == "previous summary"

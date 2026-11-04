@@ -18,9 +18,9 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-import yaml
-
+from benchmarks.agentic.inputs import CapturedInput, read_json, read_jsonl
 from benchmarks.agentic.ledger import actual_cost, load_price_snapshot
+from benchmarks.agentic.protocol import KeyLeakError
 from benchmarks.agentic.types import Buckets
 from benchmarks.grading.gates import load_egress_evidence, load_offline_evidence
 from benchmarks.grading.inputs import SNAPSHOT_NAMES
@@ -64,15 +64,19 @@ RESIDUAL_RISK = (
 
 def _read_json(path: Path) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        return read_json(path, "agentic report evidence")
+    except KeyLeakError:
+        raise
+    except BenchmarkValidationError:
         return None
 
 
 def _read_yaml(path: Path) -> Any:
     try:
-        return yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
+        return CapturedInput.read(path, "report snapshot", "report snapshot").mapping
+    except KeyLeakError:
+        raise
+    except BenchmarkValidationError:
         return None
 
 
@@ -88,8 +92,7 @@ def _cells(base: Path) -> dict[tuple[str, str], dict[str, Any]]:
 def _events(path: Path) -> list[dict[str, Any]]:
     if not path.is_file():
         return []
-    lines = path.read_text(encoding="utf-8").splitlines()
-    return [json.loads(line) for line in lines if line.strip()]
+    return read_jsonl(path, "agentic report ledger")
 
 
 def _fmt(value: Any, digits: int = 3) -> str:

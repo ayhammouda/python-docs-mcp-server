@@ -59,6 +59,7 @@ from typing import Any
 
 import yaml
 
+from benchmarks.agentic.protocol import assert_no_key_shaped
 from benchmarks.model_matrix import METHODOLOGY_TOKEN_LABEL, ModelMatrix, load_model_matrix
 from benchmarks.runner import BenchmarkValidationError
 
@@ -162,6 +163,7 @@ def generate_report(
         from benchmarks.agentic_report import render_agentic_report  # it imports this module
 
         content = render_agentic_report(bundle, matrix, methodology_path, report_path)
+        assert_no_key_shaped(content, where="agentic report")
     else:
         content = _render_report(bundle, matrix, methodology_path, report_path)
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -190,6 +192,7 @@ def generate_readme_summary(
         from benchmarks.agentic_report import render_agentic_readme_summary
 
         content = render_agentic_readme_summary(bundle, methodology_path, summary_path)
+        assert_no_key_shaped(content, where="agentic README summary")
     else:
         content = _render_readme_summary(bundle, methodology_path, summary_path)
     summary_path.parent.mkdir(parents=True, exist_ok=True)
