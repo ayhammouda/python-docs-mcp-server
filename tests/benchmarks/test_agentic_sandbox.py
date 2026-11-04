@@ -1883,7 +1883,7 @@ async def test_run_jobs_preserves_removal_ids_after_collection_error(
 
 @pytest.mark.parametrize("size_case", ["sparse", "growing", "limit"])
 async def test_run_jobs_bounds_squid_reads(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, size_case: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest, size_case: str
 ) -> None:
     limit = 8 * 1024 * 1024
     read_sizes: list[int] = []
@@ -1891,13 +1891,15 @@ async def test_run_jobs_bounds_squid_reads(
     def prepare_log(spool: Path) -> None:
         path = spool / "cache.log"
         size = {"sparse": limit + 1, "growing": 1, "limit": limit}[size_case]
-        with path.open("r+b") as stream:
-            stream.truncate(size)
-        inode = path.stat().st_ino
+        # Hold the original inode through both jobs so Linux cannot recycle it after unlink.
+        stream = path.open("r+b")
+        request.addfinalizer(stream.close)
+        stream.truncate(size)
+        identity = os.fstat(stream.fileno())
         read = os.read
 
         def instrument(fd: int, count: int) -> bytes:
-            if os.fstat(fd).st_ino == inode:
+            if os.path.samestat(os.fstat(fd), identity):
                 read_sizes.append(count)
                 if size_case == "growing" and len(read_sizes) == 1:
                     with path.open("r+b") as writer:
