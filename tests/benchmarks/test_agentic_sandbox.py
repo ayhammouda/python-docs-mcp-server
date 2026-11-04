@@ -934,16 +934,20 @@ async def test_missing_docs_index_stops_preparation_before_probes(tmp_path: Path
     assert probes.jobs == []
 
 
-async def test_missing_second_key_refuses_preparation_after_all_probes(tmp_path: Path) -> None:
-    keys = _keys(tmp_path, "ANTHROPIC_API_KEY=dummy-one")
+@pytest.mark.parametrize("second", ["", 'OPENAI_API_KEY="dummy has spaces"'])
+async def test_invalid_second_key_refuses_preparation_after_all_probes(
+    tmp_path: Path, second: str
+) -> None:
+    keys = _keys(tmp_path, f"ANTHROPIC_API_KEY=dummy-one\n{second}")
     probes = Probes()
     launcher = ContainerLauncher(
         _sandbox(tmp_path, FakeDocker(), keys_file=keys), probe=probes, control=probes.control
     )
     jobs = [_job("claude-sonnet-5-5"), _job("gpt-6.1-sol")]
     try:
-        with pytest.raises(BenchmarkValidationError, match="OPENAI_API_KEY"):
+        with pytest.raises(BenchmarkValidationError, match="OPENAI_API_KEY") as error:
             await launcher.prepare(jobs)
+        assert "dummy has spaces" not in str(error.value)
         assert probes.jobs == ["control", *(job.job_id for job in jobs)]
     finally:
         await launcher.close()

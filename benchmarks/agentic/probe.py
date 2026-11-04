@@ -252,7 +252,9 @@ async def isolation_probe(
     async with Canary() as canary:
         via_proxy = ("host.docker.internal", canary.port)
         hosts = [*_MAC_NAMES, *host_addresses(), *egress.gateways]
-        allowed_http = [_OLLAMA_VERSION_URL] if family.provider == "ollama" else []
+        allowed_http = (
+            [_OLLAMA_VERSION_URL] if ("host.docker.internal", _OLLAMA_PORT) in egress.allow else []
+        )
         spec = {
             "token": token,
             "direct": [[host, port] for host in hosts for port in (canary.port, _OLLAMA_PORT)],

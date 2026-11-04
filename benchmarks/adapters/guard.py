@@ -73,6 +73,11 @@ class MalformedApiKeyError(LiveProviderDisabledError):
     """Raised when a provider API key is set but holds characters no HTTP header may carry."""
 
 
+def valid_api_key(value: str) -> bool:
+    """Use the same character policy for the keys file and the worker environment."""
+    return _KEY_CHARACTERS.fullmatch(value) is not None
+
+
 def require_live_environment(provider: str) -> None:
     """Raise :class:`LiveProviderDisabledError` unless live calls are explicitly enabled.
 
@@ -113,7 +118,7 @@ def require_live_environment(provider: str) -> None:
             f"live provider calls are disabled: missing required {key_env} for "
             f"provider {provider!r}"
         )
-    if not _KEY_CHARACTERS.fullmatch(raw_key):
+    if not valid_api_key(raw_key):
         raise MalformedApiKeyError(
             f"live provider calls are disabled: {key_env} holds a character outside "
             "[A-Za-z0-9_.-]"

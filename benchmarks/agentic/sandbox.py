@@ -26,6 +26,7 @@ from benchmarks.adapters.guard import (
     LIVE_LATCH_ENV,
     LIVE_PROVIDERS_ENABLED_ENV,
     PROVIDER_API_KEY_ENV,
+    valid_api_key,
 )
 from benchmarks.agentic.egress import (
     EGRESS_ALIAS,
@@ -104,6 +105,8 @@ def read_key(keys_file: Path, name: str) -> str:
             value = value[1:-1]
         if not value:
             raise BenchmarkValidationError(f"keys file {keys_file} sets {name} to an empty value")
+        if not valid_api_key(value):
+            raise BenchmarkValidationError(f"keys file contains invalid characters for {name}")
         return value
     raise BenchmarkValidationError(f"keys file {keys_file} does not set {name}")
 

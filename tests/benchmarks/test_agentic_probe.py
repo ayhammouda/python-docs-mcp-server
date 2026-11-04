@@ -286,11 +286,16 @@ class ProbeDocker(FakeDocker):
         return _done(argv, out=json.dumps({"checks": checks}))
 
 
-async def _egress(tmp_path: Path, docker: FakeDocker, gateways: Sequence[str]) -> Any:
+async def _egress(
+    tmp_path: Path,
+    docker: FakeDocker,
+    gateways: Sequence[str],
+    allow: tuple[tuple[str, int], ...] = (("api.anthropic.com", 443),),
+) -> Any:
     (tmp_path / "run").mkdir(exist_ok=True)
     docker.gateways = gateways
     sandbox = Sandbox(_config(tmp_path), docker=docker, verify=_verified)
-    return sandbox, await sandbox.open_egress("j", (("api.anthropic.com", 443),))
+    return sandbox, await sandbox.open_egress("j", allow)
 
 
 async def test_the_probe_targets_every_ipam_gateway_and_records_the_inspect(
@@ -320,9 +325,19 @@ async def test_the_probe_targets_every_ipam_gateway_and_records_the_inspect(
     assert docker.ran("rm", "-f", "id-pdmcp-r1-j-probe")
 
 
+async def test_scripted_offline_probe_has_no_ollama_request(tmp_path: Path) -> None:
+    docker = ProbeDocker(lambda: tmp_path / "run" / "egress" / "j")
+    sandbox, egress = await _egress(tmp_path, docker, ("172.30.0.1",), allow=())
+    scripted = replace(_job("gemma4-12b").family, api="scripted")
+    await isolation_probe(sandbox, egress, job_id="j", family=scripted, system_id="no-docs")
+    assert docker.specs[0]["allowed_http"] == []
+
+
 async def test_an_ollama_probe_checks_its_version_url(tmp_path: Path) -> None:
     docker = ProbeDocker(lambda: tmp_path / "run" / "egress" / "j")
-    sandbox, egress = await _egress(tmp_path, docker, ("172.30.0.1",))
+    sandbox, egress = await _egress(
+        tmp_path, docker, ("172.30.0.1",), allow=(("host.docker.internal", 11434),)
+    )
     family = _job("gemma4-12b").family
     await isolation_probe(sandbox, egress, job_id="j", family=family, system_id="no-docs")
     assert docker.specs[0]["allowed_http"] == ["http://host.docker.internal:11434/api/version"]
@@ -338,7 +353,9 @@ async def test_probe_waits_for_its_log_before_freezing_query_prefix(
     )
     monkeypatch.setattr(probe, "host_addresses", lambda: [])
     job = _job("gemma4-12b")
-    sandbox, egress = await _egress(tmp_path, FakeDocker(), ())
+    sandbox, egress = await _egress(
+        tmp_path, FakeDocker(), (), allow=(("host.docker.internal", 11434),)
+    )
     log = egress.log_dir / "access.log"
     ollama = "t c GET host.docker.internal 11434 200 TCP_MISS"
     prefix = [*PROBE_LINES, ollama]
