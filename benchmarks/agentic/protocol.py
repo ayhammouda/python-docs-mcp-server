@@ -19,8 +19,8 @@ from benchmarks.runner import BenchmarkValidationError
 
 MAX_FRAME_BYTES = 64 * 1024 * 1024
 WORKER_LEAK_REASON = "worker output failed its credential check"
-# A worker normally sends the frame-limit reason and exits 2; preserve it across a broken pipe.
-UNREPORTED_FRAME_LIMIT_EXIT = 4
+# A sent error frame can remain unread after the host loses its reply pipe.
+WORKER_FRAME_LIMIT_EXIT = 4
 # Raw diagnostics can mix Python repr, JSON and YAML. Treat up to nine token
 # characters after a backslash as a possible delimiter (U + eight hex digits
 # is the longest). Punctuation already delimits a key, including the closing

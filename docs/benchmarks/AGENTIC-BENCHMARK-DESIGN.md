@@ -304,9 +304,9 @@ came from. Container settings:
   protocol errors keep their documented trajectory behavior.
 - On protocol EOF the host waits for the owned worker's terminal status, up to
   five seconds or the configured silence timeout, whichever is shorter. Status
-  3 reports a credential failure. A worker that cannot send its frame-limit
-  error exits with status 4 so the host can still identify the structural
-  failure. Other worker deaths and timeouts retain their usual loss accounting.
+  3 reports a credential failure. Status 4 reports a frame-limit failure even
+  if the host cannot read the final error frame. The host uses its ordinary
+  loss accounting for other worker deaths and timeouts.
 
 ### 7.4 Air-gapped arm (**Call**)
 

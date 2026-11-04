@@ -28,7 +28,7 @@ from benchmarks.adapters.guard import PAID_KEY_ENVS, PROVIDER_API_KEY_ENV
 from benchmarks.agentic.bridge import Bridge, SystemSpec, open_bridge, system_spec_from_raw
 from benchmarks.agentic.ledger import Outcome
 from benchmarks.agentic.protocol import (
-    UNREPORTED_FRAME_LIMIT_EXIT,
+    WORKER_FRAME_LIMIT_EXIT,
     WORKER_LEAK_REASON,
     KeyLeakError,
     encode_frame,
@@ -414,15 +414,13 @@ async def _run_job(
 
 
 def _report(channel: ProtocolChannel, reason: str, code: int) -> int:
-    try:
-        channel.send({"type": "error", "reason": reason})
-    except KeyLeakError:
-        code = 3
-        with suppress(OSError):
-            channel.send({"type": "error", "reason": WORKER_LEAK_REASON})
-    except OSError:
-        if reason.startswith("FrameTooLarge:"):
-            return UNREPORTED_FRAME_LIMIT_EXIT
+    with suppress(OSError):
+        try:
+            channel.send({"type": "error", "reason": reason})
+        except KeyLeakError:
+            code = 3
+            with suppress(KeyLeakError):
+                channel.send({"type": "error", "reason": WORKER_LEAK_REASON})
     return code
 
 
@@ -441,7 +439,7 @@ async def run_worker(
         if not isinstance(exc, Exception):
             raise
         if frame := find_frame_too_large(exc):
-            return _report(channel, f"FrameTooLarge: {frame}", 2)
+            return _report(channel, f"FrameTooLarge: {frame}", WORKER_FRAME_LIMIT_EXIT)
         return _report(channel, f"{type(exc).__name__}: {exc}", 2)
 
 

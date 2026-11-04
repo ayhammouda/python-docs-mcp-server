@@ -344,3 +344,15 @@ async def test_reporting_preserves_recognition_when_fallback_pipe_breaks(
 
     monkeypatch.setattr(worker, "_run_job", fail)
     assert await worker.run_worker(Channel(), asyncio.StreamReader()) == 3  # type: ignore[arg-type]
+
+
+async def test_diagnostic_refusal_preserves_worker_credential_status(monkeypatch):
+    class Channel:
+        def send(self, message):
+            raise KeyLeakError("synthetic diagnostic refusal")
+
+    async def fail(*args, **kwargs):
+        raise KeyLeakError("recognized content failure")
+
+    monkeypatch.setattr(worker, "_run_job", fail)
+    assert await worker.run_worker(Channel(), asyncio.StreamReader()) == 3

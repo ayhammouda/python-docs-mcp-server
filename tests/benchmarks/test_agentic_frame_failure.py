@@ -15,7 +15,12 @@ from benchmarks.agentic.bridge import Bridge
 from benchmarks.agentic.cleanup import finish
 from benchmarks.agentic.host import LocalLauncher, run_jobs
 from benchmarks.agentic.mcp_stdio import ReplyGuard
-from benchmarks.agentic.protocol import FrameTooLarge, KeyLeakError, encode_frame
+from benchmarks.agentic.protocol import (
+    WORKER_FRAME_LIMIT_EXIT,
+    FrameTooLarge,
+    KeyLeakError,
+    encode_frame,
+)
 from tests.benchmarks.test_agentic_host import (
     ANSWER,
     REPO_ROOT,
@@ -75,21 +80,31 @@ raise SystemExit(code)
     async with asyncio.timeout(10):
         with pytest.raises(FrameTooLarge, match="MCP stdio reply exceeds the frame limit"):
             await run_jobs(
-                [job], launcher=LocalLauncher(), ledger=service, on_message=host.on_message,
-                log_dir=tmp_path / "logs", cwd=REPO_ROOT,
+                [job],
+                launcher=LocalLauncher(),
+                ledger=service,
+                on_message=host.on_message,
+                log_dir=tmp_path / "logs",
+                cwd=REPO_ROOT,
             )
     assert calls.read_text().splitlines() == ["provider"]
     result = json.loads(outcome.read_text())
-    assert result["code"] == 2
+    assert result["code"] == WORKER_FRAME_LIMIT_EXIT
     assert len(result["children"]) == 1 and result["children"][0] is not None
     stopped.assert_awaited_once()
     assert [m["type"] for m in host.messages()] == ["system_info"]
     events = host.ledger.invocation_events()
     assert [e["event"] for e in events] == ["reserve", "settle"]
     assert events[1]["outcome"] == "ok"  # The known model usage was settled before MCP.
-    assert await service.reserve(
-        provider=job.family.provider, model_id=job.family.model_id, input_bound=1, output_bound=1
-    ) is None
+    assert (
+        await service.reserve(
+            provider=job.family.provider,
+            model_id=job.family.model_id,
+            input_bound=1,
+            output_bound=1,
+        )
+        is None
+    )
     assert b"synthetic server diagnostic retained" in b"".join(
         p.read_bytes() for p in (tmp_path / "logs").glob("*.log")
     )
@@ -187,11 +202,18 @@ async def test_worker_checks_latch_before_publishing_returned_record(
 
     run = AsyncMock(side_effect=trajectory)
     monkeypatch.setattr(loop, "run_trajectory", run)
-    code = await worker.run_worker(channel, asyncio.StreamReader(), {
-        "type": "job", "family": job.family.raw, "system": job.system.raw,
-        "caps": {}, "trajectories": list(job.trajectories),
-    })
-    assert code == 2
+    code = await worker.run_worker(
+        channel,
+        asyncio.StreamReader(),
+        {
+            "type": "job",
+            "family": job.family.raw,
+            "system": job.system.raw,
+            "caps": {},
+            "trajectories": list(job.trajectories),
+        },
+    )
+    assert code == WORKER_FRAME_LIMIT_EXIT
     assert run.await_count == 1
     sent = [call.args[0] for call in channel.send.call_args_list]
     assert [m["type"] for m in sent] == ["system_info", "error"]
@@ -206,7 +228,8 @@ async def test_host_stops_grants_before_wait_or_teardown(host, tmp_path, monkeyp
     stdout = asyncio.StreamReader()
     stdout.feed_data(
         encode_frame({"type": "error", "reason": "FrameTooLarge: synthetic frame limit"})
-        if source == "error" else (513).to_bytes(8, "big")
+        if source == "error"
+        else (513).to_bytes(8, "big")
     )
 
     async def wait():
@@ -216,15 +239,24 @@ async def test_host_stops_grants_before_wait_or_teardown(host, tmp_path, monkeyp
 
     proc = Mock(stdin=Mock(drain=AsyncMock()), stdout=stdout, wait=wait)
     _fake_host_processes(monkeypatch, AsyncMock(return_value=proc))
-    task = asyncio.create_task(run_jobs(
-        [job], launcher=LocalLauncher(), ledger=service, on_message=host.on_message,
-        log_dir=tmp_path / "logs", cwd=REPO_ROOT, max_frame_bytes=512,
-    ))
+    task = asyncio.create_task(
+        run_jobs(
+            [job],
+            launcher=LocalLauncher(),
+            ledger=service,
+            on_message=host.on_message,
+            log_dir=tmp_path / "logs",
+            cwd=REPO_ROOT,
+            max_frame_bytes=512,
+        )
+    )
     try:
         await asyncio.wait_for(waiting.wait(), 2)
         unit = await service.reserve(
-            provider=job.family.provider, model_id=job.family.model_id,
-            input_bound=1, output_bound=1,
+            provider=job.family.provider,
+            model_id=job.family.model_id,
+            input_bound=1,
+            output_bound=1,
         )
         if unit is not None:  # Clean up the failing pre-fix assertion's own reservation.
             await service.settle(unit, outcome="worker_lost", buckets=None)
@@ -262,9 +294,7 @@ async def test_frame_failure_denies_sibling_grants_and_publications_during_teard
     host, tmp_path, cleanup_error
 ):
     boundary, response = tmp_path / "stopping", tmp_path / "reply.json"
-    record = {
-        "type": "trajectory", "corpus_id": "Q1", "repeat": 1, "attempt": 1, "record": {}
-    }
+    record = {"type": "trajectory", "corpus_id": "Q1", "repeat": 1, "attempt": 1, "record": {}}
     code = f"""
 import os, sys, time, json
 sys.path.insert(0, {str(REPO_ROOT)!r})
@@ -274,7 +304,7 @@ job = read_frame_fd(0)
 if job['job_id'] == 'oversize':
     os.write(1, {encode_frame(_reserve_frame(1024))!r})
     assert read_frame_fd(0)['type'] == 'grant'
-    os.write(1, {encode_frame({'type': 'error', 'reason': 'FrameTooLarge: synthetic limit'})!r})
+    os.write(1, {encode_frame({"type": "error", "reason": "FrameTooLarge: synthetic limit"})!r})
 else:
     deadline = time.monotonic() + 5
     while not Path({str(boundary)!r}).exists():
@@ -284,7 +314,7 @@ else:
     assert read_frame_fd(0)['type'] == 'ack'
     os.write(1, {encode_frame(_reserve_frame(1024))!r})
     reply = read_frame_fd(0)
-    stage = Path({str(response.with_suffix('.tmp'))!r})
+    stage = Path({str(response.with_suffix(".tmp"))!r})
     stage.write_text(json.dumps(reply))
     stage.replace({str(response)!r})
 """
@@ -319,8 +349,12 @@ else:
     with pytest.raises(FrameTooLarge, match="synthetic limit"):
         async with asyncio.timeout(10):
             await run_jobs(
-                jobs, launcher=launcher, ledger=service, on_message=host.on_message,
-                log_dir=tmp_path / "logs", cwd=REPO_ROOT,
+                jobs,
+                launcher=launcher,
+                ledger=service,
+                on_message=host.on_message,
+                log_dir=tmp_path / "logs",
+                cwd=REPO_ROOT,
             )
     assert sorted(launcher.stopped) == ["oversize", "sibling"] and launcher.closed
     assert json.loads(response.read_text()) == {"type": "deny"}
@@ -365,3 +399,50 @@ async def test_existing_credential_latch_keeps_its_precedence_on_sdk_cancellatio
     with pytest.raises(KeyLeakError) as caught:
         await bridge.call("search_docs", {})
     assert caught.value is failure
+
+
+async def test_worker_frame_error_survives_an_unread_error_frame(tmp_path, monkeypatch, host):
+    """A reporting worker can exit while the host still owes a reply to the prior frame."""
+    job = _job(tmp_path, [TOOL])
+    service = host.service(job.family)
+    processes = []
+    spawn = asyncio.create_subprocess_exec
+
+    async def start(*args, **kwargs):
+        process = await spawn(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    reserve = service.reserve
+
+    async def delayed_grant(**kwargs):
+        await asyncio.wait_for(processes[0].wait(), 10)
+        return await reserve(**kwargs)
+
+    class Launcher(LocalLauncher):
+        def command(self, job):
+            code = """
+import asyncio, sys
+from benchmarks.agentic import worker
+from benchmarks.agentic.protocol import FrameTooLarge
+async def fail(channel, reader, *args, **kwargs):
+    channel.send({'type':'reserve', 'input_bound':100, 'output_bound':32})
+    raise FrameTooLarge('synthetic reply limit')
+worker._run_job = fail
+sys.exit(worker.main_worker())
+"""
+            return [sys.executable, "-c", code], {}
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", start)
+    monkeypatch.setattr(service, "reserve", delayed_grant)
+    with pytest.raises(FrameTooLarge):
+        await run_jobs(
+            [job],
+            launcher=Launcher(),
+            ledger=service,
+            on_message=host.on_message,
+            log_dir=tmp_path / "logs",
+            cwd=REPO_ROOT,
+        )
+    assert not host.messages(job.job_id)
+    assert [row["event"] for row in host.ledger.invocation_events()] == ["reserve", "settle"]
