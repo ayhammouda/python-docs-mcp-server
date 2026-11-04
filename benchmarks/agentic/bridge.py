@@ -94,9 +94,11 @@ def system_spec_from_raw(raw: Mapping[str, Any]) -> SystemSpec:
     ):
         raise BenchmarkValidationError(f"system {system_id!r} 'env' must map strings to strings")
     pass_env = _strings(raw.get("pass_env") or [], f"system {system_id!r} 'pass_env'")
-    # Every provider key, the paid ones always, except a competitor's key for its own system.
-    refused = set(PROVIDER_API_KEY_ENV.values()) - {_OWN_KEYS.get(system_id)}
-    keys = sorted(refused & (set(pass_env) | set(env)))
+    # Every provider key, the paid ones always. A competitor's own key reaches its own system
+    # only through pass_env, never as a literal in the manifest.
+    names = set(PROVIDER_API_KEY_ENV.values())
+    passed = (names - {_OWN_KEYS.get(system_id)}) & set(pass_env)
+    keys = sorted((names & set(env)) | passed)
     if keys:
         raise BenchmarkValidationError(
             f"system {system_id!r} must not receive provider keys {keys} through env or pass_env"

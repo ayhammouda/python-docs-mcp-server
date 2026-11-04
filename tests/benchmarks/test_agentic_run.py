@@ -48,6 +48,7 @@ COMMITTED_MATRIX = REPO_ROOT / "docs" / "benchmarks" / "model-matrix.yml"
 COMMITTED_MANIFEST = REPO_ROOT / "docs" / "benchmarks" / "agentic-manifest.yml"
 COMMITTED_PRICES = REPO_ROOT / "docs" / "benchmarks" / "price-snapshot.yml"
 FAKE_SERVER = FIX / "fake_fetch_server.py"
+TEMPLATE_MANIFEST = REPO_ROOT / "docs" / "benchmarks" / "competitor-manifest.template.yml"
 # 3 systems x 2 questions x 2 repeats: python-docs and docs-fetch make 2 calls, no-docs 1,
 # so 20 calls of 1,000 input tokens at $1/1M and 100 output tokens at $10/1M.
 EXPECTED_ANTHROPIC_SPEND = Decimal("0.04")
@@ -418,6 +419,27 @@ def test_a_key_shape_in_an_input_file_is_refused_before_any_snapshot(tmp_path: P
         run_agentic(_config(tmp_path, manifest_path=manifest, dry_run=True))
     assert key_shape not in str(caught.value)
     assert not (tmp_path / "run" / "snapshots").exists()
+
+
+def _ref_tools_manifest(tmp_path: Path, **fields: Any) -> Path:
+    template = yaml.safe_load(TEMPLATE_MANIFEST.read_text(encoding="utf-8"))
+    (ref,) = [c for c in template["competitors"] if c["id"] == "ref-tools"]
+    ref |= {"adapter": "mcp-stdio", "command": ["{python}", str(FAKE_SERVER)], **fields}
+    path = tmp_path / "manifest.yml"
+    path.write_text(yaml.safe_dump({"competitors": [ref]}), encoding="utf-8")
+    return path
+
+
+def test_a_competitor_key_reaches_its_system_only_through_pass_env(tmp_path: Path) -> None:
+    secret = "ref_synthetic_secret_123"
+    literal = _ref_tools_manifest(tmp_path, env={"REF_API_KEY": secret})
+    with pytest.raises(BenchmarkValidationError, match="REF_API_KEY") as caught:
+        run_agentic(_config(tmp_path, manifest_path=literal, dry_run=True))
+    assert secret not in str(caught.value)
+    assert not (tmp_path / "run" / "snapshots").exists()
+    passed = _ref_tools_manifest(tmp_path, env={}, pass_env=["REF_API_KEY"])
+    summary = run_agentic(_config(tmp_path, manifest_path=passed, dry_run=True))
+    assert summary["systems"] == ["ref-tools"]
 
 
 def test_a_worker_error_costs_only_its_own_cells(tmp_path: Path) -> None:
