@@ -155,6 +155,19 @@ pilot to obtain auditable evidence rather than adding an API label to old transc
 Local Ollama timing references need the same identity evidence, even though they are
 unmetered. Grant waits remain excluded, and discarded attempts count toward cost and time.
 
+The host retains a `transcript_inventory` in `run-summary.json`: the SHA256 of each exact
+published scored or discarded JSON file, its relative path and its immutable cell,
+question, system, family, provider, model, repeat and trajectory-attempt coordinates.
+The reference reader checks these against the same captured bytes it parses before
+using any timing or charges. Replacing a single file from another pilot, including one
+with the same run label, fails closed. Missing inventories, missing files, extra files
+and changed bytes are refused with an inventory or SHA256 diagnostic. Produce a new
+pilot with the current runner for older evidence; adding hashes after a restore cannot
+establish which bytes the host originally published. Copying a complete intact pilot
+to another directory and regenerating scoring, token or report artifacts remain supported.
+This is a consistency check for partial restores or edits, without signing infrastructure;
+deliberately forging the entire unsigned evidence bundle is outside its scope.
+
 Every actual model-call attempt must have a unique `unit_id`. For metered providers,
 that ID must join to exactly one reservation and settlement in the summary's `run_id`,
 with the same provider, family/system job and model. Execution identity establishes the

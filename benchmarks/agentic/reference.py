@@ -6,6 +6,7 @@ evidence, not authenticity: neither transcripts nor ledger exports are signed.
 
 from __future__ import annotations
 
+import hashlib
 from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
@@ -18,6 +19,71 @@ from benchmarks.model_matrix import ModelFamily
 _CALL_OUTCOMES = frozenset(
     {"ok", "no_usage", "rejected", "rate_limited", "server", "timeout", "connection"}
 )
+
+_COORDINATES = (
+    "competitor_id",
+    "corpus_id",
+    "system_id",
+    "model_family_id",
+    "provider",
+    "model_id",
+    "repeat",
+    "attempt",
+)
+
+
+class ReferenceTranscripts:
+    """Match every captured transcript to the host's publication-time inventory."""
+
+    def __init__(self, summary: dict[str, Any]) -> None:
+        items = summary.get("transcript_inventory")
+        if not isinstance(items, list) or not items:
+            raise ValueError(
+                "missing transcript inventory; regenerate the pilot with the current runner"
+            )
+        self.pending: dict[str, dict[str, Any]] = {}
+        for item in items:
+            if not isinstance(item, dict) or any(field not in item for field in _COORDINATES):
+                raise ValueError("invalid transcript inventory coordinates")
+            if any(not isinstance(item[f], str) or not item[f] for f in _COORDINATES[:-2]):
+                raise ValueError("invalid transcript inventory coordinates")
+            if any(type(item[f]) is not int or item[f] < 1 for f in ("repeat", "attempt")):
+                raise ValueError("invalid transcript inventory attempt/repeat")
+            cell = f"{item['system_id']}--{item['model_family_id']}--r{item['repeat']}"
+            path = item.get("path")
+            if item["competitor_id"] != cell or path not in (
+                f"transcripts/{cell}/{item['corpus_id']}.json",
+                f"discarded/{cell}/{item['corpus_id']}--attempt{item['attempt']}.json",
+            ):
+                raise ValueError("transcript inventory path contradicts its coordinates")
+            digest = item.get("sha256")
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(c not in "0123456789abcdef" for c in digest)
+            ):
+                raise ValueError("transcript inventory lacks a valid SHA256")
+            if path in self.pending:
+                raise ValueError("duplicate transcript inventory path")
+            self.pending[path] = item
+
+    def verify(self, path: str, content: bytes, record: dict[str, Any]) -> None:
+        item = self.pending.pop(path, None)
+        if item is None:
+            raise ValueError(f"transcript absent from the host inventory: {path}")
+        if hashlib.sha256(content).hexdigest() != item["sha256"]:
+            raise ValueError(f"transcript SHA256 disagrees with the host inventory: {path}")
+        if any(
+            type(record.get(f)) is not type(item[f]) or record.get(f) != item[f]
+            for f in _COORDINATES
+        ):
+            raise ValueError(f"transcript coordinates disagree with the host inventory: {path}")
+
+    def finish(self) -> None:
+        if self.pending:
+            raise ValueError(
+                "missing transcripts from the host inventory: " + ", ".join(sorted(self.pending))
+            )
 
 
 def nonnegative_decimal(value: Any) -> Decimal:

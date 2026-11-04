@@ -300,6 +300,7 @@ class _Collector:
         self.succeeded = 0
         self.failed = 0
         self.discarded: list[dict[str, Any]] = []
+        self.transcript_inventory: list[dict[str, Any]] = []
         self.not_run: list[dict[str, Any]] = []
         self.worker_errors: list[dict[str, Any]] = []
         self.limits_mismatch: list[str] = []
@@ -335,16 +336,26 @@ class _Collector:
         stats = self.families[job.family.id]
         stats.add(record)
         stats.reruns += message["attempt"] > 1  # a rerun counts once it has run
-        ident = self._ident(job, cell, corpus_id, repeat)
+        ident = {**self._ident(job, cell, corpus_id, repeat), "attempt": message["attempt"]}
         if kind == "discarded":
             reason, attempt = message["reason"], message["attempt"]
             self.discarded.append(
                 {"cell": cell, "corpus_id": corpus_id, "reason": reason, "attempt": attempt}
             )
             path = self.out / "discarded" / cell / f"{corpus_id}--attempt{attempt}.json"
-            _write(path, {**record, **ident, "attempt": attempt, "reason": reason})
+            self._write_transcript(path, {**record, **ident, "reason": reason}, ident)
             return
         self._write_cell(ident, record)
+
+    def _write_transcript(self, path: Path, record: dict[str, Any], ident: dict[str, Any]) -> None:
+        content = _write(path, record)
+        self.transcript_inventory.append(
+            {
+                **ident,
+                "path": path.relative_to(self.out).as_posix(),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        )
 
     def _ident(self, job: WorkerJob, cell: str, corpus_id: str, repeat: int) -> dict[str, Any]:
         family, system = job.family, job.system
@@ -365,7 +376,9 @@ class _Collector:
         status, error = record["status"], record["error"]
         question = self.questions[corpus_id]
         base = {"competitor_id": cell, "tool_model_key": key, "corpus_id": corpus_id}
-        _write(self.out / "transcripts" / cell / f"{corpus_id}.json", {**record, **ident})
+        self._write_transcript(
+            self.out / "transcripts" / cell / f"{corpus_id}.json", {**record, **ident}, ident
+        )
         _write(
             self.out / "scoring" / cell / f"{corpus_id}.json",
             _scoring_record(
@@ -653,6 +666,7 @@ def run_agentic(
                 "failed_cells_included_in_correctness_denominator": True,
                 "competitors": sorted(collector.cells),
                 "discarded": collector.discarded,
+                "transcript_inventory": collector.transcript_inventory,
                 "not_run": collector.not_run,
                 "worker_errors": collector.worker_errors,
                 "model_limits_mismatch": collector.limits_mismatch,

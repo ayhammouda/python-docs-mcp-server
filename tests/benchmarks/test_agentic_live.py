@@ -5,6 +5,7 @@ No test makes a live call: the gate's refusals are the subject, and every run is
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import shutil
@@ -87,6 +88,8 @@ def _write_record(
         "model_family_id": family_id,
         "model_id": model_id or family_id,
         "provider": provider,
+        "repeat": int(cell.rsplit("--r", 1)[1]),
+        "attempt": int(path.stem.rsplit("--attempt", 1)[1]) if "--attempt" in path.stem else 1,
         "execution": {"provider": provider, "model_id": model_id or family_id, "api": api},
         "model_calls": [
             {
@@ -109,12 +112,49 @@ def _write_record(
     path.write_text(json.dumps(record), encoding="utf-8")
 
 
+def _transcript_inventory(run: Path) -> list[dict[str, Any]]:
+    """Synthetic publication records, built when the fixture's bytes are finalized."""
+    inventory = []
+    for kind in ("transcripts", "discarded"):
+        for path in sorted((run / kind).glob("*/*.json")):
+            content = path.read_bytes()
+            record = json.loads(content)
+            inventory.append(
+                {
+                    **{
+                        field: record[field]
+                        for field in (
+                            "competitor_id",
+                            "corpus_id",
+                            "system_id",
+                            "model_family_id",
+                            "provider",
+                            "model_id",
+                            "repeat",
+                            "attempt",
+                        )
+                    },
+                    "path": path.relative_to(run).as_posix(),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                }
+            )
+    return inventory
+
+
+def _bind_reference_transcripts(run: Path) -> None:
+    path = run / "run-summary.json"
+    summary = json.loads(path.read_bytes())
+    summary["transcript_inventory"] = _transcript_inventory(run)
+    path.write_text(json.dumps(summary))
+
+
 def _pilot_summary(run: Path, status: str, planned: int, scored: int, openai_spend: str) -> None:
     summary = {
         "run_id": "pilot",
         "status": status,
         "planned_cells": planned,
         "scored_cells": scored,
+        "transcript_inventory": _transcript_inventory(run),
         "discarded": [
             {"cell": path.parent.name, "corpus_id": path.name.split("--")[0], "attempt": 1}
             for path in (run / "discarded").glob("*/*.json")

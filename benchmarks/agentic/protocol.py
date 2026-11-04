@@ -166,7 +166,9 @@ def scanned_json_bytes(
     return body
 
 
-def write_json_evidence(path: Path, record: dict[str, Any]) -> None:
+def write_json_evidence(path: Path, record: dict[str, Any]) -> bytes:
+    """Publish scanned JSON and return the exact bytes for host-owned evidence hashes."""
     data = scanned_json_bytes(record, where="JSON evidence", indent=2, sort_keys=True) + b"\n"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
+    return data

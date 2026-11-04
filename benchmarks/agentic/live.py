@@ -18,10 +18,10 @@ from decimal import Decimal, DecimalException
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
 
-from benchmarks.agentic.inputs import CapturedInput, read_json, read_jsonl
+from benchmarks.agentic.inputs import CapturedInput, CapturedJSON, read_json, read_jsonl
 from benchmarks.agentic.ledger import PROVIDER_MARGINS, UNMETERED_PROVIDERS
 from benchmarks.agentic.protocol import KeyLeakError, assert_no_key_shaped
-from benchmarks.agentic.reference import ReferenceUnits
+from benchmarks.agentic.reference import ReferenceTranscripts, ReferenceUnits
 from benchmarks.model_matrix import model_matrix_from_mapping
 from benchmarks.runner import BenchmarkValidationError
 
@@ -90,13 +90,16 @@ def _read_reference_rates(run_dir: Path) -> dict[str, ReferenceRate]:
     matrix = model_matrix_from_mapping(matrix_input.mapping)
     families = {family.id: family for family in matrix.model_families}
     units = ReferenceUnits()
+    transcripts = ReferenceTranscripts(summary)
     scored: set[tuple[str, str]] = set()
     discarded = {
         (d["cell"], f"{d['corpus_id']}--attempt{d['attempt']}.json") for d in summary["discarded"]
     }
     for kind in ("transcripts", "discarded"):
         for path in sorted((run_dir / kind).glob("*/*.json")):
-            record = read_json(path, "reference transcript")
+            captured = CapturedJSON.read(path, "reference transcript")
+            record = captured.mapping
+            transcripts.verify(path.relative_to(run_dir).as_posix(), captured.content, record)
             family_id = record["model_family_id"]
             provider = record["provider"]
             family = families[family_id]
@@ -133,6 +136,7 @@ def _read_reference_rates(run_dir: Path) -> dict[str, ReferenceRate]:
                 scored.add(cell)
             else:
                 discarded.remove((path.parent.name, path.name))
+    transcripts.finish()
     if discarded:
         raise ValueError("missing discarded attempts from the reference run")
     if len(scored) != summary["scored_cells"] or any(

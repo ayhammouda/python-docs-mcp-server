@@ -26,6 +26,7 @@ from benchmarks.agentic.run import run_agentic
 from benchmarks.runner import BenchmarkValidationError
 from tests.benchmarks import test_agentic_clients as adapters
 from tests.benchmarks.test_agentic_live import (
+    _bind_reference_transcripts,
     _jobs,
     _pilot_summary,
     _single_cell_reference,
@@ -167,6 +168,7 @@ def test_unproven_or_mismatched_execution_never_reaches_confirmation(
         summary["discarded"] = [{"cell": path.parent.name, "corpus_id": "Q1", "attempt": 1}]
         summary_path.write_text(json.dumps(summary))
     path.write_text(json.dumps(record))
+    _bind_reference_transcripts(pilot)
     launcher, docker = _container(tmp_path)
     monkeypatch.delenv("CI", raising=False)
     with pytest.raises(BenchmarkValidationError, match="reference"):
@@ -185,6 +187,7 @@ def test_scripted_response_cannot_claim_live_execution(tmp_path: Path) -> None:
     record = json.loads(path.read_text())
     record["model_calls"][0]["raw_response"] = {"scripted_step": {"text": "ok"}}
     path.write_text(json.dumps(record))
+    _bind_reference_transcripts(tmp_path)
     with pytest.raises(BenchmarkValidationError, match="scripted"):
         reference_rates(tmp_path)
 
@@ -486,6 +489,7 @@ def test_unbound_or_inconsistent_units_cannot_authorize_full_run(
     transcript.write_text(json.dumps(record))
     ledger_path.write_text("".join(json.dumps(event) + "\n" for event in events))
     summary_path.write_text(json.dumps(summary))
+    _bind_reference_transcripts(pilot)
     launcher, docker = _container(tmp_path)
     monkeypatch.delenv("CI", raising=False)
     shown = []
@@ -684,6 +688,7 @@ def test_cli_refuses_invalid_reference_before_output_ledger_or_prompt(
     else:
         record["model_calls"] = [None]
     path.write_text(json.dumps(record))
+    _bind_reference_transcripts(pilot)
     launcher, docker = _container(tmp_path)
     monkeypatch.setattr("benchmarks.__main__._container_launcher", lambda *_: launcher)
     monkeypatch.setattr("sys.stdin", Mock(isatty=lambda: pytest.fail("prompted")))
@@ -786,6 +791,7 @@ def test_every_attempt_outcome_uses_ledger_booking_rules(
     summary = json.loads(summary_path.read_bytes())
     summary["ledger"]["openai"]["spent_after"] = str(Decimal("4.10") + Decimal(booked))
     summary_path.write_text(json.dumps(summary))
+    _bind_reference_transcripts(tmp_path)
     assert reference_rates(tmp_path)["gpt-6.1-sol"].usd_per_cell == Decimal("0.10") + Decimal(
         booked
     )

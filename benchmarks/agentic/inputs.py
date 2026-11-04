@@ -87,8 +87,19 @@ def _json_mapping(content: bytes, label: str) -> dict[str, Any]:
     return _require_yaml_mapping(data, label)
 
 
+@dataclass(frozen=True)
+class CapturedJSON:
+    content: bytes
+    mapping: dict[str, Any]
+
+    @classmethod
+    def read(cls, path: Path, label: str) -> CapturedJSON:
+        content = _read_bytes(path, label, label)
+        return cls(content, _json_mapping(content, label))
+
+
 def read_json(path: Path, label: str) -> dict[str, Any]:
-    return _json_mapping(_read_bytes(path, label, label), label)
+    return CapturedJSON.read(path, label).mapping
 
 
 def read_jsonl(path: Path, label: str) -> list[dict[str, Any]]:
