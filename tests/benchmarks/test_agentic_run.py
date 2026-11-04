@@ -925,6 +925,33 @@ def test_a_key_shape_in_an_input_file_is_refused_before_any_snapshot(tmp_path: P
     assert not (tmp_path / "run" / "snapshots").exists()
 
 
+@pytest.mark.parametrize("escape_key", [False, True])
+def test_dry_run_refuses_an_escaped_key_in_corpus_before_writing_snapshots(
+    tmp_path: Path, escape_key: bool
+) -> None:
+    data = yaml.safe_load(SAMPLE_CORPUS.read_bytes())
+    key = "AIza" + "g" * 35
+    data["questions"][0]["prompt"] += "\n" + key
+    text = json.dumps(data)
+    if escape_key:
+        text = text.replace(key, r"\u0041" + key[1:])
+    corpus = tmp_path / "encoded.yml"
+    corpus.write_text(text)
+    with pytest.raises(KeyLeakError) as error:
+        run_agentic(_config(tmp_path, corpus_path=corpus, dry_run=True))
+    assert key not in str(error.value)
+    assert not (tmp_path / "run" / "snapshots").exists()
+
+
+def test_decoded_scan_visits_yaml_aliases_only_once() -> None:
+    from benchmarks.agentic.protocol import assert_no_key_shaped_json
+
+    key = "AIza" + "g" * 35
+    value = yaml.safe_load('items: &loop [*loop, "text\\n' + key + '"]')
+    with pytest.raises(KeyLeakError):
+        assert_no_key_shaped_json(value, where="aliased input")
+
+
 def _ref_tools_manifest(tmp_path: Path, **fields: Any) -> Path:
     template = yaml.safe_load(TEMPLATE_MANIFEST.read_text(encoding="utf-8"))
     (ref,) = [c for c in template["competitors"] if c["id"] == "ref-tools"]

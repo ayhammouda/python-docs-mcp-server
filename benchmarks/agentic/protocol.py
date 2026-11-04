@@ -126,15 +126,18 @@ def assert_no_key_shaped(text: str | bytes, *, where: str) -> None:
 
 def assert_no_key_shaped_json(value: object, *, where: str) -> None:
     """Check decoded JSON strings and object names before escaping changes token boundaries."""
-    if isinstance(value, str):
-        assert_no_key_shaped(value, where=where)
-    elif isinstance(value, Mapping):
-        for key, item in value.items():
-            assert_no_key_shaped_json(key, where=where)
-            assert_no_key_shaped_json(item, where=where)
-    elif isinstance(value, (list, tuple)):
-        for item in value:
-            assert_no_key_shaped_json(item, where=where)
+    stack = [value]
+    visited: set[int] = set()
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (str, bytes)):
+            assert_no_key_shaped(node, where=where)
+        elif isinstance(node, (Mapping, list, tuple, set, frozenset)) and id(node) not in visited:
+            # YAML snapshots can contain repeated or cyclic aliases.
+            visited.add(id(node))
+            stack.extend(node)
+            if isinstance(node, Mapping):
+                stack.extend(node.values())
 
 
 def scanned_json_bytes(value: object, *, where: str, **options: Any) -> bytes:

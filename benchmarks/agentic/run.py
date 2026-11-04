@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import platformdirs
+import yaml
 
 import benchmarks
 from benchmarks.adapters.claude_tokens import ANTHROPIC_API_VERSION, DEFAULT_COUNT_MODEL
@@ -54,6 +55,7 @@ from benchmarks.agentic.loop import AIR_GAPPED_CAPS, HOSTED_CAPS
 from benchmarks.agentic.prompt import SYSTEM_PROMPT
 from benchmarks.agentic.protocol import (
     assert_no_key_shaped,
+    assert_no_key_shaped_json,
     scanned_json_bytes,
 )
 from benchmarks.agentic.protocol import (
@@ -522,7 +524,8 @@ def run_agentic(
         "price-snapshot.yml": config.prices_path.read_bytes(),
     }
     for name, data in inputs.items():  # every input, before any snapshot is written
-        assert_no_key_shaped(data.decode("utf-8", errors="replace"), where=f"input {name}")
+        assert_no_key_shaped(data, where=f"input {name}")
+        assert_no_key_shaped_json(yaml.safe_load(data), where=f"input {name}")
     out.mkdir(parents=True, exist_ok=True)
     snapshots = out / "snapshots"
     snapshots.mkdir()
