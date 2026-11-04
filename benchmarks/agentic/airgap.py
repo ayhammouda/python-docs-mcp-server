@@ -192,8 +192,15 @@ def write_airgap_evidence(
     try:
         egress = json.loads((out_dir / "egress" / "summary.json").read_text(encoding="utf-8"))
         jobs = egress["jobs"]
-        reached = {h for job_id in job_ids for h in jobs.get(job_id, {}).get("hosts_allowed", [])}
-        probe_passed = egress.get("isolation_probe") == "pass" and set(job_ids) <= set(jobs)
+        reached: set[str] = set()
+        probe_passed = egress.get("isolation_probe") == "pass"
+        for job_id in job_ids:
+            entry = jobs.get(job_id)
+            hosts = entry.get("hosts_allowed") if isinstance(entry, dict) else None
+            if not isinstance(hosts, list) or not all(isinstance(h, str) and h for h in hosts):
+                probe_passed = False
+                continue
+            reached.update(hosts)
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         reached, probe_passed = set(), False
     internet = sorted(reached - {_LOCAL_OLLAMA})

@@ -845,7 +845,7 @@ cache deny all
 shutdown_lifetime 1 seconds
 httpd_suppress_version_string on
 logfile_rotate 0
-logformat bench %{%Y-%m-%dT%H:%M:%S}tg.%03tuZ %>a %rm %>rd %>rP %>Hs %Ss
+logformat bench %{%Y-%m-%dT%H:%M:%S}tg.%03tuZ %>a %rm %>rd %>rP %>Hs %Ss %Sh %<Hs
 access_log stdio:/var/log/squid-bench/access.log logformat=bench rotate=0
 cache_log /var/log/squid-bench/cache.log
 acl allow_1_host dstdomain -n api.anthropic.com

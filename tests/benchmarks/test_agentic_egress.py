@@ -101,7 +101,7 @@ cache deny all
 shutdown_lifetime 1 seconds
 httpd_suppress_version_string on
 logfile_rotate 0
-logformat bench %{%Y-%m-%dT%H:%M:%S}tg.%03tuZ %>a %rm %>rd %>rP %>Hs %Ss
+logformat bench %{%Y-%m-%dT%H:%M:%S}tg.%03tuZ %>a %rm %>rd %>rP %>Hs %Ss %Sh %<Hs
 access_log stdio:/var/log/squid-bench/access.log logformat=bench rotate=0
 cache_log /var/log/squid-bench/cache.log
 acl allow_1_host dstdomain -n api.anthropic.com
@@ -258,9 +258,12 @@ async def test_c1_refuses_a_link_to_a_complete_job_directory(tmp_path: Path) -> 
     assert write_egress_summary(out, _jobs(), _ok_settle(CLAUDE))["isolation_probe"] == "fail"
 
 
-def test_failed_provider_connect_is_not_evidence_of_a_billed_connection(tmp_path: Path) -> None:
+@pytest.mark.parametrize("status", ["503 TCP_MISS", "204 TCP_TUNNEL"])
+def test_failed_provider_connect_is_not_evidence_of_a_billed_connection(
+    tmp_path: Path, status: str
+) -> None:
     out = _clean_run(tmp_path)
-    failed = ANTHROPIC_LINE.replace("200 TCP_TUNNEL", "503 TCP_MISS")
+    failed = ANTHROPIC_LINE.replace("200 TCP_TUNNEL", status)
     (out / "egress" / CLAUDE / "access.log").write_text(_lines(*PROBE_LINES, failed, PYPI_LINE))
     summary = write_egress_summary(out, _jobs(), _ok_settle(CLAUDE))
     assert summary["isolation_probe"] == "fail"
@@ -287,6 +290,92 @@ def test_c3_fails_without_claiming_a_failed_request_reached_the_internet(
     assert summary["isolation_probe"] == "fail"
     assert summary["jobs"][job.job_id]["hosts_allowed"] == ["host.docker.internal:11434"]
     assert summary["jobs"][job.job_id]["hosts_denied"] == []
+
+
+# These fields come from the pinned Squid 6.14 proxy, including "-" for no peer reply.
+CURRENT_PREFIX = [line + " HIER_NONE -" for line in PROBE_LINES]
+LOCAL = "host.docker.internal:11434"
+
+
+@pytest.mark.parametrize(
+    "attempt,passed,reached,denied",
+    [
+        ("POST host.docker.internal 11434 500 TCP_MISS HIER_DIRECT 500", True, [LOCAL], []),
+        ("POST host.docker.internal 11434 500 TCP_MISS_ABORTED HIER_DIRECT 500", True, [LOCAL], []),
+        ("POST host.docker.internal 11434 0 TCP_MISS_ABORTED HIER_DIRECT -", True, [], []),
+        ("POST host.docker.internal 11434 0 TCP_MISS_TIMEDOUT_ABORTED HIER_DIRECT -", True, [], []),
+        ("POST host.docker.internal 11434 503 TCP_MISS_ABORTED HIER_DIRECT -", True, [], []),
+        ("POST host.docker.internal 11434 503 TCP_MISS HIER_NONE -", True, [], []),
+        ("CONNECT pypi.org 443 403 TCP_DENIED_ABORTED HIER_NONE -", True, [], ["pypi.org:443"]),
+        ("POST outside.invalid 11434 0 TCP_MISS_ABORTED HIER_DIRECT -", False, [], []),
+        (
+            "POST outside.invalid 11434 500 TCP_MISS HIER_DIRECT 500",
+            False,
+            ["outside.invalid:11434"],
+            [],
+        ),
+        ("CONNECT outside.invalid 443 200 TCP_DENIED HIER_NONE -", False, [], []),
+        ("CONNECT outside.invalid 443 403 TCP_DENIED_BOGUS HIER_NONE -", False, [], []),
+        ("CONNECT outside.invalid 443 403 TCP_DENIED_REPLY HIER_DIRECT 403", False, [], []),
+        ("POST host.docker.internal 11434 0 TCP_MISS_BOGUS HIER_DIRECT -", False, [], []),
+        ("POST host.docker.internal 11434 500 TCP_MISS UNKNOWN 500", False, [], []),
+        ("POST host.docker.internal 11434 500 TCP_MISS HIER_NONE 500", False, [], []),
+        ("POST host.docker.internal 11434 500 TCP_MISS HIER_DIRECT garbage", False, [], []),
+        ("POST host.docker.internal 11434 500 TCP_MISS HIER_DIRECT", False, [], []),
+        ("POST host.docker.internal 11434 200 TCP_MISS", False, [], []),  # format changed mid-log
+    ],
+)
+def test_airgap_query_evidence(
+    tmp_path: Path, attempt: str, passed: bool, reached: list[str], denied: list[str]
+) -> None:
+    from tests.benchmarks.test_agentic_sandbox import _job
+
+    job = _job("gemma4-12b", "python-docs")
+    query = f"2026-11-04T10:00:05.000Z 172.30.0.3 {attempt}"
+    _evidence(tmp_path, job.job_id, prefix=CURRENT_PREFIX, log=_lines(*CURRENT_PREFIX, query))
+    summary = write_egress_summary(tmp_path, [job], [])
+    entry = summary["jobs"][job.job_id]
+    assert summary["isolation_probe"] == ("pass" if passed else "fail")
+    assert entry["hosts_allowed"] == reached
+    assert entry["hosts_denied"] == denied
+    assert write_airgap_evidence(tmp_path, rounds=1, broken=False, job_ids=[job.job_id]) == {
+        "all_passed": passed,
+        "checks": 1,
+        "internet_hosts": [host for host in reached if host != LOCAL],
+    }
+
+
+@pytest.mark.parametrize(
+    "reply,passed",
+    [
+        ("200 TCP_TUNNEL HIER_DIRECT -", True),
+        ("200 TCP_TUNNEL_ABORTED HIER_DIRECT -", True),
+        ("503 TCP_MISS_ABORTED HIER_DIRECT -", False),
+        ("503 NONE_NONE HIER_NONE -", False),
+        ("200 TCP_TUNNEL HIER_NONE -", False),
+        ("204 TCP_TUNNEL HIER_DIRECT -", False),
+    ],
+)
+def test_billing_needs_an_established_provider_tunnel(
+    tmp_path: Path, reply: str, passed: bool
+) -> None:
+    query = f"2026-11-04T10:00:05.000Z 172.30.0.3 CONNECT api.anthropic.com 443 {reply}"
+    _evidence(tmp_path, CLAUDE, prefix=CURRENT_PREFIX, log=_lines(*CURRENT_PREFIX, query))
+    summary = write_egress_summary(tmp_path, [_jobs()[0]], _ok_settle(CLAUDE))
+    assert summary["isolation_probe"] == ("pass" if passed else "fail")
+    assert summary["jobs"][CLAUDE]["hosts_allowed"] == (["api.anthropic.com:443"] if passed else [])
+
+
+def test_an_empty_probe_prefix_is_not_evidence(tmp_path: Path) -> None:
+    _evidence(tmp_path, SCRIPTED, prefix=[], log="")
+    assert write_egress_summary(tmp_path, [_jobs()[1]], [])["isolation_probe"] == "fail"
+
+
+@pytest.mark.parametrize("record", ["control", SCRIPTED])
+def test_a_non_object_probe_fails_the_evidence(tmp_path: Path, record: str) -> None:
+    out = _clean_run(tmp_path)
+    (out / "probe" / f"{record}.json").write_text("[]")
+    assert write_egress_summary(out, _jobs(), [])["isolation_probe"] == "fail"
 
 
 async def test_no_false_clean_when_collection_failed_or_the_provider_never_appears(

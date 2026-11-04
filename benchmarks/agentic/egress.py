@@ -15,7 +15,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from benchmarks.agentic.protocol import assert_no_key_shaped
 from benchmarks.model_matrix import ModelFamily
@@ -64,17 +64,49 @@ class ProxyEvent:
     port: int
     status: int
     result: str
+    hierarchy: str | None = None  # absent in the original seven-field format
+    peer_status: int | None = None
+
+    @property
+    def outcome(self) -> Literal["denied", "reached", "unconfirmed", "unknown"]:
+        # Squid 6.14 LogTags::c_str appends _TIMEDOUT, then _ABORTED.
+        tag = self.result.removesuffix("_ABORTED").removesuffix("_TIMEDOUT")
+        if tag == "TCP_DENIED":
+            # This config uses Squid's default 403 request ACL denial.
+            if (
+                self.status == 403
+                and self.hierarchy in (None, "HIER_NONE")
+                and self.peer_status is None
+            ):
+                return "denied"
+            return "unknown"
+        connect = self.method == "CONNECT"
+        expected = "TCP_TUNNEL" if connect else "TCP_MISS"
+        if self.hierarchy is None:  # older logs cannot attribute a non-2xx to the origin
+            success = self.status == 200 if connect else 200 <= self.status < 300
+            return "reached" if self.result == expected and success else "unknown"
+        if self.hierarchy == "HIER_DIRECT" and tag == expected:
+            if connect and self.status == 200 and self.peer_status is None:
+                return "reached"  # Squid established the tunnel, then answered CONNECT itself
+            if not connect and self.peer_status is not None:
+                return "reached"  # an HTTP status received from the origin, including errors
+        if (
+            self.hierarchy in ("HIER_NONE", "HIER_DIRECT")
+            and self.peer_status is None
+            and (self.status == 0 or self.status >= 400)
+            and tag in ("TCP_MISS", "NONE_NONE", expected)
+        ):
+            return "unconfirmed"  # can corroborate policy, never a billed call
+        return "unknown"
 
     @property
     def allowed(self) -> bool:
-        """The ACL did not deny the request. An allowed attempt may still fail upstream."""
-        return not self.result.startswith("TCP_DENIED")
+        """Only a logged request ACL denial establishes that Squid blocked the request."""
+        return self.outcome != "denied"
 
     @property
     def reached(self) -> bool:
-        """A successful CONNECT tunnel or forwarded HTTP response in our uncached proxy."""
-        expected = "TCP_TUNNEL" if self.method == "CONNECT" else "TCP_MISS"
-        return self.result == expected and 200 <= self.status < 300
+        return self.outcome == "reached"
 
     @property
     def target(self) -> str:
@@ -91,11 +123,29 @@ def parse_proxy_log(text: str) -> list[ProxyEvent]:
     if lines[-1]:
         raise BenchmarkValidationError(f"proxy log line {len(lines)} is unterminated")
     events = []
+    width = len(lines[0].split(" "))
     for number, line in enumerate(lines[:-1], 1):
         fields = line.split(" ")
         try:
-            at, client, method, host, port, status, result = fields
-            events.append(ProxyEvent(at, client, method, host, int(port), int(status), result))
+            at, client, method, host, port, status, result, *extra = fields
+            if not all(fields) or len(fields) != width:
+                raise ValueError("empty field or log format changed")
+            hierarchy, peer_status = None, None
+            if extra:
+                hierarchy, peer = extra
+                if peer != "-":
+                    if not re.fullmatch(r"[1-5][0-9]{2}", peer):
+                        raise ValueError("invalid next-hop HTTP status")
+                    peer_status = int(peer)
+            if not port.isascii() or not port.isdecimal() or not 0 < int(port) <= 65535:
+                raise ValueError("invalid port")
+            if not re.fullmatch(r"0|000|[1-5][0-9]{2}", status):
+                raise ValueError("invalid client HTTP status")
+            events.append(
+                ProxyEvent(
+                    at, client, method, host, int(port), int(status), result, hierarchy, peer_status
+                )
+            )
         except ValueError as exc:
             raise BenchmarkValidationError(f"proxy log line {number} is malformed") from exc
     return events
@@ -109,7 +159,7 @@ cache deny all
 shutdown_lifetime 1 seconds
 httpd_suppress_version_string on
 logfile_rotate 0
-logformat bench %{{%Y-%m-%dT%H:%M:%S}}tg.%03tuZ %>a %rm %>rd %>rP %>Hs %Ss
+logformat bench %{{%Y-%m-%dT%H:%M:%S}}tg.%03tuZ %>a %rm %>rd %>rP %>Hs %Ss %Sh %<Hs
 access_log stdio:{LOG_DIR_IN_PROXY}/access.log logformat=bench rotate=0
 cache_log {LOG_DIR_IN_PROXY}/cache.log
 """
@@ -233,12 +283,13 @@ def pending_collection(out_dir: Path, job_id: str) -> Path:
     return out_dir / "probe" / f"{job_id}.collection-pending"
 
 
-def _job_hosts(out_dir: Path, job_id: str) -> tuple[bool, list[ProxyEvent]]:
+def _job_hosts(out_dir: Path, job: WorkerJob) -> tuple[bool, list[ProxyEvent]]:
     """Whether the job's collection, probe and log all hold, and its query-time events.
 
     Query time is every access-log line after the probe's verified ``proxy_prefix``: probe
     traffic never reaches the summary. Anything unreadable gives (False, []).
     """
+    job_id = job.job_id
     log_dir = out_dir / "egress" / job_id
     try:
         probe = json.loads((out_dir / "probe" / f"{job_id}.json").read_text(encoding="utf-8"))
@@ -250,14 +301,23 @@ def _job_hosts(out_dir: Path, job_id: str) -> tuple[bool, list[ProxyEvent]]:
         events = parse_proxy_log(text)
     except (OSError, ValueError, BenchmarkValidationError):
         return False, []
-    prefix = probe.get("proxy_prefix")
-    if not isinstance(prefix, list) or text.splitlines()[: len(prefix)] != prefix:
+    prefix = probe.get("proxy_prefix") if isinstance(probe, dict) else None
+    if not isinstance(prefix, list) or not prefix or text.splitlines()[: len(prefix)] != prefix:
         return False, []  # truncated, or lines before the probe's own
+    permitted = allowlist(job.family, job.system.id)
     ok = (
         probe.get("passed") is True
         and isinstance(collected, dict)
         and collected.get("ok") is True
-        and all(not e.allowed or e.reached for e in events)
+        and all(
+            e.outcome == "denied"
+            or (
+                e.outcome in ("reached", "unconfirmed")
+                and (e.host, e.port) in permitted
+                and (e.method == "CONNECT") == (e.port == 443)
+            )
+            for e in events
+        )
     )
     return ok, events[len(prefix) :]
 
@@ -268,8 +328,8 @@ def write_egress_summary(
     """``out_dir/egress/summary.json``: the C1 evidence, with exactly the keys #199 binds.
 
     ``isolation_probe`` is "pass" only when the control and every job's probe passed, every
-    collection was clean, every log holds its probe prefix and has only conclusive events,
-    each job has readable records for its lookup count, every ``ok`` settle in the ledger
+    collection was clean, every log holds its probe prefix, every non-denied attempt fits the
+    job ACL, each job has readable records for its lookup count, every ``ok`` settle in the ledger
     is attributed to a planned job, and every hosted live job with an ``ok`` settle reached its
     provider through its proxy (round-2 rulings C5, C6; round-3 items 1, 2).
     """
@@ -286,12 +346,12 @@ def write_egress_summary(
                 attributed = False
     try:
         control = json.loads((out_dir / "probe" / "control.json").read_text(encoding="utf-8"))
-        passed = control.get("passed") is True and attributed
+        passed = isinstance(control, dict) and control.get("passed") is True and attributed
     except (OSError, ValueError):
         passed = False
     entries: dict[str, Any] = {}
     for job in jobs:
-        ok, events = _job_hosts(out_dir, job.job_id)
+        ok, events = _job_hosts(out_dir, job)
         allowed = sorted({e.target for e in events if e.reached})
         family = job.family
         if family.arm == "hosted" and family.api != "scripted" and job.job_id in billed:

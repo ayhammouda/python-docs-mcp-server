@@ -399,6 +399,22 @@ def test_missing_egress_evidence_or_a_failed_probe_fails_the_evidence(tmp_path: 
     assert result["all_passed"] is False  # no round ran: nothing shows the host was offline
 
 
+@pytest.mark.parametrize("entry", [{}, {"hosts_allowed": ""}, {"hosts_allowed": {}}])
+def test_c3_requires_a_host_list_for_each_job(tmp_path: Path, entry: dict[str, Any]) -> None:
+    _egress_summary(tmp_path, [])
+    path = tmp_path / "egress" / "summary.json"
+    path.write_text(json.dumps({"isolation_probe": "pass", "jobs": {GEMMA: entry}}))
+    assert not write_airgap_evidence(tmp_path, rounds=1, broken=False, job_ids=[GEMMA])[
+        "all_passed"
+    ]
+
+
+def test_missing_job_does_not_hide_another_jobs_external_connection(tmp_path: Path) -> None:
+    _egress_summary(tmp_path, ["pypi.org:443"])
+    checks = write_airgap_evidence(tmp_path, rounds=1, broken=False, job_ids=["missing", GEMMA])
+    assert checks == {"all_passed": False, "checks": 1, "internet_hosts": ["pypi.org:443"]}
+
+
 def test_an_air_gapped_run_writes_checks_json_even_when_aborted(tmp_path: Path) -> None:
     checks, _ = _counting(fail_on=2)
     with pytest.raises(BenchmarkValidationError):

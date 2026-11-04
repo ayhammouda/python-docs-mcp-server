@@ -285,7 +285,7 @@ async def isolation_probe(
             for url in allowed_http:
                 target = urlsplit(url).netloc
                 if not any(
-                    e.method == "GET" and e.target == target and e.status == 200 and e.allowed
+                    e.method == "GET" and e.target == target and e.status == 200 and e.reached
                     for e in events
                 ):
                     found.append(f"allowed_http_not_logged {url}")

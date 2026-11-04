@@ -340,7 +340,7 @@ async def test_an_ollama_probe_checks_its_version_url(tmp_path: Path) -> None:
     assert docker.specs[0]["allowed_http"] == ["http://host.docker.internal:11434/api/version"]
 
 
-@pytest.mark.parametrize("initial", ["missing", "denials", "never_logged"])
+@pytest.mark.parametrize("initial", ["missing", "denials", "never_logged", "no_peer_reply"])
 async def test_probe_waits_for_its_log_before_freezing_query_prefix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, initial: str
 ) -> None:
@@ -356,11 +356,15 @@ async def test_probe_waits_for_its_log_before_freezing_query_prefix(
     log = egress.log_dir / "access.log"
     ollama = "t c GET host.docker.internal 11434 200 TCP_MISS"
     prefix = [*PROBE_LINES, ollama]
+    if initial == "no_peer_reply":
+        prefix = [*(line + " HIER_NONE -" for line in PROBE_LINES), ollama + " HIER_DIRECT -"]
 
     async def one_shot(*args: Any) -> list[dict[str, Any]]:
         if initial != "missing":
             log.write_text("\n".join(PROBE_LINES) + "\n")
-        if initial != "never_logged":
+        if initial == "no_peer_reply":
+            log.write_text("\n".join(prefix) + "\n")
+        elif initial != "never_logged":
             asyncio.get_running_loop().call_soon(log.write_text, "\n".join(prefix) + "\n")
         return [
             {
@@ -372,7 +376,7 @@ async def test_probe_waits_for_its_log_before_freezing_query_prefix(
         ]
 
     monkeypatch.setattr(probe, "_one_shot", one_shot)
-    if initial == "never_logged":
+    if initial in ("never_logged", "no_peer_reply"):
         monkeypatch.setattr(probe, "_SETTLE_S", 0)
         with pytest.raises(IsolationProbeFailed):
             await isolation_probe(

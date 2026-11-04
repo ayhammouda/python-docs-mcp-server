@@ -153,6 +153,27 @@ questions before you run, and disclose that choice with the results.
   check round).
 - `ollama.json`: the Ollama version, the model's digest and details, and its context.
 
+The last four access-log fields record the client status (`%>Hs`), result (`%Ss`),
+hierarchy (`%Sh`), and next-hop HTTP status (`%<Hs`).
+The pinned Squid 6.14 image produced these records against a loopback origin in a
+keyless container with networking disabled. [Squid log format](https://www.squid-cache.org/Doc/config/logformat/)
+
+| Client status, result, hierarchy, next-hop status | Evidence |
+| --- | --- |
+| `500 TCP_MISS HIER_DIRECT 500` | The origin returned 500. Include the target in `hosts_allowed`. |
+| `500 TCP_MISS_ABORTED HIER_DIRECT 500` | The origin responded before the transfer broke. Include the target. |
+| `0 TCP_MISS_ABORTED HIER_DIRECT -` | The client closed before Squid logged a reply. Reachability is unconfirmed. |
+| `503 TCP_MISS_ABORTED HIER_DIRECT -` | A refused connection produced a Squid 503. Reachability is unconfirmed. |
+| `200 TCP_TUNNEL HIER_DIRECT -` | Squid established the CONNECT tunnel. This can corroborate a billed provider call. |
+| `403 TCP_DENIED HIER_NONE -` | The request ACL blocked the attempt. Include the target in `hosts_denied`. |
+
+An unconfirmed attempt can pass isolation only if its host, port and method fit that
+job's ACL. In the air-gapped arm this permits plain HTTP to local Ollama. An
+unconfirmed external attempt fails isolation and C3 even when `internet_hosts` is
+empty. Unreadable or unrecognized evidence also fails isolation. Older seven-field
+logs still support established 200 tunnels, forwarded 2xx HTTP responses and request ACL
+denials. An older non-2xx MISS cannot establish who sent the error.
+
 ## 10. Air-gapped arm
 
 It does not run before 2026-11-17, when Ollama v0.40.14 is 14 days old (#200 ruling 6). In
