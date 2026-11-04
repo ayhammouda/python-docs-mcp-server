@@ -497,6 +497,25 @@ def test_a_competitor_key_reaches_its_system_only_through_pass_env(tmp_path: Pat
     assert summary["systems"] == ["ref-tools"]
 
 
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"env": {"REF_API_KEY": "ref_synthetic_secret_123"}},
+        {"pass_env": ["ANTHROPIC_API_KEY"]},
+    ],
+)
+def test_a_system_without_a_transport_is_screened_for_keys_too(
+    tmp_path: Path, fields: dict[str, Any]
+) -> None:
+    manifest = tmp_path / "manifest.yml"
+    no_docs = {"id": "no-docs", "adapter": "none", **fields}
+    manifest.write_text(yaml.safe_dump({"competitors": [no_docs]}), encoding="utf-8")
+    with pytest.raises(BenchmarkValidationError, match="_API_KEY") as caught:
+        run_agentic(_config(tmp_path, manifest_path=manifest, dry_run=True))
+    assert "ref_synthetic_secret_123" not in str(caught.value)
+    assert not (tmp_path / "run" / "snapshots").exists()
+
+
 def test_a_worker_error_costs_only_its_own_cells(tmp_path: Path) -> None:
     # Usage that cannot be bucketed (cached > input) raises BenchmarkValidationError in the
     # openai worker; the anthropic job still finishes and the summary lists the failure.

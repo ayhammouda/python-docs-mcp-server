@@ -83,11 +83,7 @@ def system_spec_from_raw(raw: Mapping[str, Any]) -> SystemSpec:
             f"system {system_id!r} has adapter {raw.get('adapter')!r}; "
             f"expected one of {sorted(_TRANSPORTS)}"
         )
-    if transport == "none":
-        return SystemSpec(system_id, transport, (), {}, (), dict(raw))
-    command = _strings(raw.get("command"), f"system {system_id!r} 'command'")
-    if not command:
-        raise BenchmarkValidationError(f"system {system_id!r} 'command' must not be empty")
+    # Keys first, whatever the transport: a manifest entry is snapshotted even if it spawns nothing.
     env = raw.get("env") or {}
     if not isinstance(env, Mapping) or not all(
         isinstance(k, str) and isinstance(v, str) for k, v in env.items()
@@ -105,6 +101,11 @@ def system_spec_from_raw(raw: Mapping[str, Any]) -> SystemSpec:
         )
     for name, value in env.items():
         assert_no_key_shaped(value, where=f"system {system_id!r} env {name!r}")
+    if transport == "none":
+        return SystemSpec(system_id, transport, (), {}, (), dict(raw))
+    command = _strings(raw.get("command"), f"system {system_id!r} 'command'")
+    if not command:
+        raise BenchmarkValidationError(f"system {system_id!r} 'command' must not be empty")
     return SystemSpec(system_id, transport, command, dict(env), pass_env, dict(raw))
 
 
