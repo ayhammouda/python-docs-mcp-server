@@ -91,7 +91,7 @@ First run: 2026-11-04, Docker Desktop on Apple silicon (context `desktop-linux`,
 | `host.docker.internal` against a 127.0.0.1 bind | Reachable through the proxy: a service bound to the Mac's 127.0.0.1 only answered 200 to a GET through an egress allowing it. Ollama's default bind should work for the air-gapped arm; ruling 7's `OLLAMA_HOST=0.0.0.0` fallback stays for the case where the probe's Ollama check fails. |
 | Large attached worker output | A trajectory frame over 150,000 bytes round-tripped intact with the original `docker run -i` launcher and again on November 4 with `docker create` followed by `docker start -ai`. |
 | Attach with `--log-driver none` | Works: every worker frame and reply passed over the attached stdin and stdout. |
-| Squid writing to the bind mount | Works: `access.log` and `cache.log` appear in `egress/<job>/` (mode 640), one line per connection attempt. |
+| Squid writing to the bind mount | The #200 run produced `access.log` and `cache.log` (mode 640) on the mounted volume, with one access-log line per connection attempt. |
 | Squid's exit after `docker stop` | Exit code 0, `Running` false, "Exiting normally", within `shutdown_lifetime`. |
 | IP literal whose PTR names an allowed host | Denied: a `CONNECT 127.0.0.1:443` through an egress allowing `localhost:443` got 403 and logged `TCP_DENIED_ABORTED` (the probe closes after reading the status line). |
 | Proxies in the docker CLI config | A `config.json` with `proxies` makes the CLI inject `HTTPS_PROXY` into the probe container, and the isolation probe refuses the run, naming it. |
@@ -144,14 +144,30 @@ questions before you run, and disclose that choice with the results.
 ## 9. Artifacts
 
 - `egress/summary.json`: the C1 evidence, read by PR 5.
-- `egress/<job>/access.log`, `squid.conf` and `collected.json`: each job's proxy log,
-  config and how its proxy ended.
+- `egress/<job>/` holds the public `squid.conf`, the scanned `access.log` and `cache.log`,
+  and `collected.json` with the stop state and collection result.
 - `probe/<job>.json` and `probe/control.json`: the isolation probe records.
 - `sandbox.json`: the image, its revision, the proxy image, the engine version, and the
   docker context and endpoint.
 - `airgap/checks.json` (the C3 evidence, read by PR 5) and `airgap/records.jsonl` (every
   check round).
 - `ollama.json`: the Ollama version, the model's digest and details, and its context.
+
+Worker stderr stays in an unlinked file until teardown. The host publishes a scrubbed
+snapshot in the run directory after stopping the worker. A snapshot over 8 MiB fails
+the run and leaves that worker without a public stderr log. The ledger still accounts
+for its open reservation.
+
+Squid writes to a job-specific temporary spool outside the run directory. Its parent is
+mode 0700. Docker Desktop mounts only the writable child directory (mode 0777) and the
+read-only config file. The probe reads the private access log and scans its record before
+publishing the exact prefix used to separate probe traffic from query traffic.
+
+At close, the runner reads only regular `access.log` and `cache.log` files without
+following symlinks. Each public log appears by atomic rename after its key scan. A key
+match fails the run even if writing the scrubbed log fails. The runner removes the private
+spool on teardown. A `probe/<job>.collection-pending` marker means collection is
+incomplete or failed and C1 cannot pass, even if some public files are present.
 
 The last four access-log fields record the client status (`%>Hs`), result (`%Ss`),
 hierarchy (`%Sh`), and next-hop HTTP status (`%<Hs`). Each record must have a UTC

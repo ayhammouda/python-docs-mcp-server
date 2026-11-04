@@ -232,6 +232,12 @@ def test_a_truncated_or_reprefixed_log_invalidates_the_evidence(tmp_path: Path, 
     assert write_egress_summary(out, _jobs(), _ok_settle(CLAUDE))["isolation_probe"] == "fail"
 
 
+def test_a_dangling_pending_marker_blocks_complete_evidence(tmp_path: Path) -> None:
+    out = _clean_run(tmp_path)
+    (out / "probe" / f"{CLAUDE}.collection-pending").symlink_to(tmp_path / "absent")
+    assert write_egress_summary(out, _jobs(), _ok_settle(CLAUDE))["isolation_probe"] == "fail"
+
+
 def test_a_missing_log_invalidates_the_evidence(tmp_path: Path) -> None:
     out = _clean_run(tmp_path)
     (out / "egress" / SCRIPTED / "access.log").unlink()
@@ -249,6 +255,7 @@ async def test_c1_refuses_a_link_to_a_complete_job_directory(tmp_path: Path) -> 
     sandbox, egress = await _opened(tmp_path, FakeDocker(), CLAUDE)
     out = sandbox.config.out_dir
     _evidence(out, CLAUDE, log=_lines(*PROBE_LINES, ANTHROPIC_LINE))
+    (egress.spool_dir / "access.log").write_text(_lines(*PROBE_LINES, ANTHROPIC_LINE))
     _evidence(out, SCRIPTED, log=_lines(*PROBE_LINES))
     assert await sandbox.close_egress(egress) == []
     assert write_egress_summary(out, _jobs(), _ok_settle(CLAUDE))["isolation_probe"] == "pass"
@@ -398,8 +405,8 @@ async def test_no_false_clean_when_collection_failed_or_the_provider_never_appea
     killed = {"Running": False, "ExitCode": 137, "OOMKilled": False}
     sandbox = _sandbox(tmp_path, FakeDocker(states=(RUNNING, killed)))
     egress = await sandbox.open_egress(CLAUDE, (("api.anthropic.com", 443),))
-    (egress.log_dir / "access.log").write_text(_lines(*PROBE_LINES, ANTHROPIC_LINE))
-    (egress.log_dir / "cache.log").write_text("squid\n")
+    (egress.spool_dir / "access.log").write_text(_lines(*PROBE_LINES, ANTHROPIC_LINE))
+    (egress.spool_dir / "cache.log").write_text("squid\n")
     await sandbox.close_egress(egress)
     out = tmp_path / "run"
     _evidence(out, SCRIPTED, log=_lines(*PROBE_LINES))

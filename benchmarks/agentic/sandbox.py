@@ -15,6 +15,7 @@ import os
 import re
 import secrets
 import subprocess
+import tempfile
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,11 +37,16 @@ from benchmarks.agentic.egress import (
     allowlist,
     open_log_dir,
     pending_collection,
-    read_log_at,
+    read_log,
     squid_conf,
     write_new,
 )
-from benchmarks.agentic.protocol import KeyLeakError, redact_key_shaped, redact_key_shaped_text
+from benchmarks.agentic.protocol import (
+    KeyLeakError,
+    assert_no_key_shaped,
+    redact_key_shaped,
+    redact_key_shaped_text,
+)
 from benchmarks.model_matrix import KNOWN_APIS, ModelFamily
 from benchmarks.runner import BenchmarkValidationError, _write_json
 
@@ -161,6 +167,11 @@ class Egress:
     inspect: dict[str, Any]  # its `docker network inspect` record
     network_id: str
     proxy_id: str
+    staging: tempfile.TemporaryDirectory[str]
+
+    @property
+    def spool_dir(self) -> Path:
+        return Path(self.staging.name) / "logs"
 
 
 VerifyFn = Callable[["Sandbox"], Awaitable[dict[str, str]]]
@@ -354,10 +365,14 @@ class Sandbox:
 
         await finish(remove(), pending)
 
-    async def _remove_ids(
-        self, *, containers: Sequence[str] = (), networks: Sequence[str] = ()
+    async def _remove_resources(
+        self,
+        *,
+        containers: Sequence[str] = (),
+        networks: Sequence[str] = (),
+        staging: tempfile.TemporaryDirectory[str] | None = None,
     ) -> None:
-        """Attempt every owned ID, containers before their networks."""
+        """Remove every owned resource, even after a sibling removal fails."""
         failures: list[str] = []
         for network, ids in ((False, containers), (True, networks)):
             for resource_id in ids:
@@ -368,6 +383,13 @@ class Sandbox:
                         await self.remove_container(resource_id)
                 except Exception as exc:  # noqa: BLE001 - still remove the other owned IDs
                     failures.append(f"{resource_id}: {redact_key_shaped_text(str(exc))}")
+        if staging is not None:
+            try:
+                staging.cleanup()
+            except (OSError, MemoryError) as exc:
+                failures.append(
+                    f"private proxy spool {staging.name}: {redact_key_shaped_text(str(exc))}"
+                )
         if failures:
             raise BenchmarkValidationError("; ".join(failures))
 
@@ -397,9 +419,9 @@ class Sandbox:
                 )
             await asyncio.sleep(0.1)
         if network:
-            await self._remove_ids(networks=ids.split())
+            await self._remove_resources(networks=ids.split())
         else:
-            await self._remove_ids(containers=ids.split())
+            await self._remove_resources(containers=ids.split())
 
     async def create_resource(self, name: str, *args: str) -> str:
         """Wait for create before handing off its ID or rolling it back on cancellation."""
@@ -457,6 +479,7 @@ class Sandbox:
             network,
         )
         proxy_id = None
+        staging = None
         try:
             (inspect,) = json.loads(await self.output("network", "inspect", network_id))
             if inspect.get("EnableIPv6"):
@@ -473,15 +496,23 @@ class Sandbox:
                 raise BenchmarkValidationError(
                     f"log directory {log_dir} already exists (it may be a link): refused"
                 )
-            log_dir.mkdir(parents=True)
+            log_dir.mkdir(mode=0o700, parents=True)
             pending = pending_collection(self.config.out_dir, job_id)
             pending.parent.mkdir(exist_ok=True)
             pending.touch(exist_ok=False)
             conf = log_dir / "squid.conf"
             with open_log_dir(log_dir) as dir_fd:
                 # Readable by `proxy` under any umask (round-4 item 4).
-                os.fchmod(dir_fd, 0o777)
-                write_new(dir_fd, conf.name, squid_conf(allow).encode("utf-8"), mode=0o644)
+                config_text = squid_conf(allow)
+                assert_no_key_shaped(config_text, where="squid.conf")
+                write_new(dir_fd, conf.name, config_text.encode(), mode=0o644)
+            temp_root = Path(tempfile.gettempdir()).resolve()
+            if temp_root.is_relative_to(self.config.out_dir.resolve()):
+                raise BenchmarkValidationError("proxy staging must be outside the artifact tree")
+            staging = tempfile.TemporaryDirectory(prefix="pdmcp-squid-", dir=temp_root)
+            spool = Path(staging.name) / "logs"
+            spool.mkdir()
+            spool.chmod(0o777)  # Docker Desktop maps Squid's proxy uid into this mount
             proxy_id = await self.create_resource(
                 proxy,
                 "run",
@@ -513,7 +544,7 @@ class Sandbox:
                 "--mount",
                 f"type=bind,src={conf},dst=/etc/squid/squid.conf,readonly",
                 "--mount",
-                f"type=bind,src={log_dir},dst={LOG_DIR_IN_PROXY}",
+                f"type=bind,src={spool},dst={LOG_DIR_IN_PROXY}",
                 SQUID_IMAGE,
                 "-N",
                 "-f",
@@ -525,12 +556,25 @@ class Sandbox:
         except BaseException as exc:
             # Nothing of this job's may outlive the failure (amendment 2).
             await _rollback(
-                self._remove_ids(containers=[proxy_id] if proxy_id else [], networks=[network_id]),
+                self._remove_resources(
+                    containers=[proxy_id] if proxy_id else [],
+                    networks=[network_id],
+                    staging=staging,
+                ),
                 exc,
             )
             raise
         return Egress(
-            job_id, network, proxy, tuple(allow), log_dir, gateways, inspect, network_id, proxy_id
+            job_id,
+            network,
+            proxy,
+            tuple(allow),
+            log_dir,
+            gateways,
+            inspect,
+            network_id,
+            proxy_id,
+            staging,
         )
 
     def container_argv(
@@ -596,6 +640,67 @@ class Sandbox:
         to ``collected.json``, whose ``ok`` is false after any of them.
         """
         problems: list[str] = []
+        try:
+            if any(leak.startswith(f"{egress.job_id}/") for leak in self.leaks):
+                problems.append("a key-shaped string was found during the job probe")
+            before, after = await self._stop_egress(egress, problems)
+            for name in ("access.log", "cache.log"):
+                try:
+                    data, pattern = redact_key_shaped(read_log(egress.spool_dir / name))
+                    if pattern:
+                        self.leaks.append(f"{egress.job_id}/{name} ({pattern} pattern)")
+                        problems.append(f"a key-shaped string was found in {name}")
+                    with open_log_dir(egress.log_dir) as dir_fd:
+                        write_new(dir_fd, name, data)
+                except (BenchmarkValidationError, OSError, MemoryError) as exc:
+                    problems.append(f"{name} could not be collected: {exc}")
+        finally:
+            try:
+                egress.staging.cleanup()
+            except (OSError, MemoryError) as exc:
+                problems.append(f"private log cleanup failed: {redact_key_shaped_text(str(exc))}")
+
+        collected = {
+            "ok": not problems,
+            "problems": problems,
+            "state_before_stop": before,
+            "state_after_stop": after,
+        }
+        try:
+            data = (json.dumps(collected, indent=2, sort_keys=True) + "\n").encode()
+            data, pattern = redact_key_shaped(data)
+            if pattern:
+                self.leaks.append(f"{egress.job_id}/collected.json ({pattern} pattern)")
+                collected = json.loads(data)
+                problems[:] = [
+                    *collected["problems"],
+                    "a key-shaped string was found in collection diagnostics",
+                ]
+                collected.update(ok=False, problems=problems)
+                data = (json.dumps(collected, indent=2, sort_keys=True) + "\n").encode()
+        except MemoryError:
+            # Diagnostics could not be scanned. Do not return their unverified text either.
+            return ["collection diagnostics could not be scanned: MemoryError"]
+        try:
+            with open_log_dir(egress.log_dir) as dir_fd:
+                write_new(dir_fd, "collected.json", data, mode=0o644)
+                if not problems:
+                    try:
+                        pending_collection(self.config.out_dir, egress.job_id).unlink()
+                    except OSError as exc:
+                        problems.append(
+                            f"could not clear the collection marker: {type(exc).__name__}"
+                        )
+                        collected.update(ok=False, problems=problems)
+                        text = json.dumps(collected, indent=2, sort_keys=True) + "\n"
+                        write_new(dir_fd, "collected.json", text.encode(), mode=0o644)
+        except (BenchmarkValidationError, OSError, MemoryError) as exc:
+            problems.append(f"collection could not be completed: {type(exc).__name__}")
+        return problems
+
+    async def _stop_egress(
+        self, egress: Egress, problems: list[str]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         before = await self._state(egress.proxy_id, problems, "before")
         if before and (not before.get("Running") or before.get("OOMKilled")):
             problems.append(
@@ -619,30 +724,7 @@ class Sandbox:
                 await self.run(*args)
             except Exception as exc:  # noqa: BLE001
                 problems.append(f"docker {' '.join(args[:2])} failed: {exc}")
-        try:
-            with open_log_dir(egress.log_dir) as dir_fd:
-                for name in ("access.log", "cache.log"):
-                    try:
-                        redacted, pattern = redact_key_shaped(read_log_at(dir_fd, name))
-                        if pattern:
-                            write_new(dir_fd, name, redacted)
-                            self.leaks.append(f"{egress.job_id}/{name} ({pattern} pattern)")
-                            problems.append(f"a key-shaped string in {name} was redacted")
-                    except (BenchmarkValidationError, OSError) as exc:
-                        problems.append(f"{name} could not be collected: {exc}")
-                collected = {
-                    "ok": not problems,
-                    "problems": problems,
-                    "state_before_stop": before,
-                    "state_after_stop": after,
-                }
-                text = json.dumps(collected, indent=2, sort_keys=True) + "\n"
-                write_new(dir_fd, "collected.json", text.encode("utf-8"), mode=0o644)
-            if not problems:
-                pending_collection(self.config.out_dir, egress.job_id).unlink()
-        except (BenchmarkValidationError, OSError) as exc:
-            problems.append(f"collection could not be completed: {exc}")
-        return problems
+        return before, after
 
 
 class ContainerLauncher:
@@ -712,9 +794,17 @@ class ContainerLauncher:
             allow = allowlist(job.family, job.system.id)
             egress = await self.sandbox.open_egress(job.job_id, allow)
             self._egresses.append(egress)
-            await self._probe(
-                self.sandbox, egress, job_id=job.job_id, family=job.family, system_id=job.system.id
-            )
+            try:
+                await self._probe(
+                    self.sandbox,
+                    egress,
+                    job_id=job.job_id,
+                    family=job.family,
+                    system_id=job.system.id,
+                )
+            except KeyLeakError:
+                self.sandbox.leaks.append(f"{job.job_id}/probe")
+                raise
 
         # Own every stopped worker before reading keys or letting any supervisor start one.
         for job in jobs:
@@ -754,7 +844,8 @@ class ContainerLauncher:
                 problems.append(f"docker network rm {self.sandbox.outside} failed: {exc}")
         if self.sandbox.leaks:
             raise KeyLeakError(
-                f"key-shaped strings were redacted in proxy logs: {', '.join(self.sandbox.leaks)}"
+                "key-shaped strings were detected during proxy collection: "
+                + ", ".join(self.sandbox.leaks)
                 + (f"; other problems: {'; '.join(problems)}" if problems else "")
             )
         return problems

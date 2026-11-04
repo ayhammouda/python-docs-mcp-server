@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import traceback
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import replace
@@ -122,6 +123,11 @@ class FakeDocker:
             self._inspected[args[-1]] = seen + 1
             return _done(argv, out=json.dumps(self.states[min(seen, len(self.states) - 1)]))
         return _done(argv)
+
+    def squid_spool(self, job_id: str) -> Path:
+        (run,) = [c for c in self.ran("run") if f"pdmcp-{RUN}-{job_id}-proxy" in c]
+        (mount,) = [m for m in _mounts(run) if m.endswith(",dst=/var/log/squid-bench")]
+        return Path(mount.removeprefix("type=bind,src=").split(",dst=")[0])
 
     def ran(self, *prefix: str) -> list[list[str]]:
         return [c for c in self.calls if c[1 : 1 + len(prefix)] == list(prefix)]
@@ -626,6 +632,7 @@ async def test_a_failed_proxy_start_removes_the_proxy_and_the_network(tmp_path: 
         docker = FailedStart()
         with pytest.raises(BenchmarkValidationError):
             await _sandbox(root, docker).open_egress("j", (("api.openai.com", 443),))
+        assert not docker.squid_spool("j").parent.exists()
         assert docker.ran("rm", "-f", f"id-pdmcp-{RUN}-j-proxy")
         assert docker.ran("network", "rm", f"id-pdmcp-{RUN}-j-net")
 
@@ -651,12 +658,16 @@ async def test_prepare_builds_one_network_and_proxy_per_job_with_a_file_log(
         log_dir = tmp_path / "run" / "egress" / job.job_id
         conf = (log_dir / "squid.conf").read_text()
         assert conf == squid_conf(allowlist(job.family, job.system.id))
-        assert log_dir.stat().st_mode & 0o777 == 0o777
+        spool = docker.squid_spool(job.job_id)
+        assert not spool.is_relative_to(tmp_path / "run")
+        assert spool.stat().st_mode & 0o777 == 0o777
+        assert spool.parent.stat().st_mode & 0o777 == 0o700
+        assert log_dir.stat().st_mode & 0o022 == 0
         assert (log_dir / "squid.conf").stat().st_mode & 0o777 == 0o644
         (run,) = [r for r in runs if f"pdmcp-{RUN}-{job.job_id}-proxy" in r]
         text = " ".join(run)
         assert f"type=bind,src={log_dir}/squid.conf,dst=/etc/squid/squid.conf,readonly" in text
-        assert f"type=bind,src={log_dir},dst=/var/log/squid-bench" in text
+        assert f"type=bind,src={spool},dst=/var/log/squid-bench" in text
         for flag in ("--read-only", "--cap-drop ALL", "--user proxy", "--pull never", "-d"):
             assert flag in text
         assert run[-3:] == ["-N", "-f", "/etc/squid/squid.conf"]
@@ -803,7 +814,7 @@ PARTIAL = PROBE_PREFIX + (
 async def _opened(tmp_path: Path, docker: FakeDocker, job_id: str = "j") -> tuple[Sandbox, Egress]:
     sandbox = _sandbox(tmp_path, docker)
     egress = await sandbox.open_egress(job_id, (("api.anthropic.com", 443),))
-    _logs(egress.log_dir)
+    _logs(docker.squid_spool(job_id))
     return sandbox, egress
 
 
@@ -883,7 +894,7 @@ async def test_close_stops_each_proxy_then_removes_what_it_created(tmp_path: Pat
     jobs = [_job("claude-sonnet-5-5", "no-docs"), _job("scripted-anthropic", "no-docs")]
     await launcher.prepare(jobs)
     for job in jobs:
-        _logs(tmp_path / "run" / "egress" / job.job_id)
+        _logs(docker.squid_spool(job.job_id))
     start = len(docker.calls)
     problems = await launcher.close()
     assert problems == []
@@ -952,13 +963,97 @@ async def test_close_redacts_a_key_shaped_proxy_log_and_raises_after_cleanup(
     job = _job("scripted-anthropic")
     await launcher.prepare([job])
     log_dir = tmp_path / "run" / "egress" / job.job_id
-    (log_dir / "cache.log").write_text(f"WARNING: header {SYNTHETIC}\n", encoding="utf-8")
+    _logs(docker.squid_spool(job.job_id), cache=f"WARNING: header {SYNTHETIC}\n")
     with pytest.raises(KeyLeakError, match="cache.log"):
         await launcher.close()
     assert (log_dir / "cache.log").read_text() == "WARNING: header [redacted]\n"
     assert docker.ran("rm", "-f", f"id-pdmcp-{RUN}-{job.job_id}-proxy")
     assert docker.ran("network", "rm", f"id-pdmcp-{RUN}-out")
     assert json.loads((log_dir / "collected.json").read_text())["ok"] is False
+
+
+@pytest.mark.parametrize("failure", [MemoryError, PermissionError])
+async def test_a_failed_private_read_cannot_publish_or_certify_a_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: type[Exception]
+) -> None:
+    from benchmarks.agentic import sandbox as module
+
+    job = _job("scripted-anthropic")
+    sandbox, egress = await _opened(tmp_path, FakeDocker(), job.job_id)
+    (egress.spool_dir / "cache.log").write_text(SYNTHETIC)
+    read = module.read_log
+
+    def unreadable(path: Path) -> bytes:
+        if path.name == "cache.log":
+            raise failure("cannot read private log")
+        return read(path)
+
+    monkeypatch.setattr(module, "read_log", unreadable)
+    problems = await sandbox.close_egress(egress)
+    assert problems and not sandbox.leaks
+    assert not egress.spool_dir.parent.exists()
+    assert not (egress.log_dir / "cache.log").exists()
+    assert (egress.log_dir / "access.log").read_text() == PARTIAL
+    assert json.loads((egress.log_dir / "collected.json").read_text())["ok"] is False
+    out = sandbox.config.out_dir
+    assert (out / "probe" / f"{job.job_id}.collection-pending").is_file()
+    assert write_egress_summary(out, [job], [])["isolation_probe"] == "fail"
+
+
+async def test_scan_memory_error_leaves_only_complete_scanned_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from benchmarks.agentic import sandbox as module
+
+    sandbox, egress = await _opened(tmp_path, FakeDocker())
+    (egress.spool_dir / "cache.log").write_text(SYNTHETIC)
+    scrub = module.redact_key_shaped
+
+    def exhausted(data: bytes) -> tuple[bytes, str | None]:
+        if data == SYNTHETIC.encode():
+            raise MemoryError("cannot scan")
+        return scrub(data)
+
+    monkeypatch.setattr(module, "redact_key_shaped", exhausted)
+    assert await sandbox.close_egress(egress)
+    assert not (egress.log_dir / "cache.log").exists()
+    assert (egress.log_dir / "access.log").read_text() == PARTIAL
+    assert (sandbox.config.out_dir / "probe/j.collection-pending").is_file()
+    assert not egress.spool_dir.parent.exists()
+
+
+async def test_a_linked_spool_is_neither_collected_nor_cleaned_through(tmp_path: Path) -> None:
+    sandbox, egress = await _opened(tmp_path, FakeDocker())
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _logs(elsewhere, cache=SYNTHETIC)
+    egress.spool_dir.rename(egress.spool_dir.with_name("moved"))
+    egress.spool_dir.symlink_to(elsewhere, target_is_directory=True)
+    problems = await sandbox.close_egress(egress)
+    assert any("link" in problem for problem in problems)
+    assert not sandbox.leaks and not egress.spool_dir.parent.exists()
+    assert (elsewhere / "cache.log").read_text() == SYNTHETIC
+    assert not (egress.log_dir / "cache.log").exists()
+    assert not (egress.log_dir / "access.log").exists()
+    assert json.loads((egress.log_dir / "collected.json").read_text())["ok"] is False
+
+
+async def test_only_intended_regular_files_leave_the_spool(tmp_path: Path) -> None:
+    sandbox, egress = await _opened(tmp_path, FakeDocker())
+    canary = _canary(tmp_path)
+    (egress.spool_dir / "collected.json").symlink_to(canary)
+    (egress.spool_dir / "squid.conf").write_text(SYNTHETIC)
+    (egress.spool_dir / "unexpected").write_text(SYNTHETIC)
+    assert await sandbox.close_egress(egress) == []
+    assert not egress.spool_dir.parent.exists()
+    assert {p.name for p in egress.log_dir.iterdir()} == {
+        "cache.log",
+        "access.log",
+        "squid.conf",
+        "collected.json",
+    }
+    assert canary.read_text() == f"host secret {SYNTHETIC}\n"
+    assert all(SYNTHETIC.encode() not in p.read_bytes() for p in egress.log_dir.iterdir())
 
 
 async def test_close_keeps_going_after_a_failed_step(tmp_path: Path) -> None:
@@ -1016,20 +1111,21 @@ def _canary(tmp_path: Path) -> Path:
 async def test_a_linked_access_log_is_never_followed(tmp_path: Path) -> None:
     canary = _canary(tmp_path)
     sandbox, egress = await _opened(tmp_path, FakeDocker())
-    access = egress.log_dir / "access.log"
+    access = egress.spool_dir / "access.log"
     access.unlink()
     access.symlink_to(canary)
     problems = await sandbox.close_egress(egress)
     assert canary.read_text() == f"host secret {SYNTHETIC}\n"  # unchanged
     assert sandbox.leaks == []  # unread: its key shape was never seen
-    assert access.is_symlink() and any("access.log" in p for p in problems)
+    assert not os.path.lexists(egress.log_dir / "access.log")
+    assert any("access.log" in p for p in problems)
     assert json.loads((egress.log_dir / "collected.json").read_text())["ok"] is False
 
 
 @pytest.mark.parametrize("kind", ["fifo", "directory"])
 async def test_a_cache_log_that_is_not_a_regular_file_is_refused(tmp_path: Path, kind: str) -> None:
     sandbox, egress = await _opened(tmp_path, FakeDocker())
-    cache = egress.log_dir / "cache.log"
+    cache = egress.spool_dir / "cache.log"
     cache.unlink()
     if kind == "fifo":
         os.mkfifo(cache)
@@ -1043,11 +1139,12 @@ async def test_a_cache_log_that_is_not_a_regular_file_is_refused(tmp_path: Path,
 
 async def test_a_key_shaped_log_is_scrubbed_into_a_new_file(tmp_path: Path) -> None:
     sandbox, egress = await _opened(tmp_path, FakeDocker())
-    cache = egress.log_dir / "cache.log"
+    cache = egress.spool_dir / "cache.log"
     cache.write_text(f"WARNING: header {SYNTHETIC}\n", encoding="utf-8")
     original = tmp_path / "original-inode"
     os.link(cache, original)  # a second name for the original inode
     await sandbox.close_egress(egress)
+    cache = egress.log_dir / "cache.log"
     assert cache.read_text() == "WARNING: header [redacted]\n"
     assert original.read_text() == f"WARNING: header {SYNTHETIC}\n"  # never written
     assert cache.stat().st_ino != original.stat().st_ino
@@ -1340,7 +1437,7 @@ async def _run_prepare(box: Sandbox, job: WorkerJob) -> None:
     )
 
 
-@pytest.mark.parametrize("network_failure", ["exit", "start", "timeout"])
+@pytest.mark.parametrize("network_failure", ["exit", "start", "timeout", "spool"])
 def test_failed_connect_reports_both_removals_to_caller_and_cli(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1348,6 +1445,15 @@ def test_failed_connect_reports_both_removals_to_caller_and_cli(
     network_failure: str,
 ) -> None:
     from benchmarks.__main__ import main
+
+    if network_failure == "spool":
+        cleanup = tempfile.TemporaryDirectory.cleanup
+
+        def denied(staging: tempfile.TemporaryDirectory[str]) -> None:
+            cleanup(staging)
+            raise OSError(f"private spool failure: {SYNTHETIC}")
+
+        monkeypatch.setattr(tempfile.TemporaryDirectory, "cleanup", denied)
 
     job = _job("scripted-anthropic")
 
@@ -1390,6 +1496,8 @@ def test_failed_connect_reports_both_removals_to_caller_and_cli(
     assert [c[-1] for c in docker.calls if "rm" in c] == [proxy, network, f"id-{box.outside}"]
     for message in (str(failure), summary):
         assert proxy in message and network in message and "connect disconnected" in message
+        if network_failure == "spool":
+            assert "private spool failure: [redacted]" in message
         assert SYNTHETIC not in message
     assert SYNTHETIC not in "".join(traceback.format_exception(failure))
 

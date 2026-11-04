@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from benchmarks.agentic.protocol import assert_no_key_shaped
 from benchmarks.model_matrix import ModelFamily
-from benchmarks.runner import BenchmarkValidationError, _write_json
+from benchmarks.runner import BenchmarkValidationError
 
 if TYPE_CHECKING:
     from benchmarks.agentic.host import WorkerJob
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 EGRESS_ALIAS = "egress"
 EGRESS_PORT = 3128
 EGRESS_URL = f"http://{EGRESS_ALIAS}:{EGRESS_PORT}"
-#: Where the proxy writes its logs, bind-mounted from the run's egress/<job_id>/ directory.
+#: Where the proxy writes its logs, bind-mounted from the job's private spool.
 LOG_DIR_IN_PROXY = "/var/log/squid-bench"
 
 #: The pinned base URLs in clients.py, and the air-gapped arm's Ollama (design §7.4).
@@ -195,7 +195,7 @@ def squid_conf(allow: Sequence[tuple[str, int]]) -> str:
     return _SQUID_HEAD + "".join(f"{line}\n" for line in lines) + "http_access deny all\n"
 
 
-# shortcut: a job's log directory is mode 0777 because Squid runs as `proxy` and the host cannot
+# The job's private spool is mode 0777 because Squid runs as `proxy` and the host cannot
 # chown it on Docker Desktop for macOS. Anything in it may be a link a compromised proxy planted,
 # so the host never follows one: read_log opens with O_NOFOLLOW and refuses a non-regular file,
 # and write_new writes a new O_EXCL file and renames it over the name. Upgrade to a directory
@@ -263,6 +263,15 @@ def write_new(dir_fd: int, name: str, data: bytes, *, mode: int = 0o600) -> None
         raise
 
 
+def write_scanned_json(path: Path, record: dict[str, Any]) -> None:
+    """Publish complete, key-scanned probe or summary evidence."""
+    text = json.dumps(record, indent=2, sort_keys=True) + "\n"
+    assert_no_key_shaped(text, where=str(path))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open_log_dir(path.parent) as dir_fd:
+        write_new(dir_fd, path.name, text.encode(), mode=0o644)
+
+
 def forbidden_env_names(environ: Mapping[str, str]) -> list[str]:
     """The proxy and CA variable names set in ``environ``, sorted; never their values."""
     return sorted(name for name in environ if FORBIDDEN_ENV.match(name))
@@ -305,13 +314,17 @@ def _job_hosts(out_dir: Path, job: WorkerJob) -> tuple[bool, list[ProxyEvent]]:
     log_dir = out_dir / "egress" / job_id
     try:
         probe = json.loads((out_dir / "probe" / f"{job_id}.json").read_text(encoding="utf-8"))
-        if pending_collection(out_dir, job_id).exists():
+        try:
+            pending_collection(out_dir, job_id).lstat()
+        except FileNotFoundError:
+            pass
+        else:
             return False, []
         with open_log_dir(log_dir) as dir_fd:
             collected = json.loads(read_log_at(dir_fd, "collected.json"))
             text = read_log_at(dir_fd, "access.log").decode("utf-8")
         events = parse_proxy_log(text)
-    except (OSError, ValueError, BenchmarkValidationError):
+    except (OSError, ValueError, MemoryError):
         return False, []
     prefix = probe.get("proxy_prefix") if isinstance(probe, dict) else None
     if not isinstance(prefix, list) or not prefix or text.splitlines()[: len(prefix)] != prefix:
@@ -389,6 +402,5 @@ def write_egress_summary(
         for j in summary["jobs"].values()
     )
     path = out_dir / "egress" / "summary.json"
-    assert_no_key_shaped(json.dumps(summary, sort_keys=True), where=str(path))
-    _write_json(path, summary)
+    write_scanned_json(path, summary)
     return summary

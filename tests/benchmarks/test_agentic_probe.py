@@ -33,10 +33,12 @@ from benchmarks.agentic.probe import (
     probe_verdict,
     run_probe_checks,
 )
+from benchmarks.agentic.protocol import KeyLeakError
 from benchmarks.agentic.sandbox import ContainerLauncher, Sandbox
 from benchmarks.runner import BenchmarkValidationError
 from tests.benchmarks.test_agentic_egress import PROBE_LINES, PYPI_LINE
 from tests.benchmarks.test_agentic_sandbox import (
+    SYNTHETIC,
     FakeDocker,
     LateCreate,
     _config,
@@ -253,9 +255,9 @@ def _verdict_args() -> dict[str, Any]:
 class ProbeDocker(FakeDocker):
     """A FakeDocker whose probe container 'runs': it logs both denials and reports checks."""
 
-    def __init__(self, log_dir: Callable[[], Path], *, passed: bool = True, **kwargs: Any) -> None:
+    def __init__(self, *, passed: bool = True, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self.log_dir, self.passed = log_dir, passed
+        self.passed = passed
         self.specs: list[dict[str, Any]] = []
 
     async def __call__(self, argv: Sequence[str]) -> Any:
@@ -279,7 +281,12 @@ class ProbeDocker(FakeDocker):
             lines.append(
                 "2026-11-04T10:00:00.003Z 172.30.0.2 GET host.docker.internal 11434 200 TCP_MISS"
             )
-        (self.log_dir() / "access.log").write_text("".join(f"{line}\n" for line in lines))
+        spec_job = (
+            create[create.index("--name") + 1].removeprefix("pdmcp-r1-").removesuffix("-probe")
+        )
+        (self.squid_spool(spec_job) / "access.log").write_text(
+            "".join(f"{line}\n" for line in lines)
+        )
         checks = [{"check": "env", "target": "", "passed": self.passed, "detail": ""}]
         return _done(argv, out=json.dumps({"checks": checks}))
 
@@ -296,10 +303,85 @@ async def _egress(
     return sandbox, await sandbox.open_egress("j", allow)
 
 
+async def test_read_only_artifacts_cannot_disclose_squid_logs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        probe, "Canary", lambda: nullcontext(SimpleNamespace(port=50000, received=[]))
+    )
+    monkeypatch.setattr(probe, "host_addresses", lambda: [])
+    job = _job("scripted-anthropic")
+    docker = ProbeDocker()
+    sandbox = Sandbox(_config(tmp_path), docker=docker, verify=_verified)
+    out = sandbox.config.out_dir
+    out.mkdir()
+    launcher = ContainerLauncher(sandbox, control=AsyncMock())
+    await launcher.prepare([job])
+    spool = docker.squid_spool(job.job_id)
+    (spool / "cache.log").write_text(f"header {SYNTHETIC}")
+    (spool / "unknown").write_text(SYNTHETIC)
+
+    def read_only(*args: Any, **kwargs: Any) -> None:
+        raise PermissionError("simulated artifact volume read-only")
+
+    monkeypatch.setattr("benchmarks.agentic.sandbox.write_new", read_only)
+    assert {p.name for p in (out / "egress" / job.job_id).iterdir()} == {"squid.conf"}
+    failure = None
+    try:
+        await launcher.close()
+    except KeyLeakError as exc:
+        failure = exc
+    assert all(SYNTHETIC.encode() not in p.read_bytes() for p in out.rglob("*") if p.is_file())
+    assert failure is not None and "cache.log" in str(failure)
+    assert (out / "probe" / f"{job.job_id}.collection-pending").is_file()
+    assert not spool.parent.exists()
+    assert not docker.resources
+
+
+@pytest.mark.parametrize("source", ["access.log", "checks"])
+async def test_leaking_probe_never_publishes_a_prefix_or_allows_clean_collection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    monkeypatch.setattr(
+        probe, "Canary", lambda: nullcontext(SimpleNamespace(port=50000, received=[]))
+    )
+    monkeypatch.setattr(probe, "host_addresses", lambda: [])
+    job = _job("scripted-anthropic")
+    docker = FakeDocker()
+    sandbox = Sandbox(_config(tmp_path), docker=docker, verify=_verified)
+    out = sandbox.config.out_dir
+    out.mkdir()
+    launcher = ContainerLauncher(sandbox, control=AsyncMock())
+
+    async def one_shot(*args: Any) -> list[dict[str, Any]]:
+        spool = docker.squid_spool(job.job_id)
+        lines = list(PROBE_LINES)
+        if source == "access.log":
+            lines.append(PYPI_LINE.replace("pypi.org", SYNTHETIC))
+        (spool / "access.log").write_text("\n".join(lines) + "\n")
+        (spool / "cache.log").write_text("squid started\n")
+        return [{"check": "env", "passed": True, "detail": SYNTHETIC if source == "checks" else ""}]
+
+    monkeypatch.setattr(probe, "_one_shot", one_shot)
+    with pytest.raises(KeyLeakError) as detected:
+        await launcher.prepare([job])
+    assert SYNTHETIC not in str(detected.value)
+    assert not (out / "probe" / f"{job.job_id}.json").exists()
+    # Even if Squid replaces a leaking prefix before collection, the verdict stays failed.
+    spool = docker.squid_spool(job.job_id)
+    (spool / "access.log").write_text("\n".join(PROBE_LINES) + "\n")
+    with pytest.raises(KeyLeakError):
+        await launcher.close()
+    assert not spool.parent.exists()
+    assert all(SYNTHETIC.encode() not in p.read_bytes() for p in out.rglob("*") if p.is_file())
+    assert (out / "probe" / f"{job.job_id}.collection-pending").is_file()
+    assert json.loads((out / "egress" / job.job_id / "collected.json").read_text())["ok"] is False
+
+
 async def test_the_probe_targets_every_ipam_gateway_and_records_the_inspect(
     tmp_path: Path,
 ) -> None:
-    docker = ProbeDocker(lambda: tmp_path / "run" / "egress" / "j")
+    docker = ProbeDocker()
     sandbox, egress = await _egress(tmp_path, docker, ("172.30.0.1", "fd00::1"))
     job = _job("claude-sonnet-5-5")
     record = await isolation_probe(
@@ -313,7 +395,7 @@ async def test_the_probe_targets_every_ipam_gateway_and_records_the_inspect(
     assert spec["allowed_http"] == []
     assert record["passed"] is True and record["failed"] == []
     assert record["network_inspect"] == egress.inspect
-    log = (egress.log_dir / "access.log").read_text().splitlines()
+    log = (egress.spool_dir / "access.log").read_text().splitlines()
     assert record["proxy_prefix"] == log and len(log) == 2
     written = json.loads((tmp_path / "run" / "probe" / "j.json").read_text())
     assert written == record
@@ -324,7 +406,7 @@ async def test_the_probe_targets_every_ipam_gateway_and_records_the_inspect(
 
 
 async def test_scripted_offline_probe_has_no_ollama_request(tmp_path: Path) -> None:
-    docker = ProbeDocker(lambda: tmp_path / "run" / "egress" / "j")
+    docker = ProbeDocker()
     sandbox, egress = await _egress(tmp_path, docker, ("172.30.0.1",), allow=())
     scripted = replace(_job("gemma4-12b").family, api="scripted")
     await isolation_probe(sandbox, egress, job_id="j", family=scripted, system_id="no-docs")
@@ -332,7 +414,7 @@ async def test_scripted_offline_probe_has_no_ollama_request(tmp_path: Path) -> N
 
 
 async def test_an_ollama_probe_checks_its_version_url(tmp_path: Path) -> None:
-    docker = ProbeDocker(lambda: tmp_path / "run" / "egress" / "j")
+    docker = ProbeDocker()
     sandbox, egress = await _egress(
         tmp_path, docker, ("172.30.0.1",), allow=(("host.docker.internal", 11434),)
     )
@@ -354,7 +436,7 @@ async def test_probe_waits_for_its_log_before_freezing_query_prefix(
     sandbox, egress = await _egress(
         tmp_path, FakeDocker(), (), allow=(("host.docker.internal", 11434),)
     )
-    log = egress.log_dir / "access.log"
+    log = egress.spool_dir / "access.log"
     ollama = "2026-11-04T10:00:03.000Z 172.30.0.3 GET host.docker.internal 11434 200 TCP_MISS"
     prefix = [*PROBE_LINES, ollama]
     if initial == "no_peer_reply":
@@ -392,7 +474,7 @@ async def test_probe_waits_for_its_log_before_freezing_query_prefix(
     out = tmp_path / "run"
     with log.open("a") as file:
         file.write(PYPI_LINE + "\n")
-    (egress.log_dir / "cache.log").write_text("squid started\n")
+    (egress.spool_dir / "cache.log").write_text("squid started\n")
     problems = await sandbox.close_egress(egress)
     assert problems == []
     (out / "probe/control.json").write_text('{"passed":true}')
@@ -403,7 +485,7 @@ async def test_probe_waits_for_its_log_before_freezing_query_prefix(
 
 
 async def test_a_failed_check_raises_and_still_writes_the_record(tmp_path: Path) -> None:
-    docker = ProbeDocker(lambda: tmp_path / "run" / "egress" / "j", passed=False)
+    docker = ProbeDocker(passed=False)
     sandbox, egress = await _egress(tmp_path, docker, ("172.30.0.1",))
     family = _job("claude-sonnet-5-5").family
     with pytest.raises(IsolationProbeFailed, match="env"):
@@ -500,7 +582,7 @@ async def test_a_timed_out_or_cancelled_probe_container_is_removed(
 
 async def test_a_failed_control_makes_the_probe_inconclusive(tmp_path: Path) -> None:
     (tmp_path / "run").mkdir()
-    docker = ProbeDocker(lambda: tmp_path, passed=False)
+    docker = ProbeDocker(passed=False)
     sandbox = Sandbox(_config(tmp_path), docker=docker, verify=_verified)
     with pytest.raises(IsolationProbeFailed, match="inconclusive"):
         await control_probe(sandbox)

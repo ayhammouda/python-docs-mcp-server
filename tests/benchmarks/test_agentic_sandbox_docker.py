@@ -22,7 +22,7 @@ from typing import Any
 import pytest
 
 from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
-from benchmarks.agentic.egress import parse_proxy_log
+from benchmarks.agentic.egress import parse_proxy_log, read_log
 from benchmarks.agentic.host import WorkerJob
 from benchmarks.agentic.probe import IsolationProbeFailed, _one_shot, _probe_argv, isolation_probe
 from benchmarks.agentic.run import run_agentic
@@ -204,7 +204,7 @@ async def test_an_ip_literal_connect_whose_ptr_names_an_allowlisted_host_is_deni
     )
     assert checks["proxy_denied"]["passed"] is True, checks["proxy_denied"]
     await asyncio.sleep(1)
-    events = parse_proxy_log((egress.log_dir / "access.log").read_text())
+    events = parse_proxy_log(read_log(egress.spool_dir / "access.log").decode())
     # TCP_DENIED, or TCP_DENIED_ABORTED when the probe closes after reading the status line.
     assert [(e.host, e.port, e.allowed) for e in events] == [("127.0.0.1", 443, False)]
     assert events[0].result.startswith("TCP_DENIED")

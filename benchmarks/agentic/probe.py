@@ -30,8 +30,10 @@ from benchmarks.agentic.egress import (
     forbidden_env_names,
     parse_proxy_log,
     read_log,
+    write_scanned_json,
 )
-from benchmarks.runner import BenchmarkValidationError, _write_json
+from benchmarks.agentic.protocol import KeyLeakError, assert_no_key_shaped, redact_key_shaped
+from benchmarks.runner import BenchmarkValidationError
 
 if TYPE_CHECKING:
     from benchmarks.agentic.sandbox import Egress, Sandbox
@@ -223,7 +225,9 @@ async def _one_shot(sandbox: Sandbox, argv: list[str], name: str) -> list[dict[s
             raise ValueError(f"exit {proc.returncode}")
         return list(json.loads(proc.stdout)["checks"])
     except (ValueError, KeyError, TypeError) as exc:
-        detail = proc.stderr.decode("utf-8", errors="replace").strip()[-300:]
+        detail = proc.stderr.decode("utf-8", errors="replace").strip()
+        assert_no_key_shaped(detail, where=f"{name} stderr")
+        detail = detail[-300:]
         raise IsolationProbeFailed(f"probe container {name} failed ({exc}): {detail}") from None
 
 
@@ -274,12 +278,19 @@ async def isolation_probe(
         name = f"{sandbox.worker_name(job_id)}-probe"
         argv = _probe_argv(sandbox, name, egress.network, spec, worker_env(family))
         checks = await _one_shot(sandbox, argv, name)
-        log = egress.log_dir / "access.log"
+        log = egress.spool_dir / "access.log"
 
         def verdict() -> tuple[list[str], list[str]]:
             try:
-                text = read_log(log).decode("utf-8")
+                data, pattern = redact_key_shaped(read_log(log))
+                if pattern:
+                    raise KeyLeakError(
+                        f"key-shaped string ({pattern} pattern) in {job_id}/access.log"
+                    )
+                text = data.decode("utf-8")
                 events = parse_proxy_log(text)
+            except KeyLeakError:
+                raise
             except (OSError, ValueError) as exc:
                 return [f"proxy_log {exc}"], []
             found = probe_verdict(
@@ -309,7 +320,7 @@ async def isolation_probe(
         "network_inspect": egress.inspect,
         "proxy_prefix": prefix,  # the exact access-log lines when the verdict was taken
     }
-    _write_json(sandbox.config.out_dir / "probe" / f"{job_id}.json", record)
+    write_scanned_json(sandbox.config.out_dir / "probe" / f"{job_id}.json", record)
     if failed:
         raise IsolationProbeFailed(f"isolation probe failed for {job_id}: {', '.join(failed)}")
     return record
@@ -328,7 +339,7 @@ async def control_probe(sandbox: Sandbox) -> dict[str, Any]:
         reached = any(token.encode() in data for data in canary.received)
     passed = reached and all(c["passed"] for c in checks)
     record = {"checks": checks, "canary_reached": reached, "passed": passed}
-    _write_json(sandbox.config.out_dir / "probe" / "control.json", record)
+    write_scanned_json(sandbox.config.out_dir / "probe" / "control.json", record)
     if not passed:
         raise IsolationProbeFailed(
             "inconclusive: a control container on the outside network could not reach the "
