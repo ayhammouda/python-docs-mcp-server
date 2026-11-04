@@ -1,0 +1,365 @@
+# Grading criteria for the agentic benchmark (design §9.1).
+#
+# Two criteria per corpus question, in the corpus `expected_properties` order.
+# Each `criterion` is one sentence a judge checks an answer against; it is
+# written from the question's answer_key, the property and ambiguity_notes.
+# `weight` is `core` when a correct answer cannot omit the criterion and
+# `nuance` for a qualifier, edge case or secondary detail. Weights are never
+# shown to judges; the score mapping in benchmarks/grading/mapping.py uses them.
+#
+# Drafted by the PR 5 implementer; the owner reviews them in that PR.
+# Loaded by benchmarks.grading.inputs.load_criteria(), which refuses the file
+# when corpus_sha256 no longer matches docs/benchmarks/corpus.yml.
+schema_version: 1
+corpus_sha256: 79ac86b444a8a2487fe342223af372bbed8ff6f98bd5faba302ad618da67caa6
+questions:
+  EX-001:
+    - property: running accumulated results
+      criterion: States that it yields a sequence of successive running accumulated results, one per input item, rather than a single total.
+      weight: core
+    - property: addition default and func override
+      criterion: States that addition is the default operation and that the optional func argument supplies a different binary operation.
+      weight: core
+  EX-002:
+    - property: overlapping consecutive pairs
+      criterion: States that it yields overlapping pairs of consecutive items from the input.
+      weight: core
+    - property: short-input case
+      criterion: States that an input with fewer than two items yields no pairs.
+      weight: nuance
+  EX-003:
+    - property: consecutive runs
+      criterion: States that groupby groups only consecutive runs of items that share a key, so equal keys separated by other keys form separate groups.
+      weight: core
+    - property: sorting caveat
+      criterion: States that the input should be sorted by the same key first when all equal keys must end up in one group.
+      weight: nuance
+  EX-004:
+    - property: unbounded
+      criterion: States that functools.cache is an unbounded cache whose entries are not evicted to stay under a size limit.
+      weight: core
+    - property: lru_cache(maxsize=None) equivalence
+      criterion: States that it is equivalent to lru_cache(maxsize=None).
+      weight: nuance
+  EX-005:
+    - property: first-access computation
+      criterion: States that the decorated method's value is computed on the first attribute access.
+      weight: core
+    - property: subsequent stored value
+      criterion: States that the computed value is stored on the instance and returned by later accesses until the attribute is deleted.
+      weight: core
+  EX-006:
+    - property: first-argument type
+      criterion: States that singledispatch chooses the implementation from the type of the first argument.
+      weight: core
+    - property: registered implementation
+      criterion: States that implementations are registered for specific types, with the base function used as the default when no registered type matches.
+      weight: nuance
+  EX-007:
+    - property: base-path prefix
+      criterion: States that the yielded paths are prefixed with the Path on which glob() was called.
+      weight: core
+    - property: conditional absoluteness
+      criterion: States that the yielded paths are absolute only when that base path is absolute, and relative otherwise.
+      weight: core
+  EX-008:
+    - property: string result
+      criterion: States that read_text() returns the file's decoded contents as a str.
+      weight: core
+    - property: explicit/default encoding
+      criterion: States that an encoding argument can be given explicitly and that otherwise the platform-dependent default encoding is used.
+      weight: core
+  EX-009:
+    - property: lexical comparison
+      criterion: States that is_relative_to() reports whether the path is relative to other by a purely lexical comparison of the paths.
+      weight: core
+    - property: does not resolve filesystem
+      criterion: States that it does not access the filesystem and does not resolve symlinks or .. components.
+      weight: nuance
+  EX-010:
+    - property: sum of counts
+      criterion: States that Counter.total() returns the sum of all the counts.
+      weight: core
+    - property: negative-count caveat
+      criterion: States that zero and negative counts are included in that sum.
+      weight: nuance
+  EX-011:
+    - property: direction by sign
+      criterion: States that a positive n rotates the deque to the right and a negative n rotates it to the left.
+      weight: core
+    - property: in-place
+      criterion: States that the rotation modifies the deque in place.
+      weight: nuance
+  EX-012:
+    - property: floating-point mean
+      criterion: States that fmean converts the data to floats and returns a floating-point arithmetic mean.
+      weight: nuance
+    - property: weighted-length requirement
+      criterion: States that the optional weights produce a weighted mean and must have the same number of values as the data.
+      weight: core
+  EX-013:
+    - property: inverse cumulative distribution
+      criterion: States that inv_cdf(p) returns the value x at which the distribution's cumulative distribution function equals p.
+      weight: core
+    - property: probability domain
+      criterion: States that p must be a probability strictly between 0 and 1.
+      weight: nuance
+  EX-014:
+    - property: reverse-order callbacks
+      criterion: States that on exit the registered callbacks and context managers are unwound in reverse order of registration.
+      weight: core
+    - property: cleanup on partial setup
+      criterion: States that the stack still cleans up what was already registered when a later setup step fails.
+      weight: nuance
+  EX-015:
+    - property: automatic cleanup
+      criterion: States that the directory and its contents are removed automatically when the context manager exits or the object is cleaned up.
+      weight: core
+    - property: explicit cleanup method
+      criterion: States that the cleanup() method removes the directory explicitly.
+      weight: nuance
+  CO-001:
+    - property: pure versus concrete
+      criterion: States that Path is a concrete subclass that extends PurePath.
+      weight: nuance
+    - property: filesystem I/O distinction
+      criterion: States that PurePath manipulates paths without filesystem I/O, so it fits path-only work, while Path adds operations that touch the filesystem such as stat or open.
+      weight: core
+  CO-002:
+    - property: specified exception types
+      criterion: States that suppress() silences only the exception types passed to it, inside its with block.
+      weight: core
+    - property: unmatched propagation
+      criterion: States that exceptions not named in it propagate normally.
+      weight: core
+  CO-003:
+    - property: temporary context
+      criterion: States that localcontext() supplies a temporary copy of the active decimal context for the with block, so precision or rounding changes apply only there.
+      weight: core
+    - property: outer context restored
+      criterion: States that the outer context is restored, unchanged, when the block exits.
+      weight: nuance
+  CO-004:
+    - property: sibling cancellation
+      criterion: States that the remaining sibling tasks in the group are cancelled.
+      weight: core
+    - property: grouped exception
+      criterion: States that once all tasks finish, the non-cancellation failures are raised together as an ExceptionGroup or BaseExceptionGroup.
+      weight: nuance
+  CO-005:
+    - property: completion order
+      criterion: States that as_completed() yields futures as they complete.
+      weight: core
+    - property: not input order
+      criterion: States that the yield order is not the input order and that futures already completed when it is called come first.
+      weight: nuance
+  CO-006:
+    - property: header row
+      criterion: States that without fieldnames the values of the first row are used as the field names.
+      weight: core
+    - property: dictionary rows
+      criterion: States that each later row is returned as a dictionary keyed by those field names.
+      weight: nuance
+  CO-007:
+    - property: object_pairs_hook
+      criterion: Names object_pairs_hook as the hook.
+      weight: core
+    - property: ordered pairs and duplicates
+      criterion: States that the hook receives each JSON object as an ordered list of key-value pairs, so order and duplicate names survive for custom handling.
+      weight: nuance
+  CO-008:
+    - property: attempts metadata preservation
+      criterion: States that copy2() copies the file data and attempts to preserve its metadata, as copystat() does.
+      weight: nuance
+    - property: no cross-platform guarantee
+      criterion: Answers that preservation of every metadata item is not guaranteed on every platform, and that copy2() does not fail only because some metadata cannot be preserved.
+      weight: core
+  CO-009:
+    - property: bound parameters
+      criterion: States that values should be bound through placeholders in the SQL and passed separately to execute().
+      weight: core
+    - property: no string formatting
+      criterion: States that values should not be formatted into the SQL string.
+      weight: nuance
+  CO-010:
+    - property: ancestor handlers
+      criterion: States that a propagated record is passed to the handlers of the ancestor loggers as well as to the child logger's own handlers.
+      weight: core
+    - property: propagate flag
+      criterion: States that setting the logger's propagate attribute to false stops that passing to ancestor handlers.
+      weight: nuance
+  XV-001:
+    - property: absence in 3.12
+      criterion: States that Python 3.12's base64 module has no Z85 functions.
+      weight: core
+    - property: new 3.13 function names
+      criterion: Names base64.z85encode() and base64.z85decode() as added in Python 3.13.
+      weight: core
+  XV-002:
+    - property: 3.12 absence
+      criterion: States that Python 3.12's copy module has no copy.replace().
+      weight: core
+    - property: 3.13 replace protocol
+      criterion: States that Python 3.13 adds copy.replace(obj, **changes) and the __replace__ protocol that supported objects implement.
+      weight: core
+  XV-003:
+    - property: new module
+      criterion: States that Python 3.13 adds the dbm.sqlite3 backend, which 3.12 does not have.
+      weight: nuance
+    - property: default backend change
+      criterion: States that in Python 3.13 dbm.sqlite3 becomes the default backend for new databases, a change from 3.12's backend selection order.
+      weight: core
+  XV-004:
+    - property: deprecated parameter
+      criterion: States that Python 3.13 adds a deprecated parameter that marks arguments or subcommands as deprecated, which 3.12 lacks.
+      weight: core
+    - property: both APIs
+      criterion: States that the parameter is accepted by both add_argument() and add_parser().
+      weight: nuance
+  XV-005:
+    - property: both flags
+      criterion: States that in Python 3.13 the default verify flags include both VERIFY_X509_PARTIAL_CHAIN and VERIFY_X509_STRICT, which were not both defaults in 3.12.
+      weight: core
+    - property: strictness caveat
+      criterion: States that the stricter verification may reject malformed or older certificates that 3.12 accepted.
+      weight: nuance
+  XV-006:
+    - property: CLI introduced in 3.13
+      criterion: States that Python 3.13 adds a documented command-line interface for the random module.
+      weight: core
+    - property: old version distinction
+      criterion: States that Python 3.12 did not offer that command-line interface.
+      weight: nuance
+  XV-007:
+    - property: new strict parameter
+      criterion: States that Python 3.13 adds a strict parameter, and that strict=True raises ValueError when the final batch is incomplete.
+      weight: core
+    - property: default remains permissive
+      criterion: States that by default a short final batch is still yielded, as it was in 3.12, which had no strict option.
+      weight: core
+  XV-008:
+    - property: shutdown method
+      criterion: States that Python 3.13 adds the Queue.shutdown() method, which 3.12 does not have.
+      weight: core
+    - property: ShutDown exception
+      criterion: States that Python 3.13 also adds the queue.ShutDown exception.
+      weight: nuance
+  XV-009:
+    - property: stdlib removal
+      criterion: States that distutils was in the Python 3.11 standard library and is removed from the 3.12 standard library.
+      weight: core
+    - property: setuptools caveat
+      criterion: States that the third-party setuptools package can still provide a replacement.
+      weight: nuance
+  XV-010:
+    - property: 3.12 no default setuptools
+      criterion: States that from Python 3.12 venv no longer installs setuptools in new environments by default, whereas 3.11 did.
+      weight: core
+    - property: explicit installation
+      criterion: States that projects that need setuptools must install it explicitly.
+      weight: nuance
+  XV-011:
+    - property: python -m sqlite3
+      criterion: States that the new interface is a command-line interface run as python -m sqlite3.
+      weight: core
+    - property: 3.12 introduction
+      criterion: States that the interface was introduced in Python 3.12 and is not available in 3.11.
+      weight: nuance
+  XV-012:
+    - property: python -m uuid
+      criterion: States that the new interface is a command-line interface run as python -m uuid.
+      weight: core
+    - property: 3.12 introduction
+      criterion: States that the interface was introduced in Python 3.12 and is not available in 3.11.
+      weight: nuance
+  XV-013:
+    - property: Path.walk introduction
+      criterion: States that Python 3.12 adds the Path.walk() method for walking a directory tree, which 3.11's Path does not have.
+      weight: core
+    - property: os.walk analogy
+      criterion: States that Path.walk() works like os.walk(), generating the directory and file names of a tree.
+      weight: nuance
+  XV-014:
+    - property: onexc introduced
+      criterion: States that Python 3.12 adds the onexc parameter, whose callback receives the exception instance.
+      weight: core
+    - property: onerror deprecation and signature difference
+      criterion: States that onerror is deprecated in 3.12 and that its callback received an exc_info tuple instead of an exception instance.
+      weight: nuance
+  XV-015:
+    - property: delete_on_close parameter
+      criterion: States that Python 3.12 adds the delete_on_close parameter, which controls whether the file is deleted when it is closed or only when the context manager exits.
+      weight: core
+    - property: 3.11 absence
+      criterion: States that Python 3.11's NamedTemporaryFile has no delete_on_close parameter.
+      weight: nuance
+  PE-001:
+    - property: experimental
+      criterion: States that free-threaded execution is not the default in CPython 3.13 and is experimental.
+      weight: core
+    - property: separate build
+      criterion: States that it requires a separate free-threaded build, such as python3.13t or a build configured with --disable-gil.
+      weight: core
+  PE-002:
+    - property: all three parameter types
+      criterion: Names TypeVar, ParamSpec and TypeVarTuple as the type-parameter objects that gained the feature.
+      weight: core
+    - property: defaults
+      criterion: States that the feature is default values for type parameters, from PEP 696.
+      weight: nuance
+  PE-003:
+    - property: deprecation marker for type checkers
+      criterion: States that warnings.deprecated is a decorator that marks a function, class or overload as deprecated for static type checkers.
+      weight: core
+    - property: runtime warning
+      criterion: States that using the decorated object at runtime emits a DeprecationWarning.
+      weight: core
+  PE-004:
+    - property: per-item TypedDict annotation
+      criterion: States that ReadOnly marks an individual TypedDict item as read-only.
+      weight: core
+    - property: static not runtime enforcement
+      criterion: States that the read-only rule is checked by type checkers and not enforced at runtime.
+      weight: nuance
+  PE-005:
+    - property: both branches for TypeIs
+      criterion: States that TypeIs narrows the true branch to the given type and can also narrow the false branch by excluding that type.
+      weight: core
+    - property: true-only TypeGuard
+      criterion: States that TypeGuard narrows only the true branch.
+      weight: core
+  AP-001:
+    - property: secrets.token_urlsafe
+      criterion: Recommends secrets.token_urlsafe() to generate the token.
+      weight: core
+    - property: cryptographic randomness
+      criterion: States that the token comes from cryptographically strong randomness, unlike the random module, which must not be used for this.
+      weight: nuance
+  AP-002:
+    - property: contextlib.closing
+      criterion: Recommends contextlib.closing(obj).
+      weight: core
+    - property: calls close on exit
+      criterion: States that it returns a context manager that calls obj.close() when the with block exits.
+      weight: nuance
+  AP-003:
+    - property: explicit UTF-8
+      criterion: Opens the file with an explicit encoding="utf-8" argument, through open() or Path.open().
+      weight: core
+    - property: context manager
+      criterion: Uses a with statement so the file is closed automatically when the block exits.
+      weight: core
+  AP-004:
+    - property: ArgumentParser
+      criterion: Recommends argparse.ArgumentParser with arguments added through add_argument().
+      weight: core
+    - property: parse_args and help
+      criterion: States that parse_args() parses and validates the command line and that argparse generates the usage and help text.
+      weight: nuance
+  AP-005:
+    - property: hashlib.file_digest
+      criterion: Recommends hashlib.file_digest(fileobj, digest).
+      weight: core
+    - property: binary file object
+      criterion: States that it reads a file object opened in binary mode and returns a hash object, without the caller reading the whole file into memory.
+      weight: nuance

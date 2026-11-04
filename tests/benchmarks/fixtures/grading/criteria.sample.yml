@@ -1,0 +1,356 @@
+# SYNTHETIC/FIXTURE DATA: grading criteria for tests/benchmarks/fixtures/corpus.sample.yml.
+# Same shape as docs/benchmarks/grading-criteria.yml. Mechanically generated:
+# criterion 1 is core and criterion 2 is nuance for every question.
+schema_version: 1
+corpus_sha256: 47959b1c3d4d1e56dd7b7c9eb4c745784867185839cc1d803a64de6f939364f8
+questions:
+  SYN-EX-001:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-EX-001 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-EX-001 cites.
+      weight: nuance
+  SYN-EX-002:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-EX-002 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-EX-002 cites.
+      weight: nuance
+  SYN-EX-003:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-EX-003 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-EX-003 cites.
+      weight: nuance
+  SYN-EX-004:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-EX-004 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-EX-004 cites.
+      weight: nuance
+  SYN-EX-005:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-EX-005 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-EX-005 cites.
+      weight: nuance
+  SYN-EX-006:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-EX-006 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-EX-006 cites.
+      weight: nuance
+  SYN-EX-007:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-EX-007 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-EX-007 cites.
+      weight: nuance
+  SYN-EX-008:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-EX-008 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-EX-008 cites.
+      weight: nuance
+  SYN-EX-009:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-EX-009 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-EX-009 cites.
+      weight: nuance
+  SYN-EX-010:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-EX-010 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-EX-010 cites.
+      weight: nuance
+  SYN-EX-011:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-EX-011 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-EX-011 cites.
+      weight: nuance
+  SYN-EX-012:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-EX-012 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-EX-012 cites.
+      weight: nuance
+  SYN-EX-013:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-EX-013 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-EX-013 cites.
+      weight: nuance
+  SYN-EX-014:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-EX-014 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-EX-014 cites.
+      weight: nuance
+  SYN-EX-015:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-EX-015 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-EX-015 cites.
+      weight: nuance
+  SYN-CN-001:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-CN-001 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-CN-001 cites.
+      weight: nuance
+  SYN-CN-002:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-CN-002 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-CN-002 cites.
+      weight: nuance
+  SYN-CN-003:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-CN-003 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-CN-003 cites.
+      weight: nuance
+  SYN-CN-004:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-CN-004 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-CN-004 cites.
+      weight: nuance
+  SYN-CN-005:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-CN-005 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-CN-005 cites.
+      weight: nuance
+  SYN-CN-006:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-CN-006 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-CN-006 cites.
+      weight: nuance
+  SYN-CN-007:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-CN-007 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-CN-007 cites.
+      weight: nuance
+  SYN-CN-008:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-CN-008 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-CN-008 cites.
+      weight: nuance
+  SYN-CN-009:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-CN-009 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-CN-009 cites.
+      weight: nuance
+  SYN-CN-010:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-CN-010 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-CN-010 cites.
+      weight: nuance
+  SYN-XV-001:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-XV-001 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-XV-001 cites.
+      weight: nuance
+  SYN-XV-002:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-XV-002 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-XV-002 cites.
+      weight: nuance
+  SYN-XV-003:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-XV-003 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-XV-003 cites.
+      weight: nuance
+  SYN-XV-004:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-XV-004 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-XV-004 cites.
+      weight: nuance
+  SYN-XV-005:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-XV-005 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-XV-005 cites.
+      weight: nuance
+  SYN-XV-006:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-XV-006 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-XV-006 cites.
+      weight: nuance
+  SYN-XV-007:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-XV-007 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-XV-007 cites.
+      weight: nuance
+  SYN-XV-008:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-XV-008 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-XV-008 cites.
+      weight: nuance
+  SYN-XV-009:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-XV-009 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-XV-009 cites.
+      weight: nuance
+  SYN-XV-010:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-XV-010 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-XV-010 cites.
+      weight: nuance
+  SYN-XV-011:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-XV-011 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-XV-011 cites.
+      weight: nuance
+  SYN-XV-012:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-XV-012 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-XV-012 cites.
+      weight: nuance
+  SYN-XV-013:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-XV-013 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-XV-013 cites.
+      weight: nuance
+  SYN-XV-014:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-XV-014 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-XV-014 cites.
+      weight: nuance
+  SYN-XV-015:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-XV-015 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-XV-015 cites.
+      weight: nuance
+  SYN-PEP-001:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-PEP-001 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-PEP-001 cites.
+      weight: nuance
+  SYN-PEP-002:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-PEP-002 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-PEP-002 cites.
+      weight: nuance
+  SYN-PEP-003:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-PEP-003 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-PEP-003 cites.
+      weight: nuance
+  SYN-PEP-004:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-PEP-004 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-PEP-004 cites.
+      weight: nuance
+  SYN-PEP-005:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-PEP-005 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-PEP-005 cites.
+      weight: nuance
+  SYN-APP-001:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-APP-001 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-APP-001 cites.
+      weight: nuance
+  SYN-APP-002:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-APP-002 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-APP-002 cites.
+      weight: nuance
+  SYN-APP-003:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-APP-003 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-APP-003 cites.
+      weight: nuance
+  SYN-APP-004:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-APP-004 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-APP-004 cites.
+      weight: nuance
+  SYN-APP-005:
+    - property: mentions-synthetic-symbol
+      criterion: States what the fictional symbol in SYN-APP-005 is.
+      weight: core
+    - property: cites-fixture-source
+      criterion: States the fixture source that SYN-APP-005 cites.
+      weight: nuance

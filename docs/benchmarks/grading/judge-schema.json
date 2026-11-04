@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "properties": {
+    "explanation": {"type": "string"},
+    "attempted": {"type": "boolean"},
+    "p1_met": {"type": "boolean"},
+    "p2_met": {"type": "boolean"},
+    "contradicts_key": {"type": "boolean"},
+    "wrong_version": {"type": "boolean"}
+  },
+  "required": ["explanation", "attempted", "p1_met", "p2_met", "contradicts_key", "wrong_version"],
+  "additionalProperties": false
+}
