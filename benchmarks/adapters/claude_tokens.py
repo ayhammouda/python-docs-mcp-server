@@ -26,10 +26,9 @@ they never reach the network; tests use :class:`FakeTokenCounter` instead.
 The fixed-flow envelope carries the corpus prompt and the recorded tool
 calls, but no real client's tool definitions or system prompt; with tool
 calls it sends name-only tool stubs, so the count includes the API's
-tool-use preamble. A provider-adapter mock/live-stub payload
-(``MockOpenAIAdapter`` / ``MockGoogleAdapter`` and their live-stub
-counterparts) wraps the prompt alone, since no real client SDK call was
-made. Exact post-run counting of a real client's request is the new
+tool-use preamble. A provider mock payload (one marked ``"mock": True``)
+wraps the prompt alone, since no real client SDK call was made. Exact
+post-run counting of a real client's request is the new
 harness's job (design §8), not this module's.
 """
 
@@ -232,12 +231,10 @@ def build_client_wrapped_envelope(
     prompt, one assistant message of ``tool_use`` blocks, and one user
     message of only the matching ``tool_result`` blocks.
 
-    ``provider_mock_payload`` is the raw payload from a provider-adapter
-    mock/live-stub (``benchmarks.adapters.base.AdapterResponse.raw`` for
-    ``MockOpenAIAdapter`` / ``MockGoogleAdapter`` and their live-stub
-    counterparts, identifiable by their ``"mock": True`` marker). Those
-    adapters never call a real client SDK, so there is no real wrapped
-    request body to recover; this function then wraps only the prompt text.
+    ``provider_mock_payload`` is a provider mock's raw payload, identifiable
+    by its ``"mock": True`` marker. A mock never calls a real client SDK, so
+    there is no real wrapped request body to recover; this function then
+    wraps only the prompt text.
 
     Returns ``(envelope, approximation)``; ``approximation`` is always
     ``True`` (see the module docstring, "Envelope exactness").

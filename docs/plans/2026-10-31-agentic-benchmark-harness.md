@@ -1184,8 +1184,10 @@ Scripted script (`family.raw["script"]`, a YAML path):
   Buckets come from the matching Task 3 function. `arguments` may be any
   YAML value and goes through `tool_arguments`. `"{prompt}"` in a string
   argument becomes the first user message.
-- The client counts its calls per `Conversation` object (by `id(conv)`).
-  The n-th call plays the n-th step that applies.
+- The client counts its calls per `Conversation` object, held strongly
+  (a dict keyed by the object itself), never by a bare `id(conv)`, which
+  CPython reuses once a conversation is freed. The n-th call plays the
+  n-th step that applies.
 - A `tools` step applies only when every tool it names is in
   `conv.tools`, so `no-docs` skips straight to the answer. An optional
   `delay_s` on any step sleeps first.
@@ -1303,7 +1305,7 @@ class Caps:
     tool_call_s: float = 30.0
     trajectory_s: float = 300.0
     result_bytes: int = 100_000
-    model_call_timeout_s: float = 120.0
+    model_call_timeout_s: float = 300.0   # = trajectory_s (owner ruling, #197 round 2)
 HOSTED_CAPS = Caps()
 AIR_GAPPED_CAPS = Caps(trajectory_s=900.0, model_call_timeout_s=600.0)
 MAX_RETRIES = 4
@@ -1490,6 +1492,7 @@ def test_input_bounds() -> None:
 def test_backoff() -> None:
     assert [backoff_s(r, None) for r in (1, 2, 3, 4)] == [2, 4, 8, 16]
     assert backoff_s(1, 7.0) == 7.0 and backoff_s(1, 121.0) is None
+    assert backoff_s(1, 0.0) == 0.0
 def test_system_prompt_follows_the_design() -> None:
     assert ("ground your answer in the official python documentation; if a documentation tool is "
             "available, use it before answering and cite the section url you relied on") in SYSTEM_PROMPT.lower()
@@ -1628,9 +1631,10 @@ Worker rules:
   1. Close the bridge, so the MCP server child exits and drops its copy
      of fd 2.
   2. Send `done`.
-  3. `ProtocolChannel.close()`: point fds 1 and 2 at `/dev/null`, close
-     the pipe's write end, and join the redactor thread with a 5 s
-     timeout, so every byte is drained before exit.
+  3. `ProtocolChannel.close()`: flush `sys.stdout` and `sys.stderr`,
+     point fds 1 and 2 at `/dev/null`, close the pipe's write end, and
+     join the redactor thread with a 5 s timeout, so every byte is
+     drained before exit.
 
   The thread is a daemon, so a grandchild that still holds the pipe
   cannot keep the worker alive. Its bytes are dropped, never written
@@ -1867,8 +1871,8 @@ Run rules:
     - `answer_turns`: the count of answer turns, one per trajectory that
       reached an answer;
     - `output_cap_stops`: the answer turns whose `stop_reason` is in
-      `OUTPUT_CAP_STOPS = {"max_tokens", "max_output_tokens", "MAX_TOKENS",
-      "CONTINUATION"}`. This is the count the pilot's 1% rule reads.
+      `OUTPUT_CAP_STOPS` (the code block above). This is the count the
+      pilot's 1% rule reads.
     - `wall_s`: from the first start to the last completion, with retries
       included (owner ruling 6);
     - `grant_wait_s`, `failed_attempt_s` and `retry_wait_s`: the sums of
@@ -1956,16 +1960,18 @@ def test_a_live_run_refuses_an_expired_price_snapshot(tmp_path, monkeypatch) -> 
 
 def test_run_summary_counts_retries_and_reruns(tmp_path, monkeypatch) -> None:
     # one scripted family, no-docs, two questions, repeats 1. The script for the first question:
-    # 429 (retry_after_s 0) then text. For the second: 429 on every call, so its trajectory is
-    # discarded three times, then not run.
+    # 429 (retry_after_s 0) then text. For the second: 429 (retry_after_s 0) on every call, so
+    # its trajectory is discarded three times, then not run.
     fam = summary["families"]["scripted-anthropic"]
     assert fam["retries"]["rate_limited"] == 1 + 3 * MAX_RETRIES and fam["reruns"] == 2
     assert [d["attempt"] for d in summary["discarded"]] == [1, 2, 3] and len(summary["not_run"]) == 1
 
 def test_run_summary_wall_time_includes_failed_attempts_backoff_and_grant_waits(tmp_path, monkeypatch) -> None:
     # a tmp matrix with two scripted families of provider anthropic, one no-docs job each, so
-    # their units contend for the grant. Each script: 429 with retry_after_s 0.3 and delay_s 0.2
-    # (a 0.2 s failed attempt, then 0.3 s of backoff), then text with delay_s 0.1.
+    # their units contend for the grant. Each script: 429 with retry_after_s 0.3 and delay_s 1.0
+    # (a 1.0 s failed attempt that holds the provider's grant, so the other job's grant wait does
+    # not depend on how fast two processes spawn; then 0.3 s of backoff), then text with
+    # delay_s 0.1.
     for fam in summary["families"].values():
         assert fam["failed_attempt_s"] >= 0.2 and fam["retry_wait_s"] >= 0.3
         assert fam["wall_s"] >= 0.6
@@ -2108,7 +2114,12 @@ Open PR B with `gh pr create` against `main`:
 - **PR 4:**
   - the Dockerfile and the container launcher (`--env-file`, one key per
     container, `--read-only`, tmpfs, `--cap-drop ALL`);
-  - the per-worker egress proxy and its logs;
+  - the per-worker egress proxy and its logs, passed to each SDK client
+    explicitly (the clients ignore proxy and CA variables);
+  - the container launcher's worker environment as an allowlist that
+    excludes every `*_PROXY`, `SSL_CERT_*` and `REQUESTS_CA_BUNDLE`
+    variable (a SOCKS `ALL_PROXY` crashes the Anthropic SDK at
+    construction; #197 round 4);
   - the isolation probe and the run script;
   - the Ollama client (`OllamaChatClient`), `to_openai_chat`,
     `ollama_buckets`, the unmetered `ollama` ledger provider and the

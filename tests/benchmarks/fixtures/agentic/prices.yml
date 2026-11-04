@@ -1,0 +1,26 @@
+# Flat round prices for the scripted fixture models, so a test can compute the
+# expected spend by hand: per call, 1,000 input tokens at $1 and 100 output
+# tokens at $10 per million cost $0.002. No expiry: scripted runs are never live.
+schema_version: 1
+currency: USD
+unit: per_million_tokens
+captured_on: "2026-10-31"
+expires_on: null
+source: tests/benchmarks/fixtures/agentic/prices.yml
+
+models:
+  - model_id: scripted-1
+    provider: anthropic
+    source_url: https://example.invalid/scripted-fixture
+    tiers:
+      - {up_to_input_tokens: null, input: "1", cache_write: "1", cached_input: "0.1", output: "10"}
+  - model_id: scripted-2
+    provider: openai
+    source_url: https://example.invalid/scripted-fixture
+    tiers:
+      - {up_to_input_tokens: null, input: "1", cache_write: "1", cached_input: "0.1", output: "10"}
+  - model_id: scripted-3
+    provider: google
+    source_url: https://example.invalid/scripted-fixture
+    tiers:
+      - {up_to_input_tokens: null, input: "1", cache_write: "1", cached_input: "0.1", output: "10"}

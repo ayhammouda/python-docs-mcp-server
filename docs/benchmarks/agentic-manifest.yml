@@ -1,0 +1,40 @@
+# Systems under test for the agentic benchmark, round 1.
+#
+# Context: docs/benchmarks/AGENTIC-BENCHMARK-DESIGN.md section 5. Every MCP
+# system exposes its full tool list exactly as the server advertises it,
+# unfiltered, through the one generic stdio bridge
+# (benchmarks/agentic/bridge.py). Round 2 adds Context7, GitMCP, DeepWiki and
+# Ref.tools behind the terms gates recorded in competitor-manifest.template.yml.
+#
+# Same `competitors:` format as the fixed-flow manifest, so the runner's loaders
+# and the report read it. Agentic fields:
+# - adapter: `mcp-stdio` (a stdio MCP server) or `none` (no tools).
+# - command: argv of the server; "{python}" is replaced by the worker's
+#   interpreter at spawn.
+# - env: variables set for the server.
+# - pass_env: variables copied from the worker's environment when present.
+#   The server gets these two and the MCP SDK's default set, nothing else.
+schema_version: 1
+
+competitors:
+  - id: python-docs
+    name: python-docs-mcp-server
+    adapter: mcp-stdio
+    command: ["{python}", "-m", "mcp_server_python_docs", "serve"]
+    env:
+      # Never let a missing index trigger the server's network auto-build.
+      PYTHON_DOCS_MCP_DISABLE_AUTO_INDEX: "1"
+    pass_env: [HOME, XDG_CACHE_HOME]
+
+  - id: docs-fetch
+    name: mcp-server-fetch, limited to docs.python.org by the egress proxy
+    adapter: mcp-stdio
+    # No flags: keep the robots.txt default (design section 5.1). Its version is
+    # pinned in PR 4's sandbox image.
+    command: [mcp-server-fetch]
+    env: {}
+    pass_env: [HOME, HTTPS_PROXY, HTTP_PROXY, NO_PROXY]
+
+  - id: no-docs
+    name: No documentation tools (correctness floor)
+    adapter: none

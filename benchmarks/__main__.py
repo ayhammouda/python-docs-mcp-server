@@ -15,6 +15,12 @@ from benchmarks.scoring import ingest_adjudication_verdicts, score_run
 _DEFAULT_MODEL_MATRIX = Path("docs/benchmarks/model-matrix.yml")
 _DEFAULT_METHODOLOGY = Path("docs/benchmarks/PUBLIC-BENCHMARK-METHODOLOGY.md")
 _DEFAULT_CORPUS_SCHEMA = Path("docs/benchmarks/corpus.schema.json")
+_DEFAULT_AGENTIC_MANIFEST = Path("docs/benchmarks/agentic-manifest.yml")
+_DEFAULT_PRICES = Path("docs/benchmarks/price-snapshot.yml")
+
+
+def _ids(value: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -152,12 +158,81 @@ def _build_parser() -> argparse.ArgumentParser:
         default=_DEFAULT_CORPUS_SCHEMA,
         help=f"Path to the corpus JSON schema file (default: {_DEFAULT_CORPUS_SCHEMA}).",
     )
+
+    agentic = subparsers.add_parser(
+        "agentic-run",
+        help="Run the agentic benchmark (docs/benchmarks/AGENTIC-BENCHMARK-DESIGN.md).",
+    )
+    agentic.add_argument("--corpus", required=True, type=Path, help="Corpus YAML file.")
+    agentic.add_argument("--out", required=True, type=Path, help="Empty artifact directory.")
+    agentic.add_argument(
+        "--ledger-dir",
+        type=Path,
+        help="Spend ledger directory (default: one durable per-user path, shared by every run).",
+    )
+    agentic.add_argument("--matrix", type=Path, default=_DEFAULT_MODEL_MATRIX)
+    agentic.add_argument("--manifest", type=Path, default=_DEFAULT_AGENTIC_MANIFEST)
+    agentic.add_argument("--prices", type=Path, default=_DEFAULT_PRICES)
+    for name in ("models", "systems", "questions"):
+        agentic.add_argument(f"--{name}", type=_ids, metavar="IDS", help="Comma-separated ids.")
+    agentic.add_argument("--repeats", type=int, default=3)
+    agentic.add_argument("--seed", type=int)
+    agentic.add_argument("--run-id")
+    agentic.add_argument("--dry-run", action="store_true", help="Write the plan; no ledger.")
+    agentic.add_argument(
+        "--acknowledge-overrun",
+        action="append",
+        default=[],
+        metavar="PROVIDER",
+        help="Lift a provider's overrun stop after its bound was corrected.",
+    )
+
+    # Spawned by the agentic host, never by hand: it reads its job as frames on stdin.
+    subparsers.add_parser(
+        "agentic-worker", help="Internal: run one agentic (model, system) job for the host."
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    if args.command == "agentic-worker":
+        # Lazy: the provider SDKs load only in a worker. main_worker protects output first.
+        from benchmarks.agentic.worker import main_worker
+
+        return main_worker()
+
+    if args.command == "agentic-run":
+        # Lazy, like agentic-worker: only agentic commands load the provider SDKs.
+        from benchmarks.agentic import run as agentic_run
+        from benchmarks.agentic.protocol import KeyLeakError
+
+        config = agentic_run.AgenticConfig(
+            corpus_path=args.corpus,
+            matrix_path=args.matrix,
+            manifest_path=args.manifest,
+            prices_path=args.prices,
+            ledger_dir=args.ledger_dir or agentic_run.default_ledger_dir(),
+            out_dir=args.out,
+            models=args.models,
+            systems=args.systems,
+            questions=args.questions,
+            repeats=args.repeats,
+            seed=args.seed,
+            run_id=args.run_id,
+            dry_run=args.dry_run,
+            acknowledge_overrun=tuple(args.acknowledge_overrun),
+        )
+        try:
+            summary = agentic_run.run_agentic(config)
+        except KeyLeakError as exc:  # before its base class
+            parser.exit(3, f"agentic run stopped on a key leak: {exc}\n")
+        except BenchmarkValidationError as exc:
+            parser.exit(2, f"agentic run failed: {exc}\n")
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return 0
 
     if args.command == "run":
         config = BenchmarkConfig(

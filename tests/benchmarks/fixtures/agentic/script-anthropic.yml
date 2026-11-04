@@ -1,0 +1,11 @@
+# Scripted model for the agentic tests: a docs tool, then the answer.
+# python-docs plays steps 1 and 3, docs-fetch steps 2 and 3, no-docs step 3 only
+# (a tools step applies only when the system offers every tool it names).
+# Usage is the Anthropic Messages shape.
+steps:
+  - tools: [{name: search_docs, arguments: {query: json}}]
+    usage: {input_tokens: 1000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 100}
+  - tools: [{name: fetch, arguments: {url: "https://docs.python.org/3/library/json.html"}}]
+    usage: {input_tokens: 1000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 100}
+  - text: "Scripted answer."
+    usage: {input_tokens: 1000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 100}

@@ -18,13 +18,12 @@
 # fetch of its own (see the run's forbidden-territory list: zero live
 # network calls anywhere in this task).
 #
-# The `python-docs-mcp-server` (adapter: python-docs-mcp-stdio) entry from
-# the methodology's candidate matrix is NOT repeated here -- it carries no
-# pin/terms_check metadata (issue #86) and belongs in a full run manifest
-# assembled separately; this template covers only the four competitor
-# docs-MCP adapters added by issue #87. The fixed flow has no no-MCP
-# baseline adapter; the agentic harness adds a `no-docs` arm instead
-# (AGENTIC-BENCHMARK-DESIGN.md section 5).
+# The fixed-flow adapters these entries once dispatched to are gone
+# (AGENTIC-BENCHMARK-DESIGN.md section 11.1). Round 2 runs these
+# competitors through the agentic MCP bridge (benchmarks/agentic/bridge.py),
+# still behind the pin, terms and eligibility gates recorded here; the
+# round-1 systems (python-docs, docs-fetch, no-docs) live in
+# docs/benchmarks/agentic-manifest.yml.
 
 competitors:
   # --- Context7 (Upstash) -----------------------------------------------
@@ -151,7 +150,7 @@ competitors:
       conditions:
         - "Requires a maintainer API key and paid credits to run live (free tier: 200 one-time credits, ~1 credit per tool call)."
         - "Publishing comparative results needs a written-permission decision from Ref.tools at the live-authoring phase (T13)."
-        - "Each question must use a fresh MCP session (Ref.tools dedupes/trims within a session) -- satisfied by construction: the runner instantiates a fresh RefToolsAdapter per cell."
+        - "Each question must use a fresh MCP session (Ref.tools dedupes/trims within a session). Requirement for round 2: the bridge must open a fresh MCP session per cell for Ref.tools (today one session per job, reused across cells)."
 
 # No competitor from the methodology's initial candidate matrix is excluded
 # in this TEMPLATE -- all four are built and included above (each still

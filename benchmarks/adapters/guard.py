@@ -2,39 +2,28 @@
 
 Issue #73 requires that this implementation refuse to run live providers
 unless explicit environment variables/config are present. This module is
-that guardrail: any live adapter (see ``openai_adapter.LiveOpenAIAdapter`` /
-``google_adapter.LiveGoogleAdapter``) must call
-:func:`require_live_environment` before doing anything else.
+that guardrail: every live call must pass :func:`require_live_environment`
+first. The agentic harness builds every live client through
+``benchmarks.agentic.clients.make_client``, which calls it; tests use
+scripted clients and mock transports, and never set the flag and a key.
 
-The OpenAI/Google adapters in this package never make a live or paid API
-call, with or without the guard passing -- they are stubs that, after the
-guard passes, still refuse via ``LiveExecutionNotImplementedError``.
-Actually implementing a live call for those providers is out of scope for
-issue #73's mocked plumbing and is reserved for a maintainer-run,
-human-supervised phase (see PLAN.md Amendment 2026-07-08).
-
-Issue #89 is the one exception: ``benchmarks.adapters.claude_tokens``'s
-Anthropic count-tokens caller *does* perform a real HTTP call once this
-guard passes, because the maintainer-run live phase is exactly what that
-call is for (Claude token counting after client-side rewrap, roadmap
-decision 5.8). It still never runs in CI or unit tests -- tests use a fake
-counter -- and it is structurally incapable of running without both
+``benchmarks.adapters.claude_tokens``'s Anthropic count-tokens caller
+(issue #89) performs a real HTTP call once this guard passes, because the
+maintainer-run live phase is exactly what that call is for (Claude token
+counting after client-side rewrap, roadmap decision 5.8). It still never
+runs in CI or unit tests -- tests use a fake counter -- and it is
+structurally incapable of running without both
 ``BENCHMARK_LIVE_PROVIDERS_ENABLED`` and ``ANTHROPIC_API_KEY`` set, exactly
 like every other provider gated here.
 
-Issue #87 adds :func:`require_live_competitor` for the keyless competitor
-docs MCPs (GitMCP, DeepWiki, and Context7 in its default keyless mode): they
-have no per-provider API key to gate on, so a second non-secret latch
-(:data:`LIVE_COMPETITORS_ENV`, a comma-separated allowlist) stands in for
-the key, keeping the same two-latch shape (global flag + per-target opt-in)
-as the keyed providers above. Keyed competitors (Context7 in key mode,
-Ref.tools) still go through :func:`require_live_environment` via their own
-``PROVIDER_API_KEY_ENV`` entries.
+The keyless competitors' allowlist latch is gone with the fixed-flow
+adapters that called it; round 2 brings it back together with its caller.
 """
 
 from __future__ import annotations
 
 import os
+import re
 
 from benchmarks.runner import BenchmarkCellFailure
 
@@ -48,12 +37,9 @@ LIVE_PROVIDERS_ENABLED_ENV = "BENCHMARK_LIVE_PROVIDERS_ENABLED"
 #: it gates the Claude count-tokens methodology caller in
 #: ``benchmarks.adapters.claude_tokens``, not a competitor answer adapter.
 #:
-#: ``ref`` and ``context7`` (issue #87) gate the keyed competitor docs MCP
-#: adapters: ``benchmarks.adapters.ref_tools_adapter.RefToolsAdapter``
-#: (always keyed -- Ref.tools requires an API key) and
-#: ``benchmarks.adapters.context7_adapter.Context7Adapter`` when its
-#: manifest entry declares key mode (Context7 also has a keyless mode; see
-#: :func:`require_live_competitor`).
+#: ``ref`` and ``context7`` (issue #87) gate the keyed competitor docs MCPs:
+#: Ref.tools (always keyed) and Context7 when its manifest entry declares key
+#: mode. Round 2 runs them through the agentic bridge.
 PROVIDER_API_KEY_ENV = {
     "openai": "OPENAI_API_KEY",
     "google": "GOOGLE_API_KEY",
@@ -62,16 +48,12 @@ PROVIDER_API_KEY_ENV = {
     "context7": "CONTEXT7_API_KEY",
 }
 
-#: Comma-separated allowlist of keyless competitor names permitted to run
-#: live (issue #87). Parsed case-insensitively with surrounding whitespace
-#: stripped from each item -- e.g. ``"gitmcp, DeepWiki"`` allows both
-#: ``gitmcp`` and ``deepwiki``. This is the second latch for
-#: :func:`require_live_competitor`; it deliberately holds no secret, so a
-#: keyless competitor still requires two explicit, independent opt-ins
-#: (the shared global flag plus this per-target allowlist) rather than one.
-LIVE_COMPETITORS_ENV = "BENCHMARK_LIVE_COMPETITORS"
+#: The model providers' keys: they pay for every call, and no docs system ever receives one.
+PAID_KEY_ENVS = tuple(PROVIDER_API_KEY_ENV[p] for p in ("anthropic", "openai", "google"))
 
 _TRUTHY = {"1", "true", "yes"}
+#: Every provider key is made of these; anything else could be quoted by an HTTP error.
+_KEY_CHARACTERS = re.compile(r"[A-Za-z0-9_.-]+")
 
 
 class LiveProviderDisabledError(BenchmarkCellFailure):
@@ -85,17 +67,6 @@ class MalformedApiKeyError(LiveProviderDisabledError):
     """Raised when a provider API key is set but holds characters no HTTP header may carry."""
 
 
-class LiveExecutionNotImplementedError(BenchmarkCellFailure):
-    """Raised after the guard passes: live execution itself is not implemented.
-
-    This package ships mocked plumbing only; it is structurally incapable of
-    a live call regardless of environment configuration.
-    """
-
-    def __init__(self, message: str) -> None:
-        super().__init__("tool_failure", message)
-
-
 def require_live_environment(provider: str) -> None:
     """Raise :class:`LiveProviderDisabledError` unless live calls are explicitly enabled.
 
@@ -104,8 +75,8 @@ def require_live_environment(provider: str) -> None:
     1. ``BENCHMARK_LIVE_PROVIDERS_ENABLED`` is set to a truthy value.
     2. The provider-specific API key environment variable (see
        :data:`PROVIDER_API_KEY_ENV`) is set and non-empty.
-    3. That variable's raw value is ASCII, with no whitespace or
-       non-printable character (an HTTP client error would quote such a key).
+    3. That variable's raw value uses only ``[A-Za-z0-9_.-]`` (an HTTP client error
+       would quote any other character).
 
     All conditions must hold. Passing this check does not mean a live call
     will be made -- see the module docstring.
@@ -127,10 +98,10 @@ def require_live_environment(provider: str) -> None:
             f"live provider calls are disabled: missing required {key_env} for "
             f"provider {provider!r}"
         )
-    if not raw_key.isascii() or any(char.isspace() or not char.isprintable() for char in raw_key):
+    if not _KEY_CHARACTERS.fullmatch(raw_key):
         raise MalformedApiKeyError(
-            f"live provider calls are disabled: {key_env} contains whitespace, control or "
-            "non-ASCII characters"
+            f"live provider calls are disabled: {key_env} holds a character outside "
+            "[A-Za-z0-9_.-]"
         )
 
 
@@ -159,41 +130,3 @@ def redact_api_keys(text: str) -> str:
         position = end
     parts.append(text[position:])
     return "".join(parts)
-
-
-def require_live_competitor(name: str) -> None:
-    """Raise :class:`LiveProviderDisabledError` unless a keyless competitor is explicitly enabled.
-
-    Two non-secret latches, both required (issue #87, Codex round-1 finding
-    3: flag-only gating would weaken the guard posture below the keyed
-    providers' two-condition shape):
-
-    1. ``BENCHMARK_LIVE_PROVIDERS_ENABLED`` is set to a truthy value (same
-       flag, same check, as :func:`require_live_environment`).
-    2. ``name`` appears in the comma-separated :data:`LIVE_COMPETITORS_ENV`
-       allowlist (case-insensitive, whitespace-tolerant).
-
-    Both conditions must hold. Passing this check does not mean a live call
-    will be made -- competitor adapters that pass this guard still route all
-    transport construction through their own ``_transport_factory`` seam,
-    which nothing in this module or the guard itself invokes.
-    """
-    flag = os.environ.get(LIVE_PROVIDERS_ENABLED_ENV, "").strip().lower()
-    if flag not in _TRUTHY:
-        raise LiveProviderDisabledError(
-            "live competitor calls are disabled: set "
-            f"{LIVE_PROVIDERS_ENABLED_ENV}=1 to pass the live-competitor guardrail check "
-            f"for competitor {name!r} (this does not by itself enable live calls; "
-            "see benchmarks/adapters/guard.py)"
-        )
-    allowlist = {
-        item.strip().lower()
-        for item in os.environ.get(LIVE_COMPETITORS_ENV, "").split(",")
-        if item.strip()
-    }
-    if name.strip().lower() not in allowlist:
-        raise LiveProviderDisabledError(
-            f"live competitor calls are disabled: {name!r} is not present in "
-            f"{LIVE_COMPETITORS_ENV} (comma-separated allowlist); set "
-            f"{LIVE_COMPETITORS_ENV}={name},... to enable it"
-        )
