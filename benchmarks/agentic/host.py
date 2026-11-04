@@ -13,6 +13,7 @@ import json
 import os
 import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -167,6 +168,8 @@ async def _supervise(
                     reply = {"type": "ack"}
                 elif kind == "error":
                     reason = str(message.get("reason"))
+                    with suppress(TimeoutError):  # its drain writes the last lines to the log
+                        await asyncio.wait_for(proc.wait(), 5)
                     if reason == "own key found in output":
                         raise KeyLeakError(f"worker {job.job_id}: {reason}")
                     if reason.startswith("FrameTooLarge:"):

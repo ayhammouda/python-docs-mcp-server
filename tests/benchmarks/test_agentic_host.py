@@ -522,6 +522,27 @@ async def test_a_key_shape_in_a_worker_log_is_redacted_before_the_run_stops(
     assert log.read_text() == "debug: token=[redacted]\n"
 
 
+async def test_a_line_logged_just_before_an_error_frame_reaches_the_log(
+    host: Host, tmp_path: Path
+) -> None:
+    # Like the worker's redactor, this worker drains its log after the error frame.
+    code = (
+        "import json, os, sys, time\n"
+        "sys.stdin.buffer.read(int.from_bytes(sys.stdin.buffer.read(8), 'big'))\n"
+        "log = os.fdopen(2, 'wb', buffering=1 << 16)\n"
+        "log.write(b'last line before the error\\n')\n"
+        "body = json.dumps({'type': 'error', 'reason': 'RuntimeError: boom'}).encode()\n"
+        "sys.stdout.buffer.write(len(body).to_bytes(8, 'big') + body)\n"
+        "sys.stdout.buffer.flush()\n"
+        "time.sleep(0.5)\n"
+        "log.flush()\n"
+    )
+    await host.run([_job(tmp_path, [ANSWER])], launcher=KeyedLauncher(code, key=""))
+    (log,) = (tmp_path / "logs").iterdir()
+    assert log.read_text() == "last line before the error\n"
+    assert host.messages()[0] == {"type": "worker_error", "reason": "RuntimeError: boom"}
+
+
 async def test_every_worker_log_is_scrubbed_when_a_frame_leak_aborts_the_run(
     host: Host, tmp_path: Path
 ) -> None:
