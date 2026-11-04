@@ -57,6 +57,8 @@ nesting-limit errors are retained as invalid raw arguments, without losing usage
 Each stdout line is limited to 64 MiB, with no queued reply buffer, and subprocess
 shutdown remains bounded.
 
+A reply with invalid text encoding stops the run after the worker checks its readable prefix.
+
 ## 3. Dry run
 
 ```bash

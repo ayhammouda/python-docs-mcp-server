@@ -28,6 +28,7 @@ CASES = [
     "dropped-field",
     "escaped-field",
     "trailing-encoded",
+    "truncated-utf8",
     "unfinished-encoded",
     "broken-encoded",
     "error-result",
@@ -280,9 +281,7 @@ async def test_stdio_line_limit_bounds_buffer_and_releases_process(monkeypatch):
     assert caught.value.subgroup(FrameTooLarge) is not None
 
 
-@pytest.mark.parametrize(
-    "suffix", [" trailing", ' "note":"ordinary', ' "note":"ordinary\n', '\n']
-)
+@pytest.mark.parametrize("suffix", [" trailing", ' "note":"ordinary', ' "note":"ordinary\n', "\n"])
 def test_clean_malformed_reply_keeps_sdk_disposition(suffix):
     from mcp.client.stdio import _parse_line
 
@@ -327,3 +326,13 @@ async def test_broken_stdio_scans_the_pending_partial_line(monkeypatch):
         assert find_key_leak(group) is guard.failure
     with pytest.raises(KeyLeakError):
         guard.raise_if_failed()
+
+
+@pytest.mark.parametrize("errors", ["strict", "replace"])
+def test_undecodable_reply_checks_the_complete_text_prefix(errors):
+    seen = []
+    params = StdioServerParameters(command="unused", encoding_error_handler=errors)
+    line = rb'{"note":"\u006frchard","truncated":"' + b"\xe2\x82"
+    with pytest.raises(KeyLeakError):
+        mcp_stdio.checked_line(line, params, seen.append)
+    assert b"orchard" in seen

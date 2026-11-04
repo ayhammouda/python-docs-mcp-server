@@ -86,12 +86,16 @@ if __name__ == "__main__":
         if case == "escaped-field":
             encoded = encoded.replace(token(kind), "".join(f"\\u{ord(c):04x}" for c in token(kind)))
         if (
-            case in ("trailing-encoded", "unfinished-encoded", "broken-encoded")
+            case in ("trailing-encoded", "unfinished-encoded", "broken-encoded", "truncated-utf8")
             and request["method"] == "tools/call"
         ):
             # Complete envelope, then a string with a single encoded character.
             hidden = value.replace(token(kind)[0], f"\\u{ord(token(kind)[0]):04x}", 1)
             encoded += ' "note":"' + hidden
+            if case == "truncated-utf8":
+                sys.stdout.buffer.write((encoded + '" ').encode() + b"\xe2\x82")
+                sys.stdout.buffer.flush()
+                break
             if case == "trailing-encoded":
                 encoded += '"'
             elif case == "broken-encoded":

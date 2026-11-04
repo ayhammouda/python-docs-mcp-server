@@ -39,7 +39,12 @@ def checked_line(
     assert_no_key_shaped(line, where="MCP stdio reply")
     if check_content is not None:
         check_content(line)
-    text = line.decode(params.encoding, errors=params.encoding_error_handler)
+    try:
+        text = line.decode(params.encoding)
+    except UnicodeDecodeError as exc:
+        prefix = line[: exc.start].decode(params.encoding, errors="ignore")
+        check_json_text(prefix, where="MCP stdio reply", check_content=check_content)
+        raise KeyLeakError("MCP stdio reply contains undecodable bytes") from None
     check_json_text(text, where="MCP stdio reply", check_content=check_content)
     return _parse_line(text)
 
