@@ -1,8 +1,8 @@
 <!--
 Autonomous-agent PR template. Enforces AGENT-EXECUTION-PIPELINE.md §6.
 PR title MUST match the issue title verbatim. Implementers do not self-verify.
-The Claude Code owner may merge after independent current-head verification and
-required checks under the 2026-10-30 ownership amendment; no human approval is
+The project owner may merge after independent current-head verification and
+required checks under the current ownership amendments; no human approval is
 required.
 -->
 

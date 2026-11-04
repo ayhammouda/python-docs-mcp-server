@@ -7,7 +7,7 @@
 **OpenClaw operating layer:** [`OPENCLAW-FORGE-PROTOCOL.md`](OPENCLAW-FORGE-PROTOCOL.md) was retired on 2026-10-30 and is kept as history; it has no authority.
 
 **Adopted:** 2026-05-29
-**Current authority:** Read [Amendment 2026-10-30](#amendment-2026-10-30--ownership-transferred-to-the-claude-code-owner)
+**Current authority:** For v0.5.0 read the [2026-11-04 delegation](#amendment-2026-11-04--v050-owner-delegation) together with [Amendment 2026-10-30](#amendment-2026-10-30--ownership-transferred-to-the-claude-code-owner)
 first. It supersedes conflicting historical restrictions and earlier amendments below.
 
 ---
@@ -612,3 +612,20 @@ $75 and Google Gemini $200.
 - the §5 gate;
 - the §7 triggers. `supervisor-review` now means owner review plus the
   independent verification above.
+
+## Amendment 2026-11-04 — v0.5.0 owner delegation
+
+Aymen delegated the project owner role to Codex for the v0.5.0 benchmark
+delivery, through release verification. Within that scope, Codex acts under
+Aymen's GitHub account, dispatches independent reviewers, records their
+verdicts, and merges and releases under the 2026-10-30 gates. Public owner
+comments identify “Codex — v0.5.0 project owner, acting for Aymen”. Codex
+sessions may implement on isolated branches alongside Claude Code sessions
+and subagents. An implementing session cannot act as owner for that PR.
+A separate owner session or Aymen dispatches at least one review and handles
+the verification record and merge. All three reviewers must be independent
+of the implementation.
+
+Aymen supplies the interactive confirmation for each paid benchmark
+run. The existing spending caps, quality gates and escalation rules apply.
+After v0.5.0 release verification, the 2026-10-30 owner designation applies.
