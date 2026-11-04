@@ -46,7 +46,12 @@ def test_allowlist_per_job(
 def test_parse_proxy_log_reads_tunnels_and_denials() -> None:
     tunnel, denied = parse_proxy_log(TUNNEL + DENIED)
     assert tunnel == ProxyEvent(
-        "2026-11-04T10:00:00.123Z", "172.20.0.3", "CONNECT", "api.anthropic.com", 443, 200,
+        "2026-11-04T10:00:00.123Z",
+        "172.20.0.3",
+        "CONNECT",
+        "api.anthropic.com",
+        443,
+        200,
         "TCP_TUNNEL",
     )
     assert tunnel.allowed and tunnel.target == "api.anthropic.com:443"
