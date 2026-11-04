@@ -42,7 +42,8 @@ _LOCAL_ENV = ("PATH", "HOME", "LANG", "TMPDIR", "XDG_CACHE_HOME", "VIRTUAL_ENV")
 _EXIT_WAIT_S = 30.0
 #: Leads each worker's process group and lives until teardown, so the group id that teardown
 #: kills is never reused meanwhile, even once the worker itself has exited and been reaped.
-_ANCHOR = (sys.executable, "-c", "import signal; signal.pause()")
+#: It reads its stdin, a pipe only the host holds, so it also ends with a host killed outright.
+_ANCHOR = (sys.executable, "-c", "import sys; sys.stdin.buffer.read()")
 
 
 @dataclass(frozen=True)
@@ -145,7 +146,7 @@ async def _supervise(
     # A group of its own in this session: the worker cannot join a group of another session.
     anchor = await asyncio.create_subprocess_exec(
         *_ANCHOR,
-        stdin=asyncio.subprocess.DEVNULL,
+        stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
         process_group=0,

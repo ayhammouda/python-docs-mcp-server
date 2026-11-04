@@ -303,25 +303,22 @@ class _LostAfterDiscard(LocalLauncher):
         return [sys.executable, "-c", code], env
 
 
-@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP])
-def test_a_termination_signal_tears_the_run_down_like_ctrl_c(
-    tmp_path: Path, signum: signal.Signals
-) -> None:
-    # The host runs in a subprocess this test creates, and only it is signalled. Its worker
-    # holds a unit, marks that it is ready, and sleeps; workers have process groups of their
-    # own, so only the host's teardown can end it.
-    ready = tmp_path / "worker.pid"
+def _start_host(tmp_path: Path) -> tuple[subprocess.Popen[bytes], Path]:
+    """A host in a subprocess this test creates. Its one worker holds a unit, reports its pid
+    and process group, then waits until its host closes its stdin."""
+    ready = tmp_path / "worker.ids"
     reserve = {"type": "reserve", "input_bound": 1000, "output_bound": 100, "kind": "model_call"}
     worker = (
-        "import json, os, sys, time\n"
+        "import json, os, sys\n"
         "inp, out = sys.stdin.buffer, sys.stdout.buffer\n"
         "inp.read(int.from_bytes(inp.read(8), 'big'))\n"
         f"body = json.dumps({reserve!r}).encode()\n"
         "out.write(len(body).to_bytes(8, 'big') + body)\n"
         "out.flush()\n"
         "inp.read(int.from_bytes(inp.read(8), 'big'))\n"
-        f"open({str(ready)!r}, 'w').write(str(os.getpid()))\n"
-        "time.sleep(20)\n"
+        f"open({str(ready) + '.tmp'!r}, 'w').write(f'{{os.getpid()}} {{os.getpgid(0)}}')\n"
+        f"os.replace({str(ready) + '.tmp'!r}, {str(ready)!r})\n"
+        "inp.read()\n"
     )
     host_code = (
         "import sys\n"
@@ -352,27 +349,48 @@ def test_a_termination_signal_tears_the_run_down_like_ctrl_c(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+    return host, ready
+
+
+def _when_ready(host: subprocess.Popen[bytes], ready: Path) -> tuple[int, int]:
+    """The worker's pid and process group (its anchor's pid), once it holds its unit."""
+    deadline = time.monotonic() + 20
+    while not ready.exists():  # bounded: a worker that never holds its unit fails loudly
+        assert host.poll() is None, "the host ended before its worker got ready"
+        assert time.monotonic() < deadline, "the worker never got ready"
+        time.sleep(0.01)
+    worker, group = map(int, ready.read_text().split())
+    return worker, group
+
+
+def _gone(pid: int) -> bool:
+    """Whether ``pid`` is gone within 5 s (reaped: an orphan's new parent reaps it at once)."""
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.01)
+    return False
+
+
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP])
+def test_a_termination_signal_tears_the_run_down_like_ctrl_c(
+    tmp_path: Path, signum: signal.Signals
+) -> None:
+    # Only the host is signalled. Workers have process groups of their own, so only the
+    # host's teardown can end its worker.
+    host, ready = _start_host(tmp_path)
     try:
-        deadline = time.monotonic() + 20
-        while not ready.exists():  # bounded: a worker that never holds its unit fails loudly
-            assert host.poll() is None, "the host ended before its worker got ready"
-            assert time.monotonic() < deadline, "the worker never got ready"
-            time.sleep(0.01)
+        worker, _ = _when_ready(host, ready)
         host.send_signal(signum)
         host.wait(timeout=20)
     finally:
         if host.poll() is None:
             host.kill()
             host.wait()
-    pid = int(ready.read_text())
-    deadline = time.monotonic() + 5
-    while True:  # the worker is dead, and its host reaped it
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            break
-        assert time.monotonic() < deadline, "the worker outlived its host"
-        time.sleep(0.01)
+    assert _gone(worker), "the worker outlived its host"
     lines = (tmp_path / "ledger" / "anthropic.jsonl").read_text(encoding="utf-8").splitlines()
     events = [json.loads(line) for line in lines]
     assert [(e["event"], e.get("outcome")) for e in events] == [
@@ -382,6 +400,23 @@ def test_a_termination_signal_tears_the_run_down_like_ctrl_c(
     assert Decimal(events[1]["booked"]) == 2 * Decimal(events[0]["bound"])
     summary = json.loads((tmp_path / "run" / "run-summary.json").read_text())
     assert summary["status"] == "aborted" and signum.name in summary["abort_reason"]
+
+
+def test_no_anchor_outlives_a_host_killed_outright(tmp_path: Path) -> None:
+    # SIGKILL leaves no teardown: the anchor must end once its host's pipe closes.
+    host, ready = _start_host(tmp_path)
+    try:
+        _, anchor = _when_ready(host, ready)
+        host.kill()
+        host.wait(timeout=20)
+    finally:
+        if host.poll() is None:
+            host.kill()
+            host.wait()
+    gone = _gone(anchor)
+    if not gone:  # alive throughout the wait, so still the anchor this test's host started
+        os.kill(anchor, signal.SIGKILL)
+    assert gone, "the anchor outlived its host"
 
 
 def test_a_rerun_that_never_ran_is_not_counted(tmp_path: Path) -> None:
