@@ -1,7 +1,7 @@
 """Post-hoc normalized token counting: items, envelopes and count clients (PR 5 Task 9a).
 
 Design §8; owner ruling 7. The run, worker and CLI parts (Task 9b) land with PR 4.
-Every count goes to a scripted client; no test reaches a network host.
+Counters run locally, including SDK requests served by a recording transport.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from benchmarks.agentic.loop import Caps
 from benchmarks.agentic.prompt import SYSTEM_PROMPT
 from benchmarks.agentic.schemas import schemas_sha256
 from benchmarks.agentic.types import ProviderCallError, ToolSpec
+from benchmarks.model_matrix import METHODOLOGY_TOKEN_LABEL
 from benchmarks.runner import BenchmarkValidationError
 from tests.benchmarks.test_agentic_clients import (
     Recorder,
@@ -423,10 +424,12 @@ async def test_token_record_sums_inputs_and_outputs() -> None:
     assert record["count_calls"] == 6 + 2  # 3 per call, then the docs payload and its baseline
     assert record["raw_payload_tokens"] > 0 and record["ids_normalized"] is True
     assert (record["competitor_id"], record["corpus_id"]) == ("python-docs--fam--r1", "Q1")
-    assert record["count_model"] == "claude-sonnet-5-5" and record["approximation"] is False
+    assert record["execution"] == {"provider": "scripted", "api": "scripted", "model_id": "bytes/4"}
+    assert record["count_model"] == "bytes/4" and record["approximation"] is True
+    assert record["token_label"] != METHODOLOGY_TOKEN_LABEL and record["anthropic_version"] is None
     assert record["system_prompt_sha256"] == PROMPT_SHA and record["tools_sha256"] == TOOLS_SHA
     assert record["negative_output_clamped"] == 0 and record["error"] is None
-    assert "estimate" in record["notes"]
+    assert "UTF-8" in record["notes"] and "/ 4" in record["notes"]
 
 
 def test_scripted_count_is_a_quarter_of_the_envelope_bytes() -> None:
@@ -449,6 +452,21 @@ class _Failing:
         raise ProviderCallError(self.kind, "slow down AIza" + "A" * 35, status=429)
 
 
+async def test_count_only_client_cannot_inherit_the_endpoint_identity() -> None:
+    class Zero:
+        model_id = "claude-sonnet-5-5"
+
+        async def count(self, envelope: Envelope) -> int:
+            return 0
+
+    record = await count_item(Zero(), _item(EMPTY_ANSWER))
+    assert record["status"] == "counted" and record["client_wrapped_tokens"] == 0
+    assert record["execution"] == {"provider": "unknown", "api": "unknown", "model_id": "unknown"}
+    assert record["count_model"] == "unknown" and record["approximation"] is True
+    assert record["anthropic_version"] is None and record["token_label"] != METHODOLOGY_TOKEN_LABEL
+    assert "unknown" in record["notes"].lower()
+
+
 async def test_count_retries_then_marks_the_record_failed() -> None:
     client, sleeps = _Failing(), []
 
@@ -459,6 +477,7 @@ async def test_count_retries_then_marks_the_record_failed() -> None:
     assert record["status"] == "failed" and client.calls == 5 and len(sleeps) == 4
     assert record["client_wrapped_tokens"] is None and "AIza" not in record["error"]
     assert "rate_limited" in record["error"]
+    assert record["execution"]["provider"] == "unknown" and record["approximation"] is True
     rejected = _Failing("rejected")
     record = await count_item(rejected, _item(TWO_CALL_TRANSCRIPT), sleep=sleep)
     assert record["status"] == "failed" and rejected.calls == 1
@@ -487,6 +506,32 @@ async def test_the_anthropic_count_client_sends_the_envelope() -> None:
         "tools": env.tools,
         "messages": env.messages,
     }
+
+
+@pytest.mark.parametrize("model", ["claude-sonnet-5-5", "alternate-model"])
+async def test_record_names_the_sdk_endpoint_and_its_requested_model(model: str) -> None:
+    requests = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append((request.url.path, json.loads(request.content)["model"]))
+        return httpx2.Response(200, json={"input_tokens": 0})
+
+    async with anthropic_sdk("test-key", 5.0, transport=httpx2.MockTransport(handler)) as sdk:
+        record = await count_item(AnthropicCountClient(sdk, model), _item(EMPTY_ANSWER))
+    assert requests == [("/v1/messages/count_tokens", model)]
+    assert record["status"] == "counted" and record["client_wrapped_tokens"] == 0
+    assert record["execution"] == {
+        "provider": "anthropic",
+        "api": "anthropic-messages",
+        "model_id": model,
+    }
+    assert record["count_model"] == model and record["approximation"] is False
+    assert record["token_label"] == METHODOLOGY_TOKEN_LABEL
+    assert (
+        record["anthropic_version"]
+        and "endpoint" in record["notes"]
+        and "estimate" in record["notes"]
+    )
 
 
 def test_make_count_client_is_guarded(monkeypatch: pytest.MonkeyPatch) -> None:

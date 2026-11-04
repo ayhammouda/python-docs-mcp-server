@@ -186,6 +186,52 @@ class CountClient(Protocol):
     async def count(self, envelope: Envelope) -> int: ...  # raises ProviderCallError
 
 
+@dataclass(frozen=True)
+class _CountMethod:
+    provider: str
+    api: str
+    model_id: str
+    token_label: str
+    notes: str
+
+    def record_fields(self) -> dict[str, Any]:
+        endpoint = self.api == "anthropic-messages"
+        return {
+            "execution": {"provider": self.provider, "api": self.api, "model_id": self.model_id},
+            "count_model": self.model_id,
+            "token_label": self.token_label,
+            "approximation": not endpoint,
+            "anthropic_version": ANTHROPIC_API_VERSION if endpoint else None,
+            "notes": self.notes,
+        }
+
+
+def _anthropic_method(model_id: str) -> _CountMethod:
+    return _CountMethod("anthropic", "anthropic-messages", model_id, METHODOLOGY_TOKEN_LABEL, NOTES)
+
+
+_SCRIPTED_METHOD = _CountMethod(
+    "scripted",
+    "scripted",
+    "bytes/4",
+    "Scripted token estimate",
+    "Scripted estimate: ceil(UTF-8 bytes of the canonical envelope JSON / 4).",
+)
+_UNKNOWN_METHOD = _CountMethod(
+    "unknown",
+    "unknown",
+    "unknown",
+    "Unverified token count",
+    "Unknown counting method.",
+)
+
+
+def _count_method(client: CountClient) -> _CountMethod:
+    # Count-only clients remain valid, but cannot establish endpoint provenance.
+    method = getattr(client, "_method", None)
+    return method if isinstance(method, _CountMethod) else _UNKNOWN_METHOD
+
+
 def _body(envelope: Envelope) -> dict[str, Any]:
     body: dict[str, Any] = {}
     if envelope.system:
@@ -198,6 +244,8 @@ def _body(envelope: Envelope) -> dict[str, Any]:
 
 class ScriptedCountClient:
     """ceil(UTF-8 bytes of the canonical envelope JSON / 4); records every envelope."""
+
+    _method = _SCRIPTED_METHOD
 
     def __init__(self, errors: Sequence[Mapping[str, Any]] = ()) -> None:
         self.seen: list[Envelope] = []
@@ -226,6 +274,10 @@ class AnthropicCountClient:
     def __init__(self, sdk: anthropic.AsyncAnthropic, model_id: str) -> None:
         self._sdk = sdk
         self.model_id = model_id
+
+    @property
+    def _method(self) -> _CountMethod:
+        return _anthropic_method(self.model_id)
 
     @staticmethod
     def request(envelope: Envelope) -> dict[str, Any]:
@@ -369,11 +421,8 @@ async def count_item(
         "competitor_id": item.cell,
         "corpus_id": item.corpus_id,
         "tool_model_key": item.tool_model_key,
-        "token_label": METHODOLOGY_TOKEN_LABEL,
-        "count_model": getattr(client, "model_id", DEFAULT_COUNT_MODEL),
-        "anthropic_version": ANTHROPIC_API_VERSION,
+        **_count_method(client).record_fields(),
         "status": status,
-        "approximation": False,
         "client_wrapped_tokens": total,
         "raw_payload_tokens": payload,
         "per_call": per_call,
@@ -385,7 +434,6 @@ async def count_item(
         "system_prompt_sha256": item.system_prompt_sha256,
         "tools_sha256": item.tools_sha256,
         "count_calls": count_calls,
-        "notes": NOTES,
         "counted_at": _utc_now(),
         "error": error,
     }
