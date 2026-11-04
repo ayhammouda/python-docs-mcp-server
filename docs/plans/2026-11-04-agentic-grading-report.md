@@ -26,7 +26,7 @@ on the merged harness (#197) and rebased on PR 4, which merges first.
   network). `report` renders the agentic report when `run-summary.json`
   says `mode: agentic`. The count-tokens premise check is a one-off script
   under `ops/`.
-- PR 4 interfaces used, from #200 at `32bbb17`:
+- PR 4 interfaces used, from #200 at `2ee50bb`:
   - the `Launcher` seam with `bootstrap_frame`, `prepare`, `stop_worker`, `close` (Task 5);
   - `ContainerLauncher`, `Sandbox`, `SandboxConfig` (Task 10);
   - `egress/summary.json` (Task 12);
@@ -150,7 +150,7 @@ Global Constraints before Task 1.
   C1 and C3. PR 5's report reads it through two fail-closed loaders
   (Task 7), in the shapes ruling 9 binds:
   - `<run>/egress/summary.json`: `{"jobs": {job_id: {"hosts_allowed": [...], "hosts_denied": [...], "lookup_package_docs_attempts": n}}, "isolation_probe": "pass"|"fail"}`;
-  - `<run>/airgap/checks.json`: `{"all_passed": bool, "checks": n, "internet_hosts": [...]}`, as #200 at `32bbb17`, Task 15 ("C3 evidence: `airgap/checks.json`", round-2 ruling C7) writes it:
+  - `<run>/airgap/checks.json`: `{"all_passed": bool, "checks": n, "internet_hosts": [...]}`, as #200 at `2ee50bb`, Task 15 ("C3 evidence: `airgap/checks.json`", round-2 ruling C7) writes it:
     - `checks` counts the check rounds: before the first trajectory, after each reported trajectory or discard, and after the last;
     - `internet_hosts` is built from the air-gapped jobs' `hosts_allowed` only, minus `host.docker.internal:11434`;
     - `all_passed` is true only when every round passed, the arm was not stopped, `egress/summary.json` has `isolation_probe: "pass"` and `internet_hosts` is empty. It does not depend on `hosts_denied`;
@@ -599,7 +599,7 @@ class LedgerService:
     def item_bound(self, model_id: str, item: PlannedItem) -> Decimal      # standard rate
     async def reserve_batch(self, *, provider: str, model_id: str, items: Sequence[PlannedItem],
                             job_id: str, kind: str = "batch") -> tuple[str, int] | None   # (unit id, items taken)
-    # job_id goes to Ledger.reserve(..., job_id=...) (#200 round 3, Task 5), so every reserve event names its job
+    # job_id goes to Ledger.reserve(..., job_id=...) (#200 at `2ee50bb`, Task 5), so every reserve event names its job
     async def settle_batch(self, unit_id: str, *, results: Sequence[BatchItemSettle]) -> None
 ```
 
@@ -611,7 +611,7 @@ Rules the tests pin:
   - no items → `ValueError`;
   - the first item's bound above the provider's margin → `BenchmarkValidationError` (design §12: no single bound may exceed a margin);
   - otherwise `limit = min(margin, cap − spent)`. A first item above `limit` calls `Ledger.reserve` with its bound, which refuses and stops the provider with `"cap"`, and `reserve_batch` returns `None`;
-  - otherwise it reserves the first `split_batch` group of the leading items whose bound is at most `limit`, with `bound = Σ item bounds`, `input_bound = Σ`, `output_bound = Σ` and `job_id` (passed to `Ledger.reserve`, #200 round 3 Task 5). It remembers each item's bound for its settle.
+  - otherwise it reserves the first `split_batch` group of the leading items whose bound is at most `limit`, with `bound = Σ item bounds`, `input_bound = Σ`, `output_bound = Σ` and `job_id` (passed to `Ledger.reserve`, #200 Task 5). It remembers each item's bound for its settle.
   - Counting reserves no unit (ruling 7: a free endpoint), so every reservation PR 5 makes is a batch reservation, and every one names its job.
 - **`settle_batch`:**
   - prices each result with usage at its own tier, at the batch rate: `actual_cost(price, buckets) * batch_multiplier`;
@@ -920,7 +920,7 @@ Frame protocol (new frame types only; trajectory jobs are unchanged):
 
 | From worker | Host does | Reply |
 |---|---|---|
-| `{"type": "reserve", "kind": "batch"}` | If nothing is pending, no unit. Otherwise `reserve_batch` over `source.pending()` with the job's own provider and model and `job_id=job.job_id` (#200 round 3: every `reserve` event names its job), ignoring any bound in the frame. | `no_more_items`, `deny`, or `{"type": "grant", "unit_id", "items": source.take(unit, n)}` |
+| `{"type": "reserve", "kind": "batch"}` | If nothing is pending, no unit. Otherwise `reserve_batch` over `source.pending()` with the job's own provider and model and `job_id=job.job_id` (#200 Task 5: every `reserve` event names its job), ignoring any bound in the frame. | `no_more_items`, `deny`, or `{"type": "grant", "unit_id", "items": source.take(unit, n)}` |
 | `{"type": "settle", "unit_id", "outcome", "buckets": null}` for a batch unit (submit failed, or the poll ceiling passed) | `ledger.settle`. For each of `source.exhausted(unit)`, `on_message(job, {"type": "item_terminal", "item_id", "attempt", "reason": "retries_exhausted"})`, which writes a terminal-withheld record. `source.release(unit)`. Count a no-result unit (below) when the outcome books twice the bound. | `ack` |
 | `{"type": "batch_results", "unit_id", "results": [...]}`, one or more frames | Mark each result `terminal`: true when it is not `succeeded`, it is `retryable`, and this take reached `max_attempts` (`source.attempts(item) >= max_attempts`). A non-retryable result (a failed OpenAI batch) is never terminal. Accumulate a `BatchItemSettle` per result for that unit, then `on_message(job, message)` writes the records, `terminal` included. | `ack` |
 | `{"type": "settle_batch", "unit_id", "result_count": n, "batch_state": str}` | Refuse `n` ≠ the accumulated count. `ledger.settle_batch` over the accumulated results. `release` non-`succeeded`, non-terminal, `retryable` results. `give_up` terminal ones with `retries_exhausted` and non-retryable ones with `batch_failed`. `complete(unit)`. Count a no-result unit (below) when every result is `missing`. | `ack` |
@@ -1435,7 +1435,7 @@ Rules the tests pin:
   - not evaluable when any of those cells has a `None` token count or a `None` score;
   - `peer == "no-docs"` raises `ValueError`.
 - **C3 evidence** (`offline_verdict`):
-  It reads the fields exactly as #200 at `32bbb17` writes them: `airgap/checks.json` (Task 15, round-2 ruling C7) and `egress/summary.json` (Task 12).
+  It reads the fields exactly as #200 at `2ee50bb` writes them: `airgap/checks.json` (Task 15, round-2 ruling C7) and `egress/summary.json` (Task 12).
   - `None` (not evaluable) when `airgap/checks.json` or `egress/summary.json` is absent or malformed, or when `checks < expected_checks`. `expected_checks` = every `transcripts/` record plus every `discarded/` record of the air-gapped jobs, + 2: one round before the first trajectory, one after each reported trajectory or discard, one after the last (#200 Task 15 `checks`).
   - `False` when `all_passed` is false, when `internet_hosts` is non-empty, or when any air-gapped job's `hosts_allowed` holds a host other than `host.docker.internal:11434`. `internet_hosts` holds only hosts actually reached, from `hosts_allowed`, and `all_passed` does not depend on `hosts_denied` (#200 Task 15).
   - A **denied** attempt (in `hosts_denied`, for example the local model calling `lookup_package_docs` toward `pypi.org` and being refused) means nothing left the sandbox. It does not fail C3, and `offline_verdict` returns it in the `denied_attempts` list that the report's C3 disclosure shows.
@@ -1578,7 +1578,7 @@ git commit -m "feat(benchmarks): compute alpha, the G1-G4 gates, the tier and th
 - Test: `tests/benchmarks/test_grading_run.py`
 
 **Interfaces:**
-- Consumes: Tasks 1–7; `run_jobs`, `Ledger`, `LedgerService`, `ItemSource`, `refuse_host_keys`, `refuse_stale_snapshot`, `default_ledger_dir`, `assert_no_key_shaped`. From #200 at `32bbb17`: `ContainerLauncher(sandbox, probe=None)`, `Sandbox(config, docker=None)`, `SandboxConfig` (Task 10); `live.authorize_live`, `live.interactive_confirm` (Task 13); its `FakeDocker` test helper (Task 10); and the injectable dirty-tree check of `Sandbox.verify_image`, which the owner has asked the PR 4 planner to add (its `git status --porcelain` fails on a dirty checkout; it is not yet in `32bbb17`).
+- Consumes: Tasks 1–7; `run_jobs`, `Ledger`, `LedgerService`, `ItemSource`, `refuse_host_keys`, `refuse_stale_snapshot`, `default_ledger_dir`, `assert_no_key_shaped`. From #200 at `2ee50bb`: `ContainerLauncher(sandbox, probe=None)`, `Sandbox(config, docker=None, verify=verify_image)`, the module function `verify_image(sandbox, *, repo_root)` and `SandboxConfig` (Task 10, round-4 item 2: `verify` is the test seam); `live.authorize_live`, `live.interactive_confirm` (Task 13); its `FakeDocker` test helper (Task 10).
 - Produces:
 
 ```python
@@ -1703,9 +1703,9 @@ def test_grading_never_overwrites_the_runs_c1_evidence(scripted_run, tmp_path) -
     # launcher by hand and passes it as launcher=:
     #   sandbox_dir = scripted_run / "grading" / "sandbox" / run_id
     #   launcher = LocalCommandContainerLauncher(Sandbox(SandboxConfig(..., out_dir=sandbox_dir),
-    #       docker=FakeDocker()), probe=<stub returning a passing record>)
-    # where LocalCommandContainerLauncher overrides command(job) with LocalLauncher().command(job), and
-    # the dirty-tree seam is injected as clean. Grade answers with scripted judges: the three run files
+    #       docker=FakeDocker(), verify=<stub>), probe=<stub returning a passing record>)
+    # where LocalCommandContainerLauncher overrides command(job) with LocalLauncher().command(job); the
+    # verify stub (#200 Task 10 seam) lets the test run on a dirty checkout. Grade answers with scripted judges: the three run files
     # are byte-identical afterwards, and sandbox_dir / "egress" / <job_id> holds squid.conf and
     # collected.json for every judge job
 def test_run_targets_need_the_probes_file_and_pin_its_hash(scripted_run, tmp_path) -> None:
