@@ -15,6 +15,7 @@ import os
 import re
 import secrets
 import subprocess
+import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,7 @@ from benchmarks.adapters.guard import (
     PROVIDER_API_KEY_ENV,
     valid_api_key,
 )
+from benchmarks.agentic.cleanup import finish, settle
 from benchmarks.agentic.egress import (
     EGRESS_ALIAS,
     EGRESS_URL,
@@ -129,27 +131,6 @@ def docker_runner(env: Mapping[str, str]) -> DockerRun:
         )
 
     return run
-
-
-async def _settle(task: asyncio.Future[Any]) -> asyncio.CancelledError | None:
-    """Wait for Docker across repeated cancellations, leaving its result for the caller."""
-    cancelled = None
-    while not task.done():
-        try:
-            await asyncio.wait((task,))  # cancellation of wait does not cancel task
-        except asyncio.CancelledError as exc:
-            cancelled = exc
-    return cancelled
-
-
-async def _finish[T](operation: Awaitable[T]) -> T:
-    task = asyncio.ensure_future(operation)
-    cancelled = await _settle(task)
-    if cancelled is not None:
-        if task.cancelled():
-            raise cancelled
-        raise cancelled from task.exception()
-    return task.result()
 
 
 @dataclass(frozen=True)
@@ -319,7 +300,9 @@ class Sandbox:
     async def output(self, *args: str) -> str:
         return (await self.run(*args)).stdout.decode("utf-8", errors="replace")
 
-    async def remove_container(self, container_id: str) -> None:
+    async def remove_container(
+        self, container_id: str, *, pending: BaseException | None = None
+    ) -> None:
         """Finish removing this ID even if the caller is cancelled. --rm may have won."""
 
         async def remove() -> None:
@@ -335,7 +318,7 @@ class Sandbox:
                     raise BenchmarkValidationError(f"docker rm -f {container_id} failed: {detail}")
                 await asyncio.sleep(0.1)
 
-        await _finish(remove())
+        await finish(remove(), pending)
 
     async def remove_owned(
         self, name: str, *, network: bool = False, wait_for_create: bool = False
@@ -356,38 +339,47 @@ class Sandbox:
                     f"check the daemon for {label_filter}"
                 )
             await asyncio.sleep(0.1)
+        failure = None
         for resource_id in ids.split():
-            if network:
-                await self.run("network", "rm", resource_id)
-            else:
-                await self.remove_container(resource_id)
+            try:
+                if network:
+                    await self.run("network", "rm", resource_id)
+                else:
+                    await self.remove_container(resource_id)
+            except Exception as exc:  # noqa: BLE001 - still remove the other owned IDs
+                if failure is None:
+                    failure = exc
+        if failure is not None:
+            raise failure
 
     async def create_resource(self, name: str, *args: str) -> str:
         """Wait for create before handing off its ID or rolling it back on cancellation."""
         network = args[0] == "network"
         task = asyncio.create_task(self.output(*args))
-        cancelled = await _settle(task)
+        cancelled = await settle(task)
         try:
             resource_id = task.result().strip()
             if not resource_id:
                 raise BenchmarkValidationError(f"Docker returned no ID for {name}")
-        except (OSError, subprocess.TimeoutExpired, BenchmarkValidationError) as exc:
-            # A failed run -d can leave a container even with a nonzero CLI exit.
-            await _finish(
-                self.remove_owned(
-                    name,
-                    network=network,
-                    wait_for_create=isinstance(exc, subprocess.TimeoutExpired),
+        except BaseException as exc:
+            if isinstance(exc, (subprocess.TimeoutExpired, BenchmarkValidationError)):
+                # A failed run -d can leave a container even with a nonzero CLI exit.
+                await finish(
+                    self.remove_owned(
+                        name,
+                        network=network,
+                        wait_for_create=isinstance(exc, subprocess.TimeoutExpired),
+                    ),
+                    cancelled,
                 )
-            )
             if cancelled is not None:
                 raise cancelled from exc
             raise
         if cancelled is not None:
             if network:
-                await _finish(self.run("network", "rm", resource_id))
+                await finish(self.run("network", "rm", resource_id), cancelled)
             else:
-                await self.remove_container(resource_id)
+                await self.remove_container(resource_id, pending=cancelled)
             raise cancelled
         return resource_id
 
@@ -477,16 +469,16 @@ class Sandbox:
                 "-f",
                 "/etc/squid/squid.conf",
             )
-            await _finish(
+            await finish(
                 self.run("network", "connect", "--alias", EGRESS_ALIAS, network_id, proxy_id)
             )
-        except BaseException:
+        except BaseException as exc:
             # Nothing of this job's may outlive the failure (amendment 2).
             try:
                 if proxy_id is not None:
-                    await self.remove_container(proxy_id)
+                    await self.remove_container(proxy_id, pending=exc)
             finally:
-                await _finish(self.run("network", "rm", network_id))
+                await finish(self.run("network", "rm", network_id), sys.exception())
             raise
         return Egress(
             job_id, network, proxy, tuple(allow), log_dir, gateways, inspect, network_id, proxy_id

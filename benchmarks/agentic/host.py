@@ -23,6 +23,7 @@ from typing import Any, Protocol
 
 from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
 from benchmarks.agentic.bridge import SystemSpec
+from benchmarks.agentic.cleanup import finish
 from benchmarks.agentic.ledger import LedgerService
 from benchmarks.agentic.loop import Caps
 from benchmarks.agentic.protocol import (
@@ -247,9 +248,15 @@ async def _supervise(
                 stderr=log,
                 process_group=anchor.pid,  # the anchor's group, which teardown kills whole
             )
-    except BaseException:  # the start error, never a kill error, reaches the summary
-        _kill_group(anchor)
-        await _reap(anchor)
+    except BaseException as exc:
+
+        async def discard_anchor() -> None:
+            try:
+                _kill_group(anchor)
+            finally:
+                await _reap(anchor)
+
+        await finish(discard_anchor(), exc)
         raise
     assert proc.stdin is not None and proc.stdout is not None
     in_flight: str | None = None
@@ -344,19 +351,12 @@ async def _supervise(
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             pass  # the worker died or stalled; handled as a lost worker below
     finally:
-        # Runs to its end even when a second abort cancels this task meanwhile; then re-raise.
-        teardown = asyncio.ensure_future(
-            _teardown(proc, anchor, log_path, ledger, in_flight, partial(launcher.stop_worker, job))
+        pattern = await finish(
+            _teardown(
+                proc, anchor, log_path, ledger, in_flight, partial(launcher.stop_worker, job)
+            ),
+            sys.exception(),
         )
-        cancelled: asyncio.CancelledError | None = None
-        while not teardown.done():
-            try:
-                await asyncio.shield(teardown)
-            except asyncio.CancelledError as exc:
-                cancelled = exc
-        pattern = teardown.result()
-        if cancelled is not None:
-            raise cancelled
     if pattern:
         raise KeyLeakError(
             f"a key-shaped string ({pattern} pattern) was found in {log_path}; redacted there"
@@ -413,27 +413,31 @@ async def run_jobs(
         ]
         try:
             await asyncio.gather(*tasks)
-        except BaseException:
+        except BaseException as exc:
             for task in tasks:
                 task.cancel()  # each supervisor kills its worker on the way out
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await finish(asyncio.gather(*tasks, return_exceptions=True), exc)
             raise
         failed = False
     finally:
-        # Every worker is gone. Runs to its end even when a second abort cancels meanwhile.
-        closing = asyncio.ensure_future(launcher.close())
-        cancelled: asyncio.CancelledError | None = None
-        while not closing.done():
-            try:
-                await asyncio.shield(closing)
-            except asyncio.CancelledError as exc:
-                cancelled = exc
-        problems = closing.result()  # a KeyLeakError raises here
-        if problems and failed:  # the error already propagating is the one to report
-            print(f"launcher cleanup problems: {'; '.join(problems)}", file=sys.stderr)
-        if cancelled is not None:
-            raise cancelled
-    if problems:
-        raise BenchmarkValidationError(
-            f"the run completed, but the launcher reported problems: {'; '.join(problems)}"
-        )
+        reported: BenchmarkValidationError | None = None
+
+        async def close() -> None:
+            nonlocal reported
+            if problems := await launcher.close():
+                detail = "; ".join(problems)
+                if failed:
+                    print(f"launcher cleanup problems: {detail}", file=sys.stderr)
+                reason = (
+                    "launcher cleanup problems"
+                    if failed
+                    else "the run completed, but the launcher reported problems"
+                )
+                reported = BenchmarkValidationError(f"{reason}: {detail}")
+                raise reported
+
+        try:
+            await finish(close(), sys.exception())
+        except BenchmarkValidationError as exc:
+            if not failed or exc is not reported:
+                raise

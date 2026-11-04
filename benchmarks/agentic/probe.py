@@ -16,11 +16,13 @@ import json
 import os
 import secrets
 import socket
+import sys
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
+from benchmarks.agentic.cleanup import finish
 from benchmarks.agentic.egress import (
     EGRESS_ALIAS,
     EGRESS_PORT,
@@ -165,10 +167,16 @@ class Canary:
         self.port = self._server.sockets[0].getsockname()[1]
         return self
 
-    async def __aexit__(self, *exc: object) -> None:
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
+    async def __aexit__(
+        self, exc_type: object, exc: BaseException | None, traceback: object
+    ) -> None:
+        if (server := self._server) is not None:
+
+            async def close() -> None:
+                server.close()
+                await server.wait_closed()
+
+            await finish(close(), exc)
 
 
 def host_addresses() -> list[str]:
@@ -209,7 +217,7 @@ async def _one_shot(sandbox: Sandbox, argv: list[str], name: str) -> list[dict[s
     try:
         proc = await sandbox.docker(["docker", "start", "--attach", container_id])
     finally:
-        await sandbox.remove_container(container_id)
+        await sandbox.remove_container(container_id, pending=sys.exception())
     try:
         if proc.returncode != 0:
             raise ValueError(f"exit {proc.returncode}")

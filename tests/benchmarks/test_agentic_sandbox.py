@@ -565,26 +565,6 @@ async def test_cancelled_create_that_hits_a_conflict_preserves_cancellation(tmp_
     assert not docker.ran("network", "rm")
 
 
-async def test_cancelled_create_preserves_signal_on_cli_start_error(tmp_path: Path) -> None:
-    started, release = asyncio.Event(), asyncio.Event()
-
-    async def unavailable(argv: Sequence[str]) -> Any:
-        if "create" in argv:
-            started.set()
-            await release.wait()
-            raise FileNotFoundError("docker executable unavailable")
-        return _done(argv)
-
-    box = Sandbox(_config(tmp_path), docker=unavailable, verify=_verified)
-    create = asyncio.create_task(box.create_resource("owned", "create", "--name", "owned"))
-    await asyncio.wait_for(started.wait(), 1)
-    create.cancel("operator interrupt")
-    release.set()
-    with pytest.raises(asyncio.CancelledError, match="operator interrupt") as signal_error:
-        await create
-    assert isinstance(signal_error.value.__cause__, FileNotFoundError)
-
-
 async def test_timed_out_create_can_appear_after_the_docker_cli_exits(tmp_path: Path) -> None:
     name = f"pdmcp-{RUN}-out"
 
@@ -1115,7 +1095,10 @@ async def test_worker_cleanup_reports_stalled_daemon_removal(
         await sandbox.remove_container("owned-id")
 
 
-async def test_cleanup_failure_preserves_pending_cancellation(tmp_path: Path) -> None:
+@pytest.mark.parametrize("repeat_cancel", [False, True])
+async def test_cleanup_failure_preserves_pending_cancellation(
+    tmp_path: Path, repeat_cancel: bool
+) -> None:
     started, release = asyncio.Event(), asyncio.Event()
 
     async def failing(argv: Sequence[str]) -> Any:
@@ -1127,8 +1110,88 @@ async def test_cleanup_failure_preserves_pending_cancellation(tmp_path: Path) ->
     cleanup = asyncio.create_task(box.remove_container("owned-id"))
     await asyncio.wait_for(started.wait(), 1)
     cleanup.cancel("operator interrupt")
+    if repeat_cancel:
+        await asyncio.sleep(0)
+        cleanup.cancel("second interrupt")
     release.set()
     with pytest.raises(asyncio.CancelledError, match="operator interrupt") as error:
         await cleanup
     assert isinstance(error.value.__cause__, BenchmarkValidationError)
     assert "daemon disconnected" in str(error.value.__cause__)
+
+
+@pytest.mark.parametrize("resource", ["network", "container", "partial"])
+async def test_cancelled_create_preserves_signal_when_rollback_fails(
+    tmp_path: Path, resource: str
+) -> None:
+    name = "late"
+    docker = LateCreate(name)
+    # A failed create is recovered by label. Its first removal must not skip the next ID.
+    docker.fail = lambda args: (
+        args[0] == "create" and resource == "partial" or ("rm" in args and args[-1] == "id-late")
+    )
+    box = _sandbox(tmp_path, docker)
+    if resource == "partial":
+        docker.resources.update(dict.fromkeys(("id-late", "id-extra"), {box._ownership(name)}))
+    args = ("network", "create", name) if resource == "network" else ("create", "--name", name)
+    create = asyncio.create_task(box.create_resource(name, *args))
+    await asyncio.wait_for(docker.started.wait(), 2)
+    create.cancel("signal SIGTERM")
+    docker.release.set()
+    with pytest.raises(asyncio.CancelledError, match="signal SIGTERM") as error:
+        await create
+    assert isinstance(error.value.__cause__, BenchmarkValidationError)
+    assert "rm" in str(error.value.__cause__) and "boom" in str(error.value.__cause__)
+    assert "id-extra" not in docker.resources
+
+
+@pytest.mark.parametrize("failed_rm", ["proxy", "net"])
+async def test_cancelled_open_egress_finishes_both_removals(tmp_path: Path, failed_rm: str) -> None:
+    connecting, connected = asyncio.Event(), asyncio.Event()
+    removing, release = asyncio.Event(), asyncio.Event()
+
+    class InterruptedConnect(FakeDocker):
+        async def __call__(self, argv: Sequence[str]) -> Any:
+            if argv[1:3] == ["network", "connect"]:
+                connecting.set()
+                await connected.wait()
+            if argv[1:3] == ["rm", "-f"]:
+                removing.set()
+                await release.wait()
+            return await super().__call__(argv)
+
+    docker = InterruptedConnect(fail=lambda args: "rm" in args and args[-1].endswith(failed_rm))
+    opening = asyncio.create_task(_sandbox(tmp_path, docker).open_egress("j", ()))
+    await asyncio.wait_for(connecting.wait(), 2)
+    opening.cancel("signal SIGTERM")
+    connected.set()
+    await asyncio.wait_for(removing.wait(), 2)
+    opening.cancel("signal SIGHUP")
+    await asyncio.sleep(0)
+    assert not opening.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError, match="signal SIGTERM") as error:
+        await opening
+    assert isinstance(error.value.__cause__, BenchmarkValidationError)
+    assert "boom" in str(error.value.__cause__)
+    assert docker.ran("rm", "-f", "id-pdmcp-r1-j-proxy")
+    assert docker.ran("network", "rm", "id-pdmcp-r1-j-net")
+
+
+async def test_cancelled_create_preserves_signal_when_cli_cannot_start(tmp_path: Path) -> None:
+    starting, release = asyncio.Event(), asyncio.Event()
+    failure = OSError("cannot start docker")
+
+    async def unavailable(argv: Sequence[str]) -> Any:
+        starting.set()
+        await release.wait()
+        raise failure
+
+    box = Sandbox(_config(tmp_path), docker=unavailable)
+    task = asyncio.create_task(box.ensure_outside())
+    await asyncio.wait_for(starting.wait(), 2)
+    task.cancel("signal SIGTERM")
+    release.set()
+    with pytest.raises(asyncio.CancelledError, match="signal SIGTERM") as error:
+        await task
+    assert error.value.__cause__ is failure

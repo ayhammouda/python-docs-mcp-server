@@ -1441,3 +1441,133 @@ async def test_close_problems_fail_a_clean_run(host: Host, tmp_path: Path) -> No
     with pytest.raises(BenchmarkValidationError, match="exit 137"):
         await host.run([_job(tmp_path, [ANSWER], count=1)], launcher=launcher)
     assert [m["type"] for m in host.messages()][-1] == "done"  # the run itself completed
+
+
+@pytest.mark.parametrize("boundary", ["spawn", "spawn_kill", "worker", "launcher"])
+async def test_host_cleanup_preserves_signal_and_waits_for_failure(
+    host: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    running, removing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    failure = RuntimeError(f"{boundary} cleanup failed")
+    interrupted: list[asyncio.CancelledError] = []
+
+    async def until_cancelled(*args: Any, **kwargs: Any) -> None:
+        running.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError as exc:
+            interrupted.append(exc)
+            raise
+
+    async def fail_cleanup(*args: Any) -> None:
+        removing.set()
+        await release.wait()
+        raise failure
+
+    launcher = RecordingLauncher()
+    if boundary == "launcher":
+        monkeypatch.setattr(launcher, "prepare", until_cancelled)
+        monkeypatch.setattr(launcher, "close", fail_cleanup)
+    else:
+        monkeypatch.setattr(agentic_host, "_start_anchor", Mock(return_value=Mock(pid=object())))
+
+        async def reap(*args: Any) -> None:
+            if boundary == "spawn":
+                await fail_cleanup()
+            if boundary == "spawn_kill":
+                removing.set()
+                await release.wait()
+
+        def kill(*args: Any) -> None:
+            if boundary == "spawn_kill":
+                removing.set()
+                raise failure
+
+        monkeypatch.setattr(agentic_host, "_kill_group", kill)
+        monkeypatch.setattr(agentic_host, "_reap", reap)
+        proc = Mock(stdin=Mock(drain=until_cancelled), wait=AsyncMock(return_value=0))
+        monkeypatch.setattr(
+            asyncio,
+            "create_subprocess_exec",
+            until_cancelled if boundary.startswith("spawn") else AsyncMock(return_value=proc),
+        )
+        monkeypatch.setattr(launcher, "stop_worker", fail_cleanup)
+
+    task = asyncio.create_task(host.run([_job(tmp_path, [ANSWER])], launcher=launcher))
+    await asyncio.wait_for(running.wait(), 2)
+    task.cancel("signal SIGTERM")
+    await asyncio.wait_for(removing.wait(), 2)
+    task.cancel("signal SIGHUP")
+    await asyncio.sleep(0)
+    still_cleaning = not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError, match="signal SIGTERM") as error:
+        await task
+    assert still_cleaning
+    assert error.value is interrupted[0]
+    assert error.value.__cause__ is failure
+
+
+async def test_run_jobs_preserves_cancellation_while_draining_other_workers(
+    host: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    draining, release = asyncio.Event(), asyncio.Event()
+    original = asyncio.CancelledError("signal SIGTERM")
+
+    async def supervise(job: WorkerJob, **kwargs: Any) -> None:
+        if job.job_id == "first":
+            raise original
+        try:
+            await asyncio.Event().wait()
+        finally:
+            draining.set()
+            await release.wait()
+
+    monkeypatch.setattr(agentic_host, "_supervise", supervise)
+    jobs = [_job(tmp_path, [ANSWER], job_id=name) for name in ("first", "second")]
+    task = asyncio.create_task(host.run(jobs))
+    await asyncio.wait_for(draining.wait(), 2)
+    task.cancel("signal SIGHUP")
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError, match="signal SIGTERM") as error:
+        await task
+    assert error.value is original
+
+
+@pytest.mark.parametrize("during_prepare", [True, False])
+async def test_launcher_close_problems_are_the_cause_of_cancellation(
+    host: Host, tmp_path: Path, during_prepare: bool
+) -> None:
+    started, closing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    class Launcher(LocalLauncher):
+        async def prepare(self, jobs: Sequence[WorkerJob]) -> None:
+            if during_prepare:
+                started.set()
+                await asyncio.Event().wait()
+
+        async def close(self) -> list[str]:
+            closing.set()
+            await release.wait()
+            return ["outside network removal failed"]
+
+    task = asyncio.create_task(
+        run_jobs(
+            [],
+            launcher=Launcher(),
+            ledger=host.service(_job(tmp_path, [ANSWER]).family),
+            on_message=host.on_message,
+            log_dir=tmp_path,
+            cwd=tmp_path,
+        )
+    )
+    await asyncio.wait_for((started if during_prepare else closing).wait(), 2)
+    task.cancel("signal SIGTERM")
+    await asyncio.wait_for(closing.wait(), 2)
+    release.set()
+    with pytest.raises(asyncio.CancelledError, match="signal SIGTERM") as error:
+        await task
+    assert isinstance(error.value.__cause__, BenchmarkValidationError)
+    assert "outside network removal failed" in str(error.value.__cause__)

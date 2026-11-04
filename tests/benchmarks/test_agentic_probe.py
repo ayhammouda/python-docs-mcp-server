@@ -17,6 +17,7 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -454,12 +455,14 @@ async def test_probe_creation_finishes_before_cancellation_removes_it(tmp_path: 
     assert not docker.ran("start")
 
 
-@pytest.mark.parametrize("timeout", [False, True])
+@pytest.mark.parametrize(("timeout", "rm_fails"), [(False, False), (True, False), (False, True)])
 async def test_a_timed_out_or_cancelled_probe_container_is_removed(
-    tmp_path: Path, timeout: bool
+    tmp_path: Path, timeout: bool, rm_fails: bool
 ) -> None:
     name = "pdmcp-r1-j-probe"
     started = asyncio.Event()
+
+    interrupted: list[asyncio.CancelledError] = []
 
     class Hangs(FakeDocker):
         async def __call__(self, argv: Sequence[str]) -> Any:
@@ -468,20 +471,31 @@ async def test_a_timed_out_or_cancelled_probe_container_is_removed(
                 started.set()
                 if timeout:
                     raise subprocess.TimeoutExpired(list(argv), 120)
-                await asyncio.Event().wait()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError as exc:
+                    interrupted.append(exc)
+                    raise
             return await super().__call__(argv)
 
-    docker = Hangs()
+    docker = Hangs(fail=lambda args: rm_fails and args[:2] == ["rm", "-f"])
     sandbox = Sandbox(_config(tmp_path), docker=docker)
     argv = probe._probe_argv(sandbox, name, "test-net", {}, {})
     task = asyncio.create_task(probe._one_shot(sandbox, argv, name))
     await asyncio.wait_for(started.wait(), 2)
     if not timeout:
-        task.cancel()
-    with pytest.raises(subprocess.TimeoutExpired if timeout else asyncio.CancelledError):
+        task.cancel("signal SIGTERM")
+    with pytest.raises(subprocess.TimeoutExpired if timeout else asyncio.CancelledError) as error:
         await task
     assert docker.calls[-1] == ["docker", "rm", "-f", f"id-{name}"]
-    assert not docker.resources
+    if not timeout:
+        assert error.value is interrupted[0]
+        assert str(error.value) == "signal SIGTERM"
+    if rm_fails:
+        assert isinstance(error.value.__cause__, BenchmarkValidationError)
+        assert "boom" in str(error.value.__cause__)
+    else:
+        assert not docker.resources
 
 
 async def test_a_failed_control_makes_the_probe_inconclusive(tmp_path: Path) -> None:
@@ -539,3 +553,37 @@ async def test_no_worker_starts_when_a_probe_fails(tmp_path: Path) -> None:
         ledger.close()
     assert started == ["close"]
     assert not [c for c in docker.calls if "agentic-worker" in c]
+
+
+@pytest.mark.parametrize("fail_immediately", [False, True])
+async def test_probe_listener_close_preserves_attach_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+    fail_immediately: bool,
+) -> None:
+    closing, release = asyncio.Event(), asyncio.Event()
+    failure = OSError("listener close failed")
+
+    async def wait_closed() -> None:
+        closing.set()
+        await release.wait()
+        raise failure
+
+    server = Mock(
+        wait_closed=wait_closed, close=Mock(side_effect=failure if fail_immediately else None)
+    )
+    server.sockets = [Mock(getsockname=lambda: ("localhost", 1234))]
+    monkeypatch.setattr(asyncio, "start_server", AsyncMock(return_value=server))
+    original = asyncio.CancelledError("signal SIGTERM")
+
+    async def probe_with_listener() -> None:
+        async with probe.Canary():
+            raise original
+
+    task = asyncio.create_task(probe_with_listener())
+    if not fail_immediately:
+        await asyncio.wait_for(closing.wait(), 2)
+        task.cancel("signal SIGHUP")
+        release.set()
+    with pytest.raises(asyncio.CancelledError, match="signal SIGTERM") as error:
+        await task
+    assert error.value is original and error.value.__cause__ is failure
