@@ -97,17 +97,28 @@ async def _until_signalled(run: Coroutine[Any, Any, None]) -> None:
     """Await ``run``; SIGTERM or SIGHUP cancels it, so every worker is torn down as on Ctrl-C.
 
     Workers run in process groups of their own, so no signal sent to the host's group reaches
-    them: only the host's teardown can end them.
+    them: only the host's teardown can end them. An ignored signal stays ignored, a thread
+    that cannot take signals runs without the handlers, and each disposition the handlers
+    replaced is restored afterwards.
     """
     task = asyncio.ensure_future(run)
     loop = asyncio.get_running_loop()
-    for signum in (signal.SIGTERM, signal.SIGHUP):
-        loop.add_signal_handler(signum, task.cancel, f"signal {signum.name}")
+    installed: list[tuple[signal.Signals, Any]] = []  # each with the disposition it replaced
+    try:
+        for signum in (signal.SIGTERM, signal.SIGHUP):
+            previous = signal.getsignal(signum)
+            if previous is signal.SIG_IGN:  # as under nohup: it stays ignored
+                continue
+            loop.add_signal_handler(signum, task.cancel, f"signal {signum.name}")
+            installed.append((signum, previous))
+    except (RuntimeError, NotImplementedError, ValueError):
+        pass  # not the main thread, or a loop without signal support: run without handlers
     try:
         await task
     finally:
-        for signum in (signal.SIGTERM, signal.SIGHUP):
-            loop.remove_signal_handler(signum)
+        for signum, previous in installed:
+            loop.remove_signal_handler(signum)  # leaves SIG_DFL behind
+            signal.signal(signum, signal.SIG_DFL if previous is None else previous)
 
 
 def cell_id(system_id: str, family_id: str, repeat: int) -> str:

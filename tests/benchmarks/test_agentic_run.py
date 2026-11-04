@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -303,9 +304,9 @@ class _LostAfterDiscard(LocalLauncher):
         return [sys.executable, "-c", code], env
 
 
-def _start_host(tmp_path: Path) -> tuple[subprocess.Popen[bytes], Path]:
-    """A host in a subprocess this test creates. Its one worker holds a unit, reports its pid
-    and process group, then waits until its host closes its stdin."""
+def _start_host(tmp_path: Path, prelude: str = "") -> tuple[subprocess.Popen[bytes], Path]:
+    """A host in a subprocess this test creates, running ``prelude`` first. Its one worker
+    holds a unit, reports its pid and process group, then waits until its host closes stdin."""
     ready = tmp_path / "worker.ids"
     reserve = {"type": "reserve", "input_bound": 1000, "output_bound": 100, "kind": "model_call"}
     worker = (
@@ -321,7 +322,7 @@ def _start_host(tmp_path: Path) -> tuple[subprocess.Popen[bytes], Path]:
         "inp.read()\n"
     )
     host_code = (
-        "import sys\n"
+        prelude + "import sys\n"
         "from pathlib import Path\n"
         "from benchmarks.agentic.host import LocalLauncher\n"
         "from benchmarks.agentic.run import AgenticConfig, run_agentic\n"
@@ -413,6 +414,60 @@ def test_no_anchor_outlives_a_host_killed_outright(tmp_path: Path) -> None:
             host.wait()
     # No cleanup by raw pid: the test holds no handle to its host's anchor.
     assert _gone(anchor), f"the anchor (pid {anchor}) outlived its host"
+
+
+def test_a_host_started_with_sighup_ignored_survives_sighup(tmp_path: Path) -> None:
+    # As under nohup. Only the host is signalled; it must ignore SIGHUP, then end on SIGTERM.
+    ignore = "import signal\nsignal.signal(signal.SIGHUP, signal.SIG_IGN)\n"
+    host, ready = _start_host(tmp_path, prelude=ignore)
+    try:
+        worker, _ = _when_ready(host, ready)
+        host.send_signal(signal.SIGHUP)
+        with pytest.raises(subprocess.TimeoutExpired):  # 1 s for an effect that must not come
+            host.wait(timeout=1)
+        host.send_signal(signal.SIGTERM)
+        host.wait(timeout=20)
+    finally:
+        if host.poll() is None:
+            host.kill()
+            host.wait()
+    assert _gone(worker), "the worker outlived its host"
+    summary = json.loads((tmp_path / "run" / "run-summary.json").read_text())
+    assert summary["status"] == "aborted" and "SIGTERM" in summary["abort_reason"]
+
+
+def _scripted_config(tmp_path: Path) -> AgenticConfig:
+    return _config(
+        tmp_path,
+        models=("scripted-anthropic",),
+        systems=("no-docs",),
+        questions=("SYN-EX-001",),
+        repeats=1,
+    )
+
+
+def test_run_agentic_completes_off_the_main_thread(tmp_path: Path) -> None:
+    # No signal handler can be installed off the main thread: the run goes on without one.
+    with ThreadPoolExecutor(1) as pool:
+        summary = pool.submit(run_agentic, _scripted_config(tmp_path)).result(timeout=60)
+    assert summary["status"] == "completed" and summary["succeeded_cells"] == 1
+
+
+def test_run_agentic_restores_the_previous_signal_dispositions(tmp_path: Path) -> None:
+    def previous(signum: int, frame: Any) -> None:
+        raise AssertionError("no signal is sent in this test")
+
+    saved = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        signal.signal(signal.SIGTERM, previous)
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        summary = run_agentic(_scripted_config(tmp_path))
+        after = {signum: signal.getsignal(signum) for signum in saved}
+    finally:
+        for signum, handler in saved.items():
+            signal.signal(signum, handler)
+    assert summary["status"] == "completed"
+    assert after == {signal.SIGTERM: previous, signal.SIGHUP: signal.SIG_IGN}
 
 
 def test_a_rerun_that_never_ran_is_not_counted(tmp_path: Path) -> None:
