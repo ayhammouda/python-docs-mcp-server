@@ -26,6 +26,7 @@ from typing import Any
 
 from benchmarks.adapters.guard import PAID_KEY_ENVS, PROVIDER_API_KEY_ENV
 from benchmarks.agentic.bridge import Bridge, SystemSpec, open_bridge, system_spec_from_raw
+from benchmarks.agentic.cleanup import add_safe_cleanup_cause, settle
 from benchmarks.agentic.ledger import Outcome
 from benchmarks.agentic.protocol import (
     WORKER_FRAME_LIMIT_EXIT,
@@ -431,15 +432,29 @@ async def run_worker(
     *,
     bootstrapped: bool = False,
 ) -> int:
+    # SDK task groups cancel the task that opened them when their reader fails.
+    # Keep that cancellation inside the one job, distinct from our caller's
+    # cancellation. wait() observes completion without propagating child cancellation.
+    job = asyncio.create_task(_run_job(channel, reader, first, bootstrapped=bootstrapped))
     try:
-        return await _run_job(channel, reader, first, bootstrapped=bootstrapped)
+        await asyncio.wait((job,))
+    except asyncio.CancelledError as interrupt:
+        job.cancel()
+        await settle(job)  # drain the owned SDK tasks/process even on repeated interrupts
+        try:
+            job.result()
+        except BaseException as failure:
+            add_safe_cleanup_cause(interrupt, failure)
+        raise
+    try:
+        return job.result()
     except BaseException as exc:  # task groups may combine a leak with cancellation
         if find_key_leak(exc) is not None:
             return _report(channel, WORKER_LEAK_REASON, 3)
-        if not isinstance(exc, Exception):
-            raise
         if frame := find_frame_too_large(exc):
             return _report(channel, f"FrameTooLarge: {frame}", WORKER_FRAME_LIMIT_EXIT)
+        if not isinstance(exc, Exception):
+            raise
         return _report(channel, f"{type(exc).__name__}: {exc}", 2)
 
 

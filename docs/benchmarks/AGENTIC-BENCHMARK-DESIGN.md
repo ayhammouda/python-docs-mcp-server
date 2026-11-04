@@ -307,6 +307,10 @@ came from. Container settings:
   and withholds subsequent trajectory reports while it cleans up the workers.
   Credential failures take precedence over frame-limit errors. Ordinary MCP
   protocol errors keep their documented trajectory behavior.
+  SDK reader failures can cancel their own job while it awaits a host grant or
+  settlement reply. The worker drains that job and reports the recognized failure.
+  An external cancellation instead cancels and drains the owned job, then propagates
+  the original interrupt, including when the SDK has also recognized a failure.
 - On protocol EOF the host waits for the owned worker's terminal status, up to
   five seconds or the configured silence timeout, whichever is shorter. Status
   3 reports a credential failure. Status 4 reports a frame-limit failure even
