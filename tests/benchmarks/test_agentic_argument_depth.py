@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from mcp.types import CallToolResult, TextContent
@@ -128,11 +129,7 @@ async def test_deep_and_near_limit_arguments_scan_encoded_content_even_when_shad
         await _close(client)
 
 
-@pytest.mark.parametrize("provider", ["openai", "ollama"])
-async def test_sdk_accepted_depth_keeps_worker_alive_and_publishes_a_trajectory(
-    monkeypatch, provider
-):
-    client, recorder = _argument_client(provider, _arguments(1100, "array"))
+async def _run_sdk_worker(client, monkeypatch):
     reader = asyncio.StreamReader()
     messages = []
 
@@ -155,8 +152,16 @@ async def test_sdk_accepted_depth_keeps_worker_alive_and_publishes_a_trajectory(
         "trajectories": [{"corpus_id": "Q1", "repeat": 1, "prompt": "ordinary"}],
     }
     monkeypatch.setattr(clients, "make_client", lambda *args, **kwargs: client)
+    return await worker.run_worker(Channel(), reader, job), messages
+
+
+@pytest.mark.parametrize("provider", ["openai", "ollama"])
+async def test_sdk_accepted_depth_keeps_worker_alive_and_publishes_a_trajectory(
+    monkeypatch, provider
+):
+    client, recorder = _argument_client(provider, _arguments(1100, "array"))
     try:
-        status = await worker.run_worker(Channel(), reader, job)
+        status, messages = await _run_sdk_worker(client, monkeypatch)
         assert status == 0, [m for m in messages if m["type"] == "error"]
         assert messages[-1] == {"type": "done"}
         assert len(recorder.seen) == 2
@@ -165,5 +170,32 @@ async def test_sdk_accepted_depth_keeps_worker_alive_and_publishes_a_trajectory(
         assert len(trajectories) == 1
         assert trajectories[0]["status"] == "succeeded"
         assert trajectories[0]["tool_calls"][0]["raw_arguments"] == _arguments(1100, "array")
+    finally:
+        await _close(client)
+
+
+@pytest.mark.parametrize("provider", ["openai", "ollama"])
+@pytest.mark.parametrize("arguments", [r'{"query":"\ud800"}', r'{"\udfff":"value"}'])
+async def test_unpaired_surrogate_stops_worker_after_one_correct_settlement(
+    monkeypatch, provider, arguments
+):
+    client, recorder = _argument_client(provider, arguments, safe_first=True)
+    bridge, dispatch = _bridge(CallToolResult(content=[]))
+    monkeypatch.setattr(worker, "_open", AsyncMock(return_value=bridge))
+    try:
+        status, messages = await _run_sdk_worker(client, monkeypatch)
+        assert status == 3
+        assert messages[-1] == {"type": "error", "reason": worker.WORKER_LEAK_REASON}
+        assert len(recorder.seen) == 1
+        dispatch.assert_not_awaited()
+        assert [m["type"] for m in messages if m["type"] != "system_info"] == [
+            "reserve", "settle", "error"
+        ]
+        settlement = next(m for m in messages if m["type"] == "settle")
+        expected = (
+            Buckets(500, 300, 200, 50, 40) if provider == "openai" else Buckets(120, 0, 0, 30)
+        )
+        assert settlement["outcome"] == "ok"
+        assert Buckets(**settlement["buckets"]) == expected
     finally:
         await _close(client)

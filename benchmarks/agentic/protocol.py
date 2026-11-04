@@ -170,8 +170,12 @@ def assert_no_key_shaped_json(
         node = stack.pop()
         if isinstance(node, (str, bytes)):
             assert_no_key_shaped(node, where=where)
+            try:
+                data = node if isinstance(node, bytes) else node.encode("utf-8")
+            except UnicodeEncodeError:
+                raise KeyLeakError(f"uninspectable JSON string in {where}") from None
             if check_content is not None:
-                check_content(node if isinstance(node, bytes) else node.encode("utf-8"))
+                check_content(data)
         elif isinstance(node, (Mapping, list, tuple, set, frozenset)) and id(node) not in visited:
             # YAML snapshots can contain repeated or cyclic aliases.
             visited.add(id(node))
@@ -212,10 +216,7 @@ def check_json_text(
         while match := _JSON_STRING_PART.match(text, end):
             end = match.end()
         decoded = json.loads('"' + text[start + 1 : end] + '"', strict=False)
-        try:
-            scanned_json_bytes(decoded, where=where, check_content=check_content)
-        except UnicodeEncodeError:
-            raise KeyLeakError(f"uninspectable JSON string in {where}") from None
+        scanned_json_bytes(decoded, where=where, check_content=check_content)
         if end < len(text) and text[end] != '"':
             raise KeyLeakError(f"uninspectable JSON string in {where}")
         position = end + 1
