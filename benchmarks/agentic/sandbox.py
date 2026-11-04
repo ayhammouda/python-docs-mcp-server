@@ -70,7 +70,7 @@ _CLI_ENV = (
     "DOCKER_TLS_VERIFY",
 )
 _DOCKER_TIMEOUT_S = 120
-_CREATE_RECOVERY_S = 5.0
+_RESOURCE_RECOVERY_S = 5.0
 
 DockerRun = Callable[[Sequence[str]], Awaitable[subprocess.CompletedProcess[bytes]]]
 
@@ -323,13 +323,14 @@ class Sandbox:
 
         async def remove() -> None:
             loop = asyncio.get_running_loop()
-            deadline = loop.time() + _CREATE_RECOVERY_S
+            deadline = loop.time() + _RESOURCE_RECOVERY_S
             while True:
                 proc = await self.docker(["docker", "rm", "-f", container_id])
                 detail = _tail(proc)
                 if proc.returncode == 0 or "No such container" in detail:
                     return
-                if "is already in progress" not in detail or loop.time() >= deadline:
+                conflict = f"removal of container {container_id} is already in progress"
+                if conflict not in detail or loop.time() >= deadline:
                     raise BenchmarkValidationError(f"docker rm -f {container_id} failed: {detail}")
                 await asyncio.sleep(0.1)
 
@@ -342,7 +343,7 @@ class Sandbox:
         ls = ("network", "ls") if network else ("container", "ls", "--all")
         label_filter = f"label={self._ownership(name)}"
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + _CREATE_RECOVERY_S
+        deadline = loop.time() + _RESOURCE_RECOVERY_S
         while True:
             ids = await self.output(*ls, "--no-trunc", "--quiet", "--filter", label_filter)
             if ids.strip() or not wait_for_create:

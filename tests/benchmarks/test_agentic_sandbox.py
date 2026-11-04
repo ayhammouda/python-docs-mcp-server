@@ -593,7 +593,7 @@ async def test_timed_out_create_can_appear_after_the_docker_cli_exits(tmp_path: 
 async def test_unobserved_create_timeout_reports_the_ownership_label(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("benchmarks.agentic.sandbox._CREATE_RECOVERY_S", 0)
+    monkeypatch.setattr("benchmarks.agentic.sandbox._RESOURCE_RECOVERY_S", 0)
 
     class TimeoutDocker(FakeDocker):
         async def __call__(self, argv: Sequence[str]) -> Any:
@@ -1080,3 +1080,16 @@ async def test_worker_cleanup_waits_for_daemon_auto_removal(tmp_path: Path) -> N
     sandbox = Sandbox(_config(tmp_path), docker=removing, verify=_verified)
     await sandbox.remove_container("owned-id")
     assert list(responses) == []
+
+
+async def test_worker_cleanup_reports_stalled_daemon_removal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("benchmarks.agentic.sandbox._RESOURCE_RECOVERY_S", 0)
+
+    async def stalled(argv: Sequence[str]) -> Any:
+        return _done(argv, 1, err="removal of container owned-id is already in progress")
+
+    sandbox = Sandbox(_config(tmp_path), docker=stalled, verify=_verified)
+    with pytest.raises(BenchmarkValidationError, match="already in progress"):
+        await sandbox.remove_container("owned-id")
