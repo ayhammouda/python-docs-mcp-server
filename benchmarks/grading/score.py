@@ -47,6 +47,7 @@ from benchmarks.grading.gates import (
     g2,
     g3,
     g4,
+    held_out_shortfall,
     length_grade_correlation,
     load_egress_evidence,
     load_offline_evidence,
@@ -78,6 +79,7 @@ from benchmarks.grading.mapping import Vote, grade, panel_fields
 from benchmarks.grading.panel import Panel, composition_key, load_panel, panel_from_mapping
 from benchmarks.grading.probes import (
     MAX_ROUNDS,
+    PROBE_TYPES,
     Probe,
     ProbeFile,
     assemble,
@@ -303,6 +305,7 @@ def score_run_dir(
     panel_path: Path | None = None,
     schema_path: Path,
     g1_paths: Sequence[Path] = (),
+    tuning_path: Path = TUNING_PATH,
     resamples: int = GATE_RESAMPLES,
 ) -> dict[str, Any]:
     """Score, grade, gate and claim one run; write ``grading/summary.json`` and disclosure."""
@@ -330,6 +333,36 @@ def score_run_dir(
     reference_check = GateResult(
         "reference_probe_check", check.get("passed"), dict(check.get("details") or {})
     )
+
+    if g1_result.passed is True or reference_check.passed is True:
+        # A bound entry can predate coverage checks. Verify passing claims against the
+        # run's frozen probe inventory, not just the exported pass flags.
+        suite = load_probe_file(
+            grading / "inputs" / "probes.yml",
+            criteria_path=grading / "inputs" / SNAPSHOT_FILES["criteria"],
+            tuning_path=tuning_path,
+        )
+        held = [p for p in suite.probes if p.set == "held_out"]
+        if g1_result.passed is True:
+            reason = held_out_shortfall(held, [d for d in suite.dropped if d["set"] == "held_out"])
+            counts = Counter(p.type for p in held)
+            reported = g1_result.details.get("by_type")
+            if (
+                not isinstance(reported, dict)
+                or reported.keys() != set(PROBE_TYPES)
+                or any(
+                    not isinstance(row, dict) or row.get("n") != counts[t]
+                    for t, row in reported.items()
+                )
+            ):
+                reason = "G1 type counts differ from the frozen held-out probes"
+            if reason:
+                g1_result = GateResult("G1", None, {**g1_result.details, "reason": reason})
+        if reference_check.passed is True:
+            subset = reference_subset(held, seed=suite.header["corpus_sha256"])
+            reference_check = reference_probe_check(
+                subset, reference_check.details.get("scores") or {}
+            )
 
     disclosure = grading / "disclosure"
     raw_g1 = disclosure / "g1"
@@ -715,6 +748,30 @@ def _record_vote(record: Mapping[str, Any] | None) -> Vote | None:
     return Vote(**record["vote"])
 
 
+def _probe_record(
+    root: Path, *, target: str, judge_id: str, effort: str | None, pass_number: int, item_id: str
+) -> dict[str, Any] | None:
+    record = chosen_record(
+        root,
+        target=target,
+        judge_id=judge_id,
+        effort=effort,
+        pass_number=pass_number,
+        item_id=item_id,
+    )
+    if record is not None:
+        identity = {
+            "target": target,
+            "judge_id": judge_id,
+            "effort": effort,
+            "pass": pass_number,
+            "item_id": item_id,
+        }
+        if any(record.get(k) != value for k, value in identity.items()):
+            raise BenchmarkValidationError(f"foreign vote record for {target}/{judge_id}/{item_id}")
+    return record
+
+
 def _judge_score(
     root: Path,
     target: str,
@@ -725,7 +782,7 @@ def _judge_score(
     pass_number: int = 1,
 ) -> tuple[bool, float | None]:
     """(a record exists, the judge's score of the probe or None)."""
-    record = chosen_record(
+    record = _probe_record(
         root,
         target=target,
         judge_id=judge_id,
@@ -736,6 +793,14 @@ def _judge_score(
     vote = _record_vote(record)
     score = None if vote is None else grade(vote.fields(), weights[probe.question_id])[0]
     return record is not None, score
+
+
+def _parsed_probe_reply(record: Mapping[str, Any] | None) -> dict[str, Any]:
+    if record and record.get("status") == "succeeded" and record.get("withheld") is None:
+        parsed = record.get("parsed")
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
 
 
 def assemble_workspace_probes(
@@ -755,6 +820,8 @@ def assemble_workspace_probes(
         "held_out": load_criteria(criteria_path, corpus_path=corpus_path, schema_path=schema_path),
         "tuning": load_tuning_questions(tuning_path),
     }
+    if sets["held_out"].keys() & sets["tuning"].keys():
+        raise BenchmarkValidationError("held-out and tuning question ids overlap")
     probes: list[Probe] = []
     dropped: list[dict[str, Any]] = []
     for set_name, questions in sets.items():
@@ -763,7 +830,7 @@ def assemble_workspace_probes(
         checks: dict[tuple[str, str, int], bool] = {}
         for (qid, probe_type), (generator, checker) in assignment.items():
             for r in range(1, MAX_ROUNDS + 1):
-                gen = chosen_record(
+                gen = _probe_record(
                     workspace,
                     target="probe-gen",
                     judge_id=generator,
@@ -771,9 +838,9 @@ def assemble_workspace_probes(
                     pass_number=1,
                     item_id=safe_id("gen", probe_type, qid, f"r{r}"),
                 )
-                if gen is not None and isinstance(gen.get("parsed"), dict):
-                    generated[(qid, probe_type, r)] = str(gen["parsed"]["probe_text"])
-                chk = chosen_record(
+                if isinstance(value := _parsed_probe_reply(gen).get("probe_text"), str):
+                    generated[(qid, probe_type, r)] = value
+                chk = _probe_record(
                     workspace,
                     target="probe-check",
                     judge_id=checker,
@@ -781,8 +848,8 @@ def assemble_workspace_probes(
                     pass_number=1,
                     item_id=safe_id("chk", probe_type, qid, f"r{r}"),
                 )
-                if chk is not None and isinstance(chk.get("parsed"), dict):
-                    checks[(qid, probe_type, r)] = bool(chk["parsed"]["meets_spec"])
+                if isinstance(value := _parsed_probe_reply(chk).get("meets_spec"), bool):
+                    checks[(qid, probe_type, r)] = value
         kept, lost = assemble(
             questions,
             set_name,  # type: ignore[arg-type]
@@ -868,7 +935,7 @@ def write_g1(workspace: Path, *, panel_path: Path, tuning_path: Path = TUNING_PA
     for probe in held_out:
         votes: dict[str, Vote | None] = {}
         for judge_id, spec in composition.items():
-            record = chosen_record(
+            record = _probe_record(
                 workspace,
                 target="probes",
                 judge_id=judge_id,
@@ -889,7 +956,12 @@ def write_g1(workspace: Path, *, panel_path: Path, tuning_path: Path = TUNING_PA
                 0
             ]
         )
-    gate = g1(held_out, panel_scores, judge_scores)
+    gate = g1(
+        held_out,
+        panel_scores,
+        judge_scores,
+        dropped=[d for d in probe_file.dropped if d["set"] == "held_out"],
+    )
     reference = panel.judges[panel.reference]
     subset = reference_subset(held_out, seed=probe_file.header["corpus_sha256"])
     scored = [

@@ -447,6 +447,7 @@ def _agentic_score(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
                 panel_path=args.panel,
                 schema_path=args.schema,
                 g1_paths=args.g1,
+                tuning_path=args.tuning,
                 resamples=args.resamples,
             )
         elif args.step == "assemble-probes":

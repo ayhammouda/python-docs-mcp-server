@@ -7,6 +7,7 @@ write_vote_record. No worker runs and nothing reaches the network.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import socket
@@ -19,16 +20,23 @@ import yaml
 from benchmarks.__main__ import main
 from benchmarks.grading.aggregate import write_vote_record
 from benchmarks.grading.batch import BatchItemResult
-from benchmarks.grading.inputs import TUNING_PATH, safe_id, snapshot_inputs
+from benchmarks.grading.inputs import TUNING_PATH, load_tuning_questions, safe_id, snapshot_inputs
 from benchmarks.grading.panel import load_panel
-from benchmarks.grading.probes import load_probe_file, reference_subset
+from benchmarks.grading.probes import (
+    CHECK_SCHEMA,
+    PROBE_SCHEMA,
+    assignments,
+    load_probe_file,
+    reference_subset,
+)
 from benchmarks.grading.score import (
     assemble_workspace_probes,
     score_run_dir,
     write_g1,
     write_tuning,
 )
-from mcp_server_python_docs.storage.db import bootstrap_schema, get_readwrite_connection
+from benchmarks.runner import BenchmarkValidationError
+from tests.benchmarks.test_grading_probes import index_db as index_db
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIX = Path(__file__).parent / "fixtures"
@@ -114,13 +122,18 @@ def _cell(system: str, family: str = FAMILY) -> str:
 
 
 def _build_run(
-    tmp_path: Path, *, families: dict[str, dict[str, tuple[str, ...]]] | None = None
+    tmp_path: Path,
+    *,
+    families: dict[str, dict[str, tuple[str, ...]]] | None = None,
+    corpus: Path = FIX / "corpus.sample.yml",
+    criteria: Path = CRITERIA,
+    probes: Path = PROBES,
 ) -> Path:
     """A graded run: family -> system -> its questions, repeat 1."""
     families = families or {FAMILY: dict.fromkeys(SYSTEMS, QUESTIONS)}
     run = tmp_path / "run"
     (run / "snapshots").mkdir(parents=True)
-    shutil.copy(FIX / "corpus.sample.yml", run / "snapshots" / "corpus.yml")
+    shutil.copy(corpus, run / "snapshots" / "corpus.yml")
     matrix = yaml.safe_load((FIX / "agentic" / "model-matrix.yml").read_text())
     matrix["model_families"].append(
         {
@@ -135,7 +148,7 @@ def _build_run(
     planned = []
     grading = run / "grading"
     snapshot_inputs(
-        grading / "inputs", criteria_path=CRITERIA, panel_path=PANEL_PATH, probes_path=PROBES
+        grading / "inputs", criteria_path=criteria, panel_path=PANEL_PATH, probes_path=probes
     )
     for family, systems in families.items():
         for system, questions in systems.items():
@@ -268,7 +281,7 @@ def test_score_run_dir_writes_grades_gates_claims_and_disclosure(
     assert _record(run, "no-docs", "SYN-EX-001")["score"] == 0.0
     assert json.loads((run / "grading" / "summary.json").read_text()) == summary
     assert set(summary["gates"]) == {"G1", "G2", "G3", "G4"}
-    assert summary["gates"]["G1"]["passed"] is True
+    assert summary["gates"]["G1"]["passed"] is None
     # A short artifact cannot redefine the preregistered 300-answer gate.
     assert summary["gates"]["G3"]["passed"] is None
     assert "of 300 answers" in summary["gates"]["G3"]["details"]["reason"]
@@ -417,16 +430,21 @@ def _fields_for(expected_score: float, expected_label: str, weights: tuple[str, 
     return {}
 
 
-def _workspace(path: Path, kind: str, handoff: dict[str, Path]) -> Path:
+def _workspace(
+    path: Path, kind: str, handoff: dict[str, Path], *, criteria: Path = CRITERIA
+) -> Path:
     path.mkdir(parents=True)
     snapshot_inputs(
-        path / "inputs", criteria_path=CRITERIA, panel_path=PANEL_PATH, probes_path=PROBES
+        path / "inputs",
+        criteria_path=criteria,
+        panel_path=PANEL_PATH,
+        probes_path=handoff.get("probes.yml", PROBES),
     )
     (path / "handoff").mkdir()
     shas = {}
     for name, source in handoff.items():
         shutil.copy(source, path / "handoff" / name)
-        shas[name] = __import__("hashlib").sha256(source.read_bytes()).hexdigest()
+        shas[name] = hashlib.sha256(source.read_bytes()).hexdigest()
     inputs = json.loads((path / "inputs" / "inputs.json").read_text())
     _json(
         path / "workspace.json",
@@ -459,60 +477,73 @@ def test_write_tuning_picks_the_lowest_passing_effort(tmp_path: Path) -> None:
         write_g1(ws, panel_path=PANEL_PATH)
 
 
-def test_assemble_workspace_probes_and_write_g1_are_separate_steps(tmp_path: Path) -> None:
-    index = tmp_path / "index.db"
-    conn = get_readwrite_connection(index)
-    bootstrap_schema(conn)
-    conn.close()
-    build = _workspace(tmp_path / "build", "probe-build", {})
-    gen = safe_id("gen", "PARA", "SYN-EX-001", "r1")
-    chk = safe_id("chk", "PARA", "SYN-EX-001", "r1")
-    from benchmarks.grading.probes import CHECK_SCHEMA, PROBE_SCHEMA, assignments
+def test_assemble_workspace_probes_and_write_g1_are_separate_steps(
+    tmp_path: Path, index_db: Path
+) -> None:
+    corpus = yaml.safe_load((FIX / "corpus.sample.yml").read_text())
+    for question in corpus["questions"]:
+        question["citations"] = ["https://docs.python.org/3.13/library/json.html#json.dumps"]
+    corpus_path = tmp_path / "corpus.yml"
+    corpus_path.write_text(yaml.safe_dump(corpus))
+    criteria = yaml.safe_load(CRITERIA.read_text())
+    criteria["corpus_sha256"] = hashlib.sha256(corpus_path.read_bytes()).hexdigest()
+    criteria_path = tmp_path / "criteria.yml"
+    criteria_path.write_text(yaml.safe_dump(criteria))
+    build = _workspace(tmp_path / "build", "probe-build", {}, criteria=criteria_path)
 
-    corpus_ids = sorted(yaml.safe_load(CRITERIA.read_text())["questions"])
-    generator, checker = assignments(corpus_ids, PANEL.generators)[("SYN-EX-001", "PARA")]
-    _vote(
-        build,
-        generator,
-        gen,
-        json.dumps({"probe_text": "Reworded key."}),
-        target="probe-gen",
-        effort=None,
-        schema=PROBE_SCHEMA,
-    )
-    _vote(
-        build,
-        checker,
-        chk,
-        json.dumps({"explanation": "ok", "meets_spec": True}),
-        target="probe-check",
-        effort=None,
-        schema=CHECK_SCHEMA,
-    )
-    probes_path = assemble_workspace_probes(
-        build,
-        criteria_path=CRITERIA,
-        tuning_path=TUNING_PATH,
-        panel_path=PANEL_PATH,
-        index_path=index,
-        corpus_path=FIX / "corpus.sample.yml",
-    )
+    def assemble_workspace():
+        return assemble_workspace_probes(
+            build,
+            criteria_path=criteria_path,
+            tuning_path=TUNING_PATH,
+            panel_path=PANEL_PATH,
+            index_path=index_db,
+            corpus_path=corpus_path,
+        )
+
+    with pytest.raises(BenchmarkValidationError, match="PARA"):
+        assemble_workspace()
+    assert not (build / "probes.yml").exists()
+    for questions in (criteria["questions"], load_tuning_questions(TUNING_PATH)):
+        for (qid, kind), (generator, checker) in assignments(
+            sorted(questions), PANEL.generators
+        ).items():
+            rounds = 3 if (qid, kind) == ("SYN-EX-001", "FACT") else 1
+            for r in range(1, rounds + 1):
+                _vote(
+                    build,
+                    generator,
+                    safe_id("gen", kind, qid, f"r{r}"),
+                    json.dumps({"probe_text": "Scripted candidate."}),
+                    target="probe-gen",
+                    effort=None,
+                    schema=PROBE_SCHEMA,
+                )
+                _vote(
+                    build,
+                    checker,
+                    safe_id("chk", kind, qid, f"r{r}"),
+                    json.dumps({"explanation": "Scripted check.", "meets_spec": rounds == 1}),
+                    target="probe-check",
+                    effort=None,
+                    schema=CHECK_SCHEMA,
+                )
+    probes_path = assemble_workspace()
     assert probes_path == build / "probes.yml" and not (build / "g1.json").exists()
-    built = load_probe_file(probes_path, criteria_path=CRITERIA, tuning_path=TUNING_PATH)
-    para = [p for p in built.probes if p.type == "PARA"]
-    assert [(p.id, p.text, p.built_by["round"]) for p in para] == [
-        ("PARA--SYN-EX-001", "Reworded key.", 1)
-    ]
-    assert {p.set for p in built.probes} == {"held_out", "tuning"}
-    assert any(d["type"] == "PAD" and d["reason"] == "no_pad_text" for d in built.dropped)
-
+    probes = load_probe_file(probes_path, criteria_path=criteria_path, tuning_path=TUNING_PATH)
+    held_out = [p for p in probes.probes if p.set == "held_out"]
+    assert len(held_out) == 698 and len({p.type for p in held_out}) == 14
+    assert len({p.question_id for p in probes.probes if p.set == "tuning"}) == 10
+    assert any(d["reason"] == "fact_dropped" for d in probes.dropped)
+    assert any(d["reason"] == "no_pad_text" for d in probes.dropped)
     tuning_file = tmp_path / "tuning.json"
     _json(tuning_file, {"judges": {"haiku": {"chosen": "low"}}})
     held = _workspace(
-        tmp_path / "held", "held-out", {"probes.yml": PROBES, "tuning-1.json": tuning_file}
+        tmp_path / "held",
+        "held-out",
+        {"probes.yml": probes_path, "tuning-1.json": tuning_file},
+        criteria=criteria_path,
     )
-    probes = load_probe_file(PROBES, criteria_path=CRITERIA, tuning_path=TUNING_PATH)
-    held_out = [p for p in probes.probes if p.set == "held_out"]
     for probe in held_out:
         text = _vote_text(
             **_fields_for(probe.expected_score, probe.expected_label, ("core", "nuance"))
@@ -539,10 +570,37 @@ def test_assemble_workspace_probes_and_write_g1_are_separate_steps(tmp_path: Pat
     assert g1_path == held / "g1.json" and not (held / "probes.yml").exists()
     entry = json.loads(g1_path.read_text())["entries"]["haiku+luna+flash-lite"]
     assert entry["gate"]["passed"] is True and entry["reference_check"]["passed"] is True
+    assert entry["reference_check"]["details"]["overall"]["n"] == 350
     assert entry["binding"]["composition"] == COMPOSITION
     inputs = json.loads((held / "inputs" / "inputs.json").read_text())
     assert entry["binding"]["inputs"]["probes"] == inputs["probes"]
     assert entry["tuning"] == [{"judges": {"haiku": {"chosen": "low"}}}]
+    run = _build_run(tmp_path, corpus=corpus_path, criteria=criteria_path, probes=probes_path)
+    summary = score_run_dir(
+        run,
+        criteria_path=criteria_path,
+        panel_path=PANEL_PATH,
+        schema_path=SCHEMA,
+        g1_paths=[g1_path],
+        resamples=100,
+    )
+    assert summary["gates"]["G1"]["passed"] is True
+    entry["gate"]["details"]["by_type"]["foreign"] = {"n": 1}
+    _json(g1_path, {"entries": {"haiku+luna+flash-lite": entry}})
+    replay = score_run_dir(
+        run,
+        criteria_path=criteria_path,
+        panel_path=PANEL_PATH,
+        schema_path=SCHEMA,
+        g1_paths=[g1_path],
+        resamples=100,
+    )
+    assert replay["gates"]["G1"]["passed"] is None
+    # Even 349 perfect comparisons cannot stand in for the registered 350.
+    missing = next((held / "votes/reference-probes").rglob("run-1--a1.json"))
+    missing.unlink()
+    (entry,) = json.loads(write_g1(held, panel_path=PANEL_PATH).read_text())["entries"].values()
+    assert entry["gate"]["passed"] is True and entry["reference_check"]["passed"] is None
 
 
 def test_cli_agentic_score_needs_no_network_and_exits_2_on_bad_input(
@@ -571,7 +629,7 @@ def test_cli_agentic_score_needs_no_network_and_exits_2_on_bad_input(
     ]
     assert main(argv) == 0
     printed = json.loads(capsys.readouterr().out)
-    assert printed["gates"]["G1"]["passed"] is True
+    assert printed["gates"]["G1"]["passed"] is None
     with pytest.raises(SystemExit) as exited:
         main(["agentic-score", "--run-dir", str(tmp_path / "missing")])
     assert exited.value.code == 2
@@ -615,3 +673,32 @@ def test_spi_discloses_family_when_all_its_comparisons_are_withheld(tmp_path: Pa
     assert spi == {
         f"{judge}/{family}": None for judge in JUDGES for family in ("anthropic", "openai")
     }
+
+
+def test_short_fixture_can_be_scored_without_certifying_calibration(tmp_path):
+    held = _workspace(tmp_path / "held", "held-out", {"probes.yml": PROBES})
+    suite = load_probe_file(PROBES, criteria_path=CRITERIA, tuning_path=TUNING_PATH)
+    probes = [p for p in suite.probes if p.set == "held_out"]
+    assert len(probes) == 28
+    for p in probes:
+        text = _vote_text(**_fields_for(p.expected_score, p.expected_label, ("core", "nuance")))
+        for j in JUDGES:
+            _vote(held, j, p.id, text, target="probes")
+        _vote(held, "reference", p.id, text, target="reference-probes", effort="high")
+    _json(held / "runs" / "run-1.json", {"target": "probes", "pass": 1, "composition": COMPOSITION})
+    (entry,) = json.loads(write_g1(held, panel_path=PANEL_PATH).read_text())["entries"].values()
+    assert entry["gate"]["details"]["overall"]["accuracy"] == 1.0
+    assert entry["gate"]["passed"] is None
+    assert entry["reference_check"]["passed"] is None
+
+
+def test_foreign_reference_vote_file_cannot_score_the_requested_probe(tmp_path):
+    held = _workspace(tmp_path / "held", "held-out", {"probes.yml": PROBES})
+    _json(held / "runs/run-1.json", {"target": "probes", "pass": 1, "composition": COMPOSITION})
+    item = "KEY--SYN-EX-001"
+    _vote(held, "reference", item, _vote_text(), target="reference-probes", effort="high")
+    (path,) = (held / "votes/reference-probes/reference/high/pass1" / item).glob("*.json")
+    _json(path, {**json.loads(path.read_text()), "item_id": "KEY--TUNE-001"})
+    with pytest.raises(BenchmarkValidationError, match=item):
+        write_g1(held, panel_path=PANEL_PATH)
+    assert not (held / "g1.json").exists()

@@ -22,7 +22,13 @@ from typing import Any, Literal, TypeGuard
 from benchmarks.agentic.inputs import read_json
 from benchmarks.agentic.protocol import KeyLeakError
 from benchmarks.grading.panel import Panel, composition_key
-from benchmarks.grading.probes import PROBE_TYPES, Probe
+from benchmarks.grading.probes import (
+    HELD_OUT_QUESTIONS,
+    PROBE_TYPES,
+    REFERENCE_PER_TYPE,
+    Probe,
+    validate_slots,
+)
 from benchmarks.grading.stats import (
     AlphaResult,
     Interval,
@@ -100,17 +106,38 @@ def _inj_credit(probes: Sequence[Probe], scores: Mapping[str, float | None]) -> 
     return sum(1 for p in probes if p.type == "INJ" and (scores.get(p.id) or 0.0) > 0)
 
 
+def held_out_shortfall(probes: Sequence[Probe], dropped: Sequence[Mapping[str, Any]]) -> str | None:
+    """Account for every slot in the design, including individually permitted drops."""
+    try:
+        validate_slots(probes, dropped)
+    except BenchmarkValidationError as exc:
+        return str(exc)
+    if any(p.set != "held_out" for p in probes) or any(d.get("set") != "held_out" for d in dropped):
+        return "G1 requires held-out probes only"
+    questions = {p.question_id for p in probes} | {d["question_id"] for d in dropped}
+    planned = HELD_OUT_QUESTIONS * len(PROBE_TYPES)
+    if len(questions) != HELD_OUT_QUESTIONS or len(probes) + len(dropped) != planned:
+        return (
+            f"G1 accounts for {len(probes) + len(dropped)} of {planned} held-out slots "
+            f"on {len(questions)} questions"
+        )
+    if missing := set(PROBE_TYPES) - {p.type for p in probes}:
+        return f"G1 has no retained held-out probes for {sorted(missing)}"
+    return None
+
+
 def g1(
     probes: Sequence[Probe],
     panel_scores: Mapping[str, float | None],
     judge_scores: Mapping[str, Mapping[str, float | None]],
+    *,
+    dropped: Sequence[Mapping[str, Any]] = (),
 ) -> GateResult:
     """Design §9.3 G1 on held-out probes; a probe with no panel score is a miss."""
     hits = [p for p in probes if _hit(p, panel_scores.get(p.id))]
     by_type = {
         t: _accuracy(sum(1 for p in hits if p.type == t), sum(1 for p in probes if p.type == t))
         for t in PROBE_TYPES
-        if any(p.type == t for p in probes)
     }
     by_judge = {
         judge: {
@@ -126,8 +153,9 @@ def g1(
     misses = Counter(str(p.built_by.get("generator", "code")) for p in probes if p not in hits)
     overall = _accuracy(len(hits), len(probes))
     inj = _inj_credit(probes, panel_scores)
+    reason = held_out_shortfall(probes, dropped)
     passed = (
-        bool(probes)
+        bool(judge_scores)
         and overall["accuracy"] >= G1_OVERALL
         and all(t["accuracy"] >= G1_PER_TYPE for t in by_type.values())
         and all(j["accuracy"] >= G1_PER_JUDGE and j["inj_credit"] == 0 for j in by_judge.values())
@@ -135,8 +163,9 @@ def g1(
     )
     return GateResult(
         "G1",
-        passed,
+        None if reason else passed,
         {
+            **({"reason": reason} if reason else {}),
             "overall": overall,
             "by_type": by_type,
             "by_judge": by_judge,
@@ -153,8 +182,29 @@ def reference_probe_check(
     """The reference grader's precondition for G3: >= 0.95 on its subset, zero INJ credit."""
     overall = _accuracy(sum(1 for p in probes if _hit(p, scores.get(p.id))), len(probes))
     inj = _inj_credit(probes, scores)
-    passed = bool(probes) and overall["accuracy"] >= REFERENCE_PROBES and inj == 0
-    return GateResult("reference_probe_check", passed, {"overall": overall, "inj_credit": inj})
+    details = {"overall": overall, "inj_credit": inj, "scores": dict(scores)}
+    try:
+        validate_slots(probes)
+    except BenchmarkValidationError as exc:
+        return GateResult("reference_probe_check", None, {**details, "reason": str(exc)})
+    required = dict.fromkeys(PROBE_TYPES, REFERENCE_PER_TYPE)
+    if (
+        any(p.set != "held_out" for p in probes)
+        or Counter(p.type for p in probes) != required
+        or set(scores) != {p.id for p in probes}
+        or any(s is None for s in scores.values())
+    ):
+        return GateResult(
+            "reference_probe_check",
+            None,
+            {
+                **details,
+                "reason": f"reference needs {REFERENCE_PER_TYPE} distinct held-out scores per type",
+            },
+        )
+    return GateResult(
+        "reference_probe_check", overall["accuracy"] >= REFERENCE_PROBES and inj == 0, details
+    )
 
 
 def pass1_composition(

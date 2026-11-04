@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -228,9 +229,12 @@ def test_assemble_keeps_the_first_passing_round_and_drops_after_three(index_db: 
     )
     by_id = {p.id: p for p in probes}
     assert "FACT--Q1" not in by_id and "PADX--Q1" not in by_id and "PADX--Q2" in by_id
-    assert {"question_id": "Q1", "type": "FACT", "reason": "check_failed", "attempts": 3} in dropped
+    failed = next(d for d in dropped if d["type"] == "FACT")
+    assert failed["reason"] == "check_failed" and failed["attempts"] == 3
+    assert failed["failed_checks"] == [f"chk--FACT--Q1--r{r}" for r in (1, 2, 3)]
     assert any(d["type"] == "PADX" and d["question_id"] == "Q1" for d in dropped)
     para = by_id["PARA--Q1"]
+    assert para.built_by["failed_checks"] == ["chk--PARA--Q1--r1"]
     assert para.text == "PARA for Q1, round 2" and para.built_by["round"] == 2
     assert para.built_by["generator"] == assignment[("Q1", "PARA")][0]
     assert by_id["KEY--Q1"].built_by == {"code": True} and by_id["KEY--Q1"].set == "held_out"
@@ -248,8 +252,12 @@ def test_probe_file_round_trips_and_pins_its_inputs(tmp_path: Path) -> None:
         "spec_sha256": hashlib.sha256(PROBE_SPEC_PATH.read_bytes()).hexdigest(),
         "index_sha256": "i",
     }
-    probe = Probe("KEY--Q1", "KEY", "Q1", "held_out", "x", 1.0, "CORRECT", {"code": True})
-    dropped = [{"question_id": "Q1", "type": "PAD", "reason": "no_pad_text"}]
+    probe = Probe(
+        "KEY--SYN-EX-001", "KEY", "SYN-EX-001", "held_out", "x", 1.0, "CORRECT", {"code": True}
+    )
+    dropped = [
+        {"question_id": "SYN-EX-001", "set": "held_out", "type": "PAD", "reason": "no_pad_text"}
+    ]
     path = tmp_path / "probes.yml"
     write_probe_file(path, ProbeFile(header, [probe], dropped))
     loaded = load_probe_file(path, criteria_path=criteria, tuning_path=TUNING_PATH)
@@ -295,3 +303,126 @@ def test_reference_subset_takes_25_per_type_deterministically() -> None:
     assert subset != reference_subset(probes, seed="abd")
     assert len(reference_subset(_held_out(10), seed="abc")) == 140
     assert json.dumps([p.id for p in subset])  # ids are plain strings
+
+
+@pytest.mark.parametrize(
+    "generated,checks",
+    [
+        ({}, {}),
+        ({1: "candidate"}, {}),
+        ({1: "candidate"}, {1: False}),
+        ({2: "late candidate"}, {2: True}),
+        ({1: "a", 2: "b", 3: "c"}, {1: False, 3: True}),
+        ({1: ""}, {1: True}),
+    ],
+)
+def test_missing_round_is_neither_a_drop_nor_a_pass(index_db, generated, checks):
+    questions = {"Q1": _question()}
+    texts = {("Q1", kind, 1): "candidate" for kind in AGENT_WRITTEN if kind != "PARA"}
+    verdicts = dict.fromkeys(texts, True)
+    texts.update({("Q1", "PARA", r): value for r, value in generated.items()})
+    verdicts.update({("Q1", "PARA", r): value for r, value in checks.items()})
+    with pytest.raises(BenchmarkValidationError, match="Q1.*PARA"):
+        assemble(
+            questions,
+            "held_out",
+            index_path=index_db,
+            generated=texts,
+            checks=verdicts,
+            assignment=assignments(sorted(questions), ("sonnet", "sol", "gemini")),
+        )
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "duplicate",
+        "foreign_id",
+        "foreign_question",
+        "wrong_set",
+        "foreign_type",
+        "short_drop",
+        "overlap",
+        "wrong_dependency",
+        "missing_pad",
+    ],
+)
+def test_handoff_rejects_invalid_slots(tmp_path, damage):
+    criteria = FIX / "criteria.sample.yml"
+    suite = load_probe_file(
+        FIX / "probes.sample.yml", criteria_path=criteria, tuning_path=TUNING_PATH
+    )
+    probes = list(suite.probes)
+    first = probes[0]
+    drops = []
+    if damage == "duplicate":
+        probes.append(first)
+    elif damage == "foreign_id":
+        probes[0] = replace(first, id="different")
+    elif damage == "foreign_question":
+        probes[0] = replace(first, question_id="foreign", id="KEY--foreign")
+    elif damage == "wrong_set":
+        probes[0] = replace(first, set="tuning")
+    elif damage == "foreign_type":
+        probes[0] = replace(first, type="other", id="other--" + first.question_id)
+    else:
+        kind = {
+            "short_drop": "PARA",
+            "overlap": "PAD",
+            "wrong_dependency": "PADX",
+            "missing_pad": "PAD",
+        }[damage]
+        if damage != "overlap":
+            probes = [p for p in probes if (p.question_id, p.type) != (first.question_id, kind)]
+        reason = {
+            "short_drop": "check_failed",
+            "overlap": "no_pad_text",
+            "wrong_dependency": "fact_dropped",
+            "missing_pad": "no_pad_text",
+        }[damage]
+        drops = [
+            dict(
+                question_id=first.question_id, set="held_out", type=kind, reason=reason, attempts=2
+            )
+        ]
+    path = tmp_path / "probes.yml"
+    write_probe_file(path, ProbeFile(suite.header, probes, drops))
+    with pytest.raises(BenchmarkValidationError):
+        load_probe_file(path, criteria_path=criteria, tuning_path=TUNING_PATH)
+
+
+def test_reference_sampler_refuses_duplicate_candidates_before_sampling():
+    candidates = _held_out(50)
+    with pytest.raises(BenchmarkValidationError):
+        reference_subset([*candidates, candidates[-1]], seed="abc")
+
+
+def test_handoff_rejects_unobserved_retries_and_missing_generator_provenance(tmp_path):
+    criteria = FIX / "criteria.sample.yml"
+    suite = load_probe_file(
+        FIX / "probes.sample.yml", criteria_path=criteria, tuning_path=TUNING_PATH
+    )
+    para = next(p for p in suite.probes if p.type == "PARA")
+    rest = [p for p in suite.probes if p != para]
+    path = tmp_path / "probes.yml"
+    for built_by in (
+        {"code": True},
+        {**para.built_by, "round": 2},
+        {**para.built_by, "checker": para.built_by["generator"]},
+    ):
+        write_probe_file(
+            path, ProbeFile(suite.header, [*rest, replace(para, built_by=built_by)], [])
+        )
+        with pytest.raises(BenchmarkValidationError):
+            load_probe_file(path, criteria_path=criteria, tuning_path=TUNING_PATH)
+    # Legacy assembly counted generated texts as failed checks even when zero checks existed.
+    drop = dict(
+        type=para.type,
+        set=para.set,
+        question_id=para.question_id,
+        reason="check_failed",
+        attempts=3,
+    )
+    write_probe_file(path, ProbeFile(suite.header, rest, [drop]))
+    with pytest.raises(BenchmarkValidationError):
+        load_probe_file(path, criteria_path=criteria, tuning_path=TUNING_PATH)

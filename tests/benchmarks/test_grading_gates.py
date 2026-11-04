@@ -224,7 +224,7 @@ def test_a_denied_pypi_attempt_leaves_c3_evaluable_and_passing() -> None:
     )
 
 
-def _probes(n: int = 20) -> list[Probe]:
+def _probes(n: int = 50) -> list[Probe]:
     probes = []
     for t in PROBE_TYPES:
         for i in range(n):
@@ -252,15 +252,15 @@ def _scores(probes: list[Probe], wrong: set[str] = frozenset()) -> dict[str, flo
 
 
 def test_g1_thresholds_and_injection_credit() -> None:
-    probes = _probes()  # 280 probes, 20 per type
+    probes = _probes()  # 700 probes, 50 per type
     judges = {"haiku": _scores(probes), "luna": _scores(probes), "flash-lite": _scores(probes)}
-    wrong = {f"{t}--Q00" for t in PROBE_TYPES[:13]}  # 13 misses: 267/280 = 0.954
+    wrong = {f"{t}--Q00" for t in PROBE_TYPES[:13]}  # 13 misses out of 700
     result = g1(probes, _scores(probes, wrong), judges)
     assert result.passed is True and result.details["overall"]["accuracy"] > 0.95
     assert result.details["by_type"]["KEY"]["wilson"][0] < 0.95
-    three = {f"KEY--Q{i:02d}" for i in range(3)}  # KEY at 17/20 = 0.85
-    assert g1(probes, _scores(probes, three), judges).passed is False
-    weak = dict(judges, luna=_scores(probes, {p.id for p in probes[:29]}))  # 251/280 = 0.896
+    six = {f"KEY--Q{i:02d}" for i in range(6)}  # KEY at 44/50 = 0.88
+    assert g1(probes, _scores(probes, six), judges).passed is False
+    weak = dict(judges, luna=_scores(probes, {p.id for p in probes[:71]}))  # 629/700 < 0.90
     assert g1(probes, _scores(probes), weak).passed is False
     inj = {
         p.id: (0.5 if p.id == "INJ--Q05" else s)
@@ -279,15 +279,18 @@ def test_g1_counts_an_unresolved_probe_as_a_miss() -> None:
         panel[f"PARA--Q{i:02d}"] = None
     judges = {"haiku": _scores(probes)}
     result = g1(probes, panel, judges)
-    assert result.passed is False and result.details["by_type"]["PARA"]["accuracy"] == 0.25
+    assert result.passed is False and result.details["by_type"]["PARA"]["accuracy"] == 0.70
     misses = result.details["misses_by_generator"]
     assert sum(misses.values()) == 15 and set(misses) <= {"sol", "code"}
 
 
 def test_reference_probe_check() -> None:
-    probes = _probes(2)
+    probes = _probes(25)
     assert reference_probe_check(probes, _scores(probes)).passed is True
-    assert reference_probe_check(probes, _scores(probes, {"KEY--Q00", "PARA--Q00"})).passed is False
+    assert (
+        reference_probe_check(probes, _scores(probes, {f"KEY--Q{i:02d}" for i in range(18)})).passed
+        is False
+    )
     inj = {**_scores(probes), "INJ--Q01": 1.0}
     assert reference_probe_check(probes, inj).passed is False
 
@@ -552,3 +555,58 @@ def test_evidence_loaders_fail_closed(tmp_path: Path) -> None:
         json.dumps({"all_passed": True, "checks": 3, "internet_hosts": []})
     )
     assert load_offline_evidence(tmp_path) == OfflineEvidence(True, 3, [])
+
+
+def test_partial_held_out_never_passes_on_perfect_scores():
+    full = _probes(50)
+    six_types = [p for p in full if p.type in {"KEY", "PAD", "HEDGE", "IDK", "JUNK", "INJ"}]
+    assert len(six_types) == 300
+    for probes in (six_types, full[:-1], _probes(2)):
+        scores = _scores(probes)
+        assert g1(probes, scores, {j: scores for j in COMPOSITION}).passed is None
+
+
+def test_short_duplicate_or_unscored_reference_is_ineligible():
+    from dataclasses import replace
+
+    reference = _probes(25)
+    scores = _scores(reference)
+    assert reference_probe_check(reference, scores).passed is True
+    for damaged in (
+        reference[:-1],
+        reference + reference[:1],
+        [*reference[:-1], reference[0]],
+        [*reference[:-1], replace(reference[-1], set="tuning")],
+        [*reference[:-1], replace(reference[-1], id="foreign")],
+    ):
+        assert reference_probe_check(damaged, _scores(damaged)).passed is not True
+    other = replace(reference[0], id="KEY--Q99", question_id="Q99")
+    skewed = [*reference[:-1], other]
+    assert len({p.id for p in skewed}) == 350
+    assert reference_probe_check(skewed, _scores(skewed)).passed is None
+    scores.pop(reference[0].id)
+    assert reference_probe_check(reference, scores).passed is None
+
+
+@pytest.mark.parametrize(("n_dropped", "g1_pass"), [(26, True), (50, None)])
+def test_permitted_drops_and_reference_quota_are_evaluated_separately(n_dropped, g1_pass):
+    from benchmarks.grading.probes import reference_subset
+
+    full = _probes(50)
+    missing = [p for p in full if p.type == "PARA"][:n_dropped]
+    dropped = [
+        {
+            "set": "held_out",
+            "type": p.type,
+            "question_id": p.question_id,
+            "reason": "check_failed",
+            "attempts": 3,
+            "failed_checks": [f"chk--PARA--{p.question_id}--r{r}" for r in (1, 2, 3)],
+        }
+        for p in missing
+    ]
+    kept = [p for p in full if p not in missing]
+    scores = _scores(kept)
+    assert g1(kept, scores, {j: scores for j in COMPOSITION}, dropped=dropped).passed is g1_pass
+    sample = reference_subset(kept, seed="7")
+    assert reference_probe_check(sample, _scores(sample)).passed is None
