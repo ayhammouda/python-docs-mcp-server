@@ -51,6 +51,12 @@ benchmarks/sandbox/run.sh --models claude-sonnet-5-5,gpt-6.1-sol,gemini-3.8-flas
 It builds the image, plans every cell and writes the plan, and opens no ledger and no
 container.
 
+For dry and live runs, `agentic-run` plans from the same corpus, manifest, matrix and
+price snapshot bytes that it copies to `snapshots/`. A key-shaped CLI argument or YAML
+input stops the command with exit code 3 before it writes snapshots or opens the ledger.
+The check includes YAML comments and decoded scalars, even values a merge or duplicate
+key overrides.
+
 ## 4. Order of the first live calls
 
 #200 ruling 4, as amended by round-2 ruling D10:

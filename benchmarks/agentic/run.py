@@ -24,6 +24,7 @@ from typing import Any, Protocol
 
 import platformdirs
 import yaml
+from yaml.tokens import ScalarToken
 
 import benchmarks
 from benchmarks.adapters.claude_tokens import ANTHROPIC_API_VERSION, DEFAULT_COUNT_MODEL
@@ -33,14 +34,14 @@ from benchmarks.agentic.airgap import (
     ollama_preflight,
     write_airgap_evidence,
 )
-from benchmarks.agentic.bridge import SystemSpec, load_systems
+from benchmarks.agentic.bridge import SystemSpec, systems_from_mapping
 from benchmarks.agentic.egress import write_egress_summary
 from benchmarks.agentic.host import Launcher, LocalLauncher, WorkerJob, refuse_host_keys, run_jobs
 from benchmarks.agentic.ledger import (
     PROVIDER_CAPS,
     Ledger,
     LedgerService,
-    load_price_snapshot,
+    price_snapshot_from_mapping,
     refuse_stale_snapshot,
 )
 from benchmarks.agentic.live import (
@@ -54,6 +55,7 @@ from benchmarks.agentic.live import (
 from benchmarks.agentic.loop import AIR_GAPPED_CAPS, HOSTED_CAPS
 from benchmarks.agentic.prompt import SYSTEM_PROMPT
 from benchmarks.agentic.protocol import (
+    KeyLeakError,
     assert_no_key_shaped,
     assert_no_key_shaped_json,
     scanned_json_bytes,
@@ -67,7 +69,7 @@ from benchmarks.model_matrix import (
     _HOSTED_REQUIRED_FIELDS,
     METHODOLOGY_TOKEN_LABEL,
     ModelFamily,
-    load_model_matrix,
+    model_matrix_from_mapping,
 )
 from benchmarks.runner import (
     BenchmarkCell,
@@ -77,7 +79,7 @@ from benchmarks.runner import (
     _default_run_id,
     _environment_metadata,
     _load_questions,
-    _load_yaml_mapping,
+    _require_yaml_mapping,
     _scoring_record,
     _utc_now,
 )
@@ -422,6 +424,51 @@ class _Collector:
         self.cells.add(cell)
 
 
+@dataclass(frozen=True)
+class _RunInput:
+    name: str
+    content: bytes
+    mapping: dict[str, Any]
+
+    @classmethod
+    def read(cls, path: Path, name: str, label: str) -> _RunInput:
+        try:
+            content = path.read_bytes()
+        except FileNotFoundError:
+            raise BenchmarkValidationError(f"{label} file does not exist: {path}") from None
+        except OSError as exc:
+            raise BenchmarkValidationError(
+                f"cannot read {label} file {path}: {exc.strerror}"
+            ) from None
+
+        where = f"input {name}"
+        assert_no_key_shaped(content, where=where)  # includes comments
+        try:
+            text = content.decode("utf-8")  # same encoding as the path-based loaders
+            for token in yaml.scan(text, Loader=yaml.SafeLoader):
+                if isinstance(token, ScalarToken):
+                    # Construction can discard a value under a merge or a duplicate key.
+                    assert_no_key_shaped(token.value, where=where)
+            data = yaml.safe_load(text)
+        except KeyLeakError:
+            raise
+        except (
+            yaml.YAMLError,
+            ValueError,
+            TypeError,
+            LookupError,
+            AttributeError,
+            OverflowError,
+            RecursionError,
+        ) as exc:
+            # PyYAML messages can quote source, even for constructor errors without a mark.
+            mark = getattr(exc, "problem_mark", None)
+            location = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
+            raise BenchmarkValidationError(f"{label} file is not valid YAML{location}") from None
+        assert_no_key_shaped_json(data, where=where)  # e.g. bytes constructed by !!binary
+        return cls(name, content, _require_yaml_mapping(data, label))
+
+
 def run_agentic(
     config: AgenticConfig,
     *,
@@ -438,6 +485,14 @@ def run_agentic(
     after the ledger opens and before any key is read or any container starts.
     """
     refuse_host_keys(os.environ)
+    for value in vars(config).values():
+        assert_no_key_shaped_json(
+            str(value) if isinstance(value, Path) else value, where="run options"
+        )
+    corpus_input = _RunInput.read(config.corpus_path, "corpus.yml", "corpus")
+    matrix_input = _RunInput.read(config.matrix_path, "model-matrix.yml", "model matrix")
+    manifest_input = _RunInput.read(config.manifest_path, "competitor-manifest.yml", "manifest")
+    prices_input = _RunInput.read(config.prices_path, "price-snapshot.yml", "price snapshot")
     launcher = launcher or LocalLauncher()
     out = config.out_dir
     if out.exists() and any(out.iterdir()):
@@ -446,9 +501,9 @@ def run_agentic(
         )
     if config.repeats < 1:
         raise BenchmarkValidationError("--repeats must be at least 1")
-    corpus = _load_questions(_load_yaml_mapping(config.corpus_path, "corpus"))
+    corpus = _load_questions(corpus_input.mapping)
     questions = _select(corpus, config.questions, "corpus question")
-    matrix = load_model_matrix(config.matrix_path).model_families
+    matrix = model_matrix_from_mapping(matrix_input.mapping).model_families
     families = (
         _select(matrix, config.models, "model family")
         if config.models is not None
@@ -485,8 +540,8 @@ def run_agentic(
                 f"the air-gapped arm permits only {offline_systems} in --systems, "
                 f"got {requested_systems}"
             )
-    systems = _select(load_systems(config.manifest_path), requested_systems, "system")
-    snapshot = load_price_snapshot(config.prices_path)
+    systems = _select(systems_from_mapping(manifest_input.mapping), requested_systems, "system")
+    snapshot = price_snapshot_from_mapping(prices_input.mapping)
     for family in families:
         if family.output_cap_includes_reasoning is False:
             raise BenchmarkValidationError(
@@ -517,20 +572,11 @@ def run_agentic(
         seed=seed,
         matrix_dir=config.matrix_path.parent,
     )
-    inputs = {
-        "corpus.yml": config.corpus_path.read_bytes(),
-        "competitor-manifest.yml": config.manifest_path.read_bytes(),
-        "model-matrix.yml": config.matrix_path.read_bytes(),
-        "price-snapshot.yml": config.prices_path.read_bytes(),
-    }
-    for name, data in inputs.items():  # every input, before any snapshot is written
-        assert_no_key_shaped(data, where=f"input {name}")
-        assert_no_key_shaped_json(yaml.safe_load(data), where=f"input {name}")
     out.mkdir(parents=True, exist_ok=True)
     snapshots = out / "snapshots"
     snapshots.mkdir()
-    for name, data in inputs.items():  # the exact bytes that were scanned
-        (snapshots / name).write_bytes(data)
+    for source in (corpus_input, matrix_input, manifest_input, prices_input):
+        (snapshots / source.name).write_bytes(source.content)
     (snapshots / "system-prompt.txt").write_text(SYSTEM_PROMPT, encoding="utf-8")
     environment = {
         **_environment_metadata(run_id=run_id, dry_run=config.dry_run),

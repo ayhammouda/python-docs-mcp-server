@@ -943,6 +943,144 @@ def test_dry_run_refuses_an_escaped_key_in_corpus_before_writing_snapshots(
     assert not (tmp_path / "run" / "snapshots").exists()
 
 
+def _assert_input_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], args: list[str], key: str
+) -> None:
+    with pytest.raises(SystemExit) as caught:
+        main([*_cli_args(tmp_path), "--dry-run", *args])
+    output = capsys.readouterr()
+    assert caught.value.code == 3
+    assert "key leak" in output.err and key not in output.err and not output.out
+    assert not (tmp_path / "run").exists()
+    assert not (tmp_path / "ledger").exists()
+
+
+@pytest.mark.parametrize(
+    "case, delimiter",
+    [("merge", r"\_"), ("merge", r"\x20"), ("duplicate", r"\_"), ("alias", r"\_")],
+)
+def test_cli_checks_scalar_before_yaml_discards_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], case: str, delimiter: str
+) -> None:
+    key = "AIza" + "g" * 35
+    quoted = f'"defaults{delimiter}{key}"'
+    entries = {
+        "merge": f"    <<: {{prompt: {quoted}}}\n",
+        "duplicate": f"    prompt: {quoted}\n",
+        "alias": f"    prompt: &hidden {quoted}\n    other: *hidden\n    other: safe\n",
+    }
+    corpus = tmp_path / "input.yml"
+    corpus.write_text("questions:\n  - id: SYN-EX-001\n" + entries[case] + "    prompt: safe\n")
+    _assert_input_refused(
+        tmp_path, capsys, ["--corpus", str(corpus), "--questions", "SYN-EX-001"], key
+    )
+
+
+@pytest.mark.parametrize("field, original", [("model_id", "scripted-1"), ("api", "scripted")])
+def test_cli_checks_matrix_before_validation_or_price_lookup(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], field: str, original: str
+) -> None:
+    key = "AIza" + "g" * 35
+    matrix = tmp_path / "matrix.yml"
+    matrix.write_text(
+        (FIX / "model-matrix.yml").read_text().replace(f"{field}: {original}", f"{field}: {key}", 1)
+    )
+    _assert_input_refused(tmp_path, capsys, ["--matrix", str(matrix)], key)
+
+
+@pytest.mark.parametrize(
+    "option", ["--models", "--systems", "--questions", "--out", "--image", "--repeats"]
+)
+def test_cli_checks_runtime_inputs_before_errors_or_artifacts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], option: str
+) -> None:
+    key = "AIza" + "g" * 35
+    value = str(tmp_path / key) if option == "--out" else key
+    extra = ["--launcher", "container"] if option == "--image" else []
+    _assert_input_refused(tmp_path, capsys, [*extra, option, value], key)
+    assert not (tmp_path / key).exists()
+
+
+@pytest.mark.parametrize(
+    "bad", ['"private-source\\q"', "[private-source, }", "!private-source discarded"]
+)
+def test_cli_reports_malformed_yaml_without_source_excerpt(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], bad: str
+) -> None:
+    corpus = tmp_path / "malformed.yml"
+    corpus.write_text(f"questions: {bad}\n")
+    with pytest.raises(SystemExit) as caught:
+        main([*_cli_args(tmp_path), "--dry-run", "--corpus", str(corpus)])
+    output = capsys.readouterr()
+    assert caught.value.code == 2
+    assert "corpus" in output.err and "YAML" in output.err and "line 1" in output.err
+    assert "private-source" not in output.err and not output.out
+    assert not (tmp_path / "run").exists()
+    assert not (tmp_path / "ledger").exists()
+
+
+def test_cli_accepts_benign_yaml_overrides_aliases_and_token_boundaries(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    corpus = tmp_path / "valid.yml"
+    key = "AIza" + "g" * 35
+    corpus.write_text(
+        f"defaults: &base {{prompt: prefix{key}}}\n"
+        "unused: &loop [*loop]\n"
+        "questions:\n  - <<: *base\n    id: SYN-EX-001\n    prompt: first\n    prompt: second\n"
+    )
+    assert (
+        main(
+            [
+                *_cli_args(tmp_path),
+                "--dry-run",
+                "--corpus",
+                str(corpus),
+                "--questions",
+                "SYN-EX-001",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["corpus_ids"] == ["SYN-EX-001"]
+    assert (tmp_path / "run" / "snapshots" / "corpus.yml").read_bytes() == corpus.read_bytes()
+
+
+def test_cli_plans_and_snapshots_the_same_files_even_if_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = _cli_args(tmp_path)
+    sources: dict[Path, bytes] = {}
+    for flag, name, original in (
+        ("--corpus", "corpus.yml", SAMPLE_CORPUS),
+        ("--manifest", "competitor-manifest.yml", COMMITTED_MANIFEST),
+        ("--matrix", "model-matrix.yml", FIX / "model-matrix.yml"),
+        ("--prices", "price-snapshot.yml", FIX / "prices.yml"),
+    ):
+        path = tmp_path / name
+        sources[path] = original.read_bytes()
+        path.write_bytes(sources[path])
+        args.extend([flag, str(path)])
+    opened: list[Path] = []
+    original_open = Path.open
+
+    def open_then_replace(path: Path, *args: Any, **kwargs: Any) -> Any:
+        stream = original_open(path, *args, **kwargs)
+        if path in sources:
+            opened.append(path)
+            replacement = tmp_path / "replacement"
+            replacement.write_bytes(b"questions: []\n")
+            replacement.replace(path)  # the open descriptor still refers to the original
+        return stream
+
+    monkeypatch.setattr(Path, "open", open_then_replace)
+    assert main([*args, "--dry-run", "--repeats", "1"]) == 0
+    assert json.loads(capsys.readouterr().out)["planned_cells"] == 18
+    assert sorted(opened) == sorted(sources)
+    for path, data in sources.items():
+        assert (tmp_path / "run" / "snapshots" / path.name).read_bytes() == data
+
+
 def test_decoded_scan_visits_yaml_aliases_only_once() -> None:
     from benchmarks.agentic.protocol import assert_no_key_shaped_json
 

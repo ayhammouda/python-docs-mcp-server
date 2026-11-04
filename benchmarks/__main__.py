@@ -245,6 +245,15 @@ def _container_launcher(args: argparse.Namespace, run_id: str) -> Any:
 
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "agentic-run":
+        # argparse itself quotes invalid values (e.g. --repeats) in its diagnostics.
+        from benchmarks.agentic.protocol import KeyLeakError, assert_no_key_shaped_json
+
+        try:
+            assert_no_key_shaped_json(argv[1:], where="agentic-run arguments")
+        except KeyLeakError as exc:
+            parser.exit(3, f"agentic run stopped on a key leak: {exc}\n")
     args = parser.parse_args(argv)
 
     if args.command == "agentic-worker":

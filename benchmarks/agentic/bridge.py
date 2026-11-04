@@ -111,7 +111,10 @@ def system_spec_from_raw(raw: Mapping[str, Any]) -> SystemSpec:
 
 
 def load_systems(manifest_path: Path) -> list[SystemSpec]:
-    data = _load_yaml_mapping(manifest_path, "manifest")
+    return systems_from_mapping(_load_yaml_mapping(manifest_path, "manifest"))
+
+
+def systems_from_mapping(data: dict[str, Any]) -> list[SystemSpec]:
     _validate_manifest_eligibility(data)
     return [system_spec_from_raw(competitor.raw) for competitor in _load_competitors(data)]
 

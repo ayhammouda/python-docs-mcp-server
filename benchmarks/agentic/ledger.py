@@ -89,7 +89,10 @@ class PriceSnapshot:
 
 
 def load_price_snapshot(path: Path) -> PriceSnapshot:
-    data = _load_yaml_mapping(path, "price snapshot")
+    return price_snapshot_from_mapping(_load_yaml_mapping(path, "price snapshot"))
+
+
+def price_snapshot_from_mapping(data: dict[str, Any]) -> PriceSnapshot:
     captured_on = _date(data.get("captured_on"), "captured_on")
     if captured_on is None:
         raise BenchmarkValidationError("price snapshot must set 'captured_on'")
