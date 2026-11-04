@@ -21,6 +21,7 @@ from mcp.types import CONNECTION_CLOSED, CallToolResult, PaginatedRequestParams,
 from benchmarks.adapters.guard import EGRESS_URL_ENV, PROVIDER_API_KEY_ENV
 from benchmarks.agentic.mcp_stdio import ReplyGuard, checked_stdio_client
 from benchmarks.agentic.protocol import (
+    KeyLeakError,
     assert_no_key_shaped,
     find_frame_too_large,
     find_key_leak,
@@ -185,6 +186,8 @@ class Bridge:
         except BaseException as exc:
             if leak := find_key_leak(exc):
                 raise leak
+            if self._reply_guard is not None and isinstance(self._reply_guard.failure, KeyLeakError):
+                self._reply_guard.raise_if_failed()
             if not isinstance(exc, Exception):
                 raise
             self.raise_if_failed()

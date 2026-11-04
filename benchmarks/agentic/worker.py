@@ -298,6 +298,8 @@ async def _close(stack: AsyncExitStack, pending: BaseException | None = None) ->
                 raise leak
             if not isinstance(pending, Exception):
                 raise pending from exc
+            if frame := find_frame_too_large(pending):
+                raise frame
         if frame := find_frame_too_large(exc):
             raise frame
         print(f"closing the MCP bridge failed: {exc!r}", file=sys.stderr)

@@ -10,7 +10,7 @@ import pytest
 from mcp.types import CallToolResult
 
 from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
-from benchmarks.agentic import worker
+from benchmarks.agentic import clients, loop, worker
 from benchmarks.agentic.bridge import Bridge
 from benchmarks.agentic.cleanup import finish
 from benchmarks.agentic.host import LocalLauncher, run_jobs
@@ -146,6 +146,56 @@ async def test_worker_close_propagates_grouped_frame_limit():
     with pytest.raises(FrameTooLarge) as caught:
         await worker._close(stack)
     assert caught.value is failure
+
+
+async def test_worker_frame_failure_survives_unprintable_cleanup():
+    stack = AsyncExitStack()
+    pending = FrameTooLarge("recognized frame limit")
+
+    class BrokenError(Exception):
+        def __repr__(self):
+            raise ValueError("broken diagnostic")
+
+    async def close():
+        raise BrokenError()
+
+    stack.push_async_callback(close)
+    with pytest.raises(FrameTooLarge) as caught:
+        await worker._close(stack, pending)
+    assert caught.value is pending
+
+
+@pytest.mark.parametrize("discarded", [False, True])
+async def test_worker_checks_latch_before_publishing_returned_record(
+    tmp_path, monkeypatch, discarded
+):
+    job = _job(tmp_path, [])
+    guard = ReplyGuard()
+    bridge = Bridge(Mock(), {}, [])
+    bridge._reply_guard = guard
+    channel = Mock()
+    client = Mock(provider="anthropic", model_id="scripted-1", api="scripted")
+    client.request_params.return_value = {}
+    monkeypatch.setattr(clients, "make_client", Mock(return_value=client))
+    monkeypatch.setattr(worker, "_open", AsyncMock(return_value=bridge))
+
+    async def trajectory(**kwargs):
+        guard.failure = FrameTooLarge("recognized before record publication")
+        if discarded:
+            raise loop.TrajectoryDiscarded("retries_exhausted", {})
+        return {"error": {"category": "mcp_protocol_crash"}}
+
+    run = AsyncMock(side_effect=trajectory)
+    monkeypatch.setattr(loop, "run_trajectory", run)
+    code = await worker.run_worker(channel, asyncio.StreamReader(), {
+        "type": "job", "family": job.family.raw, "system": job.system.raw,
+        "caps": {}, "trajectories": list(job.trajectories),
+    })
+    assert code == 2
+    assert run.await_count == 1
+    sent = [call.args[0] for call in channel.send.call_args_list]
+    assert [m["type"] for m in sent] == ["system_info", "error"]
+    assert sent[-1]["reason"] == "FrameTooLarge: recognized before record publication"
 
 
 @pytest.mark.parametrize("source", ["error", "header"])
@@ -297,5 +347,21 @@ async def test_frame_latch_never_masks_credential_or_interrupt(credential):
 
     bridge._session.call_tool.side_effect = call
     with pytest.raises(type(failure)) as caught:
+        await bridge.call("search_docs", {})
+    assert caught.value is failure
+
+
+async def test_existing_credential_latch_keeps_its_precedence_on_sdk_cancellation():
+    guard = ReplyGuard()
+    failure = KeyLeakError("recognized credential failure")
+    bridge = Bridge(Mock(), {}, [])
+
+    async def call(*args):
+        guard.failure = failure
+        bridge._reply_guard = guard
+        raise asyncio.CancelledError()
+
+    bridge._session.call_tool = AsyncMock(side_effect=call)
+    with pytest.raises(KeyLeakError) as caught:
         await bridge.call("search_docs", {})
     assert caught.value is failure

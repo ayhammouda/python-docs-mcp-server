@@ -52,7 +52,7 @@ class ReplyGuard:
         self.failure: KeyLeakError | FrameTooLarge | None = None
 
     def frame_too_large(self) -> None:
-        # Retain one fixed diagnostic, never the offending bytes. A known leak wins.
+        # Use one fixed diagnostic without interpolating reply bytes. A known leak wins.
         if self.failure is None:
             self.failure = FrameTooLarge("MCP stdio reply exceeds the frame limit")
         self.raise_if_failed()
