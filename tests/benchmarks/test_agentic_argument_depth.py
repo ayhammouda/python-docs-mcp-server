@@ -42,10 +42,13 @@ def _native_arguments(provider, payload, *, response=False):
 @pytest.mark.parametrize("provider", ["openai", "ollama"])
 @pytest.mark.parametrize("shape", ["array", "object", "mixed"])
 @pytest.mark.parametrize("depth", [65, 1100, 9500])
+@pytest.mark.parametrize("shadowed", [False, True])
 async def test_deep_sdk_arguments_keep_usage_evidence_and_invalid_argument_continuation(
-    provider, shape, depth
+    provider, shape, depth, shadowed
 ):
     arguments = _arguments(depth, shape)
+    if shadowed:
+        arguments = arguments[:-2] + ', "query":"safe" }'
     client, recorder = _argument_client(provider, arguments)
     ledger = RecordingLedger()
     bridge, dispatch = _bridge(CallToolResult(content=[TextContent(type="text", text="safe")]))
@@ -113,7 +116,8 @@ async def test_deep_and_near_limit_arguments_scan_encoded_content_even_when_shad
     client, recorder = _argument_client(provider, arguments, safe_first=True)
     ledger = RecordingLedger()
     bridge, dispatch = _bridge(CallToolResult(content=[TextContent(type="text", text="safe")]))
-    channel = worker.ProtocolChannel(-1, (marker.encode(),), -1, None, ())
+    literals = (marker.encode(),) if kind == "opaque" else ()
+    channel = worker.ProtocolChannel(-1, literals, -1, None, ())
     try:
         with pytest.raises(KeyLeakError):
             await _run(client, bridge, ledger, check_content=channel.check_content)
