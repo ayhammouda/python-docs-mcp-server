@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
 
 from benchmarks.agentic.ledger import PROVIDER_MARGINS, UNMETERED_PROVIDERS
+from benchmarks.model_matrix import load_model_matrix
 from benchmarks.runner import BenchmarkValidationError
 
 if TYPE_CHECKING:
@@ -39,6 +40,8 @@ class ReferenceRate:
     cells: int  # logical cells: one (cell, corpus_id), every attempt included
     usd_per_cell: Decimal
     seconds_per_cell: float
+    model_id: str | None = None
+    api: str | None = None
 
 
 @dataclass(frozen=True)
@@ -70,7 +73,8 @@ def _read_reference_rates(run_dir: Path) -> dict[str, ReferenceRate]:
     if not summary["scored_cells"] or summary["scored_cells"] != summary["planned_cells"]:
         raise ValueError("the run did not score every planned cell")
     seconds: dict[str, dict[tuple[str, str], float]] = defaultdict(lambda: defaultdict(float))
-    providers: dict[str, str] = {}
+    matrix = load_model_matrix(run_dir / "snapshots" / "model-matrix.yml")
+    families = {family.id: family for family in matrix.model_families}
     job_families: dict[tuple[str, str], str] = {}
     scored: set[tuple[str, str]] = set()
     discarded = {
@@ -81,8 +85,9 @@ def _read_reference_rates(run_dir: Path) -> dict[str, ReferenceRate]:
             record = json.loads(path.read_text(encoding="utf-8"))
             family_id = record["model_family_id"]
             provider = record["provider"]
-            if providers.setdefault(family_id, provider) != provider:
-                raise ValueError(f"inconsistent provider for {family_id}")
+            family = families[family_id]
+            if (provider, record["model_id"]) != (family.provider, family.model_id):
+                raise ValueError(f"transcript disagrees with the model snapshot for {family_id}")
             job_families[provider, f"{family_id}--{record['system_id']}"] = family_id
             timing = record["timing"]
             cell = (record["competitor_id"], record["corpus_id"])
@@ -108,11 +113,17 @@ def _read_reference_rates(run_dir: Path) -> dict[str, ReferenceRate]:
     for event in map(json.loads, filter(None, events)):
         provider = event["provider"]
         if event["event"] == "reserve":
-            reserved[event["unit_id"]] = job_families[provider, event["job_id"]]
+            family_id = job_families[provider, event["job_id"]]
+            if event["model_id"] != families[family_id].model_id:
+                raise ValueError(f"reservation disagrees with the model snapshot for {family_id}")
+            reserved[event["unit_id"]] = family_id
         elif event["event"] == "settle":
+            # Ledger.open books an older run's pending units before recording spent_before.
+            if event["outcome"] == "unsettled_at_load" and event["unit_id"] not in reserved:
+                continue
             family_id = reserved.pop(event["unit_id"])
             amount = Decimal(event["booked"])
-            if provider != providers[family_id] or not amount.is_finite() or amount < 0:
+            if provider != families[family_id].provider or not amount.is_finite() or amount < 0:
                 raise ValueError(f"invalid settlement for {family_id}")
             booked[family_id] += amount
             if event["outcome"] == "ok" and amount > 0:
@@ -122,23 +133,25 @@ def _read_reference_rates(run_dir: Path) -> dict[str, ReferenceRate]:
     balances = summary["ledger"]
     if (
         not isinstance(balances, dict)
-        or set(providers.values()) - UNMETERED_PROVIDERS - balances.keys()
+        or {families[f].provider for f in seconds} - UNMETERED_PROVIDERS - balances.keys()
     ):
         raise ValueError("the run summary is missing a metered provider's spend")
     for provider, balance in balances.items():
-        spend = sum(booked[f] for f in booked if providers[f] == provider)
+        spend = sum(booked[f] for f in booked if families[f].provider == provider)
         if spend != Decimal(balance["spent_after"]) - Decimal(balance["spent_before"]):
             raise ValueError(f"{provider} settlements disagree with the run's spend")
     rates = {
         family_id: ReferenceRate(
             family_id=family_id,
-            provider=providers[family_id],
+            provider=families[family_id].provider,
+            model_id=families[family_id].model_id,
+            api=families[family_id].api,
             cells=len(cells),
             usd_per_cell=booked[family_id] / len(cells),
             seconds_per_cell=sum(cells.values()) / len(cells),
         )
         for family_id, cells in seconds.items()
-        if providers[family_id] in UNMETERED_PROVIDERS or family_id in measured
+        if families[family_id].provider in UNMETERED_PROVIDERS or family_id in measured
         if sum(cells.values()) > 0
     }
     if not rates:
@@ -155,6 +168,23 @@ def _live_counts(jobs: Sequence[WorkerJob]) -> dict[str, dict[str, int]]:
     return counts
 
 
+def _matching_rates(
+    jobs: Sequence[WorkerJob], rates: Mapping[str, ReferenceRate] | None
+) -> dict[str, ReferenceRate]:
+    matching = {}
+    for job in jobs:
+        family = job.family
+        rate = rates.get(family.id) if rates is not None else None
+        if (
+            rate is not None
+            and family.api not in (None, "scripted")
+            and (rate.provider, rate.model_id, rate.api)
+            == (family.provider, family.model_id, family.api)
+        ):
+            matching[family.id] = rate
+    return matching
+
+
 def provider_plans(
     jobs: Sequence[WorkerJob],
     spent: Mapping[str, Decimal],
@@ -163,17 +193,16 @@ def provider_plans(
 ) -> list[ProviderPlan]:
     """One plan per provider with live trajectories, sorted by provider."""
     plans = []
+    matching = _matching_rates(jobs, rates)
     for provider, families in sorted(_live_counts(jobs).items()):
         trajectories = sum(families.values())
         if provider not in caps:  # local and unmetered
             plans.append(ProviderPlan(provider, trajectories, None, None, None))
             continue
         estimate = None
-        if rates is not None and all(
-            f in rates and rates[f].provider == provider for f in families
-        ):
+        if families.keys() <= matching.keys():
             estimate = sum(
-                (n * rates[f].usd_per_cell for f, n in families.items()), start=Decimal(0)
+                (n * matching[f].usd_per_cell for f, n in families.items()), start=Decimal(0)
             )
         plans.append(
             ProviderPlan(
@@ -201,8 +230,8 @@ def full_run_gate(
             if rates is not None:
                 families = ", ".join(counts[plan.provider])
                 problems.append(
-                    f"{plan.provider}: the reference needs usable measurements for each "
-                    f"requested family ({families})"
+                    f"{plan.provider}: the reference needs measurements from the same model ID "
+                    f"and live API for each requested family ({families})"
                 )
             elif plan.trajectories > PILOT_TRAJECTORIES_PER_PROVIDER:
                 problems.append(
@@ -217,9 +246,10 @@ def full_run_gate(
                 f"{plan.provider}: the estimate ${plan.estimate} x {SAFETY} = "
                 f"${plan.estimate * SAFETY} is over the ${remaining} left under its cap"
             )
+    matching = _matching_rates(jobs, rates)
     for provider_families in counts.values():
         for family_id, trajectories in provider_families.items():
-            rate = (rates or {}).get(family_id)
+            rate = matching.get(family_id)
             if rate is not None and trajectories * rate.seconds_per_cell * float(SAFETY) > WINDOW_S:
                 hours = trajectories * rate.seconds_per_cell * float(SAFETY) / 3600
                 problems.append(

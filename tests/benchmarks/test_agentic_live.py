@@ -7,14 +7,17 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 
 from benchmarks.agentic.host import WorkerJob
-from benchmarks.agentic.ledger import PROVIDER_CAPS
+from benchmarks.agentic.ledger import PROVIDER_CAPS, Ledger
 from benchmarks.agentic.live import (
     PILOT_TRAJECTORIES_PER_PROVIDER,
     SAFETY,
@@ -29,10 +32,12 @@ from benchmarks.agentic.live import (
     reference_rates,
 )
 from benchmarks.agentic.loop import HOSTED_CAPS
+from benchmarks.model_matrix import METHODOLOGY_TOKEN_LABEL
 from benchmarks.runner import BenchmarkValidationError
 from tests.benchmarks.test_agentic_sandbox import FAMILIES, SYSTEMS
 
 D = Decimal
+SLOW_ANSWER = {"text": "ok", "delay_s": 0.05, "usage": {"input_tokens": 1000, "output_tokens": 100}}
 
 
 class _Tty(io.StringIO):
@@ -56,11 +61,18 @@ def _jobs(**counts: int) -> list[WorkerJob]:
 
 
 def _rate(family_id: str, provider: str, usd: str, seconds: float = 10.0) -> ReferenceRate:
-    return ReferenceRate(family_id, provider, 90, D(usd), seconds)
+    family = FAMILIES[family_id]
+    return ReferenceRate(family_id, provider, 90, D(usd), seconds, family.model_id, family.api)
 
 
 def _write_record(
-    path: Path, family_id: str, provider: str, wall_ms: float, wait_ms: float
+    path: Path,
+    family_id: str,
+    provider: str,
+    wall_ms: float,
+    wait_ms: float,
+    *,
+    model_id: str | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     cell, corpus = path.parent.name, path.name.split("--")[0].removesuffix(".json")
@@ -69,6 +81,7 @@ def _write_record(
         "system_id": "no-docs",
         "corpus_id": corpus,
         "model_family_id": family_id,
+        "model_id": model_id or family_id,
         "provider": provider,
         "timing": {"wall_ms": wall_ms, "grant_wait_ms": wait_ms},
     }
@@ -89,16 +102,166 @@ def _pilot_summary(run: Path, status: str, planned: int, scored: int, openai_spe
     (run / "run-summary.json").write_text(json.dumps(summary))
 
 
-def _settled_unit(unit_id: str, family: str, booked: str, outcome: str) -> list[dict[str, str]]:
+def _settled_unit(
+    unit_id: str, family: str, booked: str, outcome: str, *, model_id: str | None = None
+) -> list[dict[str, str]]:
     unit = {"provider": "openai", "unit_id": unit_id}
     return [
-        {**unit, "event": "reserve", "job_id": f"{family}--no-docs"},
+        {
+            **unit,
+            "event": "reserve",
+            "job_id": f"{family}--no-docs",
+            "model_id": model_id or family,
+        },
         {**unit, "event": "settle", "booked": booked, "outcome": outcome},
     ]
 
 
+def _write_snapshot(run: Path, *families: dict[str, Any]) -> None:
+    path = run / "snapshots" / "model-matrix.yml"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "methodology_token_label": METHODOLOGY_TOKEN_LABEL,
+                "model_families": [*families, FAMILIES["scripted-google"].raw],
+            }
+        )
+    )
+
+
+def test_same_model_scripted_pilot_is_refused_before_confirmation(tmp_path: Path) -> None:
+    from benchmarks.agentic.run import run_agentic
+    from tests.benchmarks.test_agentic_run import (
+        COMMITTED_PRICES,
+        _config,
+        _container,
+        _live_config,
+        _matrix_with,
+    )
+
+    family = FAMILIES["gpt-6.1-sol"]
+    alias = FAMILIES["scripted-openai"].raw | {"id": family.id, "model_id": family.model_id}
+    matrix = _matrix_with(tmp_path, {family.id: [SLOW_ANSWER]}, extra=[alias])
+    pilot = tmp_path / "pilot"
+    config = _config(
+        tmp_path,
+        matrix_path=matrix,
+        prices_path=COMMITTED_PRICES,
+        out_dir=pilot,
+        models=(family.id,),
+        systems=("no-docs",),
+        questions=("SYN-EX-001",),
+        repeats=1,
+    )
+    summary = run_agentic(config)
+    assert summary["scored_cells"] == summary["planned_cells"] == 1
+    assert reference_rates(pilot)[family.id].usd_per_cell > 0
+    matrix.unlink()  # Only the pilot's snapshot is available at authorization.
+    launcher, docker = _container(tmp_path)
+    with pytest.raises(BenchmarkValidationError, match="reference"):
+        run_agentic(
+            _live_config(tmp_path, models=(family.id,), repeats=91, reference_run=pilot),
+            launcher=launcher,
+            today=date(2026, 11, 4),
+            confirm=lambda _: pytest.fail("scripted pilot reached confirmation"),
+        )
+    assert docker.calls == []
+
+
+def _single_cell_reference(
+    run: Path,
+    model_id: str,
+    api: str,
+    *,
+    transcript_model: str | None = None,
+    reserved_model: str | None = None,
+) -> None:
+    family = FAMILIES["gpt-6.1-sol"]
+    _write_snapshot(run, family.raw | {"model_id": model_id, "api": api})
+    record = run / "transcripts" / f"no-docs--{family.id}--r1" / "Q1.json"
+    _write_record(
+        record, family.id, family.provider, 200, 100, model_id=transcript_model or model_id
+    )
+    _pilot_summary(run, "completed", 1, 1, "0.10")
+    events = _settled_unit("u1", family.id, "0.10", "ok", model_id=reserved_model or model_id)
+    (run / "ledger-events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+
+
+@pytest.mark.parametrize(
+    ("model_id", "api", "usable"),
+    [
+        ("other-model", "openai-responses", False),
+        ("gpt-6.1-sol", "openai-chat-completions", False),
+        ("gpt-6.1-sol", "openai-responses", True),
+    ],
+)
+def test_only_matching_live_measurements_estimate_a_full_run(
+    tmp_path: Path, model_id: str, api: str, usable: bool
+) -> None:
+    _single_cell_reference(tmp_path, model_id, api)
+    rates = reference_rates(tmp_path)
+    jobs = _jobs(**{"gpt-6.1-sol": 91})
+    plans = provider_plans(jobs, {}, PROVIDER_CAPS, rates)
+    assert plans[0].estimate == (D("9.10") if usable else None)
+    assert (full_run_gate(plans, jobs, rates) == []) == usable
+
+
+@pytest.mark.parametrize("overrides", [{"transcript_model": "other"}, {"reserved_model": "other"}])
+def test_reference_measurements_must_belong_to_the_snapshot_model(
+    tmp_path: Path, overrides: dict[str, str]
+) -> None:
+    _single_cell_reference(tmp_path, "gpt-6.1-sol", "openai-responses", **overrides)
+    with pytest.raises(BenchmarkValidationError, match="reference"):
+        reference_rates(tmp_path)
+
+
+def test_reference_spend_excludes_recovery_of_an_earlier_run(tmp_path: Path) -> None:
+    from benchmarks.agentic.run import run_agentic
+    from tests.benchmarks.test_agentic_run import _config, _matrix_with
+
+    ledger = Ledger.open(tmp_path / "ledger", run_id="interrupted")
+    try:
+        unit = ledger.reserve(
+            "openai",
+            model_id="scripted-2",
+            kind="model_call",
+            bound=D("1"),
+            input_bound=1000,
+            output_bound=100,
+            job_id="previous--no-docs",
+        )
+        assert unit is not None
+    finally:
+        ledger.close()
+    config = _config(
+        tmp_path,
+        models=("scripted-openai",),
+        systems=("no-docs",),
+        questions=("SYN-EX-001",),
+        repeats=1,
+        run_id="pilot",
+        matrix_path=_matrix_with(tmp_path, {"scripted-openai": [SLOW_ANSWER]}),
+    )
+    summary = run_agentic(config)
+    assert D(summary["ledger"]["openai"]["spent_before"]) == 2
+    assert D(summary["ledger"]["openai"]["spent_after"]) == D("2.002")
+    events_path = config.out_dir / "ledger-events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    assert events[0]["unit_id"] == unit and events[0]["outcome"] == "unsettled_at_load"
+    assert reference_rates(config.out_dir)["scripted-openai"].usd_per_cell == D("0.002")
+
+    # An unmatched ordinary settlement is invalid even if provider balances still reconcile.
+    corrupt = shutil.copytree(config.out_dir, tmp_path / "corrupt")
+    events[0]["outcome"] = "timeout"
+    (corrupt / events_path.name).write_text("".join(json.dumps(e) + "\n" for e in events))
+    with pytest.raises(BenchmarkValidationError, match="reference"):
+        reference_rates(corrupt)
+
+
 def test_reference_rates_aggregate_every_attempt_of_a_cell(tmp_path: Path) -> None:
     run = tmp_path / "pilot"
+    _write_snapshot(run, FAMILIES["gpt-6.1-sol"].raw)
     for r in range(1, 31):
         cell = f"no-docs--gpt-6.1-sol--r{r}"
         for q in ("Q1", "Q2", "Q3"):
@@ -149,6 +312,7 @@ def test_unusable_reference_is_refused_before_confirmation(
 
     family = "gpt-6.1-sol"
     pilot = tmp_path / "pilot"
+    _write_snapshot(pilot, FAMILIES[family].raw)
     kind, filename = ("transcripts", "Q1.json") if scored else ("discarded", "Q1--attempt1.json")
     _write_record(
         pilot / kind / f"no-docs--{family}--r1" / filename, family, "openai", wall_ms, 100
@@ -172,6 +336,10 @@ def test_unusable_reference_is_refused_before_confirmation(
 
 
 def test_reference_spend_and_time_follow_the_family_that_incurred_them(tmp_path: Path) -> None:
+    _write_snapshot(
+        tmp_path,
+        *(FAMILIES["gpt-6.1-sol"].raw | {"id": f, "model_id": f} for f in ("cheap", "expensive")),
+    )
     events = []
     for family, price, wall in [("cheap", "0.01", 200), ("expensive", "3.00", 4000)]:
         record = tmp_path / "transcripts" / f"no-docs--{family}--r1" / "Q1.json"
@@ -180,8 +348,12 @@ def test_reference_spend_and_time_follow_the_family_that_incurred_them(tmp_path:
     (tmp_path / "ledger-events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
     _pilot_summary(tmp_path, "completed", 2, 2, "3.01")
     rates = reference_rates(tmp_path)
-    assert rates["cheap"] == ReferenceRate("cheap", "openai", 1, D("0.01"), 0.1)
-    assert rates["expensive"] == ReferenceRate("expensive", "openai", 1, D(3), 3.9)
+    assert rates["cheap"] == ReferenceRate(
+        "cheap", "openai", 1, D("0.01"), 0.1, "cheap", "openai-responses"
+    )
+    assert rates["expensive"] == ReferenceRate(
+        "expensive", "openai", 1, D(3), 3.9, "expensive", "openai-responses"
+    )
     # Losing even a suffix of complete ledger lines can leave positive but understated rates.
     _pilot_summary(tmp_path, "completed", 2, 2, "3.02")
     with pytest.raises(BenchmarkValidationError, match="reference"):
