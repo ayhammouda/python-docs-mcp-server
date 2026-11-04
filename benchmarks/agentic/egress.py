@@ -7,7 +7,7 @@ module inside the worker container.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from benchmarks.model_matrix import ModelFamily
@@ -79,6 +79,38 @@ def parse_proxy_log(text: str) -> list[ProxyEvent]:
         except ValueError as exc:
             raise BenchmarkValidationError(f"proxy log line {number} is malformed") from exc
     return events
+
+
+_SQUID_HEAD = f"""\
+http_port {EGRESS_PORT}
+visible_hostname {EGRESS_ALIAS}
+pid_filename none
+cache deny all
+shutdown_lifetime 1 seconds
+httpd_suppress_version_string on
+logfile_rotate 0
+logformat bench %{{%Y-%m-%dT%H:%M:%S}}tg.%03tuZ %>a %rm %>rd %>rP %>Hs %Ss
+access_log stdio:{LOG_DIR_IN_PROXY}/access.log logformat=bench rotate=0
+cache_log {LOG_DIR_IN_PROXY}/cache.log
+"""
+
+
+def squid_conf(allow: Sequence[tuple[str, int]]) -> str:
+    """One proxy's config: only ``allow``, logged to a file with no rotation.
+
+    Port 443 allows only CONNECT, any other port only plain HTTP. Every host ACL is
+    ``dstdomain -n``: no reverse lookup, so an IP-literal request never matches a name.
+    No TLS interception, and no ``dst`` ACL (it resolves names).
+    """
+    lines = []
+    for index, (host, port) in enumerate(allow, 1):
+        method = "CONNECT" if port == 443 else "!CONNECT"
+        lines += [
+            f"acl allow_{index}_host dstdomain -n {host}",
+            f"acl allow_{index}_port port {port}",
+            f"http_access allow {method} allow_{index}_host allow_{index}_port",
+        ]
+    return _SQUID_HEAD + "".join(f"{line}\n" for line in lines) + "http_access deny all\n"
 
 
 def forbidden_env_names(environ: Mapping[str, str]) -> list[str]:
