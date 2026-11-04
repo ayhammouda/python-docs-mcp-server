@@ -528,6 +528,32 @@ _SCRIPT_STOP = {"anthropic": "end_turn", "openai": "completed", "google": "STOP"
 _SCRIPT_DONE = {"anthropic": "ended", "openai": "completed", "google": "JOB_STATE_SUCCEEDED"}
 
 
+def scripted_result(
+    item_id: str, rule: Mapping[str, Any], *, provider: str, model_id: str
+) -> BatchItemResult:
+    """Normalize one selected script rule. Only the fixture client evaluates selectors."""
+    status = rule.get("status", "succeeded")
+    if status == "missing":
+        return missing(item_id)
+    if status != "succeeded":
+        unbilled = rule.get("unbilled", provider == "anthropic")
+        return _no_result(item_id, status, {"scripted_rule": rule}, unbilled=unbilled)
+    usage = rule.get("usage")
+    text = json.dumps(rule["output"]) if "output" in rule else str(rule.get("text", ""))
+    return BatchItemResult(
+        item_id=item_id,
+        status="succeeded",
+        text=text,
+        refusal=bool(rule.get("refusal", False)),
+        stop_reason=rule.get("stop_reason") or _SCRIPT_STOP[provider],
+        raw={"scripted_rule": rule},
+        raw_usage=usage,
+        buckets=None if usage is None else _SCRIPT_BUCKETS[provider](usage),
+        reported_model=model_id,
+        unbilled=False,
+    )
+
+
 class ScriptedBatchClient:
     """Plays a YAML script: ``rules`` per item id, ``polls`` in order, ``submit_errors``.
 
@@ -585,26 +611,7 @@ class ScriptedBatchClient:
 
     def _result(self, item_id: str) -> BatchItemResult:
         rule = next(rule for pattern, rule in self._rules if pattern.search(item_id))
-        status = rule.get("status", "succeeded")
-        if status == "missing":
-            return missing(item_id)
-        if status != "succeeded":
-            unbilled = rule.get("unbilled", self.provider == "anthropic")
-            return _no_result(item_id, status, {"scripted_rule": rule}, unbilled=unbilled)
-        usage = rule.get("usage")
-        text = json.dumps(rule["output"]) if "output" in rule else str(rule.get("text", ""))
-        return BatchItemResult(
-            item_id=item_id,
-            status="succeeded",
-            text=text,
-            refusal=bool(rule.get("refusal", False)),
-            stop_reason=rule.get("stop_reason") or _SCRIPT_STOP[self.provider],
-            raw={"scripted_rule": rule},
-            raw_usage=usage,
-            buckets=None if usage is None else _SCRIPT_BUCKETS[self.provider](usage),
-            reported_model=self.model_id,
-            unbilled=False,
-        )
+        return scripted_result(item_id, rule, provider=self.provider, model_id=self.model_id)
 
     async def results(self, batch_id: str, item_ids: Sequence[str]) -> list[BatchItemResult]:
         if self._batch_status == "failed":

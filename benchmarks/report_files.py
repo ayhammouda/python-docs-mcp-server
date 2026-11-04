@@ -70,22 +70,27 @@ def artifact_output_dirs(root: Path, paths: Iterable[Path]) -> Iterator[dict[Pat
 
     paths = tuple(paths)
     check_output_paths(root, paths)
+    # Preserve parent-before-child order and share each opened parent across outputs.
+    parents = {}
+    for path in paths:
+        parent = root
+        for component in path.relative_to(root).parts[:-1]:
+            child = parent / component
+            parents[child] = parent
+            parent = child
     with ExitStack() as stack:
         directories = {root: stack.enter_context(open_log_dir(root))}
-        for path in paths:
-            parent = root
-            for component in path.relative_to(root).parts[:-1]:
-                child = parent / component
-                if child not in directories:
-                    try:
-                        os.mkdir(component, dir_fd=directories[parent])
-                    except FileExistsError:
-                        pass
-                    directories[child] = stack.enter_context(
-                        open_log_dir(Path(component), dir_fd=directories[parent])
-                    )
-                parent = child
-        # Repeat the leaf check against the opened parents, before the first write.
+        for child, parent in parents.items():
+            parent_fd = directories[parent]
+            try:
+                os.mkdir(child.name, dir_fd=parent_fd)
+            except FileExistsError:
+                # open_log_dir still checks the existing entry without following links.
+                pass
+            directories[child] = stack.enter_context(
+                open_log_dir(Path(child.name), dir_fd=parent_fd)
+            )
+        # Repeat the leaf check against the opened parents before the first write.
         for path in paths:
             try:
                 info = os.stat(path.name, dir_fd=directories[path.parent], follow_symlinks=False)

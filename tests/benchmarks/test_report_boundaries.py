@@ -41,7 +41,8 @@ def test_report_and_scoring_import_order_and_shared_helper_identity(first: int) 
     script = (
         "import importlib; "
         f"[importlib.import_module(m) for m in {ordered!r}]; "
-        "from benchmarks import report, report_common; "
+        "from benchmarks import report, report_common, agentic_report, report_measurements; "
+        "assert agentic_report._GradeCapture is report_measurements.GradeCapture; "
         "from benchmarks.grading import score, aggregate, serialization, publication; "
         "assert callable(publication.reconcile_gates); "
         "assert score._own is aggregate.own_grade; "
@@ -57,3 +58,55 @@ def test_report_and_scoring_import_order_and_shared_helper_identity(first: int) 
         capture_output=True,
         text=True,
     )
+
+
+def test_report_import_graph_is_acyclic_including_typing_edges() -> None:
+    """Moving a reverse edge under TYPE_CHECKING must not recreate a dependency cycle."""
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    modules = {}
+    for path in (root / "benchmarks").rglob("*.py"):
+        name = ".".join(path.relative_to(root).with_suffix("").parts)
+        if name.endswith(".__init__"):
+            name = name.removesuffix(".__init__")
+        modules[name] = path
+    graph = {}
+    for name, path in modules.items():
+        edges = set()
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Import):
+                edges.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                assert node.level == 0, f"resolve relative import in graph test: {path}"
+                module = node.module or ""
+                edges.add(module)
+                edges.update(f"{module}.{alias.name}" for alias in node.names)
+        graph[name] = edges & modules.keys()
+    visited = set()
+
+    def visit(module, chain, origin):
+        assert module != origin or not chain, " -> ".join([*chain, module])
+        if module not in visited:
+            visited.add(module)
+            for imported in sorted(graph[module]):
+                visit(imported, [*chain, module], origin)
+
+    for name in (
+        "benchmarks.report", "benchmarks.agentic_report", "benchmarks.grading.publication",
+        "benchmarks.grading.disclosure", "benchmarks.report_common",
+        "benchmarks.report_measurements", "benchmarks.report_contracts", "benchmarks.report_files",
+    ):
+        visited.clear()
+        visit(name, [], name)
+
+
+def test_malformed_gate_container_is_unavailable() -> None:
+    from types import SimpleNamespace
+
+    from benchmarks.grading.publication import reconcile_gates
+
+    gates = reconcile_gates(SimpleNamespace(summary={"gates": ["malformed export"]}))
+    assert set(gates) == {"G1", "G2", "G3", "G4"}
+    assert all(gate.passed is None for gate in gates.values())

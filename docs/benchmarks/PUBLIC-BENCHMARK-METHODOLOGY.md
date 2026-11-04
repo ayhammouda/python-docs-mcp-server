@@ -293,6 +293,11 @@ that design.
   the scorer's rules, rather than trusting the saved tier label. Missing or
   contradictory calibration, reference, method or single-judge evidence
   withholds comparative claims; measured intervals remain in the raw report.
+  Subgroup agreement tables, confusion counts and grading diagnostics are
+  recomputed from the captured observations used by the scorer. Saved summary
+  and disclosure projections cannot certify those quantities. Missing or
+  inconsistent observations are reported as unknown; pending answers retain
+  eligible independent G2 votes without acquiring a final grade.
 - **Denominators:**
   - A hit on a §6 model-call, tool-call or time cap is a failure scored 0.0.
     The §6 result cap is not a failure.

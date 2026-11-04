@@ -177,7 +177,9 @@ def score_run(
     and the complete output batch are scanned for key shapes before any write.
     """
     paths = ScoringPaths(run_dir)
-    agentic = _is_agentic(run_dir)
+    # The grading caller supplies current vote evidence even when no cell was graded.
+    # Keep its confined writer regardless of later edits to the run metadata.
+    agentic = current_llm_cells is not None or _is_agentic(run_dir)
 
     scoring_records = _load_cell_dir(
         paths.scoring_dir, _SCORING_REQUIRED_FIELDS, "scoring", checked=agentic

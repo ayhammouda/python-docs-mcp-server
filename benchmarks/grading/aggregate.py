@@ -27,6 +27,7 @@ from benchmarks.grading.batch import (
     anthropic_result,
     gemini_result,
     openai_result,
+    scripted_result,
 )
 from benchmarks.grading.inputs import (
     VOTE_FIELDS,
@@ -341,30 +342,35 @@ def _result_matches_record(
 
 
 def recorded_result(
-    root: Path, record: Mapping[str, Any], judge: JudgeSpec, *, vote_sha256: str | None = None
+    root: Path, record: Mapping[str, Any], judge: JudgeSpec | Mapping[str, Any], *,
+    vote_sha256: str | None = None, invocation: Mapping[str, Any] | None = None,
 ) -> BatchItemResult | None:
     """Normalize this selected record's receipt, if recorded, without a run cache.
 
     This checks internal continuity of unsigned artifacts, not provider contact
-    or billing. Historical records without receipts use their retained flags
-    and stop/reply evidence in ``vote_from_record``. Selection callers pass the
+    or billing. Historical records without receipts need sufficient stop/reply
+    evidence in ``vote_from_record``. Selection callers pass the
     captured vote digest so receipt binding never reopens their selected file.
+    Report readers can also supply their already captured invocation and judge.
     """
+    spec = vars(judge) if isinstance(judge, JudgeSpec) else judge
+    judge_id = spec["id"]
     run, item, attempt = record.get("grading_run_id"), record.get("item_id"), record.get("attempt")
     if (
-        not all(isinstance(v, str) and v and Path(v).name == v for v in (run, item, judge.id))
+        not all(isinstance(v, str) and v and Path(v).name == v for v in (run, item, judge_id))
         or type(attempt) is not int or attempt < 1
     ):
         raise BenchmarkValidationError("invalid judge receipt coordinates")
-    try:
-        invocation = json_mapping(artifact_bytes(root, root / "runs" / f"{run}.json"),
-                                  "grading invocation")
-    except FileNotFoundError:
-        return None
+    if invocation is None:
+        try:
+            invocation = json_mapping(artifact_bytes(root, root / "runs" / f"{run}.json"),
+                                      "grading invocation")
+        except FileNotFoundError:
+            return None
     manifest = invocation.get("execution_results")
     if manifest is None:
         return None
-    relative = f"{judge.id}/{item}--a{attempt}.json"
+    relative = f"{judge_id}/{item}--a{attempt}.json"
     if not isinstance(manifest, dict) or relative not in manifest:
         raise BenchmarkValidationError("selected judge receipt is not in its invocation")
     try:
@@ -376,12 +382,12 @@ def recorded_result(
     history = json_mapping(body, "grading execution")
     # Find the selected file from its coordinates, never a recorded external path.
     path = vote_dir(
-        root, target=record["target"], judge_id=judge.id, effort=record["effort"],
+        root, target=record["target"], judge_id=judge_id, effort=record["effort"],
         pass_number=record["pass"], item_id=str(item),
     ) / f"{run}--a{attempt}.json"
     if vote_sha256 is None:
         vote_sha256 = hashlib.sha256(artifact_bytes(root, path)).hexdigest()
-    return receipt_result(record, vote_sha256, vars(judge), history)
+    return receipt_result(record, vote_sha256, spec, history)
 
 
 def receipt_result(
@@ -390,7 +396,8 @@ def receipt_result(
     """Bind and normalize a captured receipt without I/O or execution claims.
 
     Both score replay and public receipt eligibility consume this same result.
-    Compact/scripted receipts retain their historical flag fallback only.
+    Scripted rules can evidence technical replay only; compact receipts still
+    need sufficient stop/reply evidence in ``vote_from_record``.
     """
     expected = {k: record.get(k) for k in (
         "grading_run_id", "unit_id", "item_id", "judge_id", "target", "pass", "attempt",
@@ -404,17 +411,26 @@ def receipt_result(
     try:
         normalized = history["result"]
         raw = normalized["raw"]
-        if raw is None or (judge["api"] == "scripted" and "scripted_rule" in raw):
-            # Compact receipts lack raw output; scripted receipts have no
-            # provider line. Replay retained flags/status without inventing
-            # provider evidence (or a vote for an absent terminal reply).
+        if raw is None:
+            # A compact receipt supplies no independent response evidence.
+            # Terminal/status and unambiguous stop/reply history remain useful.
             if not _result_matches_record(normalized, record):
                 raise BenchmarkValidationError("selected judge receipt differs from saved reply")
             return None
         if not isinstance(raw, dict):
             raise ValueError("no raw result")
-        result = {"anthropic": anthropic_result, "openai": openai_result,
-                  "google": gemini_result}[judge["provider"]](raw)
+        if judge["api"] == "scripted" and "scripted_rule" in raw:
+            # Replay the actual captured rule, rather than trusting a second
+            # copy of the same refusal bit. Public admission rejects scripted APIs.
+            rule = raw["scripted_rule"]
+            if not isinstance(rule, dict) or "match" not in rule:
+                raise ValueError("missing scripted rule")
+            result = scripted_result(
+                str(record["item_id"]), rule, provider=judge["provider"], model_id=judge["model_id"]
+            )
+        else:
+            result = {"anthropic": anthropic_result, "openai": openai_result,
+                      "google": gemini_result}[judge["provider"]](raw)
     except (KeyError, TypeError, ValueError, AttributeError, IndexError):
         raise BenchmarkValidationError("invalid selected judge receipt result") from None
     if (
@@ -425,15 +441,11 @@ def receipt_result(
     return result
 
 
-def vote_from_record(
-    record: Mapping[str, Any], *, request: JudgeInput | None, result: BatchItemResult | None = None
-) -> Vote | None:
-    """Replay the producer's withholding rules, never inventing an absent vote.
-
-    Old records lack the normalized refusal bit. A refusal-specific stop is
-    evidence; an ambiguous OpenAI completed reply needs its recorded result.
-    The annotation alone is never evidence of a refusal.
-    """
+def _reply_from_record(
+    record: Mapping[str, Any], *, schema: Mapping[str, Any],
+    result: BatchItemResult | None, field: str,
+) -> dict[str, Any] | None:
+    """Replay the same withholding and parsing rules for votes and probe replies."""
     status, withheld, stop = record.get("status"), record.get("withheld"), record.get("stop_reason")
     if (
         type(record.get("terminal")) is not bool
@@ -456,12 +468,21 @@ def vote_from_record(
         if not _result_matches_record(result, record):
             raise BenchmarkValidationError("judge result differs from recorded reply")
     else:
+        # Valid judge JSON plus an ordinary successful stop is indistinguishable
+        # from success with two forged local annotations. Mixed text/refusal
+        # needs the underlying result; never recover a replacement vote here.
+        if status == "succeeded" and refusal and not refusal_stop:
+            try:
+                usable = parse_object(text, schema) is not None
+            except (TypeError, KeyError, AttributeError):
+                raise BenchmarkValidationError("invalid frozen judge schema") from None
+            if usable:
+                raise BenchmarkValidationError("mixed judge refusal requires response evidence")
         result = BatchItemResult(
             item_id=str(record.get("item_id")), status=cast(ItemStatus, status), text=text,
             refusal=refusal, stop_reason=stop, raw=None, raw_usage=None, buckets=None,
             reported_model=None, unbilled=False,
         )
-    schema = judge_schema() if request is None else request.schema
     try:
         expected = withheld_reason(result, schema)
         parsed = parse_object(text, schema) if expected is None else None
@@ -469,14 +490,46 @@ def vote_from_record(
         raise BenchmarkValidationError("invalid frozen judge schema") from None
     if withheld != expected:
         raise BenchmarkValidationError("withheld reason differs from judge reply")
-    vote = record.get("vote")
+    vote = record.get(field)
     # JSON equality distinguishes booleans from 0/1 in persisted fields.
     if json.dumps(parsed, sort_keys=True) != json.dumps(vote, sort_keys=True):
-        raise BenchmarkValidationError("stored vote differs from its judge reply")
+        raise BenchmarkValidationError(f"stored {field} differs from its judge reply")
     if withheld is not None:
         return None
     if not isinstance(vote, dict):
         raise BenchmarkValidationError("invalid stored judge vote")
+    return parsed
+
+
+def parsed_from_record(
+    record: Mapping[str, Any], *, request: JudgeInput, result: BatchItemResult | None = None,
+) -> dict[str, Any] | None:
+    """Recompute a generated/checker object from the captured, unedited reply."""
+    if record.get("vote") is not None:
+        raise BenchmarkValidationError("unexpected vote in generated probe reply")
+    if (
+        result is None and record.get("refusal") is True
+        and record.get("stop_reason") not in (_GEMINI_REFUSALS | {"refusal", "content_filter"})
+    ):
+        raise BenchmarkValidationError("probe refusal needs a refusal stop or normalized receipt")
+    return _reply_from_record(record, schema=request.schema, result=result, field="parsed")
+
+
+def vote_from_record(
+    record: Mapping[str, Any], *, request: JudgeInput | None, result: BatchItemResult | None = None
+) -> Vote | None:
+    """Replay the producer's withholding rules, never inventing an absent vote.
+
+    Old records lack the normalized refusal bit. A refusal-specific stop is
+    evidence; an ambiguous OpenAI completed reply needs its recorded result.
+    The annotation alone is never evidence of a refusal.
+    """
+    vote = _reply_from_record(
+        record, schema=judge_schema() if request is None else request.schema,
+        result=result, field="vote",
+    )
+    if vote is None:
+        return None
     try:
         return Vote(**vote)
     except TypeError:

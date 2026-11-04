@@ -134,6 +134,149 @@ def test_positive_audit_and_ledger_survive_portable_export(validated_bundle, tmp
     assert (moved / "grading/summary.json").read_bytes() == before
 
 
+def test_duplicate_settlement_cannot_double_reported_bookings(validated_bundle):
+    path = validated_bundle / "grading/ledger-events.jsonl"
+    events = [json.loads(line) for line in path.read_text().splitlines()]
+    duplicate = next(e for e in events if e.get("event") == "settle"
+                     and e["provider"] == "google")
+    with path.open("a") as file:
+        file.write(json.dumps(duplicate) + "\n")
+    text = _render(validated_bundle)
+    assert "| google | 6.00 |" not in text
+    assert "Grading cost: unverified" in text
+
+
+@pytest.mark.parametrize("projection", ["pending", "absent"])
+def test_final_votes_determine_cost_denominator_without_saved_grade(validated_bundle, projection):
+    path = next((validated_bundle / "scoring").glob("*/*.json"))
+    row = read(path)
+    row.update(score=None, grading=None, scoring_method="pending")
+    if projection == "absent":
+        path.unlink()
+    else:
+        write(path, row)
+    text = _render(validated_bundle)
+    assert "completed LLM-graded answers: 300" in text
+    assert "| google | 3.00 | 0.010000 |" in text
+    # Exercise the ordinary scorer too, without a cached summary as an oracle.
+    from benchmarks.grading.score import score_run_dir
+    from benchmarks.runner import BenchmarkValidationError
+
+    if projection == "absent":
+        # The scorer intentionally refuses to invent a missing scoring record.
+        # The read-only report can still disclose the independently paid finals.
+        with pytest.raises(BenchmarkValidationError, match="no scoring record"):
+            score_run_dir(validated_bundle, schema_path=SCHEMA)
+    else:
+        summary = score_run_dir(validated_bundle, schema_path=SCHEMA)
+        assert summary["spend"]["graded_answers"] == 300
+
+
+def test_confirmed_bookings_survive_an_unknown_vote_denominator(validated_bundle):
+    path = next((validated_bundle / "grading/executions").glob("*/*/*.json"))
+    path.unlink()
+    text = _render(validated_bundle)
+    assert "Grading cost: unverified" in text
+    assert "| google | 3.00 | n/a |" in text
+    assert "| anthropic | 6.00 | n/a |" in text
+
+
+def test_spend_and_votes_share_one_bounded_ledger_capture(validated_bundle, monkeypatch):
+    from benchmarks import agentic_report, report_files
+
+    original = report_files.artifact_bytes
+    reads = 0
+
+    def changing_ledger(root, path):
+        nonlocal reads
+        body = original(root, path)
+        if path == root / "grading/ledger-events.jsonl":
+            reads += 1
+            if reads > 1:
+                # A second read would disagree with the receipt/grade capture.
+                settled = next(line for line in body.splitlines()
+                               if json.loads(line).get("event") == "settle")
+                return body + settled + b"\n"
+        return body
+
+    monkeypatch.setattr(report_files, "artifact_bytes", changing_ledger)
+    monkeypatch.setattr(agentic_report, "artifact_bytes", changing_ledger)
+    metadata = _RunMetadata(_load_run_bundle(validated_bundle))
+    assert reads == 1
+    assert metadata.grading == "live" and metadata.tier == "Validated"
+    assert metadata.grading_spend["graded_answers"] == 300
+    assert metadata.grading_spend["by_provider"]["google"] == "3.00"
+    assert metadata.grading_spend["verified"] is True
+
+
+def test_missing_ledger_is_not_observed_empty_in_scorer(tmp_path):
+    absent = _ledger_spend(tmp_path, 0)
+    (tmp_path / "ledger-events.jsonl").write_text("")
+    empty = _ledger_spend(tmp_path, 0)
+    assert absent != empty
+    assert absent["verified"] is False
+    assert empty["verified"] is True
+
+
+@pytest.mark.parametrize("mutation", ["duplicate", "orphan", "identity", "total", "free", "bound"])
+def test_inconsistent_ledger_never_supplies_a_cost_projection(mutation):
+    from benchmarks.grading.disclosure import ledger_spend
+
+    identity = {"run_id": "grade", "unit_id": "unit", "provider": "google"}
+    reserve = {**identity, "event": "reserve", "kind": "batch", "bound": "1"}
+    settlement = {**identity, "event": "settle", "outcome": "batch", "actual": "0",
+                  "booked": "2", "items": [{"item_id": "failed", "status": "no_usage",
+                                             "booked": "2"}]}
+    events = [reserve, settlement]
+    if mutation == "duplicate":
+        events.append(dict(settlement))
+    elif mutation == "orphan":
+        events.pop(0)
+    elif mutation == "identity":
+        settlement["run_id"] = "different"
+    elif mutation == "total":
+        settlement["booked"] = "3"
+    elif mutation == "free":
+        settlement["items"][0]["status"] = "unbilled"
+    elif mutation == "bound":
+        reserve["bound"] = "2"
+    spend = ledger_spend(events, 300)
+    assert spend["verified"] is False
+    assert spend["by_provider"] == {}
+    assert spend["per_graded_answer"] == {}
+
+
+@pytest.mark.parametrize("system,qid,expected", [
+    ("no-docs", "SYN-EX-001", "pass, 0.500"),
+    ("no-docs", "SYN-EX-002", "pass, 0.500"),
+    ("docs-fetch", "SYN-EX-001", "pass, 0.500"),
+    ("docs-fetch", "SYN-EX-002", "not evaluable"),
+])
+def test_retained_claim_reconciles_only_its_unflagged_arms(
+    validated_bundle, system, qid, expected,
+):
+    run = validated_bundle
+    record_audit(run)
+    path = run / "planned-cells.json"
+    plan = read(path)
+    cell = next(c for c in plan["cells"] if c["system_id"] == system
+                and c["model_family_id"] == "scripted-openai" and c["corpus_id"] == qid)
+    plan["cells"].append({**cell, "repeat": 2,
+                          "cell": cell["cell"].replace("--r1", "--r2"),
+                          "competitor_id": cell["competitor_id"].replace("--r1", "--r2")})
+    write(path, plan)
+    if system == "docs-fetch":
+        # This changes the primary comparison too. Rescore its current plan so
+        # the subset test cannot bypass the existing G4/tier consistency gate.
+        from benchmarks.grading.score import score_run_dir
+
+        score_run_dir(run, schema_path=SCHEMA,
+                      g1_paths=sorted((run / "grading/disclosure/g1").glob("*.json")))
+    text = _render(run)
+    assert f"Without flagged questions, C2/scripted-openai: {expected}" in text
+    assert "Without flagged questions, C2/scripted-anthropic: pass, 0.500" in text
+
+
 @pytest.mark.parametrize("scope", ["none", "all"])
 def test_real_zero_flags_and_empty_retained_cohort_are_distinct(validated_bundle, scope):
     from benchmarks.grading.inputs import load_criteria
@@ -213,6 +356,11 @@ def test_cost_uses_current_settlements_and_genuine_graded_denominator(validated_
             row = read(path)
             row.update(score=None, grading=None, scoring_method="pending")
             write(path, row)
+            # Genuinely pending work has no final panel votes. Merely clearing
+            # the saved grade is covered above and must still count as complete.
+            item = f"{row['competitor_id']}--{row['corpus_id']}"
+            for vote in (run / "grading/votes/answers").glob(f"*/*/pass1/{item}/*.json"):
+                vote.unlink()
     metadata = _RunMetadata(_load_run_bundle(run))
     text = _render(run)
     if stage == "missing-ledger":
@@ -229,16 +377,52 @@ def test_cost_uses_current_settlements_and_genuine_graded_denominator(validated_
 def test_scorer_books_settled_charges_including_conservative_costs(tmp_path, graded, ratio):
     # A reservation is not spend; a conservatively booked charge is not actual usage.
     events = [
-        {"event": "reserve", "provider": "google", "bound": "100"},
-        {"event": "settle", "provider": "google", "booked": "0.50", "actual": "0.50"},
-        {"event": "settle", "provider": "google", "booked": "2.00", "actual": None},
-        {"event": "settle", "provider": "openai", "booked": "0", "actual": "0"},
+        {"event": "reserve", "provider": "google", "bound": "100", "kind": "batch",
+         "unit_id": "paid", "run_id": "grading"},
+        {"event": "settle", "provider": "google", "booked": "2.50", "actual": "0.50",
+         "unit_id": "paid", "run_id": "grading", "outcome": "batch", "items": [
+             {"item_id": "ok", "status": "ok", "booked": "0.50"},
+             {"item_id": "lost", "status": "no_usage", "booked": "2.00"},
+         ]},
+        {"event": "reserve", "provider": "openai", "bound": "100", "kind": "batch",
+         "unit_id": "free", "run_id": "grading"},
+        {"event": "settle", "provider": "openai", "booked": "0", "actual": "0",
+         "unit_id": "free", "run_id": "grading", "outcome": "batch", "items": [
+             {"item_id": "refunded", "status": "unbilled", "booked": "0"},
+         ]},
     ]
     (tmp_path / "ledger-events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
     spend = _ledger_spend(tmp_path, graded)
     assert spend["by_provider"] == {"google": "2.50", "openai": "0"}
     assert spend["per_graded_answer"].get("google") == ratio
     assert spend["graded_answers"] == graded
+    assert spend["verified"] is True
+
+
+def test_actual_ledger_failure_and_cross_invocation_recovery_are_still_booked(tmp_path):
+    from benchmarks.agentic.ledger import Ledger
+    from benchmarks.grading.disclosure import ledger_spend
+
+    ledger = Ledger.open(tmp_path / "ledger", run_id="failed")
+    try:
+        unit = ledger.reserve("google", model_id="model", kind="batch", bound=Decimal("1"),
+                              input_bound=10, output_bound=10)
+        ledger.settle(unit, outcome="timeout", actual=None, buckets=None)
+        ledger.reserve("google", model_id="model", kind="batch", bound=Decimal("2"),
+                       input_bound=10, output_bound=10)
+        events = ledger.invocation_events()
+    finally:
+        ledger.close()
+    recovered = Ledger.open(tmp_path / "ledger", run_id="recovery")
+    try:
+        events += recovered.invocation_events()
+    finally:
+        recovered.close()
+    spend = ledger_spend(events, None)
+    assert spend["verified"] is True
+    assert spend["by_provider"] == {"google": "6"}
+    assert spend["graded_answers"] is None
+    assert spend["per_graded_answer"] == {}
 
 
 def test_audit_preserves_real_cited_section_fields_and_version_pairs():

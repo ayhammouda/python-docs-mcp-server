@@ -65,17 +65,19 @@ def _receipt(root: Path, path: Path, result: Any, *, panel=PANEL) -> None:
 
 
 @pytest.mark.parametrize("judge_id", ["haiku", "luna", "flash-lite"])
-@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("refusal_flag", [None, False, True])
 @pytest.mark.parametrize("bound", [False, True])
 def test_successful_reply_cannot_be_withheld_as_a_refusal(
-    tmp_path: Path, judge_id: str, legacy: bool, bound: bool,
+    tmp_path: Path, judge_id: str, refusal_flag: bool | None, bound: bool,
 ) -> None:
     path, _ = _saved(tmp_path, judge_id, "success")
     record = _read(path)
     request = _request() if bound else None
     assert vote_from_record(record, request=request) is not None
-    if legacy:
+    if refusal_flag is None:
         record.pop("refusal", None)
+    else:
+        record["refusal"] = refusal_flag
     record.update(withheld="refusal", vote=None)
     with pytest.raises(BenchmarkValidationError, match="withheld|refusal"):
         vote_from_record(record, request=request)
@@ -96,7 +98,10 @@ def test_actual_normalized_withheld_results_stay_absent(
     )
 
 
-def test_mixed_openai_refusal_and_valid_text_are_not_an_ordinary_vote(tmp_path: Path) -> None:
+@pytest.mark.parametrize("legacy", [False, True])
+def test_mixed_openai_refusal_and_valid_text_need_the_actual_result(
+    tmp_path: Path, legacy: bool,
+) -> None:
     from benchmarks.grading.aggregate import recorded_result
     from benchmarks.grading.batch import openai_result
 
@@ -107,22 +112,38 @@ def test_mixed_openai_refusal_and_valid_text_are_not_an_ordinary_vote(tmp_path: 
     })
     result = openai_result(raw)
     assert result.refusal and result.stop_reason == "completed" and result.text == _text()
+    path.unlink()
+    path = _save_result(tmp_path, PANEL.judges["luna"], result)
     record = _read(path)
-    record.update(withheld="refusal", vote=None, refusal=True)
+    if legacy:
+        record.pop("refusal")
     runs._json(path, record)
-    assert vote_from_record(record, request=_request()) is None
-    # Historical mixed output requires its actual receipt, since stop/text alone
-    # are indistinguishable from the successful negative control above.
-    record.pop("refusal")
-    runs._json(path, record)
+    with pytest.raises(BenchmarkValidationError, match="refusal|withheld"):
+        vote_from_record(record, request=_request())
     _receipt(tmp_path, path, result)
     normalized = recorded_result(tmp_path, record, PANEL.judges["luna"])
     assert normalized == result
     assert vote_from_record(record, request=_request(), result=normalized) is None
     # A new completed ordinary reply cannot borrow that historical refusal.
     ordinary = openai_result(_outcome(record, "openai", "success"))
-    with pytest.raises(BenchmarkValidationError, match="withheld|refusal"):
+    with pytest.raises(BenchmarkValidationError, match="withheld|refusal|reply"):
         vote_from_record(record, request=_request(), result=ordinary)
+
+
+@pytest.mark.parametrize("text", [None, "", "I cannot provide this answer."])
+@pytest.mark.parametrize("bound", [False, True])
+def test_plain_refusals_keep_retained_flags_without_inventing_a_vote(
+    tmp_path: Path, text: str | None, bound: bool,
+) -> None:
+    path, _ = _saved(tmp_path, "luna", "refusal")
+    record = _read(path)
+    record["text"] = text
+    assert record["refusal"] and record["stop_reason"] == "completed"
+    assert vote_from_record(record, request=_request() if bound else None) is None
+    record.pop("refusal")
+    # No stop, normalized bit or raw block can distinguish refusal from a parse failure.
+    with pytest.raises(BenchmarkValidationError, match="withheld"):
+        vote_from_record(record, request=_request() if bound else None)
 
 
 @pytest.mark.parametrize("provider,stop", [
@@ -156,6 +177,25 @@ def test_historical_refusal_specific_stops_retain_the_normalizer_semantics(
         vote_from_record(record, request=None)
 
 
+def test_scripted_receipt_replay_only_normalizes_the_selected_rule(tmp_path, monkeypatch):
+    from benchmarks.grading.aggregate import recorded_result
+    from benchmarks.grading.batch import ScriptedBatchClient
+
+    judge = runs.PANEL.judges["luna"]
+    client = ScriptedBatchClient("openai", judge.model_id, {"rules": [
+        {"match": ".*", "text": _text(), "refusal": True},
+    ]})
+    result = client._result(ITEM)
+    path = _save_result(tmp_path, judge, result)
+    _receipt(tmp_path, path, result, panel=runs.PANEL)
+
+    def reject_dispatch(*args, **kwargs):
+        raise AssertionError("portable grading replay must not compile a script from the export")
+
+    monkeypatch.setattr(ScriptedBatchClient, "__init__", reject_dispatch)
+    assert recorded_result(tmp_path, _read(path), judge) == result
+
+
 @pytest.mark.parametrize("refusal", [False, True])
 def test_scripted_receipts_keep_explicit_flags_without_hosted_claims(
     tmp_path: Path, refusal: bool,
@@ -172,13 +212,55 @@ def test_scripted_receipts_keep_explicit_flags_without_hosted_claims(
     path = _save_result(tmp_path, judge, result)
     _receipt(tmp_path, path, result, panel=panel)
     record = _read(path)
-    assert recorded_result(tmp_path, record, judge) is None
-    assert (vote_from_record(record, request=_request()) is None) is refusal
+    normalized = recorded_result(tmp_path, record, judge)
+    assert normalized == result
+    assert (vote_from_record(record, request=_request(), result=normalized) is None) is refusal
+    from benchmarks.grading.execution_evidence import grading_execution_matches
+
+    assert not grading_execution_matches(
+        record, hashlib.sha256(path.read_bytes()).hexdigest(), vars(judge), {}, [],
+        _read(tmp_path / "executions/selected" / judge.id / f"{ITEM}--a1.json"),
+    )
+    if refusal:
+        with pytest.raises(BenchmarkValidationError, match="refusal"):
+            vote_from_record(record, request=_request())
     record["refusal"] = not refusal
     runs._json(path, record)
     _receipt(tmp_path, path, result, panel=panel)
     with pytest.raises(BenchmarkValidationError, match="receipt"):
         recorded_result(tmp_path, record, judge)
+
+
+def test_scripted_refusal_must_match_the_captured_rule(tmp_path: Path) -> None:
+    from benchmarks.grading.aggregate import recorded_result
+    from benchmarks.grading.batch import ScriptedBatchClient
+
+    judge = runs.PANEL.judges["luna"]
+    result = ScriptedBatchClient("openai", judge.model_id, {"rules": [
+        {"match": ".*", "text": _text()},
+    ]})._result(ITEM)
+    path = _save_result(tmp_path, judge, result)
+    record = _read(path)
+    record.update(refusal=True, withheld="refusal", vote=None)
+    runs._json(path, record)
+    # Rebind both hashes and the normalized bit; the captured rule still says success.
+    _receipt(tmp_path, path, replace(result, refusal=True), panel=runs.PANEL)
+    with pytest.raises(BenchmarkValidationError, match="receipt"):
+        recorded_result(tmp_path, record, judge)
+
+
+def test_compact_receipt_cannot_evidence_a_mixed_refusal(tmp_path: Path) -> None:
+    from benchmarks.grading.aggregate import recorded_result
+
+    path, result = _saved(tmp_path, "luna", "success")
+    record = _read(path)
+    record.update(refusal=True, withheld="refusal", vote=None)
+    runs._json(path, record)
+    _receipt(tmp_path, path, replace(result, refusal=True, raw=None))
+    normalized = recorded_result(tmp_path, record, PANEL.judges["luna"])
+    assert normalized is None
+    with pytest.raises(BenchmarkValidationError, match="refusal"):
+        vote_from_record(record, request=_request(), result=normalized)
 
 
 @pytest.mark.parametrize("judge_id,reason", CASES)
@@ -279,6 +361,61 @@ def test_score_rejects_two_invented_refusals_before_any_output_write(
     assert {p.relative_to(run): p.read_bytes() for p in run.rglob("*") if p.is_file()} == before
 
 
+@pytest.mark.parametrize("missing", ["invocation", "execution_results"])
+def test_score_rejects_two_forged_flags_without_response_evidence(
+    tmp_path: Path, missing: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.benchmarks.accepted_report_fixture import rebuild_grading
+
+    run = runs._build_run(tmp_path)
+    rebuild_grading(run)  # local provider-shaped replies, never provider contact
+    grading = run / "grading"
+    summary = runs._score(run, tmp_path)
+    assert runs._record(run, "python-docs", "SYN-EX-001")["score"] == 1.0
+    assert summary["claims"]["C2"][runs.FAMILY]["passed"] is True
+    # Ordinary historical replies remain useful without a receipt manifest.
+    for path in (grading / "runs").glob("*.json"):
+        if missing == "invocation":
+            path.unlink()
+        else:
+            invocation = _read(path)
+            invocation.pop("execution_results", None)
+            runs._json(path, invocation)
+    if missing == "invocation":
+        # Retain panel selection from another run, but no selected vote's run.
+        runs._json(grading / "runs/composition-only.json", {
+            "target": "answers", "pass": 1, "composition": runs.COMPOSITION,
+        })
+    assert runs._score(run, tmp_path)["claims"]["C2"][runs.FAMILY]["passed"] is True
+    item = runs.safe_id(runs._cell("python-docs"), "SYN-EX-001")
+    for judge in ("haiku", "luna"):
+        path = next((grading / "votes/answers" / judge).glob(f"*/pass1/{item}/*.json"))
+        record = _read(path)
+        assert record["status"] == "succeeded" and record["vote"] is not None
+        record.update(refusal=True, withheld="refusal", vote=None)
+        runs._json(path, record)
+    g1 = runs._g1_file(run, tmp_path / "g1.json")
+    before = {p.relative_to(run): p.read_bytes() for p in run.rglob("*") if p.is_file()}
+    attempts = []
+    original = Path.open
+
+    def opened(path: Path, mode: str = "r", *args: Any, **kwargs: Any):
+        if path.is_relative_to(run) and any(flag in mode for flag in "wax+"):
+            attempts.append(path)
+        return original(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", opened)
+    with pytest.raises(BenchmarkValidationError, match="refusal|evidence"):
+        wrong = runs.score_run_dir(run, schema_path=runs.SCHEMA, g1_paths=[g1])
+        print("wrong technical result:", {
+            "score": runs._record(run, "python-docs", "SYN-EX-001")["score"],
+            "pending_cells": wrong["pending_cells"],
+            "C2": wrong["claims"]["C2"][runs.FAMILY]["passed"],
+        })
+    assert attempts == []
+    assert {p.relative_to(run): p.read_bytes() for p in run.rglob("*") if p.is_file()} == before
+
+
 @pytest.mark.parametrize(
     "reason,count,reference", [
         ("refusal", 1, False), ("refusal", 2, False), ("refusal", 2, True),
@@ -333,7 +470,8 @@ def test_a_saved_absent_vote_is_never_invented_from_its_text(tmp_path: Path, bou
         vote_from_record(record, request=_request() if bound else None)
 
 
-def test_scoring_uses_the_historical_mixed_refusals_actual_receipt(tmp_path: Path) -> None:
+@pytest.mark.parametrize("legacy", [False, True])
+def test_scoring_uses_the_mixed_refusals_actual_receipt(tmp_path: Path, legacy: bool) -> None:
     from benchmarks.grading.batch import openai_result
     from tests.benchmarks.accepted_report_fixture import rebuild_grading
 
@@ -357,9 +495,10 @@ def test_scoring_uses_the_historical_mixed_refusals_actual_receipt(tmp_path: Pat
         provider_batch_id=old["provider_batch_id"], input_sha256=old["input_sha256"],
         schema=judge_schema(),
     )
-    legacy = _read(path)
-    legacy.pop("refusal")
-    runs._json(path, legacy)
+    if legacy:
+        record = _read(path)
+        record.pop("refusal")
+        runs._json(path, record)
     _receipt(grading, path, result, panel=runs.PANEL)
     summary = runs._score(run, tmp_path)
     assert runs._record(run, "python-docs", "SYN-EX-001")["score"] == 1.0
@@ -370,7 +509,7 @@ def test_scoring_uses_the_historical_mixed_refusals_actual_receipt(tmp_path: Pat
     raw["response"]["body"]["output"][0]["content"].pop()
     _receipt(grading, path, openai_result(raw), panel=runs.PANEL)
     before = {p.relative_to(run): p.read_bytes() for p in run.rglob("*") if p.is_file()}
-    with pytest.raises(BenchmarkValidationError, match="withheld"):
+    with pytest.raises(BenchmarkValidationError, match="withheld|receipt"):
         runs._score(run, tmp_path)
     assert {p.relative_to(run): p.read_bytes() for p in run.rglob("*") if p.is_file()} == before
 
@@ -380,3 +519,44 @@ def test_writer_retains_the_normalizers_refusal_flag(tmp_path: Path) -> None:
     assert _read(path)["refusal"] is result.refusal is True
     path, result = _saved(tmp_path / "ordinary", "luna", "success")
     assert _read(path)["refusal"] is result.refusal is False
+
+
+@pytest.mark.parametrize("count", [1, 2])
+@pytest.mark.parametrize("legacy", [False, True])
+def test_scripted_mixed_receipts_preserve_technical_majority_and_pending(
+    tmp_path: Path, count: int, legacy: bool,
+) -> None:
+    from benchmarks.grading.batch import ScriptedBatchClient
+
+    run = runs._build_run(tmp_path)
+    grading = run / "grading"
+    item = runs.safe_id(runs._cell("python-docs"), "SYN-EX-001")
+    assert runs._score(run, tmp_path)["claims"]["C2"][runs.FAMILY]["passed"] is True
+    for judge_id in ("haiku", "luna")[:count]:
+        old_path = next((grading / "votes/answers" / judge_id).glob(f"*/pass1/{item}/*.json"))
+        old = _read(old_path)
+        judge = runs.PANEL.judges[judge_id]
+        result = ScriptedBatchClient(judge.provider, judge.model_id, {"rules": [
+            {"match": ".*", "text": old["text"], "refusal": True},
+        ]})._result(item)
+        old_path.unlink()
+        path = write_vote_record(
+            grading, target="answers", judge=judge, effort=old["effort"], pass_number=1,
+            grading_run_id=f"scripted-{judge_id}", attempt=1, result=result,
+            terminal=False, unit_id=old["unit_id"], provider_batch_id="scripted-batch-1",
+            input_sha256=old["input_sha256"], schema=judge_schema(),
+        )
+        if legacy:
+            record = _read(path)
+            record.pop("refusal")
+            runs._json(path, record)
+        _receipt(grading, path, result, panel=runs.PANEL)
+    summary = runs._score(run, tmp_path)
+    record = runs._record(run, "python-docs", "SYN-EX-001")
+    if count == 1:
+        assert record["score"] == 1.0 and record["grading"]["valid_votes"] == 2
+        assert summary["claims"]["C2"][runs.FAMILY]["passed"] is True
+    else:
+        assert record["score"] is None
+        assert summary["pending_cells"] == [f"{runs._cell('python-docs')}/SYN-EX-001"]
+        assert summary["claims"]["C2"][runs.FAMILY]["passed"] is None

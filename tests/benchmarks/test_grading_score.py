@@ -143,9 +143,38 @@ def _probe_fixture_requests(root: Path):
     }
 
 
+@lru_cache(maxsize=128)
+def _probe_build_questions(root: Path):
+    from benchmarks.grading.inputs import criteria_from_mapping
+
+    questions = criteria_from_mapping(
+        yaml.safe_load((root / "inputs/grading-criteria.yml").read_bytes()),
+        root / "inputs/grading-criteria.yml",
+        corpus_path=root / "inputs/corpus.yml", schema_path=SCHEMA,
+    )
+    questions.update(load_tuning_questions(TUNING_PATH))
+    return questions
+
+
 def _probe_digest(root: Path, target: str, item_id: str) -> str:
+    if target in {"probe-gen", "probe-check"}:
+        from benchmarks.grading.inputs import JudgeInput
+        from benchmarks.grading.probes import check_request, generation_request
+
+        _, kind, qid, round_id = item_id.split("--")
+        questions = _probe_build_questions(root)
+        request = (
+            generation_request(kind, questions[qid], int(round_id[1:]))
+            if target == "probe-gen" else
+            check_request(kind, questions[qid], "Scripted candidate.", int(round_id[1:]))
+        )
+        value = JudgeInput(request.system, request.user, request.schema, False)
+        _json(root / "items" / target / f"{item_id}.json", value.item_evidence({
+            "question_id": qid, "probe_type": kind, "round": int(round_id[1:]),
+        }))
+        return value.sha256()
     if target not in {"tuning", "probes", "reference-probes"}:
-        return "d" * 64  # Generation/check replies use a different schema.
+        return "d" * 64
     pair = _probe_fixture_requests(root).get(item_id)
     if pair is None:
         return "d" * 64  # Deliberately unrelated item in retest selection controls.
@@ -286,9 +315,14 @@ def _build_run(
         },
     )
     events = [
-        {"event": "settle", "provider": "anthropic", "booked": "0.02", "unit_id": "u1"},
-        {"event": "settle", "provider": "openai", "booked": "0.01", "unit_id": "u2"},
-        {"event": "reserve", "provider": "openai", "bound": "9", "unit_id": "u2"},
+        {"event": "reserve", "provider": "anthropic", "bound": "1", "unit_id": "u1",
+         "run_id": "run-1"},
+        {"event": "settle", "provider": "anthropic", "booked": "0.02", "unit_id": "u1",
+         "run_id": "run-1", "outcome": "ok", "actual": "0.02"},
+        {"event": "reserve", "provider": "openai", "bound": "9", "unit_id": "u2",
+         "run_id": "run-1"},
+        {"event": "settle", "provider": "openai", "booked": "0.01", "unit_id": "u2",
+         "run_id": "run-1", "outcome": "ok", "actual": "0.01"},
     ]
     (grading / "ledger-events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
     return run
@@ -398,6 +432,27 @@ def test_score_run_dir_writes_grades_gates_claims_and_disclosure(
     assert diag["grounded_rate"][f"{FAMILY}/python-docs"] == 0.0
     assert diag["no_final_record"] == {}
     assert (run / "grading" / "disclosure" / "breakdowns.json").is_file()
+
+
+@pytest.mark.parametrize("state", ["missing", "empty", "duplicate"])
+def test_score_discloses_current_ledger_availability_and_uniqueness(
+    scripted_graded_run: Path, tmp_path: Path, state: str,
+) -> None:
+    path = scripted_graded_run / "grading/ledger-events.jsonl"
+    if state == "missing":
+        path.unlink()
+    elif state == "empty":
+        path.write_text("")
+    else:
+        lines = path.read_text().splitlines()
+        path.write_text("\n".join([*lines, lines[1]]) + "\n")
+    spend = _score(scripted_graded_run, tmp_path)["spend"]
+    assert spend["verified"] is (state == "empty")
+    assert spend["reason"] == {"missing": "missing ledger", "empty": None,
+                               "duplicate": "inconsistent ledger"}[state]
+    assert spend["by_provider"] == {}
+    assert spend["per_graded_answer"] == {}
+    assert spend["graded_answers"] == 6
 
 
 def test_score_run_dir_leaves_cells_pending_without_their_reference_vote(

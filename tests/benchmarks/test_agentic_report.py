@@ -29,6 +29,7 @@ from benchmarks.agentic_report import (
 )
 from benchmarks.grading.aggregate import write_vote_record
 from benchmarks.grading.batch import BatchItemResult
+from benchmarks.grading.calibration import probe_retest
 from benchmarks.grading.gates import g1, reference_probe_check
 from benchmarks.grading.mapping import MAPPING_TABLE
 from benchmarks.grading.panel import load_panel
@@ -396,8 +397,18 @@ def _score(
         # Display-only retest diagnostics stay separate from pass-1 calibration.
         # This deliberately short cohort cannot establish G1 or reference PASS.
         assert result.passed is None and check.passed is None
+        observations = {
+            p.id: {
+                "question_id": p.question_id,
+                "pass1": p.expected_score,
+                "pass2": p.expected_score if i < 24 else None,
+            }
+            for i, p in enumerate(held[:26])
+        }
         details["held_out_test_retest"] = {
-            "haiku": {"alpha": 0.75, "items": 24, "expected": 28, "pass2_records": 26}
+            "haiku": probe_retest(
+                "haiku", observations, expected=len(held), seed=suite["header"]["corpus_sha256"]
+            )
         }
     entry = {
         "binding": {
@@ -705,8 +716,9 @@ def test_report_renders_the_disclosure_from_the_exported_bundle_alone(
     assert "grading/inputs/judge-prompt.md" in disclosure
     assert "grading/disclosure/" in disclosure
     assert "Held-out probe test–retest" in disclosure
-    assert "haiku" in disclosure and "0.75" in disclosure and "24/28 paired" in disclosure
-    assert "26 pass-2 records" in disclosure
+    assert "Held-out probe test–retest, haiku: alpha 1.000, 24/28 paired, 26 pass-2 records" in (
+        disclosure
+    )
     assert "Real-answer test–retest" in disclosure
     assert "per evaluated family" in disclosure and "per system" in disclosure
     assert "scripted-openai/python-docs" in disclosure  # suspects per (model, system)
@@ -1497,6 +1509,26 @@ def current_offline_export(tmp_path: Path) -> Path:
     return export
 
 
+def test_airgap_section_reports_an_attempt_with_only_a_discard(current_offline_export: Path):
+    run = current_offline_export
+    (run / "grading/summary.json").unlink()
+    shutil.rmtree(run / "transcripts")
+    cell = "python-docs--gemma4-12b--r1"
+    _json(run / "discarded" / cell / "SYN-EX-001--attempt1.json", {"reason": "budget_stop"})
+    checks_path = run / "airgap/checks.json"
+    checks = json.loads(checks_path.read_bytes())
+    _json(checks_path, checks | {"checks": 3})
+
+    report = _render(run)
+    arm = _section(report, "## Air-gapped arm")
+    assert "Offline evidence: pass (3 check rounds expected)." in arm
+    assert "No completed air-gapped trajectory" in arm
+    assert "mean score" not in arm
+    assert "No air-gapped model ran" not in report
+    denial = r"- gemma4-12b--python-docs: pypi\.org\:443 (refused; nothing left the sandbox)"
+    assert denial in report.splitlines()
+
+
 @pytest.mark.parametrize("ungraded", [True, False])
 def test_current_offline_checks_and_denials_survive_absent_c3(
     current_offline_export: Path, ungraded: bool
@@ -1979,7 +2011,6 @@ def test_g3_reconstructs_mixed_cohort_before_scoring_or_publication(
 ) -> None:
     from benchmarks.agentic_report import _RunMetadata
     from benchmarks.grading.gates import GateResult, SampleCandidate, g3, g3_sample
-    from benchmarks.grading.inputs import safe_id
     from benchmarks.grading.mapping import grade
 
     run = validated_bundle
@@ -1990,7 +2021,7 @@ def test_g3_reconstructs_mixed_cohort_before_scoring_or_publication(
     )
     rows = [json.loads(p.read_bytes()) for p in (run / "transcripts").glob("*/*.json")]
     ids, info = g3_sample(
-        [SampleCandidate(safe_id(r["competitor_id"], r["corpus_id"]),
+        [SampleCandidate(grading_inputs.safe_id(r["competitor_id"], r["corpus_id"]),
                          r["model_family_id"], r["system_id"],
                          questions[r["corpus_id"]].category) for r in rows],
         excluded=set(), seed=str(json.loads((run / "environment.json").read_bytes())["seed"]),
@@ -2016,7 +2047,9 @@ def test_g3_reconstructs_mixed_cohort_before_scoring_or_publication(
         _json(path, vote)
     rebuild_grading(run)
     if saved_cohort == "sorted-slice":
-        arbitrary = sorted(safe_id(r["competitor_id"], r["corpus_id"]) for r in rows)[:300]
+        arbitrary = sorted(
+            grading_inputs.safe_id(r["competitor_id"], r["corpus_id"]) for r in rows
+        )[:300]
         assert not any(i.startswith(omitted_prefix) for i in arbitrary)
         _json(sample_path, {**info, "ids": arbitrary})
     _score(run, tmp_path, panel_path=run / "grading/inputs/panel.yml", composition=composition)

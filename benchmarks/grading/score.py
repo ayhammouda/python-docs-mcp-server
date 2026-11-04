@@ -41,40 +41,41 @@ from benchmarks.grading.aggregate import (
     final_grade,
     judge_grade,
     load_answer_votes,
+    parsed_from_record,
     recorded_result,
     vote_from_record,
 )
 from benchmarks.grading.aggregate import own_grade as _own
+from benchmarks.grading.batch import BatchRequest
 from benchmarks.grading.calibration import judge_settings as _judge_settings
+from benchmarks.grading.calibration import probe_retest as _probe_retest
 from benchmarks.grading.calibration import replay_g1
+from benchmarks.grading.diagnostics import diagnostic_tables, missing_records
 from benchmarks.grading.disclosure import ledger_spend, verified_key_audit
 from benchmarks.grading.gates import (
     BINDING_INPUTS,
     CellKey,
     ClaimResult,
     GateResult,
-    alpha_by_group,
     c2,
     c3,
     g1,
     g2,
     g4,
-    length_grade_correlation,
-    model_lineage,
     outcome_tier,
     pass1_composition,
     reference_probe_check,
     registered_g3,
+    registered_g3_sample,
     run_binding,
     run_offline_evidence,
-    self_preference,
-    test_retest,
 )
 from benchmarks.grading.grounding import is_grounded
 from benchmarks.grading.inputs import (
     REPO_ROOT,
     SNAPSHOT_FILES,
     TUNING_PATH,
+    GradingQuestion,
     JudgeInput,
     Weight,
     answer_requests,
@@ -98,6 +99,8 @@ from benchmarks.grading.probes import (
     ProbeFile,
     assemble,
     assignments,
+    check_request,
+    generation_request,
     probe_file_from_inputs,
     reference_subset,
     write_probe_file,
@@ -115,14 +118,15 @@ from benchmarks.scoring import apply_llm_grades, score_run
 
 CORPUS_PATH = REPO_ROOT / "docs" / "benchmarks" / "corpus.yml"
 CORPUS_SCHEMA_PATH = REPO_ROOT / "docs" / "benchmarks" / "corpus.schema.json"
-G1_PER_JUDGE, NO_RECORD = 0.90, "no_record"
+G1_PER_JUDGE = 0.90
 
 
-def _read(path: Path) -> Any:
+def _run_json(run_dir: Path, filename: str) -> dict[str, Any] | None:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise BenchmarkValidationError(f"could not read JSON {path}: {exc}") from exc
+        content = artifact_bytes(run_dir, run_dir / filename)
+    except FileNotFoundError:
+        return None
+    return json_mapping(content, filename)
 
 
 def _sha256(path: Path) -> str:
@@ -238,18 +242,18 @@ def _gate(result: GateResult) -> dict[str, Any]:
     return {"passed": result.passed, "details": result.details}
 
 
-def _ledger_events(grading: Path) -> list[dict[str, Any]]:
+def _ledger_events(grading: Path) -> list[dict[str, Any]] | None:
     path = grading / "ledger-events.jsonl"
     try:
         body = artifact_bytes(grading, path)
     except FileNotFoundError:
-        body = b""
+        return None
     return [
         json_mapping(line, "grading ledger") for line in body.splitlines() if line.strip()
     ]
 
 
-def _ledger_spend(grading: Path, graded: int) -> dict[str, Any]:
+def _ledger_spend(grading: Path, graded: int | None) -> dict[str, Any]:
     return ledger_spend(_ledger_events(grading), graded)
 
 
@@ -257,25 +261,11 @@ def _no_final_record(
     grading: Path, efforts: Mapping[str, str | None], items: Mapping[str, AnswerVotes]
 ) -> dict[str, dict[str, list[str]]]:
     """Amendment 2: per judge, the items with no final pass-1 record, by last not_run reason."""
-    # Invocation timestamps are written in UTC. Their one-second precision allows ties.
-    history: dict[tuple[str, str], dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
-    for path in artifact_paths(grading, grading / "runs", "*.json"):
-        run = json_mapping(artifact_bytes(grading, path), "grading invocation")
-        when = run.get("completed_at") or run.get("started_at") or ""
-        for entry in run.get("not_run") or []:
-            if entry.get("target") == "answers" and entry.get("pass") == 1:
-                history[entry["judge_id"], entry["item_id"]][when].add(entry["reason"])
-    result: dict[str, dict[str, list[str]]] = {}
-    for judge_id in efforts:
-        for item in sorted(items):
-            if not items[item].records.get(judge_id, {}).get("final"):
-                reasons = history.get((judge_id, item), {})
-                latest = reasons.get(max(reasons, default=""), set()) | reasons.get("", set())
-                reason = next(iter(latest), NO_RECORD)
-                if len(latest) > 1:
-                    reason = f"chronology unknown ({', '.join(sorted(latest))})"
-                result.setdefault(judge_id, {}).setdefault(reason, []).append(item)
-    return result
+    runs = [
+        json_mapping(artifact_bytes(grading, path), "grading invocation")
+        for path in artifact_paths(grading, grading / "runs", "*.json")
+    ]
+    return missing_records(runs, efforts, items)
 
 
 def _frozen_inputs(
@@ -335,7 +325,13 @@ def score_run_dir(
     grading = run_dir / "grading"
     if grading.is_symlink():
         raise BenchmarkValidationError("grading directory must be within the run")
-    seed = str(_read(run_dir / "environment.json").get("seed"))
+    environment = _run_json(run_dir, "environment.json")
+    if environment is None or environment.get("mode") != "agentic":
+        raise BenchmarkValidationError("agentic scoring requires mode agentic in environment.json")
+    run_summary = _run_json(run_dir, "run-summary.json")
+    if run_summary is not None and run_summary.get("mode") != "agentic":
+        raise BenchmarkValidationError("run-summary.json disagrees with the agentic run mode")
+    seed = str(environment.get("seed"))
     root = grading / "inputs"
     manifest, settings, frozen = _frozen_inputs(
         root, criteria_path=criteria_path, panel_path=panel_path
@@ -435,16 +431,6 @@ def score_run_dir(
 
     by_item = {av.item_id: av for av in answer_votes.values()}
     question_of = {av.item_id: av.corpus_id for av in answer_votes.values()}
-    family_of = {
-        av.item_id: transcripts[k]["model_family_id"]
-        for k, av in answer_votes.items()
-        if k in transcripts
-    }
-    system_of = {
-        av.item_id: transcripts[k]["system_id"]
-        for k, av in answer_votes.items()
-        if k in transcripts
-    }
     weights = {qid: q.weights for qid, q in questions.items()}
 
     # 3. G2 uses independent pass-1 votes even while the final grade is pending.
@@ -457,12 +443,6 @@ def score_run_dir(
         item: votes
         for item, votes in panel_votes.items()
         if sum(v is not None for v in votes.values()) >= 2
-    }
-    # Other diagnostics retain their finalized-answer cohort.
-    own = {
-        av.item_id: panel_votes[av.item_id]
-        for k, av in answer_votes.items()
-        if k in finals and av.item_id in panel_votes
     }
     g2_result = g2(agreement, question_of, seed=seed, resamples=resamples)
 
@@ -493,14 +473,8 @@ def score_run_dir(
         g3_result = GateResult(
             "G3", None, {"reason": "G3 was not evaluated: the run has no reference sample."}
         )
-    in_sample = {i: pairs[i] for i in sample_ids if i in pairs}
-    confusion: dict[str, Counter[str]] = defaultdict(Counter)
-    for final_score, reference_score in in_sample.values():
-        confusion[str(final_score)][str(reference_score)] += 1
-
     # 6. Claims under the panel and under each single judge, then G4.
-    plan_path = run_dir / "planned-cells.json"
-    plan = _read(plan_path) if plan_path.exists() else {}
+    plan = _run_json(run_dir, "planned-cells.json") or {}
     plan_cells = plan.get("cells") or []
     planned: set[CellKey] = {
         (c["system_id"], c["model_family_id"], c["corpus_id"], int(c["repeat"])) for c in plan_cells
@@ -572,9 +546,13 @@ def score_run_dir(
     ledger_events = _ledger_events(grading)
     try:
         audit = verified_key_audit(
-            run_dir, questions=questions, reference=reference.id, judge=reference.raw,
-            inputs=manifest, prompt=frozen["key_audit_prompt"],
-            events=ledger_events,
+            run_dir,
+            questions=questions,
+            reference=reference.id,
+            judge=reference.raw,
+            inputs=manifest,
+            prompt=frozen["key_audit_prompt"],
+            events=ledger_events or [],
         )
     except KeyLeakError:
         raise
@@ -589,103 +567,29 @@ def score_run_dir(
 
     # 8. The tier and the diagnostics.
     tier = outcome_tier(g1_result, g2_result, g3_result, g4_result)
-    group_key = {i: f"{family_of.get(i)}/{system_of.get(i)}" for i in by_item}
-    own2 = {
-        av.item_id: {j: _own(av, j, weights[av.corpus_id]) for j in efforts}
-        for av in pass2.values()
-        if any(v is not None for v in av.votes.values())
-    }
-    lineages = {fid: model_lineage(fid, f) for fid, f in families.items()}
-    spi = self_preference(
-        own,
-        {i: lineage for i, fid in family_of.items() if (lineage := lineages.get(fid))},
-        question_of,
+    # Descriptive G3 tables use the registered membership too, even when a
+    # contradictory saved selection withholds the gate's eligibility.
+    try:
+        diagnostic_ids, _ = registered_g3_sample(
+            answer_votes, transcripts, questions, list(efforts), seed=seed
+        )
+    except (BenchmarkValidationError, KeyError, TypeError, ValueError):
+        diagnostic_ids = []
+    diagnostics, breakdowns = diagnostic_tables(
+        answer_votes,
+        pass2,
+        finals,
+        transcripts,
+        scoring,
+        questions,
+        efforts,
         {j: panel.judges[j].provider for j in efforts},
+        families,
+        diagnostic_ids,
+        _no_final_record(grading, efforts, by_item),
         seed=seed,
         resamples=resamples,
     )
-    graded = [(k, f) for k, f in finals.items() if k in transcripts]
-    labels: dict[str, Counter[str]] = defaultdict(Counter)
-    grounded_cells: dict[str, list[bool]] = defaultdict(list)
-    for k, record in scoring.items():
-        if k not in transcripts:
-            continue
-        group = f"{transcripts[k]['model_family_id']}/{transcripts[k]['system_id']}"
-        if record.get("label"):
-            labels[group][record["label"]] += 1
-        if record.get("score") is not None:
-            grounded_cells[group].append(bool(record.get("grounded")))
-    suspects: dict[str, dict[str, int]] = defaultdict(lambda: {"suspect": 0, "differs": 0})
-    for k, final in finals.items():
-        av = answer_votes[k]
-        if av.suspect:
-            group = group_key[av.item_id]
-            suspects[group]["suspect"] += 1
-            pf = panel_fields(av.votes)
-            if (
-                pf.needs_reference
-                or grade({f: bool(v) for f, v in pf.fields.items()}, weights[av.corpus_id])[0]
-                != final["score"]
-            ):
-                suspects[group]["differs"] += 1
-    per_judge = {
-        j: {
-            "records": sum(1 for av in answer_votes.values() if j in av.records),
-            "withheld": dict(
-                Counter(
-                    av.records[j]["withheld"]
-                    for av in answer_votes.values()
-                    if j in av.records and av.records[j]["withheld"] is not None
-                )
-            ),
-        }
-        for j in efforts
-    }
-    diagnostics = {
-        "test_retest": test_retest(
-            {i: own[i] for i in own if i in own2},
-            own2,
-            question_of,
-            seed=seed,
-            resamples=resamples,
-        )
-        if own2
-        else None,
-        "self_preference": {f"{j}/{f}": asdict(v) if v else None for (j, f), v in spi.items()},
-        "length_grade_correlation": length_grade_correlation(
-            [len(transcripts[k].get("answer") or "") for k, _ in graded],
-            [f["score"] for _, f in graded],
-        ),
-        "label_shares": {
-            g: {label: n / sum(c.values()) for label, n in sorted(c.items())}
-            for g, c in sorted(labels.items())
-        },
-        "grounded_rate": {g: sum(v) / len(v) for g, v in sorted(grounded_cells.items()) if v},
-        "suspects": dict(sorted(suspects.items())),
-        "per_judge": per_judge,
-        # shortcut: an item listed here blocks the reference target until it is fixed and
-        # graded again (Task 8 refuses `reference` while any panel item lacks a final record).
-        "no_final_record": _no_final_record(grading, efforts, by_item),
-    }
-
-    def breakdown(grades: Mapping[str, Any], of: Mapping[str, str]) -> dict[str, Any]:
-        groups = alpha_by_group(
-            grades, {i: of.get(i, "?") for i in grades}, question_of, seed=seed, resamples=resamples
-        )
-        return {g: asdict(r) for g, r in groups.items()}
-
-    g3_grades = {i: {"final": p[0], "reference": p[1]} for i, p in in_sample.items()}
-    breakdowns = {
-        "G2": {
-            "by_family": breakdown(agreement, family_of),
-            "by_system": breakdown(agreement, system_of),
-        },
-        "G3": {
-            "by_family": breakdown(g3_grades, family_of),
-            "by_system": breakdown(g3_grades, system_of),
-            "confusion": {k: dict(v) for k, v in sorted(confusion.items())},
-        },
-    }
     _write(run_dir, disclosure / "breakdowns.json", breakdowns)
     for path, value in (
         (disclosure / "g1-entries.json", entries),
@@ -768,6 +672,7 @@ def _probe_record(
     item_id: str,
     request: JudgeInput | None = None,
     question_id: str | None = None,
+    item_meta: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Select the original producer's record, verifying any supplied judge request."""
     selected = chosen_vote_file(
@@ -791,10 +696,7 @@ def _probe_record(
     }
     if request is not None:
         identity["input_sha256"] = request.sha256()
-    if any(
-        type(record.get(k)) is not type(v) or record.get(k) != v
-        for k, v in identity.items()
-    ):
+    if any(type(record.get(k)) is not type(v) or record.get(k) != v for k, v in identity.items()):
         raise BenchmarkValidationError(f"foreign vote record for {target}/{judge.id}/{item_id}")
     if request is not None:
         path = root / "items" / target / f"{item_id}.json"
@@ -807,15 +709,18 @@ def _probe_record(
             ) from None
         expected = request.item_evidence(
             {"question_id": question_id, "suspect": request.suspect}
+            if item_meta is None else item_meta
         )
         if json.dumps(document, sort_keys=True) != json.dumps(expected, sort_keys=True):
             raise BenchmarkValidationError(f"calibration input document differs for {item_id}")
-        if record.get("parsed") is not None:
-            raise BenchmarkValidationError(f"unexpected parsed calibration reply for {item_id}")
-        vote_from_record(
-            record, request=request,
-            result=recorded_result(root, record, judge, vote_sha256=selected[2]),
-        )
+        result = recorded_result(root, record, judge, vote_sha256=selected[2])
+        if item_meta is not None:
+            parsed = parsed_from_record(record, request=request, result=result)
+            record = {**record, "parsed": parsed}
+        else:
+            if record.get("parsed") is not None:
+                raise BenchmarkValidationError(f"unexpected parsed calibration reply for {item_id}")
+            vote_from_record(record, request=request, result=result)
     return record
 
 
@@ -846,12 +751,48 @@ def _judge_score(
     return record is not None, score
 
 
-def _parsed_probe_reply(record: Mapping[str, Any] | None) -> dict[str, Any]:
-    if record and record.get("status") == "succeeded" and record.get("withheld") is None:
-        parsed = record.get("parsed")
-        if isinstance(parsed, dict):
-            return parsed
-    return {}
+def probe_build_reply(
+    root: Path, *, target: str, judge: JudgeSpec, request: BatchRequest,
+    question_id: str, probe_type: str, round_number: int,
+) -> dict[str, Any]:
+    """Select and replay one probe item; absent or honestly withheld data has no object."""
+    record = _probe_record(
+        root, target=target, judge=judge, effort=judge.effort, pass_number=1,
+        item_id=request.item_id,
+        request=JudgeInput(request.system, request.user, request.schema, False),
+        item_meta={"question_id": question_id, "probe_type": probe_type, "round": round_number},
+    )
+    return {} if record is None or record["parsed"] is None else record["parsed"]
+
+
+def probe_build_round(
+    root: Path, *, question: GradingQuestion, probe_type: str, round_number: int,
+    generator: JudgeSpec, checker: JudgeSpec, spec_text: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The assembler and producer replay the same selected generation/check pair."""
+    if generator.provider == checker.provider:
+        raise BenchmarkValidationError("probe checker must belong to another provider")
+    gen = probe_build_reply(
+        root, target="probe-gen", judge=generator,
+        request=generation_request(probe_type, question, round_number, spec_text=spec_text),
+        question_id=question.id, probe_type=probe_type, round_number=round_number,
+    )
+    candidate = gen.get("probe_text")
+    if not isinstance(candidate, str) or not candidate.strip():
+        # A checker cannot approve a missing/refused/invalid candidate.
+        selected = chosen_vote_file(
+            root, target="probe-check", judge_id=checker.id, effort=checker.effort,
+            pass_number=1, item_id=safe_id("chk", probe_type, question.id, f"r{round_number}"),
+        )
+        if selected is not None:
+            raise BenchmarkValidationError("probe checker has no admissible generation")
+        return gen, {}
+    chk = probe_build_reply(
+        root, target="probe-check", judge=checker,
+        request=check_request(probe_type, question, candidate, round_number, spec_text=spec_text),
+        question_id=question.id, probe_type=probe_type, round_number=round_number,
+    )
+    return gen, chk
 
 
 @dataclass(frozen=True)
@@ -899,7 +840,8 @@ def _workspace_requests(
 ) -> dict[str, JudgeInput]:
     """Reconstruct canonical stage-2 requests from the hash-bound input documents."""
     system, schema = frozen_judge_document(
-        inputs.bodies["judge_prompt"], inputs.bodies["judge_schema"],
+        inputs.bodies["judge_prompt"],
+        inputs.bodies["judge_schema"],
     )
     if tuning:
         questions = tuning_questions_from_mapping(inputs.tuning.mapping)
@@ -921,14 +863,19 @@ def _workspace_requests(
         questions = criteria_from_mapping(
             inputs.settings["criteria"].mapping,
             workspace / "inputs" / SNAPSHOT_FILES["criteria"],
-            corpus_path=corpus, corpus_body=body, schema_path=CORPUS_SCHEMA_PATH,
+            corpus_path=corpus,
+            corpus_body=body,
+            schema_path=CORPUS_SCHEMA_PATH,
         )
     requests = {}
     for probe in probes:
         if probe.question_id not in questions or probe.id != safe_id(probe.type, probe.question_id):
             raise BenchmarkValidationError("invalid grading probe")
         requests[probe.id] = render_judge_input(
-            questions[probe.question_id], probe.text, system=system, schema=schema,
+            questions[probe.question_id],
+            probe.text,
+            system=system,
+            schema=schema,
         )
     return requests
 
@@ -948,11 +895,17 @@ def assemble_workspace_probes(
     inputs = _workspace_inputs(workspace, "probe-build", panel_path, criteria_path, tuning_path)
     panel = inputs.panel
     criteria = inputs.settings["criteria"]
+    captured_corpus = workspace / "inputs/corpus.yml"
+    corpus_body = (
+        artifact_bytes(workspace, captured_corpus)
+        if captured_corpus.exists() or captured_corpus.is_symlink() else None
+    )
     sets = {
         "held_out": criteria_from_mapping(
             criteria.mapping,
             workspace / "inputs" / SNAPSHOT_FILES["criteria"],
-            corpus_path=corpus_path,
+            corpus_path=captured_corpus if corpus_body is not None else corpus_path,
+            corpus_body=corpus_body,
             schema_path=schema_path,
         ),
         "tuning": tuning_questions_from_mapping(inputs.tuning.mapping),
@@ -967,26 +920,15 @@ def assemble_workspace_probes(
         checks: dict[tuple[str, str, int], bool] = {}
         for (qid, probe_type), (generator, checker) in assignment.items():
             for r in range(1, MAX_ROUNDS + 1):
-                gen = _probe_record(
-                    workspace,
-                    target="probe-gen",
-                    judge=panel.judges[generator],
-                    effort=panel.judges[generator].effort,
-                    pass_number=1,
-                    item_id=safe_id("gen", probe_type, qid, f"r{r}"),
+                gen, chk = probe_build_round(
+                    workspace, question=questions[qid], probe_type=probe_type, round_number=r,
+                    generator=panel.judges[generator], checker=panel.judges[checker],
+                    spec_text=inputs.bodies["probe_spec"].decode("utf-8"),
                 )
-                if isinstance(value := _parsed_probe_reply(gen).get("probe_text"), str):
+                if isinstance(value := gen.get("probe_text"), str) and value.strip():
                     generated[(qid, probe_type, r)] = value
-                chk = _probe_record(
-                    workspace,
-                    target="probe-check",
-                    judge=panel.judges[checker],
-                    effort=panel.judges[checker].effort,
-                    pass_number=1,
-                    item_id=safe_id("chk", probe_type, qid, f"r{r}"),
-                )
-                if isinstance(value := _parsed_probe_reply(chk).get("meets_spec"), bool):
-                    checks[(qid, probe_type, r)] = value
+                if isinstance(verdict := chk.get("meets_spec"), bool):
+                    checks[(qid, probe_type, r)] = verdict
         kept, lost = assemble(
             questions,
             set_name,  # type: ignore[arg-type]
@@ -1064,7 +1006,12 @@ def write_tuning(
         for effort in panel.judges[judge_id].effort_levels:
             scored = [
                 _judge_score(
-                    workspace, "tuning", panel.judges[judge_id], effort, p, weights,
+                    workspace,
+                    "tuning",
+                    panel.judges[judge_id],
+                    effort,
+                    p,
+                    weights,
                     request=requests[p.id],
                 )
                 for p in probes
@@ -1138,24 +1085,6 @@ def _probe_repeat(
             "attempt": first["attempt"],
         },
         "pass2_record": {"grading_run_id": second["grading_run_id"], "attempt": second["attempt"]},
-    }
-
-
-def _probe_retest(
-    judge: str, observations: Mapping[str, dict[str, Any]], *, expected: int, seed: str
-) -> dict[str, Any]:
-    paired = {k: r for k, r in observations.items() if None not in (r["pass1"], r["pass2"])}
-    statistic = test_retest(
-        {k: {judge: r["pass1"]} for k, r in paired.items()},
-        {k: {judge: r["pass2"]} for k, r in paired.items()},
-        {k: r["question_id"] for k, r in paired.items()},
-        seed=seed,
-    ).get(judge, {"alpha": None, "low": None, "high": None, "items": 0})
-    return {
-        **statistic,
-        "expected": expected,
-        "pass2_records": len(observations),
-        "observations": observations,
     }
 
 
@@ -1278,7 +1207,12 @@ def write_g1(
     subset = reference_subset(held_out, seed=probe_file.header["corpus_sha256"])
     scored = [
         _judge_score(
-            workspace, "reference-probes", reference, reference.effort, p, weights,
+            workspace,
+            "reference-probes",
+            reference,
+            reference.effort,
+            p,
+            weights,
             request=requests[p.id],
         )
         for p in subset

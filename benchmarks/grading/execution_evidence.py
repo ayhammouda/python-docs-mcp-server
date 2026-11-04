@@ -6,15 +6,96 @@ within the bundle, not independent proof that a provider was contacted.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 from benchmarks.agentic.clients import _LIVE_APIS
+from benchmarks.agentic.ledger import Outcome, booked_cost
 from benchmarks.agentic.reference import nonnegative_decimal
 from benchmarks.grading.aggregate import receipt_result, withheld_reason
 from benchmarks.grading.batch import BatchItemResult
 from benchmarks.grading.inputs import EXPLANATION_FIELD, VOTE_FIELDS, key_audit_schema
+from benchmarks.runner import BenchmarkValidationError
+
+
+def ledger_units(
+    events: Sequence[Mapping[str, Any]],
+    *, only_unit: str | None = None,
+) -> tuple[dict[str, Mapping[str, Any]], dict[str, Mapping[str, Any]]]:
+    """Replay unique reservations and settlements from already captured bytes.
+
+    Batch accounting is shared with the vote/receipt join. Ordinary failed units
+    use the host's conservative booking rule too, even when no vote was written.
+    Recovery settlements belong to the invocation that reopened the ledger.
+    """
+    reserves: dict[str, Mapping[str, Any]] = {}
+    settlements: dict[str, Mapping[str, Any]] = {}
+    for event in events:
+        kind = event.get("event")
+        if kind in ("stop", "resume"):
+            continue
+        unit, provider, run = (event.get(k) for k in ("unit_id", "provider", "run_id"))
+        if kind not in ("reserve", "settle") or not all(
+            isinstance(v, str) and v.strip() for v in (unit, provider, run)
+        ):
+            raise BenchmarkValidationError("invalid grading ledger identity")
+        unit = cast(str, unit)
+        target = reserves if kind == "reserve" else settlements
+        if unit in target or (kind == "settle" and unit not in reserves):
+            raise BenchmarkValidationError("duplicate or unmatched grading ledger unit")
+        if kind == "reserve":
+            nonnegative_decimal(event["bound"])
+        else:
+            reservation = reserves[unit]
+            outcome = event.get("outcome")
+            if provider != reservation["provider"] or (
+                run != reservation["run_id"] and outcome != "unsettled_at_load"
+            ):
+                raise BenchmarkValidationError("grading settlement identity differs")
+            if only_unit is not None and unit != only_unit:
+                target[unit] = event
+                continue  # The vote join checks its own item; spend checks every unit.
+            amount = nonnegative_decimal(event["booked"])
+            bound = nonnegative_decimal(reservation["bound"])
+            if outcome == "batch":
+                if reservation.get("kind") != "batch":
+                    raise BenchmarkValidationError("batch settlement lacks batch reservation")
+                items = event["items"]
+                if (
+                    not isinstance(items, list)
+                    or any(not isinstance(i, dict) or not isinstance(i.get("item_id"), str)
+                           or not i["item_id"] for i in items)
+                    or len({i["item_id"] for i in items}) != len(items)
+                    or any(i["status"] not in ("ok", "no_usage", "unbilled") for i in items)
+                    or sum((nonnegative_decimal(i["booked"]) for i in items), Decimal(0)) != amount
+                    or sum((nonnegative_decimal(i["booked"]) for i in items if i["status"] == "ok"),
+                           Decimal(0)) != nonnegative_decimal(event["actual"])
+                    or any((i["status"] == "unbilled" and nonnegative_decimal(i["booked"]) != 0)
+                           or (i["status"] == "no_usage" and nonnegative_decimal(i["booked"]) <= 0)
+                           for i in items)
+                ):
+                    raise BenchmarkValidationError("inconsistent grading batch dollars")
+                no_usage = [i for i in items if i["status"] == "no_usage"]
+                conservative = sum((nonnegative_decimal(i["booked"]) for i in no_usage), Decimal(0))
+                if conservative > 2 * bound or (
+                    len(no_usage) == len(items) and conservative != 2 * bound
+                ):
+                    raise BenchmarkValidationError("inconsistent conservative batch booking")
+            else:
+                if outcome not in (
+                    "ok", "rejected", "rate_limited", "server", "timeout", "connection",
+                    "no_usage", "worker_lost", "unsettled_at_load",
+                ):
+                    raise BenchmarkValidationError("unknown grading settlement outcome")
+                actual = (
+                    None if event.get("actual") is None else nonnegative_decimal(event["actual"])
+                )
+                if amount != booked_cost(cast(Outcome, outcome), bound=bound, actual=actual):
+                    raise BenchmarkValidationError("grading booking differs from host rule")
+        target[unit] = event
+    return reserves, settlements
 
 
 def grading_execution_matches(
@@ -56,9 +137,9 @@ def _execution_matches(
         or invocation.get("not_run") != []
         or invocation.get("grading_run_id") != run
         or type(invocation.get("pass")) is not int
-        or invocation["pass"] != 1
+        or invocation["pass"] not in (1, 2)
         or type(vote.get("pass")) is not int
-        or vote["pass"] != 1
+        or vote["pass"] != invocation["pass"]
         or type(vote.get("terminal")) is not bool
         or not isinstance(vote.get("provider_batch_id"), str)
         or not vote["provider_batch_id"].strip()
@@ -131,20 +212,7 @@ def _execution_matches(
         result.unbilled or result.buckets is None or result.buckets.is_empty
     ):
         return False
-    reserves, settlements = {}, {}
-    for event in events:
-        kind = event.get("event")
-        if kind not in ("reserve", "settle"):
-            continue
-        target = reserves if kind == "reserve" else settlements
-        key = event["unit_id"]
-        if key in target or (kind == "settle" and key not in reserves):
-            return False
-        if kind == "settle" and any(
-            event.get(field) != reserves[key].get(field) for field in ("run_id", "provider")
-        ):
-            return False
-        target[key] = event
+    reserves, settlements = ledger_units(events, only_unit=unit)
     reservation, settlement = reserves[unit], settlements[unit]
     if (
         reservation.get("kind") != "batch"
@@ -181,29 +249,6 @@ def _execution_matches(
         ):
             return False
     items = settlement["items"]
-    if len({i["item_id"] for i in items}) != len(items):
-        return False
-    if (
-        any(i["status"] not in ("ok", "no_usage", "unbilled") for i in items)
-        or sum((nonnegative_decimal(i["booked"]) for i in items), Decimal(0))
-        != nonnegative_decimal(settlement["booked"])
-        or sum((nonnegative_decimal(i["booked"]) for i in items if i["status"] == "ok"), Decimal(0))
-        != nonnegative_decimal(settlement["actual"])
-    ):
-        return False
-    if any(
-        (i["status"] == "unbilled" and nonnegative_decimal(i["booked"]) != 0)
-        or (i["status"] == "no_usage" and nonnegative_decimal(i["booked"]) <= 0)
-        for i in items
-    ):
-        return False
-    # The compact ledger has no per-item bounds. Its aggregate bound still
-    # limits conservative bookings; when every item lacks usage it is exact.
-    no_usage = [i for i in items if i["status"] == "no_usage"]
-    conservative = sum((nonnegative_decimal(i["booked"]) for i in no_usage), Decimal(0))
-    bound = nonnegative_decimal(reservation["bound"])
-    if conservative > 2 * bound or (len(no_usage) == len(items) and conservative != 2 * bound):
-        return False
     matched = [i for i in items if i["item_id"] == item]
     if len(matched) != 1:
         return False

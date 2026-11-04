@@ -351,7 +351,7 @@ def test_fewer_than_two_votes_let_the_reference_decide_every_field(tmp_path: Pat
     root = tmp_path / "grading"
     _item(root)
     _write(root, "haiku", _result(_text()))
-    _write(root, "luna", _result(_text(), refusal=True))
+    _write(root, "luna", _result(_text(), refusal=True, stop_reason="content_filter"))
     _write(root, "flash-lite", _result(status="missing"), terminal=True, attempt=3)
     _write(root, "reference", _result(_text(attempted=False)), target="reference")
     final = final_grade(_votes(root), QUESTION, inputs=MANIFEST)
@@ -387,7 +387,8 @@ def test_a_suspect_answer_takes_the_reference_grade(tmp_path: Path) -> None:
 def test_a_withheld_reference_vote_leaves_the_grade_pending(tmp_path: Path) -> None:
     root = tmp_path / "grading"
     _item(root, suspect=True)
-    _write(root, "reference", _result(_text(), refusal=True), target="reference")
+    _write(root, "reference", _result(_text(), refusal=True, stop_reason="refusal"),
+           target="reference")
     assert final_grade(_votes(root), QUESTION, inputs=MANIFEST) is None
 
 

@@ -218,8 +218,9 @@ def assignments(
     }
 
 
-def _spec_sections() -> dict[str, str]:
-    text = PROBE_SPEC_PATH.read_text(encoding="utf-8")
+def _spec_sections(text: str | None = None) -> dict[str, str]:
+    if text is None:
+        text = PROBE_SPEC_PATH.read_text(encoding="utf-8")
     sections: dict[str, str] = {}
     for block in re.split(r"^## ", text, flags=re.MULTILINE)[1:]:
         heading, _, body = block.partition("\n")
@@ -240,9 +241,9 @@ def _question_text(question: GradingQuestion, probe_type: str) -> list[str]:
 
 
 def generation_request(
-    probe_type: str, question: GradingQuestion, round_number: int
+    probe_type: str, question: GradingQuestion, round_number: int, *, spec_text: str | None = None,
 ) -> BatchRequest:
-    spec = _spec_sections()
+    spec = _spec_sections(spec_text)
     return BatchRequest(
         item_id=safe_id("gen", probe_type, question.id, f"r{round_number}"),
         system=f"{spec['Generator']}\n\n## {probe_type}\n\n{spec[probe_type]}",
@@ -253,9 +254,10 @@ def generation_request(
 
 
 def check_request(
-    probe_type: str, question: GradingQuestion, probe_text: str, round_number: int
+    probe_type: str, question: GradingQuestion, probe_text: str, round_number: int,
+    *, spec_text: str | None = None,
 ) -> BatchRequest:
-    spec = _spec_sections()
+    spec = _spec_sections(spec_text)
     lines = [*_question_text(question, probe_type), "<probe>", probe_text, "</probe>"]
     return BatchRequest(
         item_id=safe_id("chk", probe_type, question.id, f"r{round_number}"),

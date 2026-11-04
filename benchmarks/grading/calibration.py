@@ -8,7 +8,14 @@ from typing import Any
 
 from benchmarks.agentic.inputs import CapturedInput
 from benchmarks.agentic.protocol import scanned_json_bytes
-from benchmarks.grading.gates import G1Binding, GateResult, g1, reference_probe_check, select_g1
+from benchmarks.grading.gates import (
+    G1Binding,
+    GateResult,
+    g1,
+    reference_probe_check,
+    select_g1,
+    test_retest,
+)
 from benchmarks.grading.panel import composition_key
 from benchmarks.grading.probes import Probe, probe_file_from_inputs, reference_subset
 from benchmarks.runner import BenchmarkValidationError
@@ -65,6 +72,24 @@ def _same(saved: Any, actual: Any) -> bool:
             and all(_same(a, b) for a, b in zip(saved, actual, strict=True))
         )
     return saved == actual
+
+
+def probe_retest(
+    judge: str, observations: Mapping[str, dict[str, Any]], *, expected: int, seed: str
+) -> dict[str, Any]:
+    paired = {k: r for k, r in observations.items() if None not in (r["pass1"], r["pass2"])}
+    statistic = test_retest(
+        {k: {judge: r["pass1"]} for k, r in paired.items()},
+        {k: {judge: r["pass2"]} for k, r in paired.items()},
+        {k: r["question_id"] for k, r in paired.items()},
+        seed=seed,
+    ).get(judge, {"alpha": None, "low": None, "high": None, "items": 0})
+    return {
+        **statistic,
+        "expected": expected,
+        "pass2_records": len(observations),
+        "observations": observations,
+    }
 
 
 def _recomputed_gate(saved: GateResult, actual: GateResult) -> GateResult:
@@ -158,10 +183,58 @@ def replay_g1(
             dropped=[d for d in suite.dropped if d["set"] == "held_out"],
         )
         selected = _recomputed_gate(selected, actual)
+        repeats = {}
+        held_by_id = {p.id: p for p in held}
+        saved_repeats = selected.details.get("held_out_test_retest")
+        for judge, saved in (saved_repeats if isinstance(saved_repeats, dict) else {}).items():
+            # Legacy aggregates without observations cannot establish coverage.
+            observations = saved.get("observations") if isinstance(saved, dict) else None
+            if judge not in judges or not isinstance(observations, dict):
+                continue
+            try:
+                for item, row in observations.items():
+                    probe = held_by_id[item]
+                    if (
+                        row["question_id"] != probe.question_id
+                        or not _same(row["pass1"], scores["judges"][judge][item])
+                        or any(
+                            v is not None and (type(v) not in (int, float) or not 0 <= v <= 1)
+                            for v in (row["pass1"], row["pass2"])
+                        )
+                    ):
+                        raise ValueError("inconsistent held-out repeat observation")
+                repeats[judge] = probe_retest(
+                    judge, observations, expected=len(held), seed=suite.header["corpus_sha256"]
+                )
+            except (KeyError, TypeError, ValueError):
+                repeats[judge] = {
+                    "alpha": "unknown",
+                    "items": "unknown",
+                    "expected": len(held),
+                    "pass2_records": "unknown",
+                }
+        selected = GateResult(
+            selected.id,
+            selected.passed,
+            {
+                **actual.details,
+                **(
+                    {"composition": selected.details["composition"]}
+                    if "composition" in selected.details
+                    else {}
+                ),
+                **(
+                    {"held_out_test_retest": repeats}
+                    if "held_out_test_retest" in selected.details
+                    else {}
+                ),
+            },
+        )
     else:
         selected = GateResult(
-            "G1", None,
-            {**selected.details, "reason": "legacy G1 lacks underlying pass-1 score evidence"},
+            "G1",
+            None,
+            {"reason": "legacy G1 lacks underlying pass-1 score evidence"},
         )
     if "scores" in reference.details:
         subset = reference_subset(held, seed=suite.header["corpus_sha256"])
@@ -171,7 +244,8 @@ def replay_g1(
         reference = _recomputed_gate(reference, actual)
     else:
         reference = GateResult(
-            "reference_probe_check", None,
+            "reference_probe_check",
+            None,
             {**reference.details, "reason": "reference lacks underlying score evidence"},
         )
     if "judge_settings" not in bound:

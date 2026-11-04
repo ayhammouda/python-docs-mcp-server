@@ -12,44 +12,108 @@ import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from benchmarks.agentic.reference import nonnegative_decimal
-from benchmarks.grading.aggregate import _chosen, _records, is_final, judge_grade
+from benchmarks.grading.aggregate import (
+    AnswerVotes,
+    _chosen,
+    _records,
+    final_grade,
+    is_final,
+    judge_grade,
+    vote_from_record,
+)
+from benchmarks.grading.batch import BatchItemResult
+from benchmarks.grading.execution_evidence import ledger_units
 from benchmarks.grading.gates import c2, c3, g4
 from benchmarks.grading.inputs import GradingQuestion, JudgeInput, key_audit_schema, safe_id
 from benchmarks.grading.mapping import parse_object
 from benchmarks.report_files import optional_json
-from benchmarks.report_measurements import grading_receipt_matches
+from benchmarks.report_measurements import evidence_cell, grading_receipt_matches
 from benchmarks.runner import BenchmarkValidationError
 
 if TYPE_CHECKING:
-    from benchmarks import agentic_report
+    from benchmarks.report_contracts import PublicationRun
 
 
-def ledger_spend(events: Sequence[Mapping[str, Any]], graded: int | None) -> dict[str, Any]:
+def ledger_spend(
+    events: Sequence[Mapping[str, Any]] | None, graded: int | None,
+) -> dict[str, Any]:
     """Book settlements exactly once as recorded, including conservative host charges.
 
     A missing/unverified denominator is distinct from zero completed LLM finals.
     Neither reservations nor cached summaries are charges.
     """
     booked: dict[str, Decimal] = defaultdict(Decimal)
-    for event in events:
-        if event.get("event") == "settle":
-            provider = event.get("provider")
-            if not isinstance(provider, str) or not provider:
-                raise BenchmarkValidationError("settlement lacks provider")
-            booked[provider] += nonnegative_decimal(event["booked"])
+    verified, reason = False, "missing ledger"
+    if events is not None:
+        try:
+            reserves, settlements = ledger_units(events)
+            for event in settlements.values():
+                booked[event["provider"]] += nonnegative_decimal(event["booked"])
+            verified = reserves.keys() == settlements.keys()
+            reason = None if verified else "unsettled reservations; confirmed bookings only"
+        except (BenchmarkValidationError, KeyError, TypeError, ValueError, DecimalException):
+            reason = "inconsistent ledger"
     return {
+        "verified": verified, "reason": reason,
         "by_provider": {p: str(v) for p, v in sorted(booked.items())},
         "graded_answers": graded,
         "per_graded_answer": {
             p: str((v / graded).quantize(Decimal("0.000001"))) for p, v in sorted(booked.items())
-        } if graded else {},
+        } if graded and verified else {},
     }
+
+
+def completed_answers(
+    requests: Mapping[tuple[str, str], JudgeInput],
+    questions: Mapping[str, GradingQuestion],
+    inputs: Mapping[str, str],
+    efforts: Mapping[str, Any],
+    reference: str,
+    selected: Mapping[tuple[str, str], tuple[dict[str, Any], BatchItemResult] | None],
+) -> int | None:
+    """Count final grades from the receipt-admitted capture, independently of projections.
+
+    Absence is pending; a selected but unverified/contradictory reply makes the
+    denominator unknown. The caller already bound each item to its request.
+    No grade, summary, vote or receipt file is reopened here.
+    """
+    count = 0
+    for key, request in requests.items():
+        item = safe_id(*key)
+        parsed, records = {}, {}
+        for judge in (*efforts, reference):
+            coord = judge, item
+            if coord not in selected:
+                continue
+            chosen = selected[coord]
+            if chosen is None:
+                return None
+            raw, result = chosen
+            if raw.get("input_sha256") != request.sha256():
+                return None
+            try:
+                parsed[judge] = vote_from_record(raw, request=request, result=result)
+            except BenchmarkValidationError:
+                return None
+            records[judge] = raw
+        if not all(j in records and is_final(records[j]) for j in efforts):
+            continue
+        if reference in records and not is_final(records[reference]):
+            continue
+        av = AnswerVotes(
+            item, key[0], key[1], {j: parsed[j] for j in efforts},
+            {j: records[j] for j in efforts}, request.suspect,
+            parsed.get(reference), records.get(reference),
+        )
+        if final_grade(av, questions[key[1]], inputs=inputs) is not None:
+            count += 1
+    return count
 
 
 def audit_request(
@@ -157,35 +221,31 @@ def verified_key_audit(
 
 
 def retained_claims(
-    run: agentic_report._RunMetadata, flagged: Sequence[str]
+    run: PublicationRun, flagged: Sequence[str]
 ) -> dict[str, dict[str, Any]]:
     """Recompute subset comparisons from the admitted, adjudicated answer cohort.
 
-    Derive compared models from the full plan, so removing flagged keys cannot
-    quietly drop a missing comparison arm. Pending retained scores stay pending.
+    Derive compared models from the full plan, then reconcile each comparison's
+    unflagged arms. Pending retained scores stay pending.
     """
     if run.grading != "live" or run.answering != "live":
         raise BenchmarkValidationError("unverified or ineligible comparison cohort")
     captured = run.grade_capture
     plan = run.plan["cells"]
-    planned = {
-        (c["system_id"], c["model_family_id"], c["corpus_id"], c["repeat"])
-        for c in plan
-    }
-    observed = {
-        (t["system_id"], t["model_family_id"], key[1], t["repeat"])
-        for key, t in run.transcripts.items()
-    }
-    if len(planned) != len(plan) or observed != planned:
-        raise BenchmarkValidationError("comparison plan differs from captured trajectories")
+    if not isinstance(plan, list) or not all(isinstance(c, dict) for c in plan):
+        raise BenchmarkValidationError("invalid comparison plan cells")
+    plan_coords = [evidence_cell(cell) for cell in plan]
+    planned = set(plan_coords)
+    observed_coords = [evidence_cell(t, key[1]) for key, t in run.transcripts.items()]
     kept = {k for k in planned if k[2] not in flagged}
     scores, tokens = {}, {}
-    by_judge: dict[str, dict[Any, Any]] = {j: {} for j in run.summary["efforts"]}
+    efforts = run.summary["efforts"]
+    if not isinstance(efforts, dict):
+        raise BenchmarkValidationError("invalid judging panel")
+    by_judge: dict[str, dict[Any, Any]] = {j: {} for j in efforts}
     for key, transcript in run.transcripts.items():
-        coord = (
-            transcript["system_id"], transcript["model_family_id"], key[1], transcript["repeat"]
-        )
-        if coord not in kept:
+        coord = evidence_cell(transcript, key[1])
+        if coord[2] in flagged:
             continue
         scores[coord] = captured.scores.get(key)
         # Only counts actually bound to the same retained trajectory can enter C2.
@@ -205,7 +265,7 @@ def retained_claims(
         systems[model].add(system)
 
     def claims(grades: dict[Any, Any]) -> dict[str, dict[str, Any]]:
-        return {
+        results = {
             "C2": {
                 m: asdict(c2(tokens, grades, kept, model=m, seed=run.seed))
                 for m, arms in systems.items() if {"python-docs", "docs-fetch"} <= arms
@@ -216,6 +276,20 @@ def retained_claims(
                 and run.families.get(m, {}).get("arm") == "air-gapped"
             },
         }
+        for cid, by_model in results.items():
+            arms = {"python-docs", "docs-fetch" if cid == "C2" else "no-docs"}
+            for model, claim in by_model.items():
+                def needed(c: tuple[str, str, str, int]) -> bool:
+                    return c[0] in arms and c[1] == model and c[2] not in flagged
+
+                want = [c for c in plan_coords if needed(c)]
+                have = [c for c in observed_coords if needed(c)]
+                if len(want) != len(set(want)) or len(have) != len(set(have)) or (
+                    set(want) != set(have)
+                ):
+                    claim.update(passed=None, interval=None,
+                                 reason="comparison plan differs from captured trajectories")
+        return results
 
     actual = claims(scores)
     single = {j: actual if own == scores else claims(own) for j, own in by_judge.items()}

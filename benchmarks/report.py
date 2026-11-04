@@ -53,17 +53,19 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from benchmarks import report_common
 from benchmarks.agentic.inputs import CapturedInput, json_mapping
 from benchmarks.agentic.protocol import assert_no_key_shaped
 from benchmarks.model_matrix import METHODOLOGY_TOKEN_LABEL, ModelMatrix, load_model_matrix
-from benchmarks.report_common import CellRecord as CellRecord
-from benchmarks.report_common import RunBundle as RunBundle
-from benchmarks.report_common import _cell as _cell
-from benchmarks.report_common import _percentile as _percentile
-from benchmarks.report_common import _relative_link as _relative_link
-from benchmarks.report_common import _table as _table
 from benchmarks.report_files import artifact_bytes, artifact_paths, checked_path
 from benchmarks.runner import BenchmarkValidationError
+
+CellRecord = report_common.CellRecord
+RunBundle = report_common.RunBundle
+_cell = report_common._cell
+_percentile = report_common._percentile
+_relative_link = report_common._relative_link
+_table = report_common._table
 
 METHODOLOGY_DISCLAIMER = (
     "This is a generated raw report, not a publication-ready claim. Per roadmap "

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import asdict
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -18,8 +19,10 @@ from benchmarks.agentic.count import (
 from benchmarks.agentic.count_evidence import is_count_coordinate, validate_count_fields
 from benchmarks.agentic.inputs import json_mapping
 from benchmarks.agentic.protocol import KeyLeakError, scanned_json_bytes
+from benchmarks.grading.aggregate import AnswerVotes
 from benchmarks.grading.batch import BatchItemResult
 from benchmarks.grading.execution_evidence import grading_execution_matches
+from benchmarks.grading.inputs import GradingQuestion, JudgeInput
 from benchmarks.report_files import artifact_bytes
 from benchmarks.runner import BenchmarkValidationError
 
@@ -256,3 +259,34 @@ class CountCapture:
 def live_count_matches(root: Path, transcript: dict[str, Any], token: dict[str, Any]) -> bool:
     """A standalone join captures fresh files on every call."""
     return CountCapture(root).matches(transcript, token)
+
+
+@dataclass
+class GradeCapture:
+    """Evidence admitted by the grade join, reused by publication without I/O.
+
+    These unsigned exports establish internal continuity, not provider authenticity.
+    A pending answer may contribute verified independent votes to G2, but only
+    a reconciled final (or automatic zero) contributes a cell score.
+    """
+
+    requests: dict[tuple[str, str], JudgeInput] = field(default_factory=dict)
+    questions: dict[str, GradingQuestion] = field(default_factory=dict)
+    answers: dict[tuple[str, str], AnswerVotes] = field(default_factory=dict)
+    finals: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+    scores: dict[tuple[str, str], float] = field(default_factory=dict)
+    graded_answers: int | None = None
+    runs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    reconciled: bool = False  # the whole join succeeded, including any genuinely pending cells
+
+
+def evidence_cell(
+    record: Mapping[str, object], question: str | None = None
+) -> tuple[str, str, str, int]:
+    """Read an answering coordinate without coercing malformed exported identities."""
+    system, model = record["system_id"], record["model_family_id"]
+    corpus, repeat = record["corpus_id"] if question is None else question, record["repeat"]
+    if (not isinstance(system, str) or not isinstance(model, str)
+            or not isinstance(corpus, str) or type(repeat) is not int):
+        raise BenchmarkValidationError("invalid answering cell coordinate")
+    return system, model, corpus, repeat
