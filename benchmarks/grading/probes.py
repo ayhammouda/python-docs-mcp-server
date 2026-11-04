@@ -19,16 +19,17 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from benchmarks.agentic.inputs import CapturedInput
 from benchmarks.agentic.protocol import assert_no_key_shaped, assert_no_key_shaped_json
 from benchmarks.grading.batch import BatchRequest
 from benchmarks.grading.inputs import (
     PROBE_SPEC_PATH,
     GradingQuestion,
-    load_tuning_questions,
     safe_id,
+    tuning_questions_from_mapping,
 )
 from benchmarks.grading.mapping import Label, grade
-from benchmarks.runner import BenchmarkValidationError, _load_yaml_mapping
+from benchmarks.runner import BenchmarkValidationError
 
 PROBE_TYPES = (
     "KEY", "PARA", "PAD", "HEDGE", "DROP1", "DROP2", "VER", "FACT", "KEYX", "PADX",
@@ -357,41 +358,47 @@ def write_probe_file(path: Path, probe_file: ProbeFile) -> None:
     path.write_bytes(body)
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def load_probe_file(path: Path, *, criteria_path: Path, tuning_path: Path) -> ProbeFile:
-    """Refuse a probe file built from other criteria or tuning questions than the current ones."""
-    data = _load_yaml_mapping(path, "probe file")
+    """Load and validate the same bytes that supply the probe header's input hashes."""
+    return probe_file_from_inputs(
+        CapturedInput.read(path, "probes", "probe file"),
+        CapturedInput.read(criteria_path, "criteria", "grading criteria"),
+        CapturedInput.read(tuning_path, "tuning", "tuning questions"),
+    )
+
+
+def probe_file_from_inputs(
+    probes_input: CapturedInput, criteria: CapturedInput, tuning: CapturedInput
+) -> ProbeFile:
+    data = probes_input.mapping
     header = data.get("header")
     if data.get("schema_version") != 1 or not isinstance(header, dict):
-        raise BenchmarkValidationError(f"probe file {path} needs schema_version: 1 and a header")
-    for field, source in (("criteria_sha256", criteria_path), ("tuning_sha256", tuning_path)):
-        if header.get(field) != _sha256(source):
+        raise BenchmarkValidationError("probe file needs schema_version: 1 and a header")
+    for field, source in (("criteria_sha256", criteria), ("tuning_sha256", tuning)):
+        if header.get(field) != hashlib.sha256(source.content).hexdigest():
             raise BenchmarkValidationError(
-                f"probe file {path}: header {field} does not match {source}"
+                f"probe file header {field} does not match {source.name}"
             )
     entries = data.get("probes")
     if not isinstance(entries, list):
-        raise BenchmarkValidationError(f"probe file {path}: probes must be a list")
+        raise BenchmarkValidationError("probe file: probes must be a list")
     probes: list[Probe] = []
     for raw in entries:
         if not isinstance(raw, dict):
-            raise BenchmarkValidationError(f"probe file {path}: each probe must be a mapping")
+            raise BenchmarkValidationError("probe file: each probe must be a mapping")
         if raw.get("type") not in PROBE_TYPES or raw.get("set") not in ("held_out", "tuning"):
-            raise BenchmarkValidationError(f"probe file {path}: bad probe {raw.get('id')!r}")
+            raise BenchmarkValidationError("probe file: bad probe")
         try:
             probes.append(Probe(**raw))
         except TypeError as exc:
-            raise BenchmarkValidationError(f"probe file {path}: invalid probe fields") from exc
+            raise BenchmarkValidationError("probe file: invalid probe fields") from exc
     dropped = data.get("dropped", [])
     if not isinstance(dropped, list) or not all(isinstance(d, dict) for d in dropped):
-        raise BenchmarkValidationError(f"probe file {path}: invalid dropped slots")
-    questions = _load_yaml_mapping(criteria_path, "grading criteria").get("questions")
+        raise BenchmarkValidationError("probe file: invalid dropped slots")
+    questions = criteria.mapping.get("questions")
     if not isinstance(questions, dict):
-        raise BenchmarkValidationError(f"{criteria_path}: missing held-out question ids")
-    tuning_questions = load_tuning_questions(tuning_path)
+        raise BenchmarkValidationError("criteria missing held-out question ids")
+    tuning_questions = tuning_questions_from_mapping(tuning.mapping)
     if questions.keys() & tuning_questions.keys():
         raise BenchmarkValidationError("held-out and tuning question ids overlap")
     sets = {qid: "held_out" for qid in questions} | {qid: "tuning" for qid in tuning_questions}

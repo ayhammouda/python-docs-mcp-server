@@ -11,9 +11,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,7 @@ from typing import Any
 import yaml
 
 from benchmarks.agentic.egress import open_log_dir, read_log_at
-from benchmarks.agentic.inputs import CapturedInput, read_input_bytes, read_json
+from benchmarks.agentic.inputs import CapturedInput, CapturedJSON, read_input_bytes, read_json
 from benchmarks.agentic.protocol import (
     assert_no_key_shaped_json,
     scanned_json_bytes,
@@ -63,20 +64,22 @@ from benchmarks.grading.gates import (
 )
 from benchmarks.grading.grounding import is_grounded
 from benchmarks.grading.inputs import (
-    PROBE_SPEC_PATH,
     REPO_ROOT,
     SNAPSHOT_FILES,
     TUNING_PATH,
-    GradingQuestion,
     Weight,
     criteria_from_mapping,
-    load_criteria,
-    load_tuning_questions,
     safe_id,
     scanned_input,
+    tuning_questions_from_mapping,
 )
 from benchmarks.grading.mapping import Vote, grade, panel_fields
-from benchmarks.grading.panel import Panel, composition_key, load_panel, panel_from_mapping
+from benchmarks.grading.panel import (
+    JudgeSpec,
+    Panel,
+    composition_key,
+    panel_from_mapping,
+)
 from benchmarks.grading.probes import (
     MAX_ROUNDS,
     PROBE_TYPES,
@@ -84,7 +87,7 @@ from benchmarks.grading.probes import (
     ProbeFile,
     assemble,
     assignments,
-    load_probe_file,
+    probe_file_from_inputs,
     reference_subset,
     write_probe_file,
 )
@@ -196,18 +199,6 @@ def _own(av: AnswerVotes, judge_id: str, weights: tuple[Weight, Weight]) -> floa
     return None if vote is None else grade(vote.fields(), weights)[0]
 
 
-def _criteria_weights(path: Path) -> dict[str, tuple[Weight, Weight]]:
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    return {
-        qid: (entries[0]["weight"], entries[1]["weight"])
-        for qid, entries in (data.get("questions") or {}).items()
-    }
-
-
-def _tuning_weights(path: Path) -> dict[str, tuple[Weight, Weight]]:
-    return {qid: q.weights for qid, q in load_tuning_questions(path).items()}
-
-
 def _ledger_spend(grading: Path, graded: int) -> dict[str, Any]:
     booked: dict[str, Decimal] = defaultdict(Decimal)
     path = grading / "ledger-events.jsonl"
@@ -259,10 +250,10 @@ def _no_final_record(
     return result
 
 
-def _scoring_inputs(
-    run_dir: Path, criteria_path: Path | None, panel_path: Path | None, schema_path: Path
-) -> tuple[dict[str, str], dict[str, GradingQuestion], Panel]:
-    root = run_dir / "grading" / "inputs"
+def _frozen_inputs(
+    root: Path, *, criteria_path: Path | None, panel_path: Path | None
+) -> tuple[dict[str, str], dict[str, CapturedInput]]:
+    """Capture each snapshot once; path overrides are byte-for-byte assertions."""
     manifest = read_json(root / "inputs.json", "grading input manifest")
     if manifest.keys() - SNAPSHOT_FILES.keys():
         raise BenchmarkValidationError("unrecognized entries in grading input manifest")
@@ -272,9 +263,9 @@ def _scoring_inputs(
         path = root / filename
         if name == "probes" and name not in manifest and not path.exists():
             continue  # An older run without probes can still be scored without G1.
-        if name in overrides:
+        if name in {"criteria", "panel", "probes"}:
             captured = CapturedInput.read(path, name, name)
-            settings[name] = captured.mapping
+            settings[name] = captured
             body = captured.content
         else:
             body = scanned_input(path, suffix=path.suffix)
@@ -286,16 +277,28 @@ def _scoring_inputs(
             and override != path
             and scanned_input(override, suffix=path.suffix) != body
         ):
-            raise BenchmarkValidationError(f"--{name} differs from the run's frozen {name}")
+            raise BenchmarkValidationError(f"--{name} differs from the frozen {name}")
 
-    questions = criteria_from_mapping(
-        settings["criteria"],
-        root / SNAPSHOT_FILES["criteria"],
-        corpus_path=run_dir / "snapshots" / "corpus.yml",
-        schema_path=schema_path,
-    )
-    panel = panel_from_mapping(settings["panel"], root / SNAPSHOT_FILES["panel"])
-    return manifest, questions, panel
+    return manifest, settings
+
+
+def _judge_settings(
+    panel_input: CapturedInput,
+    judges: Sequence[str],
+    *,
+    reference: str | None = None,
+    before_effort_freeze: bool = False,
+) -> dict[str, str]:
+    """Pin each participating judge independently, using the portable panel-file settings."""
+    pins = {}
+    participants = [*judges, reference] if reference is not None else judges
+    for judge in participants:
+        settings = dict(panel_input.mapping["judges"][judge])
+        if before_effort_freeze:
+            settings.pop("effort", None)  # Tuning chooses this field for the held-out panel.
+        body = scanned_json_bytes(settings, where="grading judge settings", sort_keys=True)
+        pins[judge] = hashlib.sha256(body).hexdigest()
+    return pins
 
 
 def score_run_dir(
@@ -315,7 +318,15 @@ def score_run_dir(
         )
     grading = run_dir / "grading"
     seed = str(_read(run_dir / "environment.json").get("seed"))
-    manifest, questions, panel = _scoring_inputs(run_dir, criteria_path, panel_path, schema_path)
+    root = grading / "inputs"
+    manifest, settings = _frozen_inputs(root, criteria_path=criteria_path, panel_path=panel_path)
+    questions = criteria_from_mapping(
+        settings["criteria"].mapping,
+        root / SNAPSHOT_FILES["criteria"],
+        corpus_path=run_dir / "snapshots/corpus.yml",
+        schema_path=schema_path,
+    )
+    panel = panel_from_mapping(settings["panel"].mapping, root / SNAPSHOT_FILES["panel"])
     binding = run_binding(run_dir, panel, inputs=manifest)
     entries, bodies, copies = _g1_inputs(g1_paths)
     if entries and binding.missing_field():
@@ -327,6 +338,13 @@ def score_run_dir(
     )
     key = composition_key(list(binding.composition))
     entry = entries.get(key, {})
+    bound = entry.get("binding", {})
+    if "judge_settings" in bound and bound["judge_settings"] != _judge_settings(
+        settings["panel"],
+        list(binding.composition),
+        reference=panel.reference if entry.get("reference_check") is not None else None,
+    ):
+        raise BenchmarkValidationError("G1 judge settings differ from the frozen run panel")
     check = entry.get("reference_check") or {}
     if not isinstance(check, dict) or not isinstance(check.get("details", {}), dict):
         raise BenchmarkValidationError("G1 reference check must contain gate details")
@@ -337,10 +355,10 @@ def score_run_dir(
     if g1_result.passed is True or reference_check.passed is True:
         # A bound entry can predate coverage checks. Verify passing claims against the
         # run's frozen probe inventory, not just the exported pass flags.
-        suite = load_probe_file(
-            grading / "inputs" / "probes.yml",
-            criteria_path=grading / "inputs" / SNAPSHOT_FILES["criteria"],
-            tuning_path=tuning_path,
+        suite = probe_file_from_inputs(
+            settings["probes"],
+            settings["criteria"],
+            CapturedInput.read(tuning_path, "tuning", "tuning questions"),
         )
         held = [p for p in suite.probes if p.set == "held_out"]
         if g1_result.passed is True:
@@ -740,11 +758,12 @@ def _workspace(path: Path, kind: str) -> dict[str, Any]:
     meta_path = path / "workspace.json"
     if not meta_path.is_file():
         raise BenchmarkValidationError(f"{path} is not a grading workspace (no workspace.json)")
-    meta = _read(meta_path)
-    if meta.get("kind") != kind:
-        raise BenchmarkValidationError(
-            f"{path} is a {meta.get('kind')} workspace; this step needs a {kind} workspace"
-        )
+    meta = read_json(meta_path, "grading workspace")
+    actual = meta.get("kind")
+    if actual not in ("probe-build", "tuning", "held-out"):
+        raise BenchmarkValidationError("unrecognized grading workspace kind")
+    if actual != kind:
+        raise BenchmarkValidationError(f"{actual} workspace cannot be used for {kind}")
     return meta
 
 
@@ -755,12 +774,12 @@ def _record_vote(record: Mapping[str, Any] | None) -> Vote | None:
 
 
 def _probe_record(
-    root: Path, *, target: str, judge_id: str, effort: str | None, pass_number: int, item_id: str
+    root: Path, *, target: str, judge: JudgeSpec, effort: str | None, pass_number: int, item_id: str
 ) -> dict[str, Any] | None:
     record = chosen_record(
         root,
         target=target,
-        judge_id=judge_id,
+        judge_id=judge.id,
         effort=effort,
         pass_number=pass_number,
         item_id=item_id,
@@ -768,20 +787,21 @@ def _probe_record(
     if record is not None:
         identity = {
             "target": target,
-            "judge_id": judge_id,
+            "judge_id": judge.id,
+            "model_id": judge.model_id,
             "effort": effort,
             "pass": pass_number,
             "item_id": item_id,
         }
         if any(record.get(k) != value for k, value in identity.items()):
-            raise BenchmarkValidationError(f"foreign vote record for {target}/{judge_id}/{item_id}")
+            raise BenchmarkValidationError(f"foreign vote record for {target}/{judge.id}/{item_id}")
     return record
 
 
 def _judge_score(
     root: Path,
     target: str,
-    judge_id: str,
+    judge: JudgeSpec,
     effort: str | None,
     probe: Probe,
     weights: Mapping[str, tuple[Weight, Weight]],
@@ -791,7 +811,7 @@ def _judge_score(
     record = _probe_record(
         root,
         target=target,
-        judge_id=judge_id,
+        judge=judge,
         effort=effort,
         pass_number=pass_number,
         item_id=probe.id,
@@ -809,22 +829,61 @@ def _parsed_probe_reply(record: Mapping[str, Any] | None) -> dict[str, Any]:
     return {}
 
 
+@dataclass(frozen=True)
+class _WorkspaceInputs:
+    meta: dict[str, Any]
+    settings: dict[str, CapturedInput]
+    panel: Panel
+    tuning: CapturedInput
+
+
+def _workspace_inputs(
+    workspace: Path,
+    kind: str,
+    panel_path: Path | None,
+    criteria_path: Path | None,
+    tuning_path: Path,
+) -> _WorkspaceInputs:
+    meta = _workspace(workspace, kind)
+    root = workspace / "inputs"
+    manifest, settings = _frozen_inputs(root, criteria_path=criteria_path, panel_path=panel_path)
+    if meta.get("inputs") != manifest:
+        raise BenchmarkValidationError("workspace metadata differs from its grading input manifest")
+    tuning = CapturedInput.read(tuning_path, "tuning", "tuning questions")
+    # Stage workspaces pin both fields. Earlier pure exports have neither.
+    if kind == "held-out" and ("judges" in meta) != ("tuning_sha256" in meta):
+        raise BenchmarkValidationError("incomplete held-out workspace metadata")
+    if (
+        "tuning_sha256" in meta
+        and meta["tuning_sha256"] != hashlib.sha256(tuning.content).hexdigest()
+    ):
+        raise BenchmarkValidationError("workspace tuning questions differ")
+    panel = panel_from_mapping(settings["panel"].mapping, root / SNAPSHOT_FILES["panel"])
+    return _WorkspaceInputs(meta, settings, panel, tuning)
+
+
 def assemble_workspace_probes(
     workspace: Path,
     *,
-    criteria_path: Path,
+    criteria_path: Path | None,
     tuning_path: Path,
-    panel_path: Path,
+    panel_path: Path | None,
     index_path: Path,
     corpus_path: Path = CORPUS_PATH,
     schema_path: Path = CORPUS_SCHEMA_PATH,
 ) -> Path:
     """probe-build workspace: the generation and check votes plus code-built probes."""
-    _workspace(workspace, "probe-build")
-    panel = load_panel(panel_path)
+    inputs = _workspace_inputs(workspace, "probe-build", panel_path, criteria_path, tuning_path)
+    panel = inputs.panel
+    criteria = inputs.settings["criteria"]
     sets = {
-        "held_out": load_criteria(criteria_path, corpus_path=corpus_path, schema_path=schema_path),
-        "tuning": load_tuning_questions(tuning_path),
+        "held_out": criteria_from_mapping(
+            criteria.mapping,
+            workspace / "inputs" / SNAPSHOT_FILES["criteria"],
+            corpus_path=corpus_path,
+            schema_path=schema_path,
+        ),
+        "tuning": tuning_questions_from_mapping(inputs.tuning.mapping),
     }
     if sets["held_out"].keys() & sets["tuning"].keys():
         raise BenchmarkValidationError("held-out and tuning question ids overlap")
@@ -839,7 +898,7 @@ def assemble_workspace_probes(
                 gen = _probe_record(
                     workspace,
                     target="probe-gen",
-                    judge_id=generator,
+                    judge=panel.judges[generator],
                     effort=panel.judges[generator].effort,
                     pass_number=1,
                     item_id=safe_id("gen", probe_type, qid, f"r{r}"),
@@ -849,7 +908,7 @@ def assemble_workspace_probes(
                 chk = _probe_record(
                     workspace,
                     target="probe-check",
-                    judge_id=checker,
+                    judge=panel.judges[checker],
                     effort=panel.judges[checker].effort,
                     pass_number=1,
                     item_id=safe_id("chk", probe_type, qid, f"r{r}"),
@@ -867,10 +926,10 @@ def assemble_workspace_probes(
         probes += kept
         dropped += [{**d, "set": set_name} for d in lost]
     header = {
-        "criteria_sha256": _sha256(criteria_path),
-        "corpus_sha256": _sha256(corpus_path),
-        "tuning_sha256": _sha256(tuning_path),
-        "spec_sha256": _sha256(PROBE_SPEC_PATH),
+        "criteria_sha256": inputs.meta["inputs"]["criteria"],
+        "corpus_sha256": criteria.mapping["corpus_sha256"],
+        "tuning_sha256": hashlib.sha256(inputs.tuning.content).hexdigest(),
+        "spec_sha256": inputs.meta["inputs"]["probe_spec"],
         "index_sha256": _sha256(index_path),
     }
     path = workspace / "probes.yml"
@@ -878,27 +937,60 @@ def assemble_workspace_probes(
     return path
 
 
-def _handoff_probes(workspace: Path, tuning_path: Path) -> ProbeFile:
-    return load_probe_file(
-        workspace / "handoff" / "probes.yml",
-        criteria_path=workspace / "inputs" / "grading-criteria.yml",
-        tuning_path=tuning_path,
-    )
+def _handoff_inputs(
+    workspace: Path, inputs: _WorkspaceInputs
+) -> tuple[ProbeFile, list[dict[str, Any]]]:
+    meta, settings = inputs.meta, inputs.settings
+    manifest = meta["inputs"]
+    handoff = meta.get("handoff")
+    if (
+        not isinstance(handoff, dict)
+        or "probes" not in settings
+        or (handoff.get("probes.yml") != manifest["probes"])
+    ):
+        raise BenchmarkValidationError("workspace probes handoff differs from the frozen inputs")
+    directory = workspace / "handoff"
+    held = read_input_bytes(directory / "probes.yml", "probes", "workspace probe handoff")
+    if held != settings["probes"].content:
+        raise BenchmarkValidationError("workspace probe handoff differs from the frozen probes")
+    evidence = []
+    for name in sorted(handoff.keys() - {"probes.yml"}):
+        if meta["kind"] != "held-out" or not re.fullmatch(r"tuning-[1-9][0-9]*\.json", name):
+            raise BenchmarkValidationError("invalid workspace handoff entry")
+        record = CapturedJSON.read(directory / name, "tuning handoff")
+        if hashlib.sha256(record.content).hexdigest() != handoff[name]:
+            raise BenchmarkValidationError("workspace tuning handoff differs")
+        evidence.append(record.mapping)
+    if any(p.name not in handoff for p in directory.glob("tuning-*.json")) or (
+        meta["kind"] == "held-out" and "judges" in meta and not evidence
+    ):
+        raise BenchmarkValidationError("incomplete workspace tuning handoff")
+    return probe_file_from_inputs(settings["probes"], settings["criteria"], inputs.tuning), evidence
 
 
-def write_tuning(workspace: Path, *, panel_path: Path, tuning_path: Path = TUNING_PATH) -> Path:
+def write_tuning(
+    workspace: Path,
+    *,
+    panel_path: Path | None = None,
+    criteria_path: Path | None = None,
+    tuning_path: Path = TUNING_PATH,
+) -> Path:
     """tuning workspace: accuracy per judge per effort, and the lowest effort meeting G1's
     per-judge criteria (overall >= 0.90, zero INJ credit)."""
-    meta = _workspace(workspace, "tuning")
-    panel = load_panel(panel_path)
-    probes = [p for p in _handoff_probes(workspace, tuning_path).probes if p.set == "tuning"]
-    weights = _tuning_weights(tuning_path)
+    inputs = _workspace_inputs(workspace, "tuning", panel_path, criteria_path, tuning_path)
+    suite, _ = _handoff_inputs(workspace, inputs)
+    panel = inputs.panel
+    probes = [p for p in suite.probes if p.set == "tuning"]
+    weights = {
+        qid: q.weights for qid, q in tuning_questions_from_mapping(inputs.tuning.mapping).items()
+    }
     judges: dict[str, Any] = {}
     for judge_id in [*panel.panel, *panel.fallback.values()]:
         efforts: dict[str, Any] = {}
         for effort in panel.judges[judge_id].effort_levels:
             scored = [
-                _judge_score(workspace, "tuning", judge_id, effort, p, weights) for p in probes
+                _judge_score(workspace, "tuning", panel.judges[judge_id], effort, p, weights)
+                for p in probes
             ]
             if not any(exists for exists, _ in scored):
                 continue
@@ -919,8 +1011,11 @@ def write_tuning(workspace: Path, *, panel_path: Path, tuning_path: Path = TUNIN
         path,
         {
             "workspace": str(workspace),
-            "inputs": meta["inputs"],
-            "prompt_sha256": meta["inputs"].get("judge_prompt"),
+            "inputs": inputs.meta["inputs"],
+            "prompt_sha256": inputs.meta["inputs"].get("judge_prompt"),
+            "judge_settings": _judge_settings(
+                inputs.settings["panel"], list(judges), before_effort_freeze=True
+            ),
             "judges": judges,
         },
     )
@@ -1004,15 +1099,72 @@ def _probe_retest(
     }
 
 
-def write_g1(workspace: Path, *, panel_path: Path, tuning_path: Path = TUNING_PATH) -> Path:
+def _check_tuning_evidence(
+    inputs: _WorkspaceInputs, evidence: Sequence[dict[str, Any]], judges: Sequence[str]
+) -> None:
+    if "judges" not in inputs.meta and all("inputs" not in record for record in evidence):
+        return  # Early pure exports carried only a tuning disclosure.
+    manifest = inputs.meta["inputs"]
+    settings = _judge_settings(inputs.settings["panel"], judges, before_effort_freeze=True)
+    chosen = set()
+    for record in evidence:
+        recorded = record.get("inputs")
+        attempts = record.get("judges")
+        if (
+            not isinstance(recorded, dict)
+            or not isinstance(attempts, dict)
+            or record.get("prompt_sha256") != manifest["judge_prompt"]
+            or any(recorded.get(k) != manifest[k] for k in BINDING_INPUTS)
+        ):
+            raise BenchmarkValidationError("tuning evidence differs from the frozen grading inputs")
+        for judge in judges:
+            entry = attempts.get(judge, {})
+            if not isinstance(entry, dict):
+                raise BenchmarkValidationError("invalid tuning judge evidence")
+            if entry.get("chosen") is None:
+                continue
+            spec = inputs.panel.judges[judge]
+            efforts = entry.get("efforts")
+            if not isinstance(efforts, dict) or not all(
+                isinstance(v, dict) for v in efforts.values()
+            ):
+                raise BenchmarkValidationError("invalid tuning effort evidence")
+            passing = next(
+                (e for e in spec.effort_levels if efforts.get(e, {}).get("meets") is True), None
+            )
+            if not passing or passing != entry["chosen"] or passing != spec.effort:
+                raise BenchmarkValidationError("frozen judge effort differs from tuning evidence")
+            pins = record.get("judge_settings")
+            if "judge_settings" in record and (
+                not isinstance(pins, dict) or pins.get(judge) != settings[judge]
+            ):
+                raise BenchmarkValidationError("frozen judge settings differ from tuning evidence")
+            chosen.add(judge)
+    if chosen != set(judges):
+        raise BenchmarkValidationError("incomplete tuning evidence for the frozen composition")
+
+
+def write_g1(
+    workspace: Path,
+    *,
+    panel_path: Path | None = None,
+    criteria_path: Path | None = None,
+    tuning_path: Path = TUNING_PATH,
+) -> Path:
     """held-out workspace: G1 for its composition, the reference probe check, the dropped
     probes and the handed-off tuning evidence, as one entry of ``g1.json``."""
-    meta = _workspace(workspace, "held-out")
-    panel = load_panel(panel_path)
-    probe_file = _handoff_probes(workspace, tuning_path)
+    inputs = _workspace_inputs(workspace, "held-out", panel_path, criteria_path, tuning_path)
+    probe_file, evidence = _handoff_inputs(workspace, inputs)
+    panel = inputs.panel
     held_out = [p for p in probe_file.probes if p.set == "held_out"]
-    weights = _criteria_weights(workspace / "inputs" / "grading-criteria.yml")
+    weights = {
+        qid: (entries[0]["weight"], entries[1]["weight"])
+        for qid, entries in inputs.settings["criteria"].mapping["questions"].items()
+    }
     composition = pass1_composition(workspace, "probes", panel)
+    if "judges" in inputs.meta and inputs.meta["judges"] != list(composition):
+        raise BenchmarkValidationError("held-out workspace composition differs")
+    _check_tuning_evidence(inputs, evidence, list(composition))
     judge_scores: dict[str, dict[str, float | None]] = {}
     panel_scores: dict[str, float | None] = {}
     repeats: dict[str, dict[str, dict[str, Any]]] = {j: {} for j in composition}
@@ -1022,7 +1174,7 @@ def write_g1(workspace: Path, *, panel_path: Path, tuning_path: Path = TUNING_PA
             record = _probe_record(
                 workspace,
                 target="probes",
-                judge_id=judge_id,
+                judge=panel.judges[judge_id],
                 effort=spec.get("effort"),
                 pass_number=1,
                 item_id=probe.id,
@@ -1060,7 +1212,7 @@ def write_g1(workspace: Path, *, panel_path: Path, tuning_path: Path = TUNING_PA
     reference = panel.judges[panel.reference]
     subset = reference_subset(held_out, seed=probe_file.header["corpus_sha256"])
     scored = [
-        _judge_score(workspace, "reference-probes", reference.id, reference.effort, p, weights)
+        _judge_score(workspace, "reference-probes", reference, reference.effort, p, weights)
         for p in subset
     ]
     check = None
@@ -1069,11 +1221,8 @@ def write_g1(workspace: Path, *, panel_path: Path, tuning_path: Path = TUNING_PA
             subset, {p.id: s for p, (_, s) in zip(subset, scored, strict=True)}
         )
         check = _gate(result)
-    tuning = [
-        _read(workspace / "handoff" / name)
-        for name in sorted(meta.get("handoff") or {})
-        if name.startswith("tuning")
-    ]
+    if not evidence and (gate.passed is not None or (check and check["passed"] is not None)):
+        raise BenchmarkValidationError("evaluable calibration requires a tuning handoff")
     gate.details["held_out_test_retest"] = {
         judge: _probe_retest(
             judge, rows, expected=len(held_out), seed=probe_file.header["corpus_sha256"]
@@ -1083,12 +1232,17 @@ def write_g1(workspace: Path, *, panel_path: Path, tuning_path: Path = TUNING_PA
     entry = {
         "binding": {
             "composition": composition,
-            "inputs": {name: meta["inputs"].get(name) for name in BINDING_INPUTS},
+            "judge_settings": _judge_settings(
+                inputs.settings["panel"],
+                list(composition),
+                reference=reference.id if check else None,
+            ),
+            "inputs": {name: inputs.meta["inputs"].get(name) for name in BINDING_INPUTS},
         },
         "gate": _gate(gate),
         "reference_check": check,
         "dropped": dict(Counter(str(d.get("type")) for d in probe_file.dropped)),
-        "tuning": tuning,
+        "tuning": evidence,
     }
     path = workspace / "g1.json"
     _write(path, {"entries": {composition_key(list(composition)): entry}})

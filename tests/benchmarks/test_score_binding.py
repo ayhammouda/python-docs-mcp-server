@@ -37,6 +37,7 @@ def test_cli_replays_the_frozen_bundle(scripted_graded_run: Path, tmp_path: Path
     assert summary["claims"]["C2"][runs.FAMILY]["interval"]["point"] == pytest.approx(2 / 3)
     assert summary["gates"]["G1"]["passed"] is None
     assert summary["gates"]["G1"]["details"]["reason"]
+    assert summary["gates"]["G1"]["details"]["overall"]["accuracy"] == 0.97
     assert summary["resamples"] == 10_000
 
 

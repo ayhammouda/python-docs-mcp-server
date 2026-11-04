@@ -114,7 +114,9 @@ def test_rescore_publishes_only_current_g1_evidence(run: Path, tmp_path: Path) -
     assert _score(run, fallback, primary) == 0
     summary = json.loads((grading / "summary.json").read_bytes())
     assert summary["gates"]["G1"]["passed"] is None
+    assert summary["gates"]["G1"]["details"]["overall"]["accuracy"] == 0.97
     assert summary["reference_check"]["passed"] is None
+    assert summary["reference_check"]["details"]["overall"]["n"] == 28
     entries_file = disclosure / "g1-entries.json"
     selected = json.loads(entries_file.read_bytes())[PRIMARY]
     assert selected["gate"]["passed"] is None and selected["reference_check"]["passed"] is None
@@ -179,6 +181,7 @@ def test_fallback_uses_recorded_efforts_and_its_own_reference_check(
     assert summary["efforts"]["flash"] == "medium" and summary["pending_cells"] == []
     assert summary["gates"]["G1"]["passed"] is False
     assert summary["reference_check"]["passed"] is None
+    assert summary["reference_check"]["details"]["overall"]["n"] == 28
 
 
 def test_unregistered_pass1_composition_cannot_register_itself(run: Path, tmp_path: Path) -> None:

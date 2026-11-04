@@ -190,11 +190,16 @@ def criteria_from_mapping(
 
 
 def load_tuning_questions(path: Path) -> dict[str, GradingQuestion]:
-    data = _load_yaml_mapping(path, "tuning questions")
+    return tuning_questions_from_mapping(
+        CapturedInput.read(path, "tuning", "tuning questions").mapping
+    )
+
+
+def tuning_questions_from_mapping(data: dict[str, Any]) -> dict[str, GradingQuestion]:
     items = data.get("questions")
     if data.get("schema_version") != 1 or not isinstance(items, list) or not items:
         raise BenchmarkValidationError(
-            f"tuning questions {path} need schema_version: 1 and a 'questions' list"
+            "tuning questions need schema_version: 1 and a 'questions' list"
         )
     required = ("id", "category", "python_version", "prompt", "answer_key", "citations")
     questions: dict[str, GradingQuestion] = {}

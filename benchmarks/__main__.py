@@ -235,12 +235,12 @@ def _build_parser() -> argparse.ArgumentParser:
     agentic_score.add_argument(
         "--criteria",
         type=Path,
-        help="Workspace criteria, or a copy to check against a run's frozen criteria.",
+        help="Criteria file to check against the frozen grading inputs.",
     )
     agentic_score.add_argument(
         "--panel",
         type=Path,
-        help="Workspace panel, or a copy to check against a run's frozen panel.",
+        help="Panel file to check against the frozen grading inputs.",
     )
     agentic_score.add_argument("--schema", type=Path, default=_DEFAULT_CORPUS_SCHEMA)
     agentic_score.add_argument("--tuning", type=Path, default=_DEFAULT_TUNING_QUESTIONS)
@@ -455,23 +455,25 @@ def _agentic_score(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
 
             path = score.assemble_workspace_probes(
                 args.workspace,
-                criteria_path=args.criteria or _DEFAULT_GRADING_CRITERIA,
+                criteria_path=args.criteria,
                 tuning_path=args.tuning,
-                panel_path=args.panel or _DEFAULT_GRADING_PANEL,
+                panel_path=args.panel,
                 index_path=args.index or get_index_path(),
             )
             result = {"probes": str(path)}
         elif args.step == "tuning":
             path = score.write_tuning(
                 args.workspace,
-                panel_path=args.panel or _DEFAULT_GRADING_PANEL,
+                panel_path=args.panel,
+                criteria_path=args.criteria,
                 tuning_path=args.tuning,
             )
             result = {"tuning": str(path)}
         elif args.step == "g1":
             path = score.write_g1(
                 args.workspace,
-                panel_path=args.panel or _DEFAULT_GRADING_PANEL,
+                panel_path=args.panel,
+                criteria_path=args.criteria,
                 tuning_path=args.tuning,
             )
             result = {"g1": str(path)}
