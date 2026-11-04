@@ -752,8 +752,7 @@ async def test_raw_worker_stderr_is_private_before_publication(
     assert not visible_at_stop
     assert links.read_text() == "0"
     if read_only:
-        assert isinstance(error.value.__cause__, BenchmarkValidationError)
-        assert "PermissionError" in str(error.value.__cause__)
+        assert isinstance(error.value.__cause__, PermissionError)
         assert not log.exists()
     else:
         assert log.read_text() == "[redacted]"

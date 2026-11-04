@@ -295,15 +295,18 @@ came from. Container settings:
   lock. Already granted units still settle or recover, and teardown and log
   scrubbing finish before the original failure is reported. This stop does not
   persist into a later invocation.
-- Oversized MCP stdio replies latch a structural frame-limit failure before the
-  SDK connection closes. The worker aborts with `FrameTooLarge`, without scoring
-  the affected trajectory or starting another model call. Returned model usage
-  still settles. On recognizing a frame-limit failure, the host stops fresh
-  grants across all workers and withholds subsequent trajectory reports,
-  including sibling reports during teardown. Owned workers are stopped and open
-  units recovered before the harness error is reported. Credential failures and
-  interrupts retain their precedence over the frame-limit error; ordinary MCP
-  protocol failures keep their existing trajectory behavior.
+  The host retains the recognized failure across sibling cleanup and attaches
+  redacted diagnostics from any storage errors. Operator interrupts take precedence.
+- An MCP stdio reply above the frame limit aborts the run before the SDK closes
+  its connection. The worker settles any known usage. The host stops new grants
+  and withholds subsequent trajectory reports while it cleans up the workers.
+  Credential failures take precedence over frame-limit errors. Ordinary MCP
+  protocol errors keep their documented trajectory behavior.
+- On protocol EOF the host waits for the owned worker's terminal status, up to
+  five seconds or the remaining silence timeout, whichever is shorter. Status
+  3 reports a credential failure. A worker that cannot send its frame-limit
+  error exits with status 4 so the host can still identify the structural
+  failure. Other worker deaths and timeouts retain their usual loss accounting.
 
 ### 7.4 Air-gapped arm (**Call**)
 

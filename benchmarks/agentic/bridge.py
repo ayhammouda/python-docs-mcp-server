@@ -186,7 +186,9 @@ class Bridge:
         except BaseException as exc:
             if leak := find_key_leak(exc):
                 raise leak
-            if self._reply_guard is not None and isinstance(self._reply_guard.failure, KeyLeakError):
+            if self._reply_guard is not None and isinstance(
+                self._reply_guard.failure, KeyLeakError
+            ):
                 self._reply_guard.raise_if_failed()
             if not isinstance(exc, Exception):
                 raise

@@ -64,6 +64,7 @@ CASES = [
     "unfinished",
     "unfinished-slash",
     "unfinished-unicode",
+    "unfinished-quotes",
     "broken-escape",
     "raw-invalid",
     "name",
@@ -104,8 +105,12 @@ async def test_arguments_stop_before_dispatch_or_second_grant_with_first_usage_s
             "unfinished": "-suffix",
             "unfinished-slash": "-suffix\\",
             "unfinished-unicode": "-suffix\\u00",
+            "unfinished-quotes": "-suffix",
             "broken-escape": '-suffix\\x20"}',
         }[case]
+        if case == "unfinished-quotes":
+            # Interior escaped quotes must not restart the scan on every suffix.
+            prefix = prefix[0] + r'\"' * 8192 + prefix[1:]
         if mode == "lexical":
             tail = tail.replace("-suffix", " ")
         arguments = '{"query":' + prefix + tail
@@ -114,6 +119,10 @@ async def test_arguments_stop_before_dispatch_or_second_grant_with_first_usage_s
     client, recorder = _argument_client(
         provider, arguments, name, safe_first=case.startswith("later-")
     )
+    if provider == "openai" and case.startswith("unfinished"):
+        body = json.loads(recorder.responses[0].content)
+        body.update(status="incomplete", incomplete_details={"reason": "max_output_tokens"})
+        recorder.responses[0] = _ok(body)
     # The bound credential also authenticates the first SDK request. Content checks must
     # never compare against auth headers or attach the callback to the HTTP transport.
     if provider == "openai":

@@ -54,8 +54,8 @@ strings. Broken escapes with an uninspectable suffix fail closed using the same
 credential-failure path; no such content is replayed or published. Tool arguments
 use this same bounded scan after returned provider usage has settled; integer and
 nesting-limit errors are retained as invalid raw arguments, without losing usage.
-Each stdout line is limited
-to 64 MiB, with no queued reply buffer, and subprocess shutdown remains bounded.
+Each stdout line is limited to 64 MiB, with no queued reply buffer, and subprocess
+shutdown remains bounded.
 
 ## 3. Dry run
 

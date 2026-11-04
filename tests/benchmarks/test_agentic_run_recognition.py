@@ -260,6 +260,10 @@ async def test_eof_recovers_genuine_worker_recognition_and_settles_once(
         is None
     )
     assert harness.ledger.invocation_events() == events
+    # Both the retained error and the stopped ledger arbiter belong to this invocation.
+    fresh = _job(tmp_path, [ANSWER], count=1, job_id="next-invocation")
+    await harness.run([fresh])
+    assert harness.messages(fresh.job_id)[-1] == {"type": "done"}
 
 
 @pytest.mark.parametrize("ending", ["death", "timeout", "closed-stdout"])
