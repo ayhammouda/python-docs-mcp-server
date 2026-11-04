@@ -176,24 +176,22 @@ class Bridge:
     async def call(self, name: str, arguments: dict[str, Any]) -> ToolOutcome:
         try:
             result = await self._session.call_tool(name, arguments)
-        except MCPError as exc:
+        except BaseException as exc:
             if self._reply_guard is not None:
                 self._reply_guard.raise_if_failed()
             if leak := find_key_leak(exc):
                 raise leak
-            scanned_json_bytes(
-                exc.error.model_dump(mode="json"),
-                where="MCP tool error",
-                check_content=self.check_content,
-            )
-            if exc.code == CONNECTION_CLOSED:
-                raise BridgeCrash(f"MCP connection closed during {name}: {exc}") from exc
-            return ToolOutcome(text=str(exc.message), is_error=True)
-        except Exception as exc:  # noqa: BLE001 - any other failure means the session is gone
-            if self._reply_guard is not None:
-                self._reply_guard.raise_if_failed()
-            if leak := find_key_leak(exc):
-                raise leak
+            if not isinstance(exc, Exception):
+                raise
+            if isinstance(exc, MCPError):
+                scanned_json_bytes(
+                    exc.error.model_dump(mode="json"),
+                    where="MCP tool error",
+                    check_content=self.check_content,
+                )
+                if exc.code == CONNECTION_CLOSED:
+                    raise BridgeCrash(f"MCP connection closed during {name}: {exc}") from exc
+                return ToolOutcome(text=str(exc.message), is_error=True)
             scanned_json_bytes(
                 str(exc), where="MCP tool exception", check_content=self.check_content
             )

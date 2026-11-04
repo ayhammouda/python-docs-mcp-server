@@ -41,6 +41,15 @@ add `--live`.
 - This is a recorded departure from design §7.3, which passed keys with `--env-file`
   (#200, ruling A1): Docker stores `-e` and `--env-file` values in the container config.
 
+MCP stdout replies are checked for literal worker credentials and key-shaped strings
+before JSON-RPC parsing, result conversion or tool output-schema validation can drop
+fields. This includes malformed replies, error details, tool listings and handshake
+data. A detected credential ends the worker with exit 3 and stops new grants across
+the run; already granted calls still settle and clean diagnostics are retained.
+Task-group and chained exceptions cannot turn that detection into a scored MCP crash.
+Clean replies keep the SDK's normal validation outcomes. Each stdout line is limited
+to 64 MiB, with no queued reply buffer, and subprocess shutdown remains bounded.
+
 ## 3. Dry run
 
 ```bash

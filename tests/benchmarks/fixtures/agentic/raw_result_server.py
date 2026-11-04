@@ -2,11 +2,16 @@
 
 import json
 import sys
+import time
 
 
 def token(kind):
-    return {"literal": "synthetic_bootstrap_opaque", "lexical": "AIza" + "q" * 35,
-            "clean": "clean-value"}[kind]
+    return {
+        "literal": "synthetic_bootstrap_opaque",
+        "bound-shaped": "AIza" + "q" * 35,
+        "lexical": "AIza" + "q" * 35,
+        "clean": "clean-value",
+    }[kind]
 
 
 def response(method, params, case, value):
@@ -39,7 +44,7 @@ def response(method, params, case, value):
         result["structuredContent"] = {"hidden": value}
     elif case == "malformed-content":
         result["content"] = [{"type": "unknown", "hidden": value}]
-    elif case == "dropped-field":
+    elif case in ("dropped-field", "escaped-field"):
         result["discarded"] = value
     elif case == "error-result":
         result.update(isError=True, discarded=value)
@@ -59,15 +64,25 @@ def response(method, params, case, value):
 if __name__ == "__main__":
     case, kind = sys.argv[1:]
     # The literal deliberately has no lexical-key match; its exact bytes matter.
-    value = "prefix" + token(kind) + "-suffix" if kind == "literal" else token(kind)
+    value = (
+        "prefix" + token(kind) + "-suffix" if kind in ("literal", "bound-shaped") else token(kind)
+    )
     print("synthetic server diagnostic retained", file=sys.stderr, flush=True)
     for line in sys.stdin:
         request = json.loads(line)
         if "id" not in request:
+            continue
+        if case == "wait" and request["method"] == "tools/call":
+            time.sleep(30)  # Cancellation must stop only this owned subprocess.
+        if case == "oversize" and request["method"] == "tools/call":
+            print("x" * 2048, flush=True)
             continue
         message = {
             "jsonrpc": "2.0",
             "id": request["id"],
             **response(request["method"], request.get("params", {}), case, value),
         }
-        print(json.dumps(message), flush=True)
+        encoded = json.dumps(message)
+        if case == "escaped-field":
+            encoded = encoded.replace(token(kind), "".join(f"\\u{ord(c):04x}" for c in token(kind)))
+        print(encoded, flush=True)

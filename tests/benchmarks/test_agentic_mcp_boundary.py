@@ -13,10 +13,10 @@ from unittest.mock import AsyncMock
 import pytest
 from mcp import ClientSession, MCPError, StdioServerParameters, stdio_client
 
-from benchmarks.agentic import worker
+from benchmarks.agentic import mcp_stdio, worker
 from benchmarks.agentic.bridge import Bridge, BridgeCrash, open_bridge, system_spec_from_raw
 from benchmarks.agentic.host import LocalLauncher, run_jobs
-from benchmarks.agentic.protocol import WORKER_LEAK_REASON, KeyLeakError
+from benchmarks.agentic.protocol import WORKER_LEAK_REASON, FrameTooLarge, KeyLeakError
 from tests.benchmarks.test_agentic_host import REPO_ROOT, Host, _job
 from tests.benchmarks.test_agentic_sandbox import FAMILIES
 
@@ -26,6 +26,7 @@ CASES = [
     "invalid-structured",
     "malformed-content",
     "dropped-field",
+    "escaped-field",
     "error-result",
     "rpc-error",
     "dropped-error",
@@ -56,13 +57,14 @@ def _system(case, kind):
     )
 
 
-@pytest.mark.parametrize("kind", ["literal", "lexical"])
+@pytest.mark.parametrize("kind", ["literal", "bound-shaped", "lexical"])
 @pytest.mark.parametrize("case", CASES)
 async def test_real_worker_stops_before_second_paid_dispatch(
     tmp_path, monkeypatch, host, case, kind
 ):
     """Removing the pre-validation scan must restore a second grant or a normal crash."""
     calls = tmp_path / "calls.txt"
+    exit_code = tmp_path / "exit-code.txt"
     program = tmp_path / "worker.py"
     program.write_text(f"""
 import sys
@@ -96,7 +98,9 @@ clients.fetch_model_limits = limits
 # Synthetic bootstrap stays in this worker; the host holds no credential.
 worker.read_frame_fd = lambda fd: {{
     'type': 'bootstrap', 'env': {{'GOOGLE_API_KEY': token({kind!r})}}}}
-raise SystemExit(worker.main_worker())
+code = worker.main_worker()
+Path({str(exit_code)!r}).write_text(str(code))
+raise SystemExit(code)
 """)
     job = replace(
         _job(tmp_path, [], job_id="synthetic"),
@@ -142,6 +146,7 @@ raise SystemExit(worker.main_worker())
     from tests.benchmarks.fixtures.agentic.raw_result_server import token
 
     assert token(kind).encode() not in logs
+    assert exit_code.read_text() == "3"
 
 
 @pytest.mark.parametrize("case", ["missing-clean", "valid", "rpc-clean"])
@@ -158,10 +163,19 @@ async def test_clean_sdk_outcomes_are_preserved(case):
             assert result.text == '{"answer":"clean answer"}'
 
 
-@pytest.mark.parametrize("case", [
-    "missing-structured", "invalid-structured", "malformed-content",
-    "dropped-field", "error-result", "rpc-error", "dropped-error", "valid",
-])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing-structured",
+        "invalid-structured",
+        "malformed-content",
+        "dropped-field",
+        "error-result",
+        "rpc-error",
+        "dropped-error",
+        "valid",
+    ],
+)
 async def test_clean_raw_data_keeps_exact_sdk_validation_outcome(case):
     async def outcome(session):
         try:
@@ -229,3 +243,35 @@ def test_mcp_reply_checks_escaped_values_before_duplicate_fields_are_discarded()
         guard.parse(line, StdioServerParameters(command="unused"))
     with pytest.raises(KeyLeakError):
         guard.raise_if_failed()
+
+
+async def test_caller_cancellation_reaps_only_the_owned_stdio_process(monkeypatch):
+    processes = []
+    create = mcp_stdio._create_platform_compatible_process
+
+    async def capture(**kwargs):
+        process = await create(**kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(mcp_stdio, "_create_platform_compatible_process", capture)
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.5):
+            async with open_bridge(_system("wait", "clean")) as bridge:
+                await bridge.call("search_docs", {})
+    assert len(processes) == 1 and processes[0].returncode is not None
+    # A cancelled caller can immediately create and use a fresh, independent session.
+    async with open_bridge(_system("valid", "clean")) as bridge:
+        assert (await bridge.call("search_docs", {})).text == '{"answer":"clean answer"}'
+    assert len(processes) == 2 and processes[1].returncode == 0
+
+
+async def test_stdio_line_limit_bounds_buffer_and_releases_process(monkeypatch):
+    monkeypatch.setattr(mcp_stdio, "MAX_FRAME_BYTES", 512)
+    # The request cannot wait indefinitely when the raw peer sends no valid reply.
+    with pytest.raises(BaseExceptionGroup) as caught:
+        async with asyncio.timeout(5):
+            async with open_bridge(_system("oversize", "clean")) as bridge:
+                with pytest.raises(BridgeCrash):
+                    await bridge.call("search_docs", {})
+    assert caught.value.subgroup(FrameTooLarge) is not None

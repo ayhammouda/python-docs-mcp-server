@@ -282,9 +282,11 @@ async def _open(
 async def _close(stack: AsyncExitStack) -> None:
     try:
         await stack.aclose()
-    except Exception as exc:  # noqa: BLE001 - a dead server may fail its own shutdown
+    except BaseException as exc:
         if leak := find_key_leak(exc):
             raise leak
+        if not isinstance(exc, Exception):
+            raise
         print(f"closing the MCP bridge failed: {exc!r}", file=sys.stderr)
 
 
