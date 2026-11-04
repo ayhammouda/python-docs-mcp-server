@@ -28,6 +28,7 @@ from benchmarks.adapters.guard import PAID_KEY_ENVS, PROVIDER_API_KEY_ENV
 from benchmarks.agentic.bridge import Bridge, SystemSpec, open_bridge, system_spec_from_raw
 from benchmarks.agentic.ledger import Outcome
 from benchmarks.agentic.protocol import (
+    UNREPORTED_FRAME_LIMIT_EXIT,
     WORKER_LEAK_REASON,
     KeyLeakError,
     encode_frame,
@@ -420,7 +421,8 @@ def _report(channel: ProtocolChannel, reason: str, code: int) -> int:
         with suppress(OSError):
             channel.send({"type": "error", "reason": WORKER_LEAK_REASON})
     except OSError:
-        pass  # The owned worker's terminal status remains authoritative without a frame.
+        if reason.startswith("FrameTooLarge:"):
+            return UNREPORTED_FRAME_LIMIT_EXIT
     return code
 
 

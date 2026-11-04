@@ -13,7 +13,12 @@ from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
 from benchmarks.agentic import host, worker
 from benchmarks.agentic.host import LocalLauncher, WorkerJob, run_jobs
 from benchmarks.agentic.loop import Caps
-from benchmarks.agentic.protocol import WORKER_LEAK_REASON, KeyLeakError, encode_frame
+from benchmarks.agentic.protocol import (
+    WORKER_LEAK_REASON,
+    FrameTooLarge,
+    KeyLeakError,
+    encode_frame,
+)
 from tests.benchmarks.test_agentic_cleanup_failure import (
     _assert_safe_chain,
     _storage_error,
@@ -34,8 +39,11 @@ def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 @pytest.mark.parametrize("secret", ["", SYNTHETIC_KEY], ids=["clean", "redacted-chain"])
 @pytest.mark.parametrize("interrupted", [False, True])
 async def test_sibling_storage_failure_cannot_displace_recognition(
-    harness: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    secret: str, interrupted: bool,
+    harness: Host,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    secret: str,
+    interrupted: bool,
 ) -> None:
     jobs = [_job(tmp_path, [ANSWER], job_id=name) for name in ("recognized", "storage")]
     service = harness.service(jobs[0].family)
@@ -98,10 +106,16 @@ async def test_sibling_storage_failure_cannot_displace_recognition(
     monkeypatch.setattr(service, "stop_grants", recognize)
     monkeypatch.setattr(host, "_publish_worker_log", publish_or_fail)
     launcher = Launcher()
-    task = asyncio.create_task(run_jobs(
-        jobs, launcher=launcher, ledger=service, on_message=on_message,
-        log_dir=tmp_path / "logs", cwd=REPO_ROOT,
-    ))
+    task = asyncio.create_task(
+        run_jobs(
+            jobs,
+            launcher=launcher,
+            ledger=service,
+            on_message=on_message,
+            log_dir=tmp_path / "logs",
+            cwd=REPO_ROOT,
+        )
+    )
     try:
         async with asyncio.timeout(10):
             await draining.wait()
@@ -125,10 +139,15 @@ async def test_sibling_storage_failure_cannot_displace_recognition(
         assert events[1]["outcome"] == "worker_lost"
         assert D(events[1]["booked"]) == 2 * D(events[0]["bound"])
         assert len(pending) == 1 and await pending[0] is None
-        assert await reserve(
-            provider="anthropic", model_id=jobs[0].family.model_id,
-            input_bound=1000, output_bound=1024,
-        ) is None
+        assert (
+            await reserve(
+                provider="anthropic",
+                model_id=jobs[0].family.model_id,
+                input_bound=1000,
+                output_bound=1024,
+            )
+            is None
+        )
         assert harness.ledger.invocation_events() == events
     finally:
         release.set()
@@ -136,40 +155,65 @@ async def test_sibling_storage_failure_cannot_displace_recognition(
         await asyncio.gather(task, *pending, return_exceptions=True)
 
 
-def _closed_report_worker(*, reserve: bool) -> str:
+def _closed_report_worker(*, reserve: bool, failure_type: str = "KeyLeakError") -> str:
     # Exercise main_worker, protect_output, run_worker and ProtocolChannel.send. Only
     # this child's own protocol fd and a fresh pipe are closed. No credentials exist.
     return (
         "import asyncio, os, sys\n"
         f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
         "from benchmarks.agentic import worker\n"
-        "from benchmarks.agentic.protocol import KeyLeakError\n"
+        f"from benchmarks.agentic.protocol import {failure_type}\n"
         "async def job(channel, reader, *args, **kwargs):\n"
-        + ("    await worker._HostLedger(channel, reader).reserve(\n"
-           "        provider='anthropic', model_id='scripted-1',\n"
-           "        input_bound=1000, output_bound=1024)\n" if reserve else "")
+        + (
+            "    await worker._HostLedger(channel, reader).reserve(\n"
+            "        provider='anthropic', model_id='scripted-1',\n"
+            "        input_bound=1000, output_bound=1024)\n"
+            if reserve
+            else ""
+        )
         + "    read_fd, write_fd = os.pipe()\n"
         "    os.close(read_fd)\n"
         "    os.close(channel._fd)\n"
         "    channel._fd = write_fd\n"
         "    await asyncio.sleep(0.05)\n"  # EOF precedes terminal status becoming available.
-        "    raise KeyLeakError('synthetic content refusal')\n"
+        f"    raise {failure_type}('synthetic content refusal')\n"
         "worker._run_job = job\n"
         "sys.exit(worker.main_worker())\n"
     )
 
 
-def test_genuine_worker_exits_three_when_error_pipe_is_closed() -> None:
+@pytest.mark.parametrize("failure_type, status", [("KeyLeakError", 3), ("FrameTooLarge", 4)])
+def test_genuine_worker_retains_harness_failure_when_error_pipe_is_closed(failure_type, status):
     proc = subprocess.run(
-        [sys.executable, "-I", "-c", _closed_report_worker(reserve=False)], env={},
-        input=encode_frame({"type": "job"}), capture_output=True, timeout=10,
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            _closed_report_worker(reserve=False, failure_type=failure_type),
+        ],
+        env={},
+        input=encode_frame({"type": "job"}),
+        capture_output=True,
+        timeout=10,
     )
-    assert proc.returncode == 3, proc.stderr
+    assert proc.returncode == status, proc.stderr
     assert proc.stdout == proc.stderr == b""
 
 
+@pytest.mark.parametrize(
+    "error, reason, status",
+    [
+        (KeyLeakError, WORKER_LEAK_REASON, 3),
+        (FrameTooLarge, "frame limit", 4),
+    ],
+)
 async def test_eof_recovers_genuine_worker_recognition_and_settles_once(
-    harness: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    harness: Host,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error,
+    reason,
+    status,
 ) -> None:
     job = _job(tmp_path, [ANSWER])
     processes = []
@@ -182,30 +226,47 @@ async def test_eof_recovers_genuine_worker_recognition_and_settles_once(
 
     class Launcher(LocalLauncher):
         def command(self, job: WorkerJob) -> tuple[list[str], dict[str, str]]:
-            return [sys.executable, "-I", "-c", _closed_report_worker(reserve=True)], {}
+            return [
+                sys.executable,
+                "-I",
+                "-c",
+                _closed_report_worker(reserve=True, failure_type=error.__name__),
+            ], {}
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", record_process)
     service = harness.service(job.family)
-    with pytest.raises(KeyLeakError, match=WORKER_LEAK_REASON):
+    with pytest.raises(error, match=reason):
         await run_jobs(
-            [job], launcher=Launcher(), ledger=service, on_message=harness.on_message,
-            log_dir=tmp_path / "logs", cwd=REPO_ROOT,
+            [job],
+            launcher=Launcher(),
+            ledger=service,
+            on_message=harness.on_message,
+            log_dir=tmp_path / "logs",
+            cwd=REPO_ROOT,
         )
-    assert [proc.returncode for proc in processes] == [3]
+    assert [proc.returncode for proc in processes] == [status]
     events = harness.ledger.invocation_events()
     assert [event["event"] for event in events] == ["reserve", "settle"]
     assert events[1]["outcome"] == "worker_lost"
     assert D(events[1]["booked"]) == 2 * D(events[0]["bound"])
     assert harness.messages() == []
-    assert await service.reserve(
-        provider="anthropic", model_id=job.family.model_id, input_bound=1000, output_bound=1024,
-    ) is None
+    assert (
+        await service.reserve(
+            provider="anthropic",
+            model_id=job.family.model_id,
+            input_bound=1000,
+            output_bound=1024,
+        )
+        is None
+    )
     assert harness.ledger.invocation_events() == events
 
 
 @pytest.mark.parametrize("ending", ["death", "timeout", "closed-stdout"])
 async def test_unrelated_worker_loss_allows_a_healthy_sibling(
-    harness: Host, tmp_path: Path, ending: str,
+    harness: Host,
+    tmp_path: Path,
+    ending: str,
 ) -> None:
     lost = replace(
         _job(tmp_path, [ANSWER], job_id="lost"),
@@ -217,8 +278,11 @@ async def test_unrelated_worker_loss_allows_a_healthy_sibling(
         def command(self, job: WorkerJob) -> tuple[list[str], dict[str, str]]:
             if job.job_id != "lost":
                 return super().command(job)
-            end = {"death": "sys.exit(1)", "timeout": "time.sleep(30)",
-                   "closed-stdout": "os.close(1); time.sleep(30)"}[ending]
+            end = {
+                "death": "sys.exit(1)",
+                "timeout": "time.sleep(30)",
+                "closed-stdout": "os.close(1); time.sleep(30)",
+            }[ending]
             code = _worker_code(leak=False).replace("sys.exit(2)", end)
             return [sys.executable, "-I", "-c", "import time\n" + code], {}
 
@@ -229,13 +293,15 @@ async def test_unrelated_worker_loss_allows_a_healthy_sibling(
     events = harness.ledger.invocation_events()
     assert [event["event"] for event in events] == ["reserve", "settle", "reserve", "settle"]
     assert [event["outcome"] for event in events if event["event"] == "settle"] == [
-        "worker_lost", "ok",
+        "worker_lost",
+        "ok",
     ]
 
 
 @pytest.mark.parametrize("report_leak", [False, True])
 async def test_reporting_preserves_recognition_when_fallback_pipe_breaks(
-    monkeypatch: pytest.MonkeyPatch, report_leak: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    report_leak: bool,
 ) -> None:
     class Channel:
         def send(self, message: dict[str, Any]) -> None:

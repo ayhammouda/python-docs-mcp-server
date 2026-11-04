@@ -30,6 +30,7 @@ from benchmarks.agentic.loop import Caps
 from benchmarks.agentic.protocol import (
     KEY_SHAPED,
     MAX_FRAME_BYTES,
+    UNREPORTED_FRAME_LIMIT_EXIT,
     WORKER_LEAK_REASON,
     FrameTooLarge,
     KeyLeakError,
@@ -341,6 +342,10 @@ async def _supervise(
                 status = await asyncio.wait_for(proc.wait(), min(silence_s, 5))
                 if status == 3:
                     raise KeyLeakError(f"worker {job.job_id}: {WORKER_LEAK_REASON} (exit 3)")
+                if status == UNREPORTED_FRAME_LIMIT_EXIT:
+                    raise FrameTooLarge(
+                        f"worker {job.job_id}: protocol frame limit exceeded (exit {status})"
+                    )
 
         try:
             # The private key frame first, then the job. The frame is never logged or kept.
