@@ -25,6 +25,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - The Ollama client for the benchmark's air-gapped arm, with host offline checks
   around every trajectory.
 - The "Air-gapped install" README section.
+- Agentic benchmark grading, first part (development tooling, not part of the
+  package): the grading criteria, judge prompt, schema, panel, tuning
+  questions and probe spec under `docs/benchmarks/`; batch clients for the
+  three providers; the probe-suite builder; judge vote records with full
+  provenance; Krippendorff's alpha, the G1–G4 gates and the C2/C3 verdicts in
+  `python -m benchmarks agentic-score`; normalized token counting per model
+  call; and the agentic report. `agentic-grade` and `agentic-count-tokens`
+  follow with the sandbox launcher.
 
 ### Changed
 
@@ -33,6 +41,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Benchmark keys reach a worker only as a bootstrap frame on its stdin, never
   through a container's environment, `--env-file` or argv. This is a recorded
   departure from the agentic design §7.3.
+- Benchmark scoring: `adjudicate` refuses agentic runs, which only the LLM
+  panel grades, and LLM grades carry `llm_panel` or `llm_reference`
+  provenance.
 
 - The benchmark harness (development tooling, not part of the package) now
   reports success latency and failed-cell latency separately, lists manifest
