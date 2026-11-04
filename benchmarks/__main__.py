@@ -18,6 +18,9 @@ _DEFAULT_METHODOLOGY = Path("docs/benchmarks/PUBLIC-BENCHMARK-METHODOLOGY.md")
 _DEFAULT_CORPUS_SCHEMA = Path("docs/benchmarks/corpus.schema.json")
 _DEFAULT_AGENTIC_MANIFEST = Path("docs/benchmarks/agentic-manifest.yml")
 _DEFAULT_PRICES = Path("docs/benchmarks/price-snapshot.yml")
+_DEFAULT_GRADING_CRITERIA = Path("docs/benchmarks/grading-criteria.yml")
+_DEFAULT_GRADING_PANEL = Path("docs/benchmarks/grading/panel.yml")
+_DEFAULT_TUNING_QUESTIONS = Path("docs/benchmarks/grading/tuning-questions.yml")
 
 
 def _ids(value: str) -> tuple[str, ...]:
@@ -214,6 +217,27 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Lift a provider's overrun stop after its bound was corrected.",
     )
 
+    # PR 5: grades, gates and claims of an agentically graded run, or one workspace step.
+    # It reads files only and makes no network call.
+    agentic_score = subparsers.add_parser(
+        "agentic-score",
+        help="Grade, gate and claim a graded agentic run, or run one grading workspace step.",
+    )
+    where = agentic_score.add_mutually_exclusive_group(required=True)
+    where.add_argument("--run-dir", type=Path, help="A graded agentic run directory.")
+    where.add_argument("--workspace", type=Path, help="A grading workspace directory.")
+    agentic_score.add_argument(
+        "--g1", type=Path, action="append", default=[], metavar="PATH",
+        help="A g1.json from a held-out workspace (repeatable).",
+    )
+    agentic_score.add_argument("--step", choices=("assemble-probes", "tuning", "g1"))
+    agentic_score.add_argument("--criteria", type=Path, default=_DEFAULT_GRADING_CRITERIA)
+    agentic_score.add_argument("--panel", type=Path, default=_DEFAULT_GRADING_PANEL)
+    agentic_score.add_argument("--schema", type=Path, default=_DEFAULT_CORPUS_SCHEMA)
+    agentic_score.add_argument("--tuning", type=Path, default=_DEFAULT_TUNING_QUESTIONS)
+    agentic_score.add_argument("--index", type=Path, help="Docs index (default: the server's).")
+    agentic_score.add_argument("--resamples", type=int, default=10_000)
+
     # Spawned by the agentic host, never by hand: it reads its job as frames on stdin.
     subparsers.add_parser(
         "agentic-worker", help="Internal: run one agentic (model, system) job for the host."
@@ -307,6 +331,9 @@ def main(argv: list[str] | None = None) -> int:
         print(output.decode())
         return 0
 
+    if args.command == "agentic-score":
+        return _agentic_score(parser, args)
+
     if args.command == "run":
         config = BenchmarkConfig(
             corpus_path=args.corpus,
@@ -393,6 +420,49 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.print_help()
     return 2
+
+
+def _agentic_score(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    # Lazy, like the other agentic commands.
+    from benchmarks.grading import score
+
+    try:
+        if args.run_dir is not None:
+            if args.step is not None:
+                parser.error("--step goes with --workspace, not --run-dir")
+            result: object = score.score_run_dir(
+                args.run_dir,
+                criteria_path=args.criteria,
+                panel_path=args.panel,
+                schema_path=args.schema,
+                g1_paths=args.g1,
+                resamples=args.resamples,
+            )
+        elif args.step == "assemble-probes":
+            from mcp_server_python_docs.storage.db import get_index_path
+
+            path = score.assemble_workspace_probes(
+                args.workspace,
+                criteria_path=args.criteria,
+                tuning_path=args.tuning,
+                panel_path=args.panel,
+                index_path=args.index or get_index_path(),
+            )
+            result = {"probes": str(path)}
+        elif args.step == "tuning":
+            path = score.write_tuning(
+                args.workspace, panel_path=args.panel, tuning_path=args.tuning
+            )
+            result = {"tuning": str(path)}
+        elif args.step == "g1":
+            path = score.write_g1(args.workspace, panel_path=args.panel, tuning_path=args.tuning)
+            result = {"g1": str(path)}
+        else:
+            parser.error("--workspace needs --step")
+    except BenchmarkValidationError as exc:
+        parser.exit(2, f"agentic scoring failed: {exc}\n")
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
 
 
 if __name__ == "__main__":

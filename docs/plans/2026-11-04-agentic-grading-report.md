@@ -1471,7 +1471,7 @@ Rules the tests pin:
   5. G1 through `select_g1` over the entries of every `g1_paths` file. Each file is copied into `grading/disclosure/` with its sha256;
   6. claims under the panel and under each single judge (`judge_grade`), then G4;
   7. the key audit: the reference's `key-audit` votes, with `key_supported: false` flagged, and the claims recomputed without flagged questions;
-  8. the tier and the diagnostics: test–retest when pass-2 votes exist, SPI, length–grade correlation, label shares and grounded rate per `(model, system)`, the suspect count and the reference-vs-panel differences per `(model, system)`; per judge, parse failures, refusals, output-cap stops and withheld votes; and grading spend per provider from `grading/ledger-events.jsonl`, also per graded answer.
+  8. the tier and the diagnostics: test–retest when pass-2 votes exist, SPI, length–grade correlation, label shares and grounded rate per `(model, system)`, the suspect count and the reference-vs-panel differences per `(model, system)`; per judge, parse failures, refusals, output-cap stops and withheld votes; per judge, the items that have no final pass-1 record, grouped by their last `not_run` reason from `grading/runs/*.json` (#199 amendment 2; a `shortcut:` note says such an item blocks `reference` until it is fixed); and grading spend per provider from `grading/ledger-events.jsonl`, also per graded answer.
 
   It writes `grading/summary.json` and `grading/disclosure/`, which holds the breakdowns, the tuning evidence carried in each G1 entry (dropped-probe counts, efforts tried and chosen), and the G1 entries. It returns the summary. The seed is `environment.json`'s `seed`, as a string.
 - **Workspace steps**, one function each:
@@ -1986,7 +1986,7 @@ Rules the tests pin:
      - the probes: dropped-probe counts, generator and checker models, and per-judge and per-type accuracy with Wilson intervals; the tuning evidence (efforts tried and chosen, and the prompt revision if any), linked into `grading/disclosure/`;
      - G1 per composition; G2 and G3 with intervals, `q` and undefined draws, overall, per evaluated family and per system; the G3 confusion matrix, the strata borrows, and, when G3 was not evaluated, the plain sentence from `summary.json` saying why;
      - G4 per grader; test–retest, SPI, length–grade correlation;
-     - label shares; suspect counts and reference-vs-panel differences per `(model, system)`; grader failures; the key audit; and grading cost per provider.
+     - label shares; suspect counts and reference-vs-panel differences per `(model, system)`; grader failures, including, per judge, the items with no final pass-1 record by their last `not_run` reason (#199 amendment 2); the key audit; and grading cost per provider.
   4. Correctness per `(model, system)` with a 95% bootstrap interval, per category, grounded rate and `correct_but_ungrounded`.
   5. Normalized tokens per `(model, system)`, for `python-docs` and `docs-fetch` only: totals, per correct answer, docs payload tokens, the count model, the estimate note, and "not comparable with any earlier study that used another count model".
   6. Cost per correct answer per model, from provider usage and the price snapshot, with reasoning tokens for information and cached tokens disclosed.
