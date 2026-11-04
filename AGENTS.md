@@ -25,11 +25,12 @@ Vision's authority and transferred project ownership to a Claude Code owner
 session that works for him under his GitHub account. The owner decides the
 roadmap and architecture, triages and replies to issues, repairs CI, upgrades
 dependencies, and merges and releases. No routine human approval is required.
-The owner is accountable for the project promise and quality. Vision, its
+For v0.5.0, read the 2026-11-04 delegation alongside that amendment. Codex
+holds the owner role through release verification. Vision, its
 workers, the `pdctl` broker and the Vision GitHub Apps have no authority;
 `ops/vision/` is kept for reference only.
 
-Implementers are Claude Code sessions or subagents on branches in isolated
+Implementers work on branches in isolated
 worktrees, and never verify their own change. The owner merges only when the
 required checks are green on the current PR head, the newest owner record for
 that head is PASS (a separate Fable-model review, a Codex peer review and a
