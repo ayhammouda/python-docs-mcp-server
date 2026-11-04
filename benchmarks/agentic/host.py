@@ -80,6 +80,22 @@ def refuse_host_keys(environ: Mapping[str, str]) -> None:
         )
 
 
+async def _teardown(
+    proc: asyncio.subprocess.Process, log_path: Path, ledger: LedgerService, in_flight: str | None
+) -> str | None:
+    """Kill the worker, scrub its log and book its open unit; the log's key pattern, if any."""
+    if proc.returncode is None:
+        proc.kill()
+    await proc.wait()
+    # On every exit, a raise or a cancel included: the leaked bytes never stay on disk.
+    redacted, pattern = redact_key_shaped(log_path.read_bytes())
+    if pattern:
+        log_path.write_bytes(redacted)
+    if in_flight is not None:  # may have been billed: booked at twice its bound
+        await ledger.settle(in_flight, outcome="worker_lost", buckets=None)
+    return pattern
+
+
 async def _supervise(
     job: WorkerJob,
     *,
@@ -188,19 +204,18 @@ async def _supervise(
                     await proc.stdin.drain()
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             pass  # the worker died or stalled; handled as a lost worker below
-        if proc.returncode is None:
-            proc.kill()
-        await proc.wait()
     finally:
-        if proc.returncode is None:
-            proc.kill()
-            await proc.wait()
-        # On every exit, a raise or a cancel included: the leaked bytes never stay on disk.
-        redacted, pattern = redact_key_shaped(log_path.read_bytes())
-        if pattern:
-            log_path.write_bytes(redacted)
-        if in_flight is not None:  # may have been billed: booked at twice its bound
-            await ledger.settle(in_flight, outcome="worker_lost", buckets=None)
+        # Runs to its end even when a second abort cancels this task meanwhile; then re-raise.
+        teardown = asyncio.ensure_future(_teardown(proc, log_path, ledger, in_flight))
+        cancelled: asyncio.CancelledError | None = None
+        while not teardown.done():
+            try:
+                await asyncio.shield(teardown)
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+        pattern = teardown.result()
+        if cancelled is not None:
+            raise cancelled
     if pattern:
         raise KeyLeakError(
             f"a key-shaped string ({pattern} pattern) was found in {log_path}; redacted there"

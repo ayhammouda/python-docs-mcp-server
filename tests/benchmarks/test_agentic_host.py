@@ -577,6 +577,49 @@ async def test_every_worker_log_is_scrubbed_when_a_frame_leak_aborts_the_run(
         assert log.read_text() == "debug: [redacted]\n"
 
 
+async def test_a_teardown_cancelled_by_a_second_abort_still_scrubs_and_settles(
+    host: Host, tmp_path: Path
+) -> None:
+    # A holds a unit, then leaks a key. A grandchild keeps A's pipes open, so A's teardown
+    # waits for it. B leaks next, and its abort cancels A mid-teardown.
+    leaked = "sk-ant-api03-" + "z" * 90
+    marker = str(tmp_path / "a-leaks")
+    code = (
+        "import json, subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        "inp, out = sys.stdin.buffer, sys.stdout.buffer\n"
+        "def read():\n"
+        "    return json.loads(inp.read(int.from_bytes(inp.read(8), 'big')))\n"
+        "def send(message):\n"
+        "    body = json.dumps(message).encode()\n"
+        "    out.write(len(body).to_bytes(8, 'big') + body)\n"
+        "    out.flush()\n"
+        "job = read()\n"
+        f"sys.stderr.write('debug: {leaked}\\n')\n"
+        "sys.stderr.flush()\n"
+        "if job['job_id'] == 'a':\n"
+        f"    send({_reserve_frame(1024)!r})\n"
+        "    read()\n"
+        "    subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(3)'])\n"
+        f"    Path({marker!r}).touch()\n"
+        "else:\n"
+        f"    while not Path({marker!r}).exists():\n"
+        "        time.sleep(0.05)\n"
+        "    time.sleep(0.3)\n"
+        f"send({{'type': 'system_info', 'note': '{leaked}'}})\n"
+        "time.sleep(30)\n"
+    )
+    jobs = [_job(tmp_path, [ANSWER], job_id=job_id) for job_id in ("a", "b")]
+    with pytest.raises(KeyLeakError):
+        await host.run(jobs, launcher=KeyedLauncher(code, key=""))
+    logs = sorted((tmp_path / "logs").iterdir())
+    assert [log.read_text() for log in logs] == ["debug: [redacted]\n"] * 2
+    settles = [e for e in host.ledger.events("host-test") if e["event"] == "settle"]
+    assert [(s["outcome"], D(s["booked"])) for s in settles] == [
+        ("worker_lost", 2 * D("0.002024"))
+    ]
+
+
 async def test_host_aborts_the_run_when_a_worker_frame_holds_a_key_shaped_string(
     host: Host, tmp_path: Path
 ) -> None:
