@@ -324,7 +324,9 @@ def _start_host(tmp_path: Path, prelude: str = "") -> tuple[subprocess.Popen[byt
         "inp.read()\n"
     )
     host_code = (
-        prelude + "import sys\n"
+        # The host starts from the default SIGHUP disposition even when this test inherits
+        # SIG_IGN (as under nohup); a prelude may still set its own.
+        "import signal\nsignal.signal(signal.SIGHUP, signal.SIG_DFL)\n" + prelude + "import sys\n"
         "from pathlib import Path\n"
         "from benchmarks.agentic.host import LocalLauncher\n"
         "from benchmarks.agentic.run import AgenticConfig, run_agentic\n"
@@ -453,17 +455,26 @@ def test_run_agentic_completes_off_the_main_thread(
 ) -> None:
     # No signal handler can be installed off the main thread: the run goes on without one,
     # and says so.
+    expected = _wanted_signal_names()
     with ThreadPoolExecutor(1) as pool:
         summary = pool.submit(run_agentic, _scripted_config(tmp_path)).result(timeout=60)
     assert summary["status"] == "completed" and summary["succeeded_cells"] == 1
     skipped = [line for line in capsys.readouterr().err.splitlines() if "handler" in line]
-    assert len(skipped) == 1 and "SIGTERM, SIGHUP" in skipped[0] and "RuntimeError" in skipped[0]
+    assert len(skipped) == 1 and expected in skipped[0] and "RuntimeError" in skipped[0]
+
+
+def _wanted_signal_names() -> str:
+    """The names the run installs handlers for: an inherited SIG_IGN (nohup) is left out."""
+    return ", ".join(
+        s.name for s in (signal.SIGTERM, signal.SIGHUP) if signal.getsignal(s) is not signal.SIG_IGN
+    )
 
 
 def test_a_loop_without_signal_support_runs_without_handlers(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     before = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGHUP)}
+    expected = _wanted_signal_names()
     removed: list[int] = []
 
     async def scenario() -> list[str]:
@@ -486,7 +497,34 @@ def test_a_loop_without_signal_support_runs_without_handlers(
     assert removed == []  # nothing was installed, so nothing is removed
     assert {signum: signal.getsignal(signum) for signum in before} == before
     err = capsys.readouterr().err
-    assert "SIGTERM, SIGHUP" in err and "NotImplementedError" in err
+    assert expected in err and "NotImplementedError" in err
+
+
+def test_an_ignored_sighup_is_left_out_of_the_skipped_handlers_line(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    previous = signal.getsignal(signal.SIGHUP)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    try:
+
+        async def scenario() -> None:
+            loop = asyncio.get_running_loop()
+
+            def unsupported(*args: Any) -> None:
+                raise NotImplementedError
+
+            loop.add_signal_handler = unsupported  # type: ignore[method-assign]
+
+            async def run() -> None:
+                return None
+
+            await _until_signalled(run())
+
+        asyncio.run(scenario())
+    finally:
+        signal.signal(signal.SIGHUP, previous)
+    line = next(line for line in capsys.readouterr().err.splitlines() if "handler" in line)
+    assert "SIGTERM" in line and "SIGHUP" not in line
 
 
 def test_run_agentic_restores_the_previous_signal_dispositions(tmp_path: Path) -> None:

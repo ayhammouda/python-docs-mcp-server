@@ -9,7 +9,7 @@ import importlib.util
 import json
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from email.utils import format_datetime
 from pathlib import Path
 from typing import Any
@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 from benchmarks.adapters.guard import PAID_KEY_ENVS, PROVIDER_API_KEY_ENV, LiveProviderDisabledError
+from benchmarks.agentic import clients
 from benchmarks.agentic.clients import (
     AnthropicClient,
     GeminiClient,
@@ -367,11 +368,18 @@ def test_tool_arguments(value: Any, expected: tuple[dict[str, Any], str | None])
     assert tool_arguments(value) == expected
 
 
-def test_parse_retry_after_accepts_an_http_date() -> None:
-    when = format_datetime(datetime.now(UTC) + timedelta(seconds=30), usegmt=True)
-    value = parse_retry_after({"retry-after": when})
-    assert value is not None and 28 < value <= 30
-    past = format_datetime(datetime.now(UTC) - timedelta(seconds=30), usegmt=True)
+def test_parse_retry_after_accepts_an_http_date(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = datetime(2026, 11, 4, 12, 0, 0, tzinfo=UTC)
+
+    class Frozen(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> datetime:
+            return now
+
+    monkeypatch.setattr(clients, "datetime", Frozen)
+    when = format_datetime(now + timedelta(seconds=30), usegmt=True)
+    assert parse_retry_after({"retry-after": when}) == 30.0
+    past = format_datetime(now - timedelta(seconds=30), usegmt=True)
     assert parse_retry_after({"retry-after": past}) == 0
     assert parse_retry_after({"retry-after": "soon"}) is None
     assert parse_retry_after({}) is None
