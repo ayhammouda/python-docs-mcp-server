@@ -25,7 +25,7 @@ from benchmarks.agentic.types import Buckets
 from benchmarks.grading.gates import load_egress_evidence, load_offline_evidence
 from benchmarks.grading.inputs import SNAPSHOT_NAMES
 from benchmarks.grading.stats import paired_bootstrap
-from benchmarks.model_matrix import ModelMatrix
+from benchmarks.model_matrix import KNOWN_APIS, ModelMatrix
 from benchmarks.report import RunBundle, _cell, _percentile, _relative_link, _table
 from benchmarks.runner import BenchmarkValidationError
 
@@ -46,7 +46,8 @@ NOT_COMPARABLE = "not comparable with any earlier study that used another count 
 REPORT_RESAMPLES = 2_000  # descriptive intervals only (S1); the gates use 10,000
 DISCLAIMER = (
     "This is a generated raw report. A comparative claim may enter the README or PyPI only "
-    "when the grading outcome is Validated and the claim is not judge-sensitive (design §9.3)."
+    "for live answering and grading when the grading outcome is Validated and the claim is "
+    "not judge-sensitive (design §9.3)."
 )
 DISCLOSURE = (
     "Correctness was graded by three LLMs ({judges}) against the corpus answer keys. "
@@ -131,22 +132,75 @@ def _fence(text: str) -> list[str]:
     return [f"{fence}text", text.rstrip(), fence]
 
 
-class _Run:
-    """Everything the report reads, from the run directory only."""
+def _execution_kind(apis: Sequence[str | None], *, grading: bool = False) -> str:
+    if "scripted" in apis:
+        return "scripted"
+    # The OpenAI-compatible Ollama endpoint supports answering only.
+    allowed = KNOWN_APIS - {"openai-chat-completions"} if grading else KNOWN_APIS
+    known = all(isinstance(api, str) and api in allowed for api in apis)
+    return "live" if apis and known else "unknown"
 
-    def __init__(self, bundle: RunBundle, matrix: ModelMatrix, report_dir: Path) -> None:
+
+class _RunMetadata:
+    """Execution provenance shared by both renderers, from exported inputs only."""
+
+    def __init__(self, bundle: RunBundle) -> None:
         run = bundle.run_dir
-        self.dir, self.bundle, self.report_dir = run, bundle, report_dir
         self.summary: dict[str, Any] = _read_json(run / "grading" / "summary.json") or {}
-        self.inputs: dict[str, str] = _read_json(run / "grading" / "inputs" / "inputs.json") or {}
         snapshot = _read_yaml(run / "snapshots" / "model-matrix.yml") or {}
-        families = snapshot.get("model_families") or [
-            {"id": f.id, "provider": f.provider, "model_id": f.model_id, "arm": f.arm}
-            for f in matrix.model_families
-        ]
-        self.families: dict[str, dict[str, Any]] = {str(f["id"]): f for f in families}
+        self.families: dict[str, dict[str, Any]] = {
+            str(f["id"]): f for f in snapshot.get("model_families") or [] if "id" in f
+        }
         panel = _read_yaml(run / "grading" / "inputs" / "panel.yml") or {}
         self.judges: dict[str, dict[str, Any]] = panel.get("judges") or {}
+
+        models = bundle.run_summary.get("models") or bundle.run_summary.get("families") or []
+        self.answering = _execution_kind([self.families.get(fid, {}).get("api") for fid in models])
+        efforts = self.summary.get("efforts") or {}
+        active = [self.judges.get(j, {}).get("api") for j in efforts]
+        references = [j.get("api") for j in self.judges.values() if j.get("role") == "reference"]
+        if len(active) != 3 or len(references) != 1:
+            active.append(None)  # an incomplete panel cannot establish live grading
+        self.grading = _execution_kind([*active, *references], grading=True)
+        self.tier = str(self.summary.get("tier", NOT_GRADED))
+
+    @property
+    def grading_label(self) -> str:
+        if not self.summary:
+            return NOT_GRADED
+        if self.grading == "live":
+            return REQUIRED_WORDING
+        return "scripted grading" if self.grading == "scripted" else "grading provenance unknown"
+
+    @property
+    def claim_blocker(self) -> str:
+        stages = {"answering": self.answering}
+        if self.summary:
+            stages["grading"] = self.grading
+        scripted = " and ".join(stage for stage, kind in stages.items() if kind == "scripted")
+        unknown = " and ".join(stage for stage, kind in stages.items() if kind == "unknown")
+        messages = []
+        if scripted:
+            messages.append(f"Demonstration results include scripted {scripted}.")
+        if unknown:
+            messages.append(f"Execution provenance is unknown for {unknown}.")
+        return " ".join(messages)
+
+
+class _Run(_RunMetadata):
+    """Everything the full report reads, from the run directory only."""
+
+    def __init__(self, bundle: RunBundle, matrix: ModelMatrix, report_dir: Path) -> None:
+        super().__init__(bundle)
+        run = bundle.run_dir
+        self.dir, self.bundle, self.report_dir = run, bundle, report_dir
+        self.inputs: dict[str, str] = _read_json(run / "grading" / "inputs" / "inputs.json") or {}
+        # The caller's matrix is a display fallback, never evidence for a claim.
+        if not self.families:
+            self.families = {
+                f.id: {"id": f.id, "provider": f.provider, "model_id": f.model_id, "arm": f.arm}
+                for f in matrix.model_families
+            }
         self.transcripts = _cells(run / "transcripts")
         self.scoring = _cells(run / "scoring")
         self.tokens = _cells(run / "tokens")
@@ -159,7 +213,6 @@ class _Run:
         self.systems: dict[str, dict[str, Any]] = {
             str(c["id"]): c for c in manifest.get("competitors") or []
         }
-        self.tier = str(self.summary.get("tier", NOT_GRADED))
         self.seed = str(bundle.environment.get("seed"))
         groups: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
         for key, t in self.transcripts.items():
@@ -209,7 +262,8 @@ def _header(run: _Run, methodology_path: Path) -> list[str]:
         "",
         DISCLAIMER,
         "",
-        f"Grading outcome: {_esc(run.tier)} (G1–G4; {REQUIRED_WORDING})",
+        *([run.claim_blocker, ""] if run.claim_blocker else []),
+        f"Grading outcome: {_esc(run.tier)} (G1–G4; {run.grading_label})",
         "",
         f"- Run {_esc(summary.get('run_id'))} at commit {_esc(summary.get('repo_commit'))}",
         f"- Methodology: [{methodology_path.name}]({link})",
@@ -399,15 +453,22 @@ def _disclosure(run: _Run) -> list[str]:
             f"{_esc(judge_id)} ({_esc(model)}, reported {versions}, "
             f"effort {_esc(effort or 'default')})"
         )
+    if run.grading == "live":
+        lines += [
+            DISCLOSURE.format(judges="; ".join(described)),
+            "",
+            f"{REQUIRED_WORDING}.",
+            "",
+            "The air-gapped arm applies only to answering. Grading used the providers' "
+            "hosted batch APIs.",
+        ]
+    else:
+        lines += [
+            f"Grading: {run.grading_label}. No human graded or calibrated any grade.",
+            "",
+            f"Recorded judges: {'; '.join(described) or 'unknown'}.",
+        ]
     lines += [
-        DISCLOSURE.format(judges="; ".join(described)),
-        "",
-        f"{REQUIRED_WORDING}.",
-        "",
-        (
-            "Only answering ran in the air-gapped arm; grading ran on the providers' "
-            "hosted batch APIs."
-        ),
         "",
         f"The run was graded by the composition {_esc(summary.get('composition'))}.",
         "",
@@ -689,7 +750,7 @@ def _correctness(run: _Run) -> list[str]:
         "## Correctness",
         "",
         f"Mean score per (model, system) with a 95% bootstrap interval over questions "
-        f"({REPORT_RESAMPLES} resamples); {REQUIRED_WORDING}.",
+        f"({REPORT_RESAMPLES} resamples); {run.grading_label}.",
         "",
         *_table(
             [
@@ -1067,18 +1128,23 @@ def _airgap(run: _Run) -> list[str]:
 def render_agentic_readme_summary(
     bundle: RunBundle, methodology_path: Path, summary_path: Path
 ) -> str:
-    summary = _read_json(bundle.run_dir / "grading" / "summary.json") or {}
-    tier = str(summary.get("tier", NOT_GRADED))
+    run = _RunMetadata(bundle)
+    summary = run.summary
+    tier = run.tier
     link = _relative_link(methodology_path, summary_path.parent)
     lines = [
         "# Agentic benchmark summary",
         "",
         f"- Methodology: [{methodology_path.name}]({link})",
-        f"- Grading: {REQUIRED_WORDING}",
+        f"- Grading: {run.grading_label}",
         "",
     ]
+    if run.claim_blocker:
+        lines += [run.claim_blocker, ""]
     if tier != "Validated":
         return "\n".join([*lines, f"No public claim: grading outcome is {_esc(tier)}."]) + "\n"
+    if run.claim_blocker:
+        return "\n".join([*lines, "No public claim."]) + "\n"
     sensitive = set(summary.get("judge_sensitive") or [])
     claims = [
         (cid, model, c)

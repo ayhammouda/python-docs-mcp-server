@@ -320,6 +320,7 @@ def _build(tmp_path: Path) -> Path:
             "repo_commit": "abc",
             "artifact_root": str(run),
             "mode": "agentic",
+            "models": list(FAMILIES),
             "competitors": cells,
             "corpus_ids": list(QUESTIONS),
             "planned_cells": len(planned),
@@ -402,6 +403,32 @@ def agentic_bundle(tmp_path: Path) -> Path:
     return _score(_build(tmp_path), tmp_path)
 
 
+@pytest.fixture
+def live_like_bundle(agentic_bundle: Path) -> Path:
+    """Report-only fixture with live adapter snapshots for the active aliases."""
+    docs = REPO_ROOT / "docs" / "benchmarks"
+    matrix = yaml.safe_load(MATRIX.read_text())
+    hosted = {
+        f["provider"]: f
+        for f in yaml.safe_load((docs / "model-matrix.yml").read_text())["model_families"]
+        if f["arm"] == "hosted"
+    }
+    for family in matrix["model_families"]:
+        if family["id"] in FAMILIES:
+            family.update(hosted[family["provider"]], id=family["id"])
+            del family["script"]
+    (agentic_bundle / "snapshots/model-matrix.yml").write_text(yaml.safe_dump(matrix))
+    panel_path = agentic_bundle / "grading/inputs/panel.yml"
+    panel = yaml.safe_load(panel_path.read_text())
+    real = yaml.safe_load((docs / "grading/panel.yml").read_text())
+    for judge in (*JUDGES, "reference"):
+        panel["judges"][judge].update(real["judges"][judge], effort=PANEL.judges[judge].effort)
+        del panel["judges"][judge]["script"]
+    panel_path.write_text(yaml.safe_dump(panel))
+    # The unused family, fallback and generators retain their scripted adapters.
+    return agentic_bundle
+
+
 def generate_report(run: Path, **kwargs: Any) -> Path:
     return _generate_report(run, model_matrix_path=MATRIX, methodology_path=METHODOLOGY, **kwargs)
 
@@ -417,17 +444,19 @@ def _section(text: str, heading: str) -> str:
     return text[start : min(ends) if ends else len(text)]
 
 
-def test_agentic_report_sections_in_order(agentic_bundle: Path) -> None:
-    text = _render(agentic_bundle)
+def test_agentic_report_sections_in_order(live_like_bundle: Path) -> None:
+    text = _render(live_like_bundle)
     positions = [text.index(heading + "\n") for heading in SECTIONS]
     assert positions == sorted(positions)
-    tier = json.loads((agentic_bundle / "grading" / "summary.json").read_text())["tier"]
+    tier = json.loads((live_like_bundle / "grading" / "summary.json").read_text())["tier"]
     assert f"Grading outcome: {tier} (G1–G4; {REQUIRED_WORDING})" in text
-    assert "scripted-1" in text
+    assert "claude-sonnet-5-5" in text
+    assert "providers' hosted batch APIs" in text
+    assert "Only answering ran in the air-gapped arm" not in text
 
 
-def test_report_never_makes_an_anti_claim(agentic_bundle: Path) -> None:
-    text = _render(agentic_bundle)
+def test_report_never_makes_an_anti_claim(live_like_bundle: Path) -> None:
+    text = _render(live_like_bundle)
     assert not any(p in text.lower() for p in FORBIDDEN_PHRASES)
     rest = text.replace(REQUIRED_WORDING, "").replace("Judge not validated", "")
     # what is left of "validated" is only the capitalized tier name
@@ -600,16 +629,15 @@ def test_c3_disclosure_shows_a_denied_pypi_attempt_while_c3_passes(
     assert "| python-docs | no |" in c1 and "lookup_package_docs" in c1
 
 
-def test_readme_summary_has_no_claim_below_validated(agentic_bundle: Path) -> None:
-    tier = json.loads((agentic_bundle / "grading" / "summary.json").read_text())["tier"]
+def test_readme_summary_has_no_claim_below_validated(live_like_bundle: Path) -> None:
+    tier = json.loads((live_like_bundle / "grading" / "summary.json").read_text())["tier"]
     assert tier != "Validated"
-    text = generate_readme_summary(agentic_bundle, methodology_path=METHODOLOGY).read_text()
+    text = generate_readme_summary(live_like_bundle, methodology_path=METHODOLOGY).read_text()
     assert f"No public claim: grading outcome is {tier}." in text
     assert "C2" not in text and "fewer" not in text
 
 
-@pytest.fixture
-def agentic_bundle_validated(agentic_bundle: Path) -> Path:
+def _validated(run: Path) -> Path:
     def claim(model: str) -> dict[str, Any]:
         return {
             "id": "C2",
@@ -620,26 +648,91 @@ def agentic_bundle_validated(agentic_bundle: Path) -> Path:
         }
 
     _edit_summary(
-        agentic_bundle,
+        run,
         tier="Validated",
         claims={"C2": {m: claim(m) for m in FAMILIES}, "C3": {}},
         judge_sensitive=["C2/scripted-openai"],
     )
-    return agentic_bundle
+    return run
 
 
-def test_readme_summary_drops_a_judge_sensitive_claim(agentic_bundle_validated: Path) -> None:
+def test_readme_summary_drops_a_judge_sensitive_claim(live_like_bundle: Path) -> None:
     text = generate_readme_summary(
-        agentic_bundle_validated, methodology_path=METHODOLOGY
+        _validated(live_like_bundle), methodology_path=METHODOLOGY
     ).read_text()
     assert "scripted-anthropic" in text and "scripted-openai" not in text
     assert ROUND_1_SCOPE in text and REQUIRED_WORDING in text
     assert not any(p in text.lower() for p in FORBIDDEN_PHRASES)
 
 
+def _readme(run: Path) -> str:
+    return generate_readme_summary(run, methodology_path=METHODOLOGY).read_text()
+
+
+def test_validated_scripted_bundle_has_only_demonstration_results(agentic_bundle: Path) -> None:
+    readme = _readme(_validated(agentic_bundle))
+    report = _render(agentic_bundle)
+    assert "fewer normalized tokens" not in readme
+    for text in (readme, report):
+        assert "demonstration" in text.lower()
+        assert REQUIRED_WORDING not in text
+    assert "Correctness was graded by three LLMs" not in report
+    assert "hosted batch APIs" not in report
+    assert "Only answering ran in the air-gapped arm" not in report
+    assert "scripted-1" in report
+    assert "95% CI" in _section(report, "## Claims")
+
+
+@pytest.mark.parametrize("scripted", ["answer", "luna", "reference"])
+def test_one_active_scripted_adapter_blocks_public_claim(
+    live_like_bundle: Path, scripted: str
+) -> None:
+    run = _validated(live_like_bundle)
+    if scripted == "answer":
+        path = run / "snapshots/model-matrix.yml"
+        data = yaml.safe_load(path.read_text())
+        data["model_families"][1] = yaml.safe_load(MATRIX.read_text())["model_families"][1]
+    else:
+        path = run / "grading/inputs/panel.yml"
+        data = yaml.safe_load(path.read_text())
+        data["judges"][scripted] = yaml.safe_load((GFIX / "panel.yml").read_text())["judges"][
+            scripted
+        ]
+    path.write_text(yaml.safe_dump(data))
+    readme = _readme(run)
+    assert "fewer normalized tokens" not in readme
+    for text in (readme, _render(run)):
+        assert "demonstration" in text.lower()
+        assert (REQUIRED_WORDING in text) == (scripted == "answer")
+
+
+@pytest.mark.parametrize("missing", ["snapshots/model-matrix.yml", "grading/inputs/panel.yml"])
+def test_missing_snapshot_withholds_public_claim_without_calling_it_scripted(
+    live_like_bundle: Path, missing: str
+) -> None:
+    run = _validated(live_like_bundle)
+    (run / missing).unlink()
+    for text in (_readme(run), _render(run)):
+        assert "unknown" in text.lower()
+        assert "demonstration" not in text.lower()
+    assert "fewer normalized tokens" not in _readme(run)
+
+
+def test_unknown_active_api_withholds_public_claim(live_like_bundle: Path) -> None:
+    run = _validated(live_like_bundle)
+    path = run / "grading/inputs/panel.yml"
+    data = yaml.safe_load(path.read_text())
+    data["judges"]["reference"]["api"] = "unrecognized"
+    path.write_text(yaml.safe_dump(data))
+    text = _readme(run)
+    assert "unknown" in text.lower() and "demonstration" not in text.lower()
+    assert "fewer normalized tokens" not in text and REQUIRED_WORDING not in text
+
+
 def test_an_ungraded_agentic_run_still_renders(tmp_path: Path) -> None:
     run = _build(tmp_path)
     text = _render(run)
+    assert REQUIRED_WORDING not in text and REQUIRED_WORDING not in _readme(run)
     assert "Grading outcome: not graded" in text
     assert "not evaluable: the run has not been graded" in text
 
@@ -715,8 +808,8 @@ def _assert_inert(text: str) -> None:
 
 
 @pytest.fixture
-def agentic_bundle_hostile(agentic_bundle: Path) -> Path:
-    run = agentic_bundle
+def agentic_bundle_hostile(live_like_bundle: Path) -> Path:
+    run = live_like_bundle
     cell = "python-docs--scripted-anthropic--r1"
     path = run / "transcripts" / cell / "SYN-EX-001.json"
     transcript = json.loads(path.read_text())
@@ -795,7 +888,7 @@ def test_fenced_input_text_cannot_close_its_fence(agentic_bundle_hostile: Path) 
     assert "<img src=x onerror=alert(1)>" in mapping and "``````` and more" in mapping
 
 
-def test_no_run_data_value_becomes_markdown_in_the_readme_summary(agentic_bundle: Path) -> None:
+def test_no_run_data_value_becomes_markdown_in_the_readme_summary(live_like_bundle: Path) -> None:
     claim = {
         "id": "C2",
         "model": PAYLOAD,
@@ -804,10 +897,10 @@ def test_no_run_data_value_becomes_markdown_in_the_readme_summary(agentic_bundle
         "reason": None,
     }
     _edit_summary(
-        agentic_bundle,
+        live_like_bundle,
         tier="Validated",
         claims={"C2": {PAYLOAD: claim}, "C3": {}},
         judge_sensitive=[],
     )
-    text = generate_readme_summary(agentic_bundle, methodology_path=METHODOLOGY).read_text()
+    text = generate_readme_summary(live_like_bundle, methodology_path=METHODOLOGY).read_text()
     _assert_inert(text)
