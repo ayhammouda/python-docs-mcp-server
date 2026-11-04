@@ -11,15 +11,17 @@ import socket
 import subprocess
 import threading
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 import benchmarks.agentic.probe as probe
-from benchmarks.agentic.egress import ProxyEvent
+from benchmarks.agentic.egress import ProxyEvent, write_egress_summary
 from benchmarks.agentic.host import run_jobs
 from benchmarks.agentic.ledger import Ledger, LedgerService
 from benchmarks.agentic.probe import (
@@ -32,6 +34,7 @@ from benchmarks.agentic.probe import (
 )
 from benchmarks.agentic.sandbox import ContainerLauncher, Sandbox
 from benchmarks.runner import BenchmarkValidationError
+from tests.benchmarks.test_agentic_egress import PROBE_LINES, PYPI_LINE
 from tests.benchmarks.test_agentic_sandbox import (
     FakeDocker,
     LateCreate,
@@ -274,6 +277,10 @@ class ProbeDocker(FakeDocker):
             f"2026-11-04T10:00:00.002Z 172.30.0.2 GET {spec['canary_via_proxy'][0]} "
             f"{spec['canary_via_proxy'][1]} 403 TCP_DENIED",
         ]
+        if spec["allowed_http"]:
+            lines.append(
+                "2026-11-04T10:00:00.003Z 172.30.0.2 GET host.docker.internal 11434 200 TCP_MISS"
+            )
         (self.log_dir() / "access.log").write_text("".join(f"{line}\n" for line in lines))
         checks = [{"check": "env", "target": "", "passed": self.passed, "detail": ""}]
         return _done(argv, out=json.dumps({"checks": checks}))
@@ -319,6 +326,59 @@ async def test_an_ollama_probe_checks_its_version_url(tmp_path: Path) -> None:
     family = _job("gemma4-12b").family
     await isolation_probe(sandbox, egress, job_id="j", family=family, system_id="no-docs")
     assert docker.specs[0]["allowed_http"] == ["http://host.docker.internal:11434/api/version"]
+
+
+@pytest.mark.parametrize("initial", ["missing", "denials", "never_logged"])
+async def test_probe_waits_for_its_log_before_freezing_query_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, initial: str
+) -> None:
+    # No sockets or containers. The proxy publishes the completed log on the next loop turn.
+    monkeypatch.setattr(
+        probe, "Canary", lambda: nullcontext(SimpleNamespace(port=50000, received=[]))
+    )
+    monkeypatch.setattr(probe, "host_addresses", lambda: [])
+    job = _job("gemma4-12b")
+    sandbox, egress = await _egress(tmp_path, FakeDocker(), ())
+    log = egress.log_dir / "access.log"
+    ollama = "t c GET host.docker.internal 11434 200 TCP_MISS"
+    prefix = [*PROBE_LINES, ollama]
+
+    async def one_shot(*args: Any) -> list[dict[str, Any]]:
+        if initial != "missing":
+            log.write_text("\n".join(PROBE_LINES) + "\n")
+        if initial != "never_logged":
+            asyncio.get_running_loop().call_soon(log.write_text, "\n".join(prefix) + "\n")
+        return [
+            {
+                "check": "allowed_http",
+                "target": probe._OLLAMA_VERSION_URL,
+                "passed": True,
+                "detail": "200",
+            }
+        ]
+
+    monkeypatch.setattr(probe, "_one_shot", one_shot)
+    if initial == "never_logged":
+        monkeypatch.setattr(probe, "_SETTLE_S", 0)
+        with pytest.raises(IsolationProbeFailed):
+            await isolation_probe(
+                sandbox, egress, job_id="j", family=job.family, system_id="no-docs"
+            )
+        assert json.loads((tmp_path / "run/probe/j.json").read_text())["passed"] is False
+        return
+    record = await isolation_probe(
+        sandbox, egress, job_id="j", family=job.family, system_id="no-docs"
+    )
+    assert record["proxy_prefix"] == prefix
+    out = tmp_path / "run"
+    with log.open("a") as file:
+        file.write(PYPI_LINE + "\n")
+    (egress.log_dir / "collected.json").write_text('{"ok":true}')
+    (out / "probe/control.json").write_text('{"passed":true}')
+    summary = write_egress_summary(out, [replace(job, job_id="j")], [])
+    assert summary["isolation_probe"] == "pass"
+    assert summary["jobs"]["j"]["hosts_allowed"] == []
+    assert summary["jobs"]["j"]["hosts_denied"] == ["pypi.org:443"]
 
 
 async def test_a_failed_check_raises_and_still_writes_the_record(tmp_path: Path) -> None:

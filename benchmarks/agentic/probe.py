@@ -252,13 +252,14 @@ async def isolation_probe(
     async with Canary() as canary:
         via_proxy = ("host.docker.internal", canary.port)
         hosts = [*_MAC_NAMES, *host_addresses(), *egress.gateways]
+        allowed_http = [_OLLAMA_VERSION_URL] if family.provider == "ollama" else []
         spec = {
             "token": token,
             "direct": [[host, port] for host in hosts for port in (canary.port, _OLLAMA_PORT)],
             "dns_name": "pypi.org",
             "denied": list(denied),
             "canary_via_proxy": list(via_proxy),
-            "allowed_http": [_OLLAMA_VERSION_URL] if family.provider == "ollama" else [],
+            "allowed_http": allowed_http,
         }
         name = f"{sandbox.worker_name(job_id)}-probe"
         argv = _probe_argv(sandbox, name, egress.network, spec, worker_env(family))
@@ -269,7 +270,7 @@ async def isolation_probe(
             try:
                 text = read_log(log).decode("utf-8")
                 events = parse_proxy_log(text)
-            except BenchmarkValidationError as exc:
+            except (OSError, ValueError) as exc:
                 return [f"proxy_log {exc}"], []
             found = probe_verdict(
                 checks,
@@ -279,9 +280,16 @@ async def isolation_probe(
                 denied=denied,
                 canary=via_proxy,
             )
+            for url in allowed_http:
+                target = urlsplit(url).netloc
+                if not any(
+                    e.method == "GET" and e.target == target and e.status == 200 and e.allowed
+                    for e in events
+                ):
+                    found.append(f"allowed_http_not_logged {url}")
             return found, text.splitlines()
 
-        await _settle(lambda: "denial_not_logged" not in verdict()[0])
+        await _settle(lambda: not verdict()[0])
         failed, prefix = verdict()
     record = {
         "job_id": job_id,

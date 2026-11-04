@@ -25,10 +25,12 @@ from benchmarks.agentic.egress import allowlist
 from benchmarks.agentic.run import run_agentic
 from benchmarks.model_matrix import load_model_matrix
 from benchmarks.runner import BenchmarkValidationError
+from tests.benchmarks.test_agentic_egress import PROBE_LINES, PYPI_LINE, _evidence, _lines
 from tests.benchmarks.test_agentic_run import (
     COMMITTED_MATRIX,
     _cli,
     _config,
+    _container,
     _EveryFamily,
     _live_config,
 )
@@ -289,6 +291,58 @@ def test_a_hosted_run_makes_no_offline_check(tmp_path: Path) -> None:
     config = _config(tmp_path, models=("scripted-anthropic",), systems=("no-docs",), repeats=1)
     summary = run_agentic(config, offline_checks=never)
     assert summary["status"] == "completed" and "airgap" not in summary
+
+
+@pytest.mark.parametrize(
+    ("kind", "partial"),
+    [
+        ("transcripts", b'{"tool_calls":'),
+        ("discarded", b'{"tool_calls":[null]}'),
+        ("transcripts", b"{}"),
+    ],
+)
+def test_partial_record_preserves_abort_and_evidence(
+    tmp_path: Path, kind: str, partial: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _local_config(tmp_path, systems=("no-docs", "python-docs"))
+    out = config.out_dir
+    launcher, _ = _container(tmp_path)
+    aborted = OSError("trajectory write interrupted")
+
+    async def interrupted(jobs: Any, **kwargs: Any) -> None:
+        for job in jobs:
+            _evidence(out, job.job_id, log=_lines(*PROBE_LINES, PYPI_LINE))
+        cell = out / kind / "no-docs--scripted-local--r1"
+        cell.mkdir(parents=True)
+        (cell / "SYN-EX-001.json").write_bytes(partial)
+        good = out / "transcripts" / "python-docs--scripted-local--r1"
+        good.mkdir(parents=True)
+        (good / "SYN-EX-001.json").write_text('{"tool_calls":[{"tool":"lookup_package_docs"}]}')
+        raise aborted
+
+    monkeypatch.setattr("benchmarks.agentic.run.run_jobs", interrupted)
+    checks, _ = _counting()
+    with pytest.raises(OSError) as raised:
+        run_agentic(config, launcher=launcher, offline_checks=checks)
+    assert raised.value is aborted
+    summary = json.loads((out / "run-summary.json").read_text())
+    assert (summary["status"], summary["abort_reason"]) == (
+        "aborted",
+        "OSError: trajectory write interrupted",
+    )
+    c1 = json.loads((out / "egress" / "summary.json").read_text())
+    assert c1["isolation_probe"] == "fail"
+    assert c1["jobs"]["scripted-local--no-docs"] == {
+        "hosts_allowed": [],
+        "hosts_denied": ["pypi.org:443"],
+        "lookup_package_docs_attempts": 0,
+    }
+    assert c1["jobs"]["scripted-local--python-docs"]["lookup_package_docs_attempts"] == 1
+    assert json.loads((out / "airgap" / "checks.json").read_text()) == {
+        "checks": 1,
+        "internet_hosts": [],
+        "all_passed": False,
+    }
 
 
 # --- C3 evidence: airgap/checks.json (#199, owner question 9) -----------------------------------

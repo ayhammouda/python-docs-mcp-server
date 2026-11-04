@@ -217,8 +217,14 @@ def lookup_attempts(out_dir: Path, family_id: str, system_id: str) -> int:
         root = out_dir / kind
         cells = [c for c in root.iterdir() if cell.fullmatch(c.name)] if root.is_dir() else []
         for path in (p for c in cells for p in sorted(c.glob("*.json"))):
-            calls = json.loads(path.read_text(encoding="utf-8")).get("tool_calls") or []
-            count += sum(call.get("tool") == "lookup_package_docs" for call in calls)
+            record = json.loads(path.read_text(encoding="utf-8"))
+            calls = record.get("tool_calls") if isinstance(record, dict) else None
+            if not isinstance(calls, list):
+                raise BenchmarkValidationError(f"invalid tool_calls in {path}")
+            for call in calls:
+                if not isinstance(call, dict) or not isinstance(call.get("tool"), str):
+                    raise BenchmarkValidationError(f"invalid tool call in {path}")
+                count += call["tool"] == "lookup_package_docs"
     return count
 
 
@@ -263,7 +269,7 @@ def write_egress_summary(
 
     ``isolation_probe`` is "pass" only when the control and every job's probe passed, every
     collection was clean, every log holds its probe prefix and has only conclusive events,
-    every ``ok`` settle in the ledger
+    each job has readable records for its lookup count, every ``ok`` settle in the ledger
     is attributed to a planned job, and every hosted live job with an ``ok`` settle reached its
     provider through its proxy (round-2 rulings C5, C6; round-3 items 1, 2).
     """
@@ -291,11 +297,17 @@ def write_egress_summary(
         if family.arm == "hosted" and family.api != "scripted" and job.job_id in billed:
             provider = {f"{h}:{p}" for h, p in PROVIDER_HOSTS.get(family.provider, ())}
             ok = ok and bool(provider & set(allowed))  # billed, so it must show its provider
+        try:
+            attempts = lookup_attempts(out_dir, family.id, job.system.id)
+        except (OSError, ValueError):
+            # An interrupted record cannot establish a count. Keep the required integer
+            # and fail C1 without losing the other jobs or masking the run's abort.
+            attempts, ok = 0, False
         passed = passed and ok
         entries[job.job_id] = {
             "hosts_allowed": allowed,
             "hosts_denied": sorted({e.target for e in events if not e.allowed}),
-            "lookup_package_docs_attempts": lookup_attempts(out_dir, family.id, job.system.id),
+            "lookup_package_docs_attempts": attempts,
         }
     summary = {"jobs": entries, "isolation_probe": "pass" if passed else "fail"}
     # The shape #199 reads, and nothing else (round-2 ruling E18).
