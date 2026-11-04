@@ -972,8 +972,9 @@ async def test_an_abnormal_proxy_exit_fails_the_collection(
     [
         (f"WARNING: header {SYNTHETIC}\n", SYNTHETIC),
         (json.dumps({"error": "bad\n" + "AIza" + "g" * 35}) + "\n", "AIza" + "g" * 35),
+        (json.dumps({"error": repr(b"\x00" + b"AIza" + b"g" * 35)}) + "\n", "AIza" + "g" * 35),
     ],
-    ids=["plain", "structured"],
+    ids=["plain", "structured", "bytes-repr"],
 )
 async def test_close_redacts_a_key_shaped_proxy_log_and_raises_after_cleanup(
     tmp_path: Path, line: str, key: str

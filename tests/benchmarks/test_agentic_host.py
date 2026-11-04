@@ -236,6 +236,8 @@ ANTHROPIC_SHAPE = "sk-ant-api03-" + "a" * 90
         ("AIza" + "b" * 36, None),  # a Google key is exactly 39 characters
         ("bn" + "AIza" + "b" * 35, None),  # a base64 run containing a key-shaped suffix
         ("base64u0020" + "sk-proj-" + "c" * 40, None),
+        ("\\" + "x" * 10 + "AIza" + "g" * 35, None),  # beyond the longest escape
+        (r"\x20" + "AIza" + "g" * 36, None),  # the end boundary still applies
     ],
 )
 def test_key_shaped_scan(text: str, pattern: str | None) -> None:
@@ -249,7 +251,33 @@ def test_key_shaped_scan(text: str, pattern: str | None) -> None:
         assert_no_key_shaped(f"before {text} after", where="test frame")
 
 
-@pytest.mark.parametrize("escape", [r"\b", r"\f", r"\n", r"\r", r"\t", r"\u000A", r"\\u0020"])
+@pytest.mark.parametrize(
+    "escape",
+    [
+        r"\b",
+        r"\f",
+        r"\n",
+        r"\r",
+        r"\t",
+        r"\u000A",
+        r"\\u0020",
+        r"\x20",
+        r"\0",
+        r"\07",
+        r"\377",
+        r"\U00000020",
+        r"\N{SPACE}",
+        r"\a",
+        r"\v",
+        r"\e",
+        r"\N",
+        r"\_",
+        r"\L",
+        r"\P",
+        r"\\\\x00",
+        "\\" * 64 + "U00000020",
+    ],
+)
 def test_structured_escape_is_a_key_boundary_in_arbitrary_text(escape: str) -> None:
     key = "sk-proj-" + "k" * 40
     prefix = "arbitrary text, no JSON required " + escape
@@ -671,11 +699,13 @@ async def test_a_key_shape_in_a_worker_log_is_redacted_before_the_run_stops(
 
 
 @pytest.mark.parametrize("indent", [None, 2], ids=["compact", "multiline"])
+@pytest.mark.parametrize("bytes_repr", [False, True])
 async def test_structured_worker_stderr_is_redacted_on_publication(
-    host: Host, tmp_path: Path, indent: int | None
+    host: Host, tmp_path: Path, indent: int | None, bytes_repr: bool
 ) -> None:
     key = "AIza" + "g" * 35
-    line = json.dumps({"detail": "failure\n" + key}, indent=indent) + "\n"
+    detail = repr(b"\x00" + key.encode()) if bytes_repr else "failure\n" + key
+    line = json.dumps({"detail": detail}, indent=indent) + "\n"
     code = (
         "import sys\nfrom benchmarks.agentic.worker import protect_output\n"
         "channel = protect_output()\n"

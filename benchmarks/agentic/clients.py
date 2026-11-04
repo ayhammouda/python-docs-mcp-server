@@ -75,18 +75,17 @@ _LIVE_APIS = {
 
 def tool_arguments(value: Any) -> tuple[dict[str, Any], str | None]:
     """A JSON object passes; anything else is ``({}, raw)`` and never reaches a tool."""
-    parsed = value
     if isinstance(value, str):
+        assert_no_key_shaped(value, where="tool arguments")
         try:
             parsed = json.loads(value)
         except json.JSONDecodeError:
-            parsed = None
-    if isinstance(parsed, dict):
-        return parsed, None
-    if isinstance(value, str):
+            return {}, value
         assert_no_key_shaped_json(parsed, where="tool arguments")
-        assert_no_key_shaped(value, where="tool arguments")
-        return {}, value
+        return (parsed, None) if isinstance(parsed, dict) else ({}, value)
+    if isinstance(value, dict):
+        assert_no_key_shaped_json(value, where="tool arguments")
+        return value, None
     return {}, scanned_json_bytes(value, where="tool arguments").decode()
 
 

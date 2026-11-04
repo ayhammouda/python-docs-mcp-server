@@ -1007,6 +1007,28 @@ def _tool_call(name: str, arguments: str, call_id: str | None) -> dict[str, Any]
     return call if call_id is None else {"id": call_id, **call}
 
 
+@pytest.mark.parametrize("provider", ["anthropic", "openai", "google", "ollama"])
+async def test_provider_refuses_key_in_tool_arguments(provider: str) -> None:
+    key = "AIza" + "g" * 35
+    args = {"query": "https://docs.python.org/3/?token=" + key}
+    if provider == "anthropic":
+        block = {"type": "tool_use", "id": "id", "name": "search_docs", "input": args}
+        client = _anthropic(Recorder(_ok({**ANTHROPIC_TOOL_TURN, "content": [block]})))
+    elif provider == "openai":
+        response = _openai_response([{**OPENAI_CALL, "arguments": json.dumps(args)}])
+        client = _openai(Recorder(_ok(response)))
+    elif provider == "google":
+        response = _gemini_response([{"functionCall": {"name": "search_docs", "args": args}}])
+        client = _gemini(GeminiRecorder(_gemini_ok(response)))
+    else:
+        calls = [_tool_call("search_docs", json.dumps(args), "id")]
+        response = _chat_completion({"role": "assistant", "tool_calls": calls}, "tool_calls")
+        client = _ollama(Recorder(_ok(response)))
+    with pytest.raises(KeyLeakError, match="tool arguments") as caught:
+        await client.call(_conv())
+    assert key not in str(caught.value)
+
+
 async def test_ollama_client_round_trips_a_tool_call() -> None:
     first = {
         "role": "assistant",

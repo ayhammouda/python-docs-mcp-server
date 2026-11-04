@@ -543,11 +543,15 @@ async def test_probe_failure_never_echoes_key_in_traceback(
     sandbox.remove_container.assert_awaited_once()
 
 
+@pytest.mark.parametrize("delimiter", ["\n", r"\x20"])
 def test_cli_withholds_structured_probe_stderr(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    delimiter: str,
 ) -> None:
     key = "sk-proj-" + "k" * 40
-    stderr = json.dumps({"error": "." * 350 + "\n" + key})
+    stderr = json.dumps({"error": "." * 350 + delimiter + key})
     sandbox = Mock(
         create_resource=AsyncMock(return_value="fake-id"),
         docker=AsyncMock(return_value=_done([], 1, err=stderr)),

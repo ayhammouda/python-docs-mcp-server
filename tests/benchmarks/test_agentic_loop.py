@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ from benchmarks.agentic.loop import (
     run_trajectory,
 )
 from benchmarks.agentic.prompt import SYSTEM_PROMPT
+from benchmarks.agentic.protocol import KeyLeakError
 from benchmarks.agentic.schemas import schemas_sha256
 from benchmarks.agentic.types import Buckets, Conversation, ModelTurn, ToolSpec
 from benchmarks.model_matrix import ModelFamily, load_model_matrix, model_family_from_raw
@@ -370,6 +372,29 @@ async def test_unknown_tool_call_is_returned_to_the_model_and_the_loop_continues
     record = await harness.run([unknown, ANSWER], bridge=bridge)
     assert record["tool_calls"][0]["is_error"] is True and record["status"] == "succeeded"
     assert record["canonical_messages"][2]["content"][0]["is_error"] is True
+
+
+@pytest.mark.parametrize("case", ["native-url", "serialized-field", "raw-only", "malformed"])
+async def test_contaminated_tool_turn_aborts_before_any_bridge_call(
+    harness: Harness, case: str
+) -> None:
+    key = "AIza" + "g" * 35
+    arguments = {
+        "native-url": {"url": "https://docs.python.org/3/?token=" + key},
+        "serialized-field": json.dumps({"nested": [{key: True}]}).replace("AIza", r"\u0041Iza"),
+        # Decoding adds a token character just after the otherwise complete raw key.
+        "raw-only": '{"url":"' + key + r'\u0041"}',
+        "malformed": '{"url":"bad' + r"\x20" + key + '"}',
+    }[case]
+    bridge = FakeBridge(("fetch",))
+    tools = [
+        {"name": "fetch", "arguments": {"url": "https://docs.python.org/3/"}},
+        {"name": "fetch", "arguments": arguments},
+    ]
+    with pytest.raises(KeyLeakError, match="tool arguments") as caught:
+        await harness.run([{"tools": tools, "usage": USAGE}, ANSWER], bridge=bridge)
+    assert bridge.calls == []
+    assert key not in str(caught.value)
 
 
 @pytest.mark.parametrize("arguments", [[1, 2], "x", 3, None, True])

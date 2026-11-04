@@ -1090,24 +1090,42 @@ def test_decoded_scan_visits_yaml_aliases_only_once() -> None:
         assert_no_key_shaped_json(value, where="aliased input")
 
 
-@pytest.mark.parametrize("case", ["malformed", "valid-nested", "truncated", "base64"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "malformed",
+        "malformed-hex",
+        "valid-nested",
+        "native-url",
+        "serialized-field",
+        "truncated",
+        "base64",
+    ],
+)
 def test_transcript_checks_escaped_tool_arguments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
     key = "AIza" + "g" * 35
     raw = '{"url":"failure' + r"\n" + key + '"'  # missing the closing brace
+    arguments: str | dict[str, Any] = raw
     if case == "valid-nested":
-        raw = json.dumps({"url": r"\n" + key}, indent=2)
+        arguments = json.dumps({"url": r"\n" + key}, indent=2)
     elif case == "truncated":
         # Only the clipped tool error ends exactly at the 39-character Google shape.
-        raw = raw[:-1] + "X"
-        limit = len("tool arguments must be a JSON object: " + raw) - 1
+        arguments = raw[:-1] + "X"
+        limit = len("tool arguments must be a JSON object: " + arguments) - 1
         monkeypatch.setattr("benchmarks.agentic.run.HOSTED_CAPS", Caps(result_bytes=limit))
     elif case == "base64":
-        raw = raw.replace(r"\n", "bn")
+        arguments = raw.replace(r"\n", "bn")
+    elif case == "malformed-hex":
+        arguments = '{"url":"bad' + r"\x20" + key + '"}'
+    elif case == "native-url":
+        arguments = {"url": "https://docs.python.org/3/?token=" + key}
+    elif case == "serialized-field":
+        arguments = json.dumps({"nested": [{key: True}]})
     usage = {"input_tokens": 1000, "output_tokens": 100}
     steps = [
-        {"tools": [{"name": "fetch", "arguments": raw}], "usage": usage},
+        {"tools": [{"name": "fetch", "arguments": arguments}], "usage": usage},
         {"text": "done", "usage": usage},
     ]
     config = _config(
@@ -1123,7 +1141,7 @@ def test_transcript_checks_escaped_tool_arguments(
     if case == "base64":
         assert run_agentic(config)["succeeded_cells"] == 1
         (call,) = json.loads(transcript.read_text())["tool_calls"]
-        assert call["raw_arguments"] == raw and raw in call["result"]
+        assert call["raw_arguments"] == arguments and arguments in call["result"]
     else:
         with pytest.raises(KeyLeakError) as caught:
             run_agentic(config)
