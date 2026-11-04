@@ -117,7 +117,7 @@ def _publish_scrubbed(log_path: Path) -> str | None:
 
     On every exit, a raise or a cancel included, the leaked bytes never stay on disk. The copy
     replaces the log, so a writer still holding it writes into an unlinked file. If the copy
-    cannot be written, the log is emptied instead.
+    cannot be published, the log is unlinked instead, for the same reason.
     """
     redacted, pattern = redact_key_shaped(log_path.read_bytes())
     scrubbed = log_path.with_name(log_path.name + ".tmp")
@@ -125,7 +125,7 @@ def _publish_scrubbed(log_path: Path) -> str | None:
         scrubbed.write_bytes(redacted)
         os.replace(scrubbed, log_path)
     except OSError:  # a full or read-only disk, say
-        log_path.write_bytes(b"")
+        log_path.unlink(missing_ok=True)
         scrubbed.unlink(missing_ok=True)
         raise
     return pattern

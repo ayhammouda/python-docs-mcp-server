@@ -935,18 +935,21 @@ async def test_a_failed_log_publish_still_settles_and_leaves_no_key(
     )
     log = tmp_path / "full.stderr.log"
     log.write_text("debug: sk-ant-api03-" + "z" * 90 + "\n", encoding="utf-8")
+    retained = log.open("ab")  # a writer that kept its descriptor through the teardown
     try:
         with pytest.raises(OSError, match="No space left"):
             worker = anchor = _Exited(group.pid)
             await agentic_host._teardown(worker, anchor, log, service, unit)  # type: ignore[arg-type]
+        retained.write(b"late: sk-ant-api03-" + b"z" * 90 + b"\n")
     finally:
+        retained.close()
         group.wait(timeout=5)
     settles = [e for e in host.ledger.events("host-test") if e["event"] == "settle"]
     assert [(s["outcome"], D(s["booked"])) for s in settles] == [
         ("worker_lost", 2 * D("0.002024"))
     ]
     assert [path.name for path in tmp_path.glob("*.tmp")] == []
-    assert "sk-ant-api03-" not in log.read_text()
+    assert not log.exists() or "sk-ant-api03-" not in log.read_text()
 
 
 async def test_host_aborts_the_run_when_a_worker_frame_holds_a_key_shaped_string(
