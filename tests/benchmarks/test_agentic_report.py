@@ -517,6 +517,7 @@ def test_grading_disclosure_names_judges_versions_and_self_grading(
     assert "grades its own answers" in disclosure
     assert "The run was graded by the composition haiku+luna+flash." in disclosure
     assert "No human graded or calibrated any grade." in disclosure
+    assert "a valid alternative may earn less credit if the key omits it" in disclosure
 
 
 @pytest.fixture

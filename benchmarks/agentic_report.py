@@ -608,6 +608,8 @@ def _diagnostics(run: _Run) -> list[str]:
         "",
         f"Answer-key audit: {_esc(audit.get('audited', 0))} keys audited by the reference "
         f"grader; flagged: {flagged or 'none'}.",
+        "The audit checks whether the cited docs support the frozen key. When a question has "
+        "several correct answers, a valid alternative may earn less credit if the key omits it.",
     ]
     if summary.get("claims_without_flagged_keys"):
         for cid, by in sorted(summary["claims_without_flagged_keys"].items()):
