@@ -293,12 +293,12 @@ def test_reference_probe_check() -> None:
 
 
 INPUTS = {
-    "judge_prompt": "p",
-    "judge_schema": "s",
-    "criteria": "c",
-    "mapping_table": "m",
-    "mask_rules": "k",
-    "probes": "r",
+    "judge_prompt": "a" * 64,
+    "judge_schema": "b" * 64,
+    "criteria": "c" * 64,
+    "mapping_table": "d" * 64,
+    "mask_rules": "e" * 64,
+    "probes": "f" * 64,
 }
 COMPOSITION = {
     "haiku": {"model_id": "claude-haiku-5-5", "effort": "low"},
@@ -324,7 +324,7 @@ def test_g1_evidence_must_match_the_runs_binding() -> None:
     effort = {**COMPOSITION, "luna": {"model_id": "gpt-6-luna", "effort": "low"}}
     with pytest.raises(BenchmarkValidationError, match="luna.effort"):
         select_g1({key: _entry(effort)}, binding)
-    for field in ("judge_prompt", "criteria", "mapping_table", "mask_rules", "probes"):
+    for field in INPUTS:
         with pytest.raises(BenchmarkValidationError, match=field):
             select_g1({key: _entry(COMPOSITION, **{field: "other"})}, binding)
 

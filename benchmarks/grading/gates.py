@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import re
 import statistics
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
@@ -18,7 +19,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal, TypeGuard
 
-from benchmarks.grading.panel import composition_key
+from benchmarks.agentic.inputs import read_json
+from benchmarks.grading.panel import Panel, composition_key
 from benchmarks.grading.probes import PROBE_TYPES, Probe
 from benchmarks.grading.stats import (
     AlphaResult,
@@ -58,7 +60,18 @@ class ClaimResult:
 @dataclass(frozen=True)
 class G1Binding:
     composition: dict[str, dict[str, str | None]]  # judge id -> {"model_id", "effort"}
-    inputs: dict[str, str]  # BINDING_INPUTS -> sha256
+    inputs: dict[str, str | None]  # BINDING_INPUTS -> sha256 (absent in some legacy runs)
+
+    def missing_field(self) -> str | None:
+        for judge, spec in self.composition.items():
+            for field in ("model_id", "effort"):
+                value = spec.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    return f"composition.{judge}.{field}"
+        for field in BINDING_INPUTS:
+            if not self.inputs.get(field):
+                return f"inputs.{field}"
+        return None
 
 
 @dataclass(frozen=True)
@@ -142,13 +155,17 @@ def reference_probe_check(
     return GateResult("reference_probe_check", passed, {"overall": overall, "inj_credit": inj})
 
 
-def pass1_composition(root: Path, target: str) -> dict[str, dict[str, str | None]]:
+def pass1_composition(
+    root: Path, target: str, panel: Panel | None = None
+) -> dict[str, dict[str, str | None]]:
     """The composition (judge -> model id and effort) of every pass-1 run of ``target`` under
     ``root/runs``; runs that disagree are refused."""
     compositions = []
     for path in sorted((root / "runs").glob("*.json")):
-        run = json.loads(path.read_text(encoding="utf-8"))
-        if run.get("target") == target and run.get("pass") == 1 and run.get("composition"):
+        run = read_json(path, "grading invocation")
+        if run.get("target") == target and run.get("pass") == 1:
+            if not isinstance(run.get("composition"), dict) or not run["composition"]:
+                raise BenchmarkValidationError(f"{root}: pass-1 {target} run has no composition")
             compositions.append(run["composition"])
     if not compositions:
         raise BenchmarkValidationError(f"{root} has no pass-1 {target} grading run")
@@ -156,20 +173,30 @@ def pass1_composition(root: Path, target: str) -> dict[str, dict[str, str | None
         raise BenchmarkValidationError(
             f"{root}: pass-1 {target} runs disagree on the panel composition or its efforts"
         )
-    return compositions[0]
+    composition = compositions[0]
+    if panel is None:
+        return composition
+    # The records pin the actual model and effort. The panel supplies provider order
+    # and the registered alternative in each seat.
+    judges = [j if j in composition else panel.fallback.get(j) for j in panel.panel]
+    if set(composition) != set(judges):
+        raise BenchmarkValidationError(f"{root}: unregistered pass-1 {target} composition")
+    for judge, spec in composition.items():
+        if not isinstance(spec, dict):
+            raise BenchmarkValidationError(f"invalid composition.{judge}")
+        if spec.get("model_id") and spec["model_id"] != panel.judges[judge].model_id:
+            raise BenchmarkValidationError(f"unregistered composition.{judge}.model_id")
+        if spec.get("effort") and spec["effort"] not in panel.judges[judge].effort_levels:
+            raise BenchmarkValidationError(f"unregistered composition.{judge}.effort")
+    return {j: composition[j] for j in judges if j is not None}
 
 
-def run_binding(run_dir: Path) -> G1Binding:
+def run_binding(run_dir: Path, panel: Panel | None = None) -> G1Binding:
     """The run's frozen inputs and the composition (with efforts) that graded pass 1."""
     grading = run_dir / "grading"
-    try:
-        inputs = json.loads((grading / "inputs" / "inputs.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise BenchmarkValidationError(
-            f"{run_dir} has no readable grading/inputs/inputs.json"
-        ) from exc
+    inputs = read_json(grading / "inputs" / "inputs.json", "grading input manifest")
     return G1Binding(
-        composition=pass1_composition(grading, "answers"),
+        composition=pass1_composition(grading, "answers", panel),
         inputs={name: inputs.get(name) for name in BINDING_INPUTS},
     )
 
@@ -182,20 +209,50 @@ def select_g1(g1_entries: Mapping[str, Mapping[str, Any]], binding: G1Binding) -
         return GateResult(
             "G1", None, {"composition": key, "reason": f"no G1 entry for composition {key}"}
         )
-    bound = entry["binding"]
+    bound = entry.get("binding")
+    if not isinstance(bound, dict):
+        raise BenchmarkValidationError(f"G1 entry {key} needs a binding")
+    composition = bound.get("composition")
+    if not isinstance(composition, dict) or composition.keys() != binding.composition.keys():
+        raise BenchmarkValidationError(f"G1 entry {key} differs from the run at composition")
     for judge_id, spec in binding.composition.items():
-        theirs = bound["composition"].get(judge_id) or {}
+        theirs = composition[judge_id]
+        if not isinstance(theirs, dict):
+            raise BenchmarkValidationError(f"G1 entry {key} differs at composition.{judge_id}")
         for field in ("model_id", "effort"):
-            if theirs.get(field) != spec.get(field):
+            if spec.get(field) and theirs.get(field) != spec[field]:
                 raise BenchmarkValidationError(
-                    f"G1 entry {key} differs from the run at composition.{judge_id}.{field}: "
-                    f"{theirs.get(field)!r} != {spec.get(field)!r}"
+                    f"G1 entry {key} differs at composition.{judge_id}.{field}"
                 )
+    inputs = bound.get("inputs")
+    if not isinstance(inputs, dict):
+        raise BenchmarkValidationError(f"G1 entry {key} needs binding inputs")
     for field in BINDING_INPUTS:
-        if bound["inputs"].get(field) != binding.inputs.get(field):
+        expected = binding.inputs.get(field)
+        if not expected:
+            continue  # A legacy run cannot acquire a pin from the supplied evidence.
+        if inputs.get(field) != expected:
             raise BenchmarkValidationError(f"G1 entry {key} differs from the run at inputs.{field}")
-    gate = entry["gate"]
-    return GateResult("G1", gate["passed"], {**gate["details"], "composition": key})
+        if not isinstance(expected, str) or not re.fullmatch("[0-9a-f]{64}", expected):
+            raise BenchmarkValidationError(
+                f"G1 entry {key} has an invalid SHA-256 at inputs.{field}"
+            )
+    missing = binding.missing_field()
+    if missing:
+        return GateResult(
+            "G1", None, {"composition": key, "reason": f"run binding lacks {missing}"}
+        )
+    gate = entry.get("gate")
+    if (
+        not isinstance(gate, dict)
+        or "passed" not in gate
+        or not isinstance(gate.get("details"), dict)
+    ):
+        raise BenchmarkValidationError(f"G1 entry {key} needs a gate verdict and details")
+    passed = gate["passed"]
+    if passed is not None and not isinstance(passed, bool):
+        raise BenchmarkValidationError(f"G1 entry {key} has an invalid gate verdict")
+    return GateResult("G1", passed, {**gate["details"], "composition": key})
 
 
 def _clusters(

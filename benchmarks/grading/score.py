@@ -20,8 +20,8 @@ from typing import Any
 
 import yaml
 
+from benchmarks.agentic.inputs import read_input_bytes
 from benchmarks.agentic.protocol import (
-    assert_no_key_shaped,
     assert_no_key_shaped_json,
     scanned_json_bytes,
 )
@@ -118,16 +118,46 @@ def _write(path: Path, data: Any) -> Any:
 
 
 def _read_g1(path: Path) -> tuple[bytes, dict[str, Any]]:
+    body = read_input_bytes(path, "G1 evidence", "G1 evidence")
+
+    def checked_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        assert_no_key_shaped_json(pairs, where="G1 evidence")
+        data = dict(pairs)
+        if len(data) != len(pairs):
+            raise BenchmarkValidationError("G1 evidence contains a duplicate JSON member")
+        return data
+
     try:
-        body = path.read_bytes()
-        text = body.decode("utf-8")
-        # A raw copy also publishes duplicate members discarded by normal JSON parsing.
-        pairs = json.loads(text, object_pairs_hook=list)
-    except (OSError, ValueError) as exc:
+        data = json.loads(body.decode("utf-8"), object_pairs_hook=checked_pairs)
+    except BenchmarkValidationError:
+        raise
+    except (ValueError, RecursionError) as exc:
         raise BenchmarkValidationError("could not read G1 evidence as UTF-8 JSON") from exc
-    assert_no_key_shaped(body, where="G1 evidence")
-    assert_no_key_shaped_json(pairs, where="G1 evidence")
-    return body, json.loads(text)
+    if not isinstance(data, dict) or not isinstance(data.get("entries"), dict):
+        raise BenchmarkValidationError("G1 evidence needs an entries object")
+    return body, data["entries"]
+
+
+def _g1_inputs(
+    paths: Sequence[Path],
+) -> tuple[dict[str, Any], dict[str, bytes], list[dict[str, str]]]:
+    entries: dict[str, Any] = {}
+    bodies: dict[str, bytes] = {}
+    copies: list[dict[str, str]] = []
+    for path in paths:
+        body, supplied = _read_g1(path)
+        for key, entry in supplied.items():
+            if not isinstance(entry, dict):
+                raise BenchmarkValidationError(f"G1 entry {key} must be an object")
+            if key in entries and json.dumps(entries[key], sort_keys=True) != json.dumps(
+                entry, sort_keys=True
+            ):
+                raise BenchmarkValidationError(f"conflicting G1 evidence for composition {key}")
+            entries[key] = entry
+        sha = hashlib.sha256(body).hexdigest()
+        bodies[sha] = body
+        copies.append({"source": str(path), "path": f"disclosure/g1/{sha}.json", "sha256": sha})
+    return entries, bodies, copies
 
 
 def _cells(base: Path) -> dict[tuple[str, str], dict[str, Any]]:
@@ -223,7 +253,6 @@ def score_run_dir(
     resamples: int = 10_000,
 ) -> dict[str, Any]:
     """Score, grade, gate and claim one run; write ``grading/summary.json`` and disclosure."""
-    score_run(run_dir, schema_path=schema_path)
     grading = run_dir / "grading"
     seed = str(_read(run_dir / "environment.json").get("seed"))
     manifest = _read(grading / "inputs" / "inputs.json")
@@ -231,7 +260,28 @@ def score_run_dir(
         criteria_path, corpus_path=run_dir / "snapshots" / "corpus.yml", schema_path=schema_path
     )
     panel = load_panel(panel_path)
-    binding = run_binding(run_dir)
+    binding = run_binding(run_dir, panel)
+    entries, bodies, copies = _g1_inputs(g1_paths)
+    g1_result = (
+        select_g1(entries, binding)
+        if entries
+        else GateResult("G1", None, {"reason": "no G1 evidence was given (--g1)"})
+    )
+    key = composition_key(list(binding.composition))
+    entry = entries.get(key, {})
+    if entry and binding.missing_field():
+        # Keep the supplied bytes for provenance. The report reads this derived entry.
+        entry = entries[key] = {**entry, "gate": _gate(g1_result), "reference_check": None}
+    check = entry.get("reference_check") or {}
+    reference_check = GateResult(
+        "reference_probe_check", check.get("passed"), dict(check.get("details") or {})
+    )
+
+    disclosure = grading / "disclosure"
+    raw_g1 = disclosure / "g1"
+    if any(p.is_symlink() for p in (grading, disclosure, raw_g1)):
+        raise BenchmarkValidationError("G1 disclosure directory must be within the run")
+    score_run(run_dir, schema_path=schema_path)
     efforts = {judge: spec.get("effort") for judge, spec in binding.composition.items()}
     answer_votes = load_answer_votes(grading, panel=panel, judges=efforts)
     transcripts = _cells(run_dir / "transcripts")
@@ -278,27 +328,6 @@ def score_run_dir(
         if k in finals and not av.suspect
     }
     g2_result = g2(own, question_of, seed=seed, resamples=resamples)
-
-    # 5. G1 (read before G3: the entry carries the reference probe check).
-    copies: list[dict[str, str]] = []
-    entries: dict[str, Any] = {}
-    for path in g1_paths:
-        body, data = _read_g1(path)
-        entries.update(data.get("entries") or {})
-        sha = hashlib.sha256(body).hexdigest()
-        dest = grading / "disclosure" / "g1" / f"{sha}.json"
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(body)
-        copies.append({"source": str(path), "path": str(dest.relative_to(grading)), "sha256": sha})
-    if entries:
-        g1_result = select_g1(entries, binding)
-    else:
-        g1_result = GateResult("G1", None, {"reason": "no G1 evidence was given (--g1)"})
-    entry = entries.get(composition_key(list(binding.composition))) or {}
-    check = entry.get("reference_check") or {}
-    reference_check = GateResult(
-        "reference_probe_check", check.get("passed"), dict(check.get("details") or {})
-    )
 
     # 4. G3 on the stored reference sample: final grade vs an independent reference vote.
     pairs: dict[str, tuple[float, float]] = {}
@@ -540,10 +569,21 @@ def score_run_dir(
         },
     }
     _write(grading / "disclosure" / "breakdowns.json", breakdowns)
-    if entries:
-        _write(grading / "disclosure" / "g1-entries.json", entries)
-    if entry.get("tuning"):
-        _write(grading / "disclosure" / "tuning.json", entry["tuning"])
+    for path, value in (
+        (disclosure / "g1-entries.json", entries),
+        (disclosure / "tuning.json", entry.get("tuning")),
+    ):
+        path.unlink(missing_ok=True)
+        if value:
+            _write(path, value)
+    if bodies:
+        raw_g1.mkdir(parents=True, exist_ok=True)
+    for path in raw_g1.glob("*.json"):
+        if len(path.stem) == 64 and all(c in "0123456789abcdef" for c in path.stem):
+            path.unlink()
+    for sha, body in bodies.items():
+        with (raw_g1 / f"{sha}.json").open("xb") as f:
+            f.write(body)
 
     summary = {
         "run_dir": str(run_dir),
@@ -750,7 +790,7 @@ def write_g1(workspace: Path, *, panel_path: Path, tuning_path: Path = TUNING_PA
     probe_file = _handoff_probes(workspace, tuning_path)
     held_out = [p for p in probe_file.probes if p.set == "held_out"]
     weights = _criteria_weights(workspace / "inputs" / "grading-criteria.yml")
-    composition = pass1_composition(workspace, "probes")
+    composition = pass1_composition(workspace, "probes", panel)
     judge_scores: dict[str, dict[str, float | None]] = {}
     panel_scores: dict[str, float | None] = {}
     for probe in held_out:
