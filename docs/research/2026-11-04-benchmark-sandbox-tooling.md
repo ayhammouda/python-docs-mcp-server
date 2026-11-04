@@ -47,16 +47,20 @@ Notes on the pins:
    https://docs.docker.com/reference/cli/docker/network/create/
 2. **Isolated gateway mode.** `-o com.docker.network.bridge.gateway_mode_ipv4=isolated`
    is allowed only with `--internal`; "No address is assigned to the
-   bridge". It needs Engine 28.0.0 or newer.
-   https://docs.docker.com/engine/network/port-publishing/
+   bridge". https://docs.docker.com/engine/network/port-publishing/ . The
+   Engine 28 release notes introduce it: `gateway_mode_ipv4` and
+   `gateway_mode_ipv6` "now accept mode isolated, when the network is
+   also internal" (moby/moby#49262). So it needs Engine 28.0 or newer.
+   https://docs.docker.com/engine/release-notes/28/
 3. **DNS on internal networks.** Engine 26.0.0 and 25.0.5 stopped
    forwarding external names for containers attached only to internal
-   networks (CVE-2024-29018, moby/moby#47589). The advisory says "Docker
-   Desktop is not affected", because Desktop runs its own internal
-   resolver on a private address. A container attached only to an
-   internal network has no route to that resolver, so external names
-   should not resolve from it. That is an expectation, not a documented
-   guarantee; the isolation probe's DNS check decides.
+   networks (CVE-2024-29018, moby/moby#47589). From Engine 26 on, the
+   embedded DNS server does not forward external names for a container
+   attached only to internal networks, so such a container should not
+   resolve them. The advisory's "Docker Desktop is not affected" refers to
+   the earlier leak, which Desktop's own internal resolver avoided; it
+   does not describe a different behaviour now. The maintainer runs
+   Engine 29.9.2. The isolation probe's DNS check still decides.
    https://docs.docker.com/engine/release-notes/26.0/ ,
    https://github.com/moby/moby/security/advisories/GHSA-mq39-4gv4-mvpx
 4. **`host.docker.internal`** "Resolves to the internal IP address of your

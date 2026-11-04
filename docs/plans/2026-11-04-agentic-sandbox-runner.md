@@ -90,7 +90,7 @@ Executors read the design §7, the sandbox note and
   - `--read-only`, with tmpfs for `/tmp` (which is `HOME`) and for `/cache/mcp-python-docs`;
   - `--cap-drop ALL`, `--security-opt no-new-privileges`, `--user 10001:10001`;
   - `--memory 1g --cpus 1 --pids-limit 256`;
-  - `--init`, `--rm`, `-i` without `-t`, `--pull never`;
+  - `--init`, `--rm`, `-i` without `-t`, `--pull never`, `--log-driver none` (the daemon keeps no second copy of worker output; round-3 item 7);
   - no Docker socket, and the image by ID (`sha256:<64 hex>`), never by tag;
   - `XDG_CACHE_HOME=/cache`; `index.db` bind-mounted read-only at `/cache/mcp-python-docs/index.db` for `python-docs` jobs only; `PYTHON_DOCS_MCP_DISABLE_AUTO_INDEX=1` always.
 - **Egress (design §7.3):**
@@ -110,13 +110,15 @@ Executors read the design §7, the sandbox note and
   - `mcp-server-fetch==2026.10.19`, every transitive package hash-pinned and published on or before 2026-10-21.
   - The two young pins (the Python image and `mcp-server-fetch`) are re-checked at implementation time (#200 ruling). Before Task 7, the implementer also checks https://www.python.org/downloads/ for a CPython 3.14.9+ security fix. If one exists and is at least 14 days old, they raise it in the PR body instead of switching silently.
 - **Platform:** Docker Desktop for Mac only (context `desktop-linux`), Engine ≥ 28.0. Podman and Colima are out of scope for round 1.
+- **Local daemon only** (round-3 item 4): `verify_image` refuses unless the active context's endpoint and any `DOCKER_HOST` are `unix://`. A bootstrap frame therefore never crosses a network to a remote daemon.
 - **Dependencies:** no change to `pyproject.toml` or `uv.lock`. `mcp-server-fetch` lives only in the image's `/opt/fetch` venv, from a hashed requirements file.
 - **Forbidden territory** (`AGENT-EXECUTION-PIPELINE.md` §2):
   - No change under `src/` (the tool surface is frozen) or to the corpus (`c52c3f2`).
   - The one workflow change is owner-approved (#200 ruling 2): `.github/workflows/security.yml`'s "Audit dependencies" step also audits `benchmarks/sandbox/fetch-requirements.txt` (Task 4).
   - The README change stays below the first install block.
 - **Shared files with PR 5:** PR 4 merges first, and PR 5 also edits `host.py` and `worker.py`. PR 4's edits there stay additive at the launcher seam:
-  - `host.py`: four new `Launcher` methods; `LocalLauncher` no-ops; in `_supervise`, writing the bootstrap frame and passing `stop_worker`; one defaulted `_teardown` argument; the `prepare`/`close` calls around the gather in `run_jobs`. The rest is two rewritten comments and one message tail.
+  - `host.py`: four new `Launcher` methods; `LocalLauncher` no-ops; in `_supervise`, writing the bootstrap frame, passing `stop_worker`, and passing `job_id=job.job_id` to `ledger.reserve`; one defaulted `_teardown` argument; the `prepare`/`close` calls around the gather in `run_jobs`. The rest is two rewritten comments and one message tail.
+  - `ledger.py`: `Ledger.reserve` and `LedgerService.reserve` gain a defaulted `job_id: str | None = None`, written as the `job_id` field of every `reserve` event (round-3 item 2).
   - `worker.py`: `main_worker` reads the bootstrap frame first. `_serve`, `run_worker` and `_run_job` gain defaulted parameters. `_converted` gains one branch, and `_system_info` gains two keys.
   - `protocol.py`: one new function, `read_frame_fd`.
   - Nothing else in these files moves or is renamed.
@@ -152,7 +154,9 @@ the spec implies and no other task pins.
 5. **The proxy log loses lines or gains a stale prefix.** Tests:
    - Task 9 `test_squid_conf_matches_the_template` (file log, no rotation);
    - Task 12 `test_a_truncated_or_reprefixed_log_invalidates_the_evidence` and `test_a_missing_log_invalidates_the_evidence`.
-6. **A false clean summary.** Log collection failed, or a hosted job billed `ok` calls but its log shows no provider host. Test: Task 12 `test_no_false_clean_when_collection_failed_or_the_provider_never_appears`.
+6. **A false clean summary.** Log collection failed, the proxy ended abnormally (exit 137, OOM), or a hosted job billed `ok` calls but its log shows no provider host, including a job whose worker died before reporting the trajectory. Tests:
+   - Task 10 `test_an_abnormal_proxy_exit_fails_the_collection`;
+   - Task 12 `test_no_false_clean_when_collection_failed_or_the_provider_never_appears`, `test_an_ok_settle_from_a_worker_that_died_early_fails_the_evidence` and `test_an_unattributed_ok_settle_fails_the_evidence`.
 7. **A denied attempt counted as an internet host.** Test: Task 15 `test_a_denied_pypi_attempt_keeps_all_passed_true`.
 8. **A retry-heavy pilot halves the estimate.** Test: Task 13 `test_reference_rates_aggregate_every_attempt_of_a_cell` (90 completed, 90 discarded, $9 booked gives $0.10 per cell).
 9. **A live run starts under CI or without a terminal.** Tests: Task 13 `test_ci_refuses_a_live_run_even_with_a_terminal` and `test_a_non_tty_stdin_refuses_a_live_run`.
@@ -167,7 +171,7 @@ the spec implies and no other task pins.
 | `benchmarks/agentic/clients.py` | 2, 3, 6 | explicit egress proxy; `OllamaChatClient`; `fetch_model_limits` |
 | `benchmarks/agentic/schemas.py`, `usage.py`, `ledger.py` | 3 | Ollama schema, buckets, unmetered units |
 | `benchmarks/agentic/bridge.py`, `docs/benchmarks/agentic-manifest.yml`, `benchmarks/sandbox/fetch-requirements.txt`, `.github/workflows/security.yml` | 4 | `{egress}` for MCP servers; the `docs-fetch` pin and its audit |
-| `benchmarks/agentic/protocol.py`, `host.py`, `worker.py` | 5 | the launcher seam: key bootstrap, prepare, stop worker, close |
+| `benchmarks/agentic/protocol.py`, `host.py`, `worker.py`, `ledger.py` | 5 | the launcher seam: key bootstrap, prepare, stop worker, close; `job_id` on `reserve` events |
 | `benchmarks/agentic/worker.py`, `run.py` | 6 | `model_limits` at startup and the host's comparison |
 | `benchmarks/sandbox/Dockerfile` | 7 | the worker image |
 | `benchmarks/agentic/egress.py` | 8, 9, 12 | allowlists, Squid config, log parser, forbidden env names; `egress/summary.json` |
@@ -525,10 +529,12 @@ at the seam (Global Constraints, "Shared files with PR 5").
 - Modify: `benchmarks/agentic/protocol.py` (`read_frame_fd`)
 - Modify: `benchmarks/agentic/host.py` (`Launcher`, `LocalLauncher`, `_supervise`, `_teardown`, `run_jobs`; rewrite both `shortcut:` comments)
 - Modify: `benchmarks/agentic/worker.py` (`BOOTSTRAP`, `apply_bootstrap`, `main_worker`, `_serve`, `run_worker`, `_run_job`)
-- Test: `tests/benchmarks/test_agentic_host.py`
+- Modify: `benchmarks/agentic/ledger.py` (`Ledger.reserve`, `LedgerService.reserve`: a defaulted `job_id`)
+- Test: `tests/benchmarks/test_agentic_host.py`, `tests/benchmarks/test_agentic_ledger.py`
 
 **Interfaces:**
 - Produces: `protocol.read_frame_fd(fd: int, *, limit: int = MAX_FRAME_BYTES) -> dict[str, Any] | None`. It reads exactly one frame with unbuffered `os.read`, so no byte of the next frame is consumed. It returns `None` at EOF.
+- Produces: `Ledger.reserve(..., job_id: str | None = None)` and `LedgerService.reserve(..., job_id: str | None = None)`. The value is written as the `job_id` field of the `reserve` event, in `<provider>.jsonl` and therefore in the run's `ledger-events.jsonl` (round-3 item 2). `_supervise` passes `job_id=job.job_id`, because it already holds `in_flight` per job. Every other caller keeps working unchanged.
 - Produces: four new `Launcher` methods:
 
 ```python
@@ -593,6 +599,9 @@ async def test_a_failing_stop_worker_still_scrubs_the_log_and_settles_the_unit(t
     # stop_worker raises; the worker log held a key shape: the published log holds "[redacted]" (or is
     # removed), the unit is booked at twice its bound, and the stop_worker error propagates
 async def test_close_problems_fail_a_clean_run(tmp_path) -> None
+async def test_every_reserve_event_names_its_job(tmp_path) -> None
+    # a scripted two-job run: every "reserve" event in ledger-events.jsonl has job_id equal to the
+    # job that reserved it; Ledger.reserve without job_id still writes job_id None (old callers)
 ```
 
 - [ ] **Step 2: Run them to see them fail**
@@ -610,7 +619,7 @@ Expected: PASS, with every existing teardown and anchor test unchanged.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add benchmarks/agentic/protocol.py benchmarks/agentic/host.py benchmarks/agentic/worker.py tests/benchmarks/test_agentic_host.py
+git add benchmarks/agentic/protocol.py benchmarks/agentic/host.py benchmarks/agentic/worker.py benchmarks/agentic/ledger.py tests/benchmarks/test_agentic_host.py tests/benchmarks/test_agentic_ledger.py
 git commit -m "feat(benchmarks): launcher seam with a stdin key bootstrap, prepare, stop-worker and close"
 ```
 
@@ -899,20 +908,27 @@ git commit -m "feat(benchmarks): Squid config with lookup-free allowlists and a 
   - `@dataclass(frozen=True) class SandboxConfig: image: str; run_id: str; out_dir: Path; index_path: Path; keys_file: Path | None; repo_commit: str`. `__post_init__` refuses an `image` that does not match `^sha256:[0-9a-f]{64}$`.
   - `@dataclass(frozen=True) class Egress: job_id: str; network: str; proxy: str; allow: tuple[tuple[str, int], ...]; log_dir: Path; gateways: tuple[str, ...]; inspect: dict[str, Any]`.
   - `class Sandbox(config, docker: DockerRun | None = None)`:
-    - `async verify_image() -> dict[str, str]`. `docker image inspect` must give `Id == config.image` and the label `org.opencontainers.image.revision == config.repo_commit`. `docker version` must give a server version ≥ `MIN_ENGINE`. `git status --porcelain` must be empty (the only dirty-tree check; `run.sh` has none). It writes `out_dir/sandbox.json` (image, revision, proxy image, engine version, docker context).
+    - `async verify_image() -> dict[str, str]`. All of these must hold, checked before any container starts:
+      - `docker context inspect --format '{{.Endpoints.docker.Host}}'` (the active context) gives an endpoint starting `unix://`, and `DOCKER_HOST`, when set in `cli_env`, also starts `unix://` (round-3 item 4);
+      - `docker image inspect` gives `Id == config.image` and the label `org.opencontainers.image.revision == config.repo_commit`;
+      - `docker version` gives a server version ≥ `MIN_ENGINE`;
+      - `git status --porcelain` is empty (the only dirty-tree check; `run.sh` has none).
+      It writes `out_dir/sandbox.json` (image, revision, proxy image, engine version, docker context and endpoint).
     - `async open_egress(job_id: str, allow) -> Egress`:
       1. Create the outside network once per run.
       2. Create the internal network with `docker network create --internal --ipv6=false -o com.docker.network.bridge.gateway_mode_ipv4=isolated --label ...`.
-      3. Run `docker network inspect`. If `EnableIPv6` is still true, remove the network and recreate it with `-o com.docker.network.bridge.gateway_mode_ipv6=isolated` added (round-2 ruling B4). Keep every `IPAM.Config[].Gateway` and the inspect output in the `Egress`.
-      4. Create `log_dir = out_dir/egress/<job_id>/`, mode `0o777`, because Squid's uid differs from the host user's. Write `squid.conf` into it.
+      3. Run `docker network inspect`. If `EnableIPv6` is still true, raise `BenchmarkValidationError` naming the network (round-3 item 8; no IPv6 fallback). Keep every `IPAM.Config[].Gateway` and the inspect output in the `Egress`.
+      4. Create `log_dir = out_dir/egress/<job_id>/` with `mkdir(parents=True)`, then `log_dir.chmod(0o777)`, because `mkdir(mode=...)` is cut by the umask and Squid's uid differs from the host user's (round-3 item 3). Write `squid.conf` into it.
       5. Start the proxy: `docker run -d --pull never --name <proxy> --label RUN_LABEL=<run_id> --network <outside> --read-only --tmpfs /run --tmpfs /var/spool/squid --cap-drop ALL --security-opt no-new-privileges --user proxy --memory 256m --cpus 0.5 --entrypoint /usr/sbin/squid --mount type=bind,src=<log_dir>/squid.conf,dst=/etc/squid/squid.conf,readonly --mount type=bind,src=<log_dir>,dst=/var/log/squid-bench SQUID_IMAGE -N -f /etc/squid/squid.conf`.
       6. Run `docker network connect --alias egress <internal> <proxy>`.
-    - `container_argv(*, name: str, network: str, env: Mapping[str, str], mounts: Sequence[str], argv: Sequence[str], interactive: bool = True) -> list[str]`: the full `docker run` argv with the Global Constraints hardening (`-i` only when `interactive`). `env` becomes `-e NAME=VALUE` and each mount a `--mount`, then the image ID, then `argv`. It has no key parameter.
+    - `container_argv(*, name: str, network: str, env: Mapping[str, str], mounts: Sequence[str], argv: Sequence[str], interactive: bool = True) -> list[str]`: the full `docker run` argv with the Global Constraints hardening, `--log-driver none` included (`-i` only when `interactive`). `env` becomes `-e NAME=VALUE` and each mount a `--mount`, then the image ID, then `argv`. It has no key parameter.
     - `async close_egress(egress: Egress) -> list[str]`:
-      1. `docker stop -t 5 <proxy>`. Squid closes its log within `shutdown_lifetime`, and the access log is already on the host.
-      2. Check the key shape of `access.log` and `cache.log` with `redact_key_shaped`, rewriting a file in place when a pattern is found.
-      3. `docker rm -f <proxy>`, then `docker network rm <internal>`.
-      4. Write `egress/<job_id>/collected.json` as `{"ok": bool, "problems": [...]}`.
+      1. `docker inspect --format '{{json .State}}' <proxy>`, before our stop (round-3 item 1). The proxy ended abnormally when it is no longer `Running` (it ended on its own, for example exit 137 from a kill or an OOM) or `OOMKilled` is true.
+      2. `docker stop -t 5 <proxy>`. Squid closes its log within `shutdown_lifetime`, and the access log is already on the host.
+      3. Inspect `State` again: `OOMKilled` true is abnormal too. A non-zero exit caused by our own stop is not abnormal by itself; a truncated log still fails Task 12's checks.
+      4. Check the key shape of `access.log` and `cache.log` with `redact_key_shaped`, rewriting a file in place when a pattern is found.
+      5. `docker rm -f <proxy>`, then `docker network rm <internal>`.
+      6. Write `egress/<job_id>/collected.json` as `{"ok": bool, "problems": [...], "state_before_stop": {...}, "state_after_stop": {...}}`. `ok` is false after any failed step or an abnormal end.
       Every step runs even after a failure, and failures are returned as problems. `ContainerLauncher.close` raises `KeyLeakError` for a key shape after all cleanup.
   - `ProbeFn = Callable[..., Awaitable[dict[str, Any]]]`, called as `probe(sandbox, egress, *, job_id, family, system_id)`.
   - `class ContainerLauncher(sandbox: Sandbox, probe: ProbeFn | None = None)` implements `Launcher`. `None` means Task 11's `isolation_probe`.
@@ -935,8 +951,8 @@ def test_read_key_refuses_a_group_or_world_readable_file(tmp_path) -> None   # 0
 def test_read_key_errors_never_hold_a_value(tmp_path) -> None                # missing and empty names
 def test_worker_argv_carries_the_design_hardening(tmp_path) -> None
     # contains --read-only, "--cap-drop ALL", "--security-opt no-new-privileges", "--user 10001:10001",
-    # --init, --rm, -i, "--pull never", "--network <internal>", --memory, --cpus, --pids-limit;
-    # no -t, --privileged, docker.sock or --network host; the image ID right before the command
+    # --init, --rm, -i, "--pull never", "--log-driver none", "--network <internal>", --memory, --cpus,
+    # --pids-limit; no -t, --privileged, docker.sock or --network host; the image ID right before the command
 def test_only_python_docs_jobs_mount_the_index_read_only(tmp_path) -> None
 def test_worker_env_is_the_allowlist(tmp_path, monkeypatch) -> None
     # host env polluted with HTTPS_PROXY, ALL_PROXY, SSL_CERT_FILE, REQUESTS_CA_BUNDLE, LANG:
@@ -950,19 +966,29 @@ def test_each_live_bootstrap_holds_only_its_own_providers_key(tmp_path) -> None
 def test_a_live_family_without_a_keys_file_is_refused(tmp_path) -> None
 async def test_internal_networks_are_ipv4_only_with_an_isolated_gateway(tmp_path) -> None
     # "network create --internal --ipv6=false -o com.docker.network.bridge.gateway_mode_ipv4=isolated";
-    # a FakeDocker inspect with EnableIPv6 true -> rm and recreate with gateway_mode_ipv6=isolated;
-    # Egress.gateways == every IPAM Config Gateway
-async def test_prepare_builds_one_network_and_proxy_per_job_with_a_file_log(tmp_path) -> None
+    # Egress.gateways == every IPAM Config Gateway; a FakeDocker inspect with EnableIPv6 still true ->
+    # BenchmarkValidationError, and no proxy or worker run follows
+async def test_prepare_builds_one_network_and_proxy_per_job_with_a_file_log(tmp_path, monkeypatch) -> None
     # one outside network; per job one squid run with the conf and the log dir bind-mounted, and one
-    # "network connect --alias egress"; egress/<job>/squid.conf == squid_conf(allowlist(...)); probe per job
+    # "network connect --alias egress"; egress/<job>/squid.conf == squid_conf(allowlist(...)); probe per job;
+    # with os.umask(0o077) in force, egress/<job>/ is still mode 0o777
+async def test_prepare_refuses_a_daemon_that_is_not_local(tmp_path, monkeypatch) -> None
+    # FakeDocker context endpoint "tcp://10.0.0.5:2376" -> refused; DOCKER_HOST=tcp://... with a unix
+    # context -> refused; in both, FakeDocker recorded no "run" and no "network create"
 async def test_prepare_refuses_an_image_from_another_commit(tmp_path) -> None
 async def test_prepare_refuses_an_engine_older_than_28(tmp_path) -> None
 def test_sandbox_config_refuses_a_tag(tmp_path) -> None                       # "python-docs:latest"
 async def test_stop_worker_removes_only_its_own_container(tmp_path) -> None
     # exactly ["docker", "rm", "-f", "pdmcp-<run>-<job>"]; FakeDocker never sees ps, prune or --filter
 async def test_close_stops_each_proxy_then_removes_what_it_created(tmp_path) -> None
-    # per egress in order: stop, rm -f, network rm; collected.json {"ok": true, "problems": []};
-    # then the outside network
+    # per egress in order: inspect, stop, inspect, rm -f, network rm; collected.json ok true with no
+    # problems; then the outside network
+@pytest.mark.parametrize("state", [{"Running": False, "ExitCode": 137, "OOMKilled": False},
+                                   {"Running": True, "ExitCode": 0, "OOMKilled": True}])
+async def test_an_abnormal_proxy_exit_fails_the_collection(tmp_path, state) -> None
+    # every cleanup command succeeds and the access log is well formed but partial; the pre-stop
+    # inspect returns `state` -> collected.json ok false naming the exit code or OOMKilled; Task 12's
+    # summary over this run dir says isolation_probe "fail"
 async def test_close_redacts_a_key_shaped_proxy_log_and_raises_after_cleanup(tmp_path) -> None
 async def test_close_keeps_going_after_a_failed_step(tmp_path) -> None       # collected.json ok false
 def test_container_launcher_supports_scripted_and_every_live_api() -> None
@@ -1014,7 +1040,7 @@ git commit -m "feat(benchmarks): container launcher with per-job egress proxy an
   - `probe_main(argv: list[str]) -> int`: `agentic-probe --spec <json>`. It prints one JSON object `{"checks": [...]}` and exits 0 whatever the checks found.
 - Produces, on the host:
   - `class Canary`, an async context manager: a TCP listener on `0.0.0.0:0`, with `port` and `received: list[bytes]`.
-  - `host_addresses() -> list[str]`: non-loopback IPv4 addresses from `socket.gethostbyname_ex(socket.gethostname())`, plus the source address of a UDP socket connected to `192.0.2.1:9` (no packet is sent). An empty list is allowed.
+  - `host_addresses() -> list[str]`: non-loopback IPv4 addresses from `socket.gethostbyname_ex(socket.gethostname())`, plus the source address of a UDP socket connected to `192.0.2.1:9` (no packet is sent). Each lookup sits in `suppress(OSError)`, so an unresolvable hostname or a missing route while offline (exactly when the air-gapped arm runs) leaves the list short, never raises (round-3 item 5). An empty list is allowed.
   - `class IsolationProbeFailed(BenchmarkValidationError)`.
   - `probe_verdict(checks, *, canary_received: Sequence[bytes], token: str, proxy_events: Sequence[ProxyEvent], denied: tuple[str, int], canary: tuple[str, int]) -> list[str]`. It names what failed: each failed check, `canary_saw_token`, and `denial_not_logged` unless both the `CONNECT` to `denied` and the plain request to `canary` appear as not-allowed events. An empty list means pass.
   - `isolation_probe(sandbox, egress, *, job_id, family, system_id) -> dict`, the default `ProbeFn`:
@@ -1034,6 +1060,9 @@ def test_direct_check_fails_and_sends_the_token_when_something_listens() -> None
     # a listener on 127.0.0.1: passed False; the listener received b"Bearer <token>"
 def test_direct_check_passes_when_nothing_listens() -> None
 def test_dns_check(monkeypatch) -> None                       # getaddrinfo raises -> pass; returns -> fail
+def test_host_addresses_work_offline(monkeypatch) -> None
+    # gethostbyname_ex raises socket.gaierror and the UDP connect raises OSError -> [] and no exception;
+    # only the UDP source address available -> that one address
 def test_proxy_checks_read_the_status_line() -> None          # a local fake proxy answering 403, then 200
 def test_env_check_names_forbidden_variables_only(monkeypatch) -> None
     # HTTPS_PROXY=http://user:secret@x:1 -> passed False, "HTTPS_PROXY" in detail, "secret" not in detail
@@ -1087,7 +1116,7 @@ makes C1 "not evaluable".
 - Test: `tests/benchmarks/test_agentic_egress.py`, `tests/benchmarks/test_agentic_run.py`
 
 **Interfaces:**
-- Consumes: `parse_proxy_log`, `PROVIDER_HOSTS` (Task 8); `probe/<job>.json` and `probe/control.json` (Task 11); `egress/<job>/access.log` and `collected.json` (Task 10); the run's `transcripts/` and `discarded/` records; `ledger.events(run_id)`.
+- Consumes: `parse_proxy_log`, `PROVIDER_HOSTS` (Task 8); `probe/<job>.json` and `probe/control.json` (Task 11); `egress/<job>/access.log` and `collected.json` (Task 10); the run's `transcripts/` and `discarded/` records; `ledger.events(run_id)` with the `job_id` field of `reserve` events (Task 5).
 - The shape, bound by #199:
 
 ```json
@@ -1106,11 +1135,12 @@ makes C1 "not evaluable".
   - `jobs` is keyed by `job_id` (`<family id>--<system id>`), with one entry per planned job.
   - `hosts_allowed` and `hosts_denied` are sorted, unique `"host:port"` strings. They come from the query-time events: the access-log lines after the probe's verified `proxy_prefix`, split by `ProxyEvent.allowed`. Probe traffic never appears.
   - `lookup_package_docs_attempts` counts the model's `lookup_package_docs` tool calls in that job's `transcripts/` and `discarded/` records (cells `<system>--<family>--r<k>`).
-  - `isolation_probe` is `"pass"` only when all of these hold (round-2 rulings C5, C6):
+  - `isolation_probe` is `"pass"` only when all of these hold (round-2 rulings C5, C6; round-3 items 1, 2):
     - `probe/control.json` and every job's `probe/<job>.json` passed;
-    - every job's `collected.json` says `ok`;
+    - every job's `collected.json` says `ok`, so no failed collection step and no abnormal proxy end;
     - every job's `access.log` exists, parses, and starts with exactly its `proxy_prefix`;
-    - every hosted live job (`arm == "hosted"`, `api != "scripted"`) that has at least one `ok` settle in the run's ledger events shows an allowed `PROVIDER_HOSTS` line after the prefix. Its units are the `unit_id`s in its records' `model_calls[].attempts`.
+    - every `ok` settle in the run's ledger events is attributed: its `unit_id` matches a `reserve` event whose `job_id` is a planned job. An `ok` settle that cannot be attributed fails the evidence;
+    - every hosted live job (`arm == "hosted"`, `api != "scripted"`) with at least one attributed `ok` settle shows an allowed `PROVIDER_HOSTS` line after the prefix. The attribution comes from the ledger alone, so a worker that died before reporting its trajectory still counts.
     Otherwise it is `"fail"`.
 - Produces in `egress.py`:
   - `lookup_attempts(out_dir: Path, family_id: str, system_id: str) -> int`.
@@ -1137,8 +1167,14 @@ def test_a_truncated_or_reprefixed_log_invalidates_the_evidence(tmp_path) -> Non
     # an unterminated last line -> "fail"; a log whose first lines differ from proxy_prefix -> "fail"
 def test_a_missing_log_invalidates_the_evidence(tmp_path) -> None
 def test_no_false_clean_when_collection_failed_or_the_provider_never_appears(tmp_path) -> None
-    # FakeDocker-built run dirs: (a) collected.json ok false -> "fail"; (b) a hosted job whose unit has
-    # an "ok" settle in the ledger events but whose log shows no api.anthropic.com line -> "fail"
+    # FakeDocker-built run dirs: (a) collected.json ok false -> "fail"; (b) a hosted job whose reserve
+    # (job_id set) has an "ok" settle but whose log shows no api.anthropic.com line -> "fail"
+def test_an_ok_settle_from_a_worker_that_died_early_fails_the_evidence(tmp_path) -> None
+    # ledger events: reserve {job_id: "claude-sonnet-5-5--python-docs"} + settle ok; no transcript or
+    # discarded record for that job (the worker died before reporting); access.log holds only the
+    # probe prefix -> "fail"
+def test_an_unattributed_ok_settle_fails_the_evidence(tmp_path) -> None
+    # an ok settle whose reserve has job_id None, or a job_id outside the planned jobs -> "fail"
 def test_lookup_attempts_count_scored_and_discarded_records(tmp_path) -> None
     # 2 calls in transcripts/python-docs--m--r1/EX-001.json, 1 in discarded/... -> 3;
     # a docs-fetch cell of the same family is not counted
@@ -1149,7 +1185,7 @@ async def test_a_failed_probe_run_still_writes_fail(tmp_path) -> None
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `uv run --locked pytest tests/benchmarks/test_agentic_egress.py tests/benchmarks/test_agentic_run.py -k "summary or lookup or probe_lines or invalidates or false_clean or probe_run" -q`
+Run: `uv run --locked pytest tests/benchmarks/test_agentic_egress.py tests/benchmarks/test_agentic_run.py -k "summary or lookup or probe_lines or invalidates or false_clean or probe_run or settle" -q`
 Expected: FAIL (`write_egress_summary` missing).
 
 - [ ] **Step 3: Implement the interfaces above**
@@ -1193,7 +1229,11 @@ git commit -m "feat(benchmarks): write the C1 egress summary in the shape PR 5 r
     - a family's `trajectories × seconds_per_cell × SAFETY` is over `WINDOW_S`.
     The per-graded-answer term of design §12 comes from PR 5's `grading/summary.json`.
   - `confirmation_text(plans) -> str`. One line per provider: planned trajectories, spent, cap, remaining, the estimate or "no reference run", and "the ledger stops at the cap; one overrun is at most the $<margin> margin". An unmetered provider shows "local, unmetered".
-  - `interactive_confirm(text: str, *, stdin: TextIO = sys.stdin, stderr: TextIO = sys.stderr, ask: Callable[[str], str] = input) -> bool`. It prints `text` to `stderr`, returns `False` when `stdin` is not a TTY, and returns `True` only for the exact answer `yes`.
+  - `interactive_confirm(text: str, *, stdin: TextIO = sys.stdin, stderr: TextIO = sys.stderr) -> bool` (round-3 item 6).
+    - It returns `False` when `stdin` is not a TTY.
+    - It writes `text` and the question `Type yes to start this live run: ` to `stderr` and flushes.
+    - It reads the answer with `stdin.readline()`, never `input()`, so nothing reaches stdout, which carries only the summary JSON.
+    - It returns `True` only for the exact answer `yes`.
   - `authorize_live(text: str, *, environ: Mapping[str, str] = os.environ, confirm: Callable[[str], bool] = interactive_confirm) -> None` (round-2 ruling D9). It first raises `BenchmarkValidationError("live calls are refused under CI")` when `environ.get("CI", "").strip().lower()` is not one of `""`, `"0"`, `"false"`, `"no"`. Then it raises `BenchmarkValidationError("live run not confirmed")` unless `confirm(text)` is true. It is the one gate every live entry point calls; PR 5's grading entry points call it too.
 - `run_agentic(config, *, launcher=None, caps=PROVIDER_CAPS, today=None, confirm: Callable[[str], bool] = interactive_confirm)`:
   - With `config.models` unset, it selects only the `hosted` families the launcher supports. The air-gapped arm must be named with `--models` (round-2 ruling D11).
@@ -1221,6 +1261,9 @@ def test_ci_refuses_a_live_run_even_with_a_terminal(monkeypatch) -> None
 def test_a_non_tty_stdin_refuses_a_live_run(monkeypatch) -> None
     # CI unset; interactive_confirm with a stdin whose isatty() is False -> "not confirmed"
 def test_interactive_confirm_accepts_only_yes() -> None                    # "y", "YES ", "" -> False
+def test_the_confirmation_prompt_never_reaches_stdout(capsys) -> None
+    # a TTY-like stdin answering "yes\n": True; capsys stdout == ""; the stderr stream holds the table
+    # and the question
 async def test_the_gate_runs_before_any_key_is_read_or_container_started(tmp_path, monkeypatch) -> None
     # CI=1, ContainerLauncher(FakeDocker), keys_file pointing at a missing path: the error is the CI
     # refusal, FakeDocker recorded no call, and run-summary.json status is "aborted"
@@ -1493,6 +1536,7 @@ async def test_a_scripted_run_completes_inside_containers(tmp_path, image) -> No
     # keys, isolation_probe "pass" and empty host lists (probe lines excluded); the persistent docs
     # cache file was created on the tmpfs
 async def test_a_trajectory_frame_over_100000_bytes_round_trips_through_a_container(tmp_path, image) -> None
+    # the worker runs with --log-driver none: the attached stream still carries every frame intact
 async def test_an_ip_literal_connect_whose_ptr_names_an_allowlisted_host_is_denied(tmp_path, image) -> None
     # an egress allowlisting ("localhost", 443); a probe-container CONNECT 127.0.0.1:443 through it
     # answers 403 and logs TCP_DENIED (Squid's hosts file maps 127.0.0.1 to localhost)
@@ -1593,7 +1637,7 @@ From #200 (round 1), as amended by the round-2 message on #200:
 7. **Reaching Ollama:** the default 127.0.0.1 bind. `OLLAMA_HOST=0.0.0.0:11434` only for the air-gapped arm, only while the Mac is offline, and reverted afterwards.
 8. **Confirmation:** the remaining cap is shown as the worst case. More than 90 metered trajectories per provider needs `--reference-run`.
 9. **Keys** (re-ruled, A1): a stdin bootstrap frame. No key in any container environment or config, any docker CLI environment, any argv, the host's `os.environ`, or any file but the keys file. This departs from design §7.3's `--env-file`, as recorded in the CHANGELOG and the runbook.
-10. **Runtime:** Docker Desktop, Engine 28.0 or newer.
+10. **Runtime:** Docker Desktop, Engine 28.0 or newer, and a local `unix://` daemon only (round 3).
 11. **`egress/summary.json` meanings:**
     - hosts are `"host:port"`;
     - the lists cover query time only, with probe lines excluded;
@@ -1602,5 +1646,16 @@ From #200 (round 1), as amended by the round-2 message on #200:
     PR 5 treats `pypi.org:443` as the C1 exception only when the attempts count is above 0.
 12. **`airgap/checks.json`** (re-ruled, C7): `internet_hosts` comes from `hosts_allowed` only. `all_passed` needs every round passed, the arm not stopped, a passing probe, and no internet host. `checks` counts rounds.
 13. **The three undocumented Docker behaviours** are settled by the keyless docker test before any live call, with results in the runbook. The two young pins are re-checked at implementation time. PR 4 merges before PR 5.
+
+14. **Round 3 (reviews of `b4e54a1`):**
+    - an abnormal proxy end (not running before our stop, for example exit 137, or `OOMKilled`) fails that job's collection (Task 10);
+    - `reserve` events carry `job_id`, and the C6 rule attributes `ok` settles through it; an unattributed `ok` settle fails the evidence (Tasks 5, 12);
+    - the log directory is `chmod`ed to 0o777 after `mkdir` (Task 10);
+    - a local `unix://` daemon only (Task 10);
+    - `host_addresses` works offline (Task 11);
+    - the confirmation prompt goes to stderr and is read with `stdin.readline()` (Task 13);
+    - workers run with `--log-driver none` (Task 10);
+    - a network that keeps IPv6 is refused, with no fallback (Task 10);
+    - sandbox note §§B.2 and B.3 are corrected.
 
 No open question remains for this plan.
