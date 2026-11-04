@@ -1305,3 +1305,169 @@ print("rollback complete" if sys.stdin.read(1) == "" else "read host input")
         check=True,
     )
     assert json.loads(run.stdout) == [0, "rollback complete", True]
+
+
+async def _run_prepare(box: Sandbox, job: WorkerJob) -> None:
+    probes = Probes()
+    await run_jobs(
+        [job],
+        launcher=ContainerLauncher(box, probe=probes, control=probes.control),
+        ledger=Mock(),
+        on_message=AsyncMock(),
+        log_dir=box.config.out_dir / "logs",
+        cwd=box.config.out_dir,
+    )
+
+
+@pytest.mark.parametrize("network_failure", ["exit", "start", "timeout"])
+def test_failed_connect_reports_both_removals_to_caller_and_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    network_failure: str,
+) -> None:
+    from benchmarks.__main__ import main
+
+    job = _job("scripted-anthropic")
+
+    class Disconnected(FakeDocker):
+        async def __call__(self, argv: Sequence[str]) -> Any:
+            args = argv[1:3]
+            if (
+                args == ["network", "connect"]
+                or args == ["rm", "-f"]
+                or (args == ["network", "rm"] and argv[-1].endswith("-net"))
+            ):
+                self.calls.append(list(argv))
+                if args == ["network", "rm"]:
+                    if network_failure == "start":
+                        raise OSError(f"cannot start {SYNTHETIC}")
+                    if network_failure == "timeout":
+                        raise subprocess.TimeoutExpired(["docker", SYNTHETIC], 120)
+                return _done(argv, 1, err=f"{args[-1]} disconnected {SYNTHETIC}")
+            return await super().__call__(argv)
+
+    docker = Disconnected()
+    box = _sandbox(tmp_path, docker)
+    failures = []
+
+    def run(*args: Any, **kwargs: Any) -> None:
+        try:
+            asyncio.run(_run_prepare(box, job))
+        except BenchmarkValidationError as exc:
+            failures.append(exc)
+            raise
+
+    monkeypatch.setattr("benchmarks.agentic.run.run_agentic", run)
+    with pytest.raises(SystemExit) as stopped:
+        main(["agentic-run", "--corpus", "unused", "--out", str(tmp_path)])
+    assert stopped.value.code == 2
+    summary = capsys.readouterr().err
+    (failure,) = failures
+    proxy = f"id-{box.worker_name(job.job_id)}-proxy"
+    network = f"id-{box.worker_name(job.job_id)}-net"
+    assert [c[-1] for c in docker.calls if "rm" in c] == [proxy, network, f"id-{box.outside}"]
+    for message in (str(failure), summary):
+        assert proxy in message and network in message and "connect disconnected" in message
+        assert SYNTHETIC not in message
+    assert SYNTHETIC not in "".join(traceback.format_exception(failure))
+
+
+@pytest.mark.parametrize("lookup_failure", ["exit", "start", "timeout", "multiple ids"])
+async def test_partial_proxy_recovery_reports_safe_selector_or_all_failed_ids(
+    tmp_path: Path,
+    lookup_failure: str,
+) -> None:
+    job = _job("scripted-anthropic")
+
+    class PartialProxy(FakeDocker):
+        async def __call__(self, argv: Sequence[str]) -> Any:
+            if argv[1:3] == ["run", "-d"]:
+                await super().__call__(argv)  # created, but the caller did not receive an ID
+                return _done(argv, 1, err="proxy start failed")
+            if argv[1:3] == ["container", "ls"]:
+                self.calls.append(list(argv))
+                if lookup_failure == "start":
+                    raise OSError(f"cannot start {SYNTHETIC}")
+                if lookup_failure == "timeout":
+                    raise subprocess.TimeoutExpired(["docker", SYNTHETIC], 120)
+                if lookup_failure == "exit":
+                    return _done(argv, 1, err=f"daemon unavailable {SYNTHETIC}")
+                owned = next(i for i in self.resources if i.endswith("-proxy"))
+                self.resources["second-id"] = self.resources[owned]
+                return _done(argv, out=f"{owned}\nsecond-id")
+            if argv[1:3] == ["rm", "-f"]:
+                self.calls.append(list(argv))
+                return _done(argv, 1, err=f"removal failed {SYNTHETIC}")
+            return await super().__call__(argv)
+
+    docker = PartialProxy()
+    box = _sandbox(tmp_path, docker)
+    with pytest.raises(BenchmarkValidationError) as caught:
+        await _run_prepare(box, job)
+    proxy = f"{box.worker_name(job.job_id)}-proxy"
+    selector = f"label={box._ownership(proxy)}"
+    assert docker.ran("container", "ls")[0][-1] == selector
+    message = str(caught.value)
+    assert "proxy start failed" in message
+    if lookup_failure == "multiple ids":
+        ids = [f"id-{proxy}", "second-id"]
+        assert [c[-1] for c in docker.ran("rm", "-f")] == ids
+        assert all(i in message for i in ids)
+    else:
+        assert not docker.ran("rm", "-f")
+        assert selector in message
+        reason = {"exit": "daemon unavailable", "start": "cannot start", "timeout": "timed out"}
+        assert reason[lookup_failure] in message
+    assert SYNTHETIC not in "".join(traceback.format_exception(caught.value))
+
+
+@pytest.mark.parametrize("cancel_during_create", [True, False])
+async def test_repeated_interrupt_during_partial_proxy_recovery_retains_selector(
+    tmp_path: Path,
+    cancel_during_create: bool,
+) -> None:
+    job = _job("scripted-anthropic")
+    proxy = f"pdmcp-{RUN}-{job.job_id}-proxy"
+    removing, removed = asyncio.Event(), asyncio.Event()
+
+    class InterruptedLookup(LateCreate):
+        async def __call__(self, argv: Sequence[str]) -> Any:
+            if argv[1:3] == ["container", "ls"]:
+                self.calls.append(list(argv))
+                raise OSError(f"daemon unavailable {SYNTHETIC}")
+            if argv[1:3] == ["network", "rm"]:
+                removing.set()
+                await removed.wait()
+            return await super().__call__(argv)
+
+    docker = InterruptedLookup(proxy)
+    docker.fail = lambda args: (
+        args[:2] == ["run", "-d"]
+        or (args[:2] == ["network", "rm"] and (cancel_during_create or args[-1].endswith("-out")))
+    )
+    box = _sandbox(tmp_path, docker)
+    task = asyncio.create_task(_run_prepare(box, job))
+    await asyncio.wait_for(docker.started.wait(), 2)
+    if cancel_during_create:
+        task.cancel("signal SIGTERM")
+    docker.release.set()
+    await asyncio.wait_for(removing.wait(), 2)
+    if not cancel_during_create:
+        task.cancel("signal SIGTERM")
+        await asyncio.sleep(0)
+    task.cancel("second interrupt")
+    removed.set()
+    with pytest.raises(asyncio.CancelledError, match="signal SIGTERM") as caught:
+        await task
+    trace = "".join(traceback.format_exception(caught.value))
+    assert docker.ran("container", "ls")[0][-1] == f"label={box._ownership(proxy)}"
+    assert f"label={box._ownership(proxy)}" in trace and "daemon unavailable" in trace
+    assert SYNTHETIC not in trace
+    assert [c[-1] for c in docker.ran("network", "rm")] == [
+        f"id-{box.worker_name(job.job_id)}-net",
+        f"id-{box.outside}",
+    ]
+    assert f"id-{box.outside}" in trace
+    if cancel_during_create:
+        assert f"id-{box.worker_name(job.job_id)}-net" in trace

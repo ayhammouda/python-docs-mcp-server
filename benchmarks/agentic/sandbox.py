@@ -15,7 +15,6 @@ import os
 import re
 import secrets
 import subprocess
-import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,7 +28,7 @@ from benchmarks.adapters.guard import (
     PROVIDER_API_KEY_ENV,
     valid_api_key,
 )
-from benchmarks.agentic.cleanup import finish, settle
+from benchmarks.agentic.cleanup import add_cleanup_cause, finish, settle
 from benchmarks.agentic.egress import (
     EGRESS_ALIAS,
     EGRESS_URL,
@@ -199,6 +198,25 @@ async def _remove(docker: DockerRun, *args: str) -> subprocess.CompletedProcess[
         raise BenchmarkValidationError(f"docker {' '.join(args)} failed: {detail}") from None
 
 
+async def _rollback(
+    operation: Awaitable[None],
+    setup_error: BaseException,
+    cancelled: asyncio.CancelledError | None = None,
+) -> None:
+    """Finish rollback with the original cancellation or a CLI-visible setup and recovery error."""
+    try:
+        await finish(operation, cancelled or setup_error)
+    except asyncio.CancelledError as interrupt:
+        if cancelled is None and interrupt is not setup_error:
+            # A signal arrived after setup failed. Later close failures can hide its context.
+            reason = KEY_SHAPED.sub("[redacted]", str(setup_error))
+            add_cleanup_cause(interrupt, BenchmarkValidationError(reason))
+        raise
+    except BenchmarkValidationError as exc:
+        reason = KEY_SHAPED.sub("[redacted]", str(setup_error))
+        raise BenchmarkValidationError(f"{reason}; rollback failed: {exc}") from None
+
+
 def _engine(version: str) -> tuple[int, int]:
     match = re.match(r"(\d+)\.(\d+)", version.strip())
     return (int(match[1]), int(match[2])) if match else (0, 0)
@@ -336,6 +354,23 @@ class Sandbox:
 
         await finish(remove(), pending)
 
+    async def _remove_ids(
+        self, *, containers: Sequence[str] = (), networks: Sequence[str] = ()
+    ) -> None:
+        """Attempt every owned ID, containers before their networks."""
+        failures: list[str] = []
+        for network, ids in ((False, containers), (True, networks)):
+            for resource_id in ids:
+                try:
+                    if network:
+                        await self.run("network", "rm", resource_id)
+                    else:
+                        await self.remove_container(resource_id)
+                except Exception as exc:  # noqa: BLE001 - still remove the other owned IDs
+                    failures.append(f"{resource_id}: {KEY_SHAPED.sub('[redacted]', str(exc))}")
+        if failures:
+            raise BenchmarkValidationError("; ".join(failures))
+
     async def remove_owned(
         self, name: str, *, network: bool = False, wait_for_create: bool = False
     ) -> None:
@@ -345,7 +380,13 @@ class Sandbox:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + _RESOURCE_RECOVERY_S
         while True:
-            ids = await self.output(*ls, "--no-trunc", "--quiet", "--filter", label_filter)
+            try:
+                ids = await self.output(*ls, "--no-trunc", "--quiet", "--filter", label_filter)
+            except (BenchmarkValidationError, OSError, subprocess.TimeoutExpired) as exc:
+                detail = KEY_SHAPED.sub("[redacted]", str(exc))
+                raise BenchmarkValidationError(
+                    f"Docker lookup for {label_filter} failed: {detail}"
+                ) from None
             if ids.strip() or not wait_for_create:
                 break
             # Killing a timed-out CLI does not roll back a POST already sent to the daemon.
@@ -355,18 +396,10 @@ class Sandbox:
                     f"check the daemon for {label_filter}"
                 )
             await asyncio.sleep(0.1)
-        failure = None
-        for resource_id in ids.split():
-            try:
-                if network:
-                    await self.run("network", "rm", resource_id)
-                else:
-                    await self.remove_container(resource_id)
-            except Exception as exc:  # noqa: BLE001 - still remove the other owned IDs
-                if failure is None:
-                    failure = exc
-        if failure is not None:
-            raise failure
+        if network:
+            await self._remove_ids(networks=ids.split())
+        else:
+            await self._remove_ids(containers=ids.split())
 
     async def create_resource(self, name: str, *args: str) -> str:
         """Wait for create before handing off its ID or rolling it back on cancellation."""
@@ -380,12 +413,13 @@ class Sandbox:
         except BaseException as exc:
             if isinstance(exc, (subprocess.TimeoutExpired, BenchmarkValidationError)):
                 # A failed run -d can leave a container even with a nonzero CLI exit.
-                await finish(
+                await _rollback(
                     self.remove_owned(
                         name,
                         network=network,
                         wait_for_create=isinstance(exc, subprocess.TimeoutExpired),
                     ),
+                    exc,
                     cancelled,
                 )
             if cancelled is not None:
@@ -490,11 +524,10 @@ class Sandbox:
             )
         except BaseException as exc:
             # Nothing of this job's may outlive the failure (amendment 2).
-            try:
-                if proxy_id is not None:
-                    await self.remove_container(proxy_id, pending=exc)
-            finally:
-                await finish(self.run("network", "rm", network_id), sys.exception())
+            await _rollback(
+                self._remove_ids(containers=[proxy_id] if proxy_id else [], networks=[network_id]),
+                exc,
+            )
             raise
         return Egress(
             job_id, network, proxy, tuple(allow), log_dir, gateways, inspect, network_id, proxy_id
