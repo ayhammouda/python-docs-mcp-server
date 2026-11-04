@@ -294,6 +294,7 @@ async def _run_job(
     job = first if first is not None else await read_frame(reader)
     if job is None or job.get("type") != "job":
         raise BenchmarkValidationError("the host sent no job")
+    scanned_json_bytes(job, where="worker job", check_content=channel.check_content)
     family = model_family_from_raw(job["family"])
     system = system_spec_from_raw(job["system"])
     caps = Caps(**job["caps"])

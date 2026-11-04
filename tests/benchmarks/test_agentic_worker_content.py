@@ -194,3 +194,50 @@ def test_bootstrap_literal_stops_worker_before_outgoing_side_effects(
     assert not list((tmp_path / "run" / "transcripts").rglob("*.json"))
     for root in (tmp_path / "run", tmp_path / "ledger"):
         assert all(token.encode() not in p.read_bytes() for p in root.rglob("*") if p.is_file())
+
+
+@pytest.mark.parametrize("location", ["env", "command"])
+async def test_bootstrapped_job_cannot_pass_worker_secret_to_mcp_child(monkeypatch, location):
+    import asyncio
+    from tempfile import TemporaryFile
+    from unittest.mock import AsyncMock, Mock
+
+    from benchmarks.agentic import bridge, clients, worker
+    from benchmarks.agentic.protocol import WORKER_LEAK_REASON, encode_frame
+    from tests.benchmarks.test_agentic_sandbox import FAMILIES, SYSTEMS
+
+    token = "AI" + "za" + "g" * 35
+    embedded = "prefix" + token + "-suffix"
+    system = dict(SYSTEMS["python-docs"].raw)
+    if location == "env":
+        system["env"] = {"MCP_AUTH": embedded}
+    else:
+        system["command"] = [*system["command"], embedded]
+    job = {
+        "type": "job",
+        "family": FAMILIES["gemini-3.8-flash"].raw,
+        "system": system,
+        "caps": {},
+        "trajectories": [],
+    }
+    reader = asyncio.StreamReader()
+    reader.feed_data(encode_frame(job, where="job frame"))
+    reader.feed_eof()
+    client = Mock()
+    client.request_params.return_value = {"model": job["family"]["model_id"]}
+    create = Mock(return_value=client)
+    limits = AsyncMock(return_value=None)
+    launch = Mock(side_effect=RuntimeError("child launch intercepted"))
+    monkeypatch.setattr(clients, "make_client", create)
+    monkeypatch.setattr(clients, "fetch_model_limits", limits)
+    monkeypatch.setattr(bridge, "stdio_client", launch)
+
+    with TemporaryFile() as output:
+        channel = worker.ProtocolChannel(output.fileno(), (token.encode(),), -1, None, ())
+        code = await worker.run_worker(channel, reader, bootstrapped=True)
+        output.seek(0)
+        frame = json.loads(output.read()[8:])
+    assert (code, frame) == (3, {"type": "error", "reason": WORKER_LEAK_REASON})
+    create.assert_not_called()
+    limits.assert_not_awaited()
+    launch.assert_not_called()
