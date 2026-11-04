@@ -698,16 +698,24 @@ _LATE_WRITER = (
 
 
 def _alive(pid: int) -> bool:
+    """Whether ``pid`` is a live process; a zombie is dead, whoever has yet to reap it.
+
+    ps on Linux and macOS alike: it shows a zombie as such, and sends no signal at all.
+    """
+    state = subprocess.run(
+        ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True
+    ).stdout.strip()
+    return bool(state) and not state.startswith("Z")
+
+
+@pytest.mark.skipif(not hasattr(os, "waitid"), reason="waitid: Linux; macOS from Python 3.13")
+def test_alive_counts_an_unreaped_zombie_as_exited() -> None:
+    child = subprocess.Popen([sys.executable, "-c", "pass"])  # this test's own child
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    if not Path("/proc").is_dir():  # macOS: launchd reaps an orphan at once
-        return True
-    try:  # Linux: a zombie is dead, whoever has yet to reap it
-        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
-    except FileNotFoundError:  # reaped between the two reads
-        return False
+        os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT)  # exited, held unreaped
+        assert not _alive(child.pid)
+    finally:
+        child.wait()  # reaped here, by its parent
 
 
 async def test_no_descendant_can_write_a_key_into_the_published_log(
