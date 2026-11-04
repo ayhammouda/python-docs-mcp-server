@@ -620,9 +620,12 @@ delivery, through release verification. Within that scope, Codex acts under
 Aymen's GitHub account, dispatches independent reviewers, records their
 verdicts, and merges and releases under the 2026-10-30 gates. Public owner
 comments identify “Codex — v0.5.0 project owner, acting for Aymen”. Codex
-may also implement on a branch, with all three reviews in fresh contexts
-independent of the implementation.
+sessions may implement on isolated branches alongside Claude Code sessions
+and subagents. An implementing session cannot act as owner for that PR.
+A separate owner session or Aymen dispatches at least one review and handles
+the verification record and merge. All three reviewers must be independent
+of the implementation.
 
-The maintainer supplies the interactive confirmation for each paid benchmark
+Aymen supplies the interactive confirmation for each paid benchmark
 run. The existing spending caps, quality gates and escalation rules apply.
 After v0.5.0 release verification, the 2026-10-30 owner designation applies.
