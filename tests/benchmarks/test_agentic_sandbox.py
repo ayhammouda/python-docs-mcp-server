@@ -19,7 +19,7 @@ import pytest
 
 from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
 from benchmarks.agentic.bridge import SystemSpec, load_systems
-from benchmarks.agentic.egress import allowlist, squid_conf
+from benchmarks.agentic.egress import allowlist, squid_conf, write_egress_summary
 from benchmarks.agentic.host import WorkerJob
 from benchmarks.agentic.loop import HOSTED_CAPS
 from benchmarks.agentic.protocol import KeyLeakError
@@ -752,7 +752,15 @@ async def test_a_linked_log_dir_is_refused(tmp_path: Path) -> None:
     assert not docker.ran("run") and list(elsewhere.iterdir()) == []
     # At teardown: a log directory swapped for a link is neither read nor written.
     (tmp_path / "late").mkdir()
-    sandbox, egress = await _opened(tmp_path / "late", FakeDocker())
+    job = _job("claude-sonnet-5-5")
+    sandbox, egress = await _opened(tmp_path / "late", FakeDocker(), job.job_id)
+    out = sandbox.config.out_dir
+    probe = out / "probe"
+    probe.mkdir(exist_ok=True)
+    (probe / "control.json").write_text('{"passed": true}')
+    (probe / f"{job.job_id}.json").write_text(
+        json.dumps({"passed": True, "proxy_prefix": PROBE_PREFIX.splitlines()})
+    )
     _logs(elsewhere, cache=f"key {SYNTHETIC}\n")
     moved = egress.log_dir.with_name("moved")
     egress.log_dir.rename(moved)
@@ -761,3 +769,9 @@ async def test_a_linked_log_dir_is_refused(tmp_path: Path) -> None:
     assert any("link" in p for p in problems) and sandbox.leaks == []
     assert (elsewhere / "cache.log").read_text() == f"key {SYNTHETIC}\n"
     assert not (elsewhere / "collected.json").exists()
+    (elsewhere / "collected.json").write_text('{"ok": true}')
+    assert write_egress_summary(out, [job], [])["isolation_probe"] == "fail"
+    # A regular directory with exactly the same files cannot undo teardown's refusal.
+    egress.log_dir.unlink()
+    elsewhere.rename(egress.log_dir)
+    assert write_egress_summary(out, [job], [])["isolation_probe"] == "fail"

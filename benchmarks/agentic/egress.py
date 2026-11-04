@@ -11,7 +11,8 @@ import os
 import re
 import secrets
 import stat
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -66,7 +67,14 @@ class ProxyEvent:
 
     @property
     def allowed(self) -> bool:
+        """The ACL did not deny the request. An allowed attempt may still fail upstream."""
         return not self.result.startswith("TCP_DENIED")
+
+    @property
+    def reached(self) -> bool:
+        """A successful CONNECT tunnel or forwarded HTTP response in our uncached proxy."""
+        expected = "TCP_TUNNEL" if self.method == "CONNECT" else "TCP_MISS"
+        return self.result == expected and 200 <= self.status < 300
 
     @property
     def target(self) -> str:
@@ -134,18 +142,34 @@ _READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC  # a FI
 _NEW_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
 
 
-def read_log(path: Path) -> bytes:
-    """A file under a log directory, never through a link: a link, FIFO, directory or any
-    other non-regular file is refused, and so is a missing one."""
+@contextmanager
+def open_log_dir(path: Path) -> Iterator[int]:
     try:
-        fd = os.open(path, _READ_FLAGS)
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as exc:
+        raise BenchmarkValidationError(f"log directory is a link or unavailable: {exc}") from exc
+    try:
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def read_log(path: Path) -> bytes:
+    with open_log_dir(path.parent) as dir_fd:
+        return read_log_at(dir_fd, path.name)
+
+
+def read_log_at(dir_fd: int, name: str) -> bytes:
+    """Read a regular file without following a link or blocking on a FIFO."""
+    try:
+        fd = os.open(name, _READ_FLAGS, dir_fd=dir_fd)
     except FileNotFoundError:
-        raise BenchmarkValidationError(f"{path.name} is missing") from None
+        raise BenchmarkValidationError(f"{name} is missing") from None
     except OSError as exc:  # ELOOP: a link
-        raise BenchmarkValidationError(f"{path.name} was refused ({exc.strerror})") from None
+        raise BenchmarkValidationError(f"{name} was refused ({exc.strerror})") from None
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise BenchmarkValidationError(f"{path.name} is not a regular file")
+            raise BenchmarkValidationError(f"{name} is not a regular file")
         chunks = []
         while chunk := os.read(fd, 1 << 20):
             chunks.append(chunk)
@@ -154,14 +178,14 @@ def read_log(path: Path) -> bytes:
         os.close(fd)
 
 
-def write_new(path: Path, data: bytes, *, mode: int = 0o600) -> None:
-    """Replace ``path`` by a new file holding ``data``: never written through the old name.
+def write_new(dir_fd: int, name: str, data: bytes, *, mode: int = 0o600) -> None:
+    """Replace ``name`` by a new file holding ``data``: never written through the old name.
 
     The bytes go to a new file in the same directory, created exclusively, then renamed over
-    ``path``, which replaces a link itself, never its target.
+    ``name``, which replaces a link itself, never its target.
     """
-    temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
-    fd = os.open(temporary, _NEW_FLAGS, 0o600)
+    temporary = f".{name}.{secrets.token_hex(8)}.tmp"
+    fd = os.open(temporary, _NEW_FLAGS, 0o600, dir_fd=dir_fd)
     try:
         try:
             os.fchmod(fd, mode)  # exactly ``mode``, whatever the umask
@@ -170,9 +194,10 @@ def write_new(path: Path, data: bytes, *, mode: int = 0o600) -> None:
                 view = view[os.write(fd, view) :]
         finally:
             os.close(fd)
-        os.replace(temporary, path)
+        os.replace(temporary, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
     except BaseException:
-        temporary.unlink(missing_ok=True)
+        with suppress(FileNotFoundError):
+            os.unlink(temporary, dir_fd=dir_fd)
         raise
 
 
@@ -197,6 +222,11 @@ def lookup_attempts(out_dir: Path, family_id: str, system_id: str) -> int:
     return count
 
 
+def pending_collection(out_dir: Path, job_id: str) -> Path:
+    """Host-owned marker, outside the proxy mount, until collection completes cleanly."""
+    return out_dir / "probe" / f"{job_id}.collection-pending"
+
+
 def _job_hosts(out_dir: Path, job_id: str) -> tuple[bool, list[ProxyEvent]]:
     """Whether the job's collection, probe and log all hold, and its query-time events.
 
@@ -206,15 +236,23 @@ def _job_hosts(out_dir: Path, job_id: str) -> tuple[bool, list[ProxyEvent]]:
     log_dir = out_dir / "egress" / job_id
     try:
         probe = json.loads((out_dir / "probe" / f"{job_id}.json").read_text(encoding="utf-8"))
-        collected = json.loads(read_log(log_dir / "collected.json"))  # its directory is 0777
-        text = read_log(log_dir / "access.log").decode("utf-8")
+        if pending_collection(out_dir, job_id).exists():
+            return False, []
+        with open_log_dir(log_dir) as dir_fd:
+            collected = json.loads(read_log_at(dir_fd, "collected.json"))
+            text = read_log_at(dir_fd, "access.log").decode("utf-8")
         events = parse_proxy_log(text)
     except (OSError, ValueError, BenchmarkValidationError):
         return False, []
     prefix = probe.get("proxy_prefix")
     if not isinstance(prefix, list) or text.splitlines()[: len(prefix)] != prefix:
         return False, []  # truncated, or lines before the probe's own
-    ok = probe.get("passed") is True and collected.get("ok") is True
+    ok = (
+        probe.get("passed") is True
+        and isinstance(collected, dict)
+        and collected.get("ok") is True
+        and all(not e.allowed or e.reached for e in events)
+    )
     return ok, events[len(prefix) :]
 
 
@@ -224,7 +262,8 @@ def write_egress_summary(
     """``out_dir/egress/summary.json``: the C1 evidence, with exactly the keys #199 binds.
 
     ``isolation_probe`` is "pass" only when the control and every job's probe passed, every
-    collection was clean, every log holds its probe prefix, every ``ok`` settle in the ledger
+    collection was clean, every log holds its probe prefix and has only conclusive events,
+    every ``ok`` settle in the ledger
     is attributed to a planned job, and every hosted live job with an ``ok`` settle reached its
     provider through its proxy (round-2 rulings C5, C6; round-3 items 1, 2).
     """
@@ -247,7 +286,7 @@ def write_egress_summary(
     entries: dict[str, Any] = {}
     for job in jobs:
         ok, events = _job_hosts(out_dir, job.job_id)
-        allowed = sorted({e.target for e in events if e.allowed})
+        allowed = sorted({e.target for e in events if e.reached})
         family = job.family
         if family.arm == "hosted" and family.api != "scripted" and job.job_id in billed:
             provider = {f"{h}:{p}" for h, p in PROVIDER_HOSTS.get(family.provider, ())}

@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from benchmarks.agentic.airgap import write_airgap_evidence
 from benchmarks.agentic.egress import (
     EGRESS_URL,
     ProxyEvent,
@@ -240,6 +241,52 @@ def test_a_missing_log_invalidates_the_evidence(tmp_path: Path) -> None:
     access.unlink()
     access.symlink_to(out / "egress" / CLAUDE / "access.log")  # a link is never followed
     assert write_egress_summary(out, _jobs(), _ok_settle(CLAUDE))["isolation_probe"] == "fail"
+
+
+async def test_c1_refuses_a_link_to_a_complete_job_directory(tmp_path: Path) -> None:
+    from tests.benchmarks.test_agentic_sandbox import FakeDocker, _opened
+
+    sandbox, egress = await _opened(tmp_path, FakeDocker(), CLAUDE)
+    out = sandbox.config.out_dir
+    _evidence(out, CLAUDE, log=_lines(*PROBE_LINES, ANTHROPIC_LINE))
+    _evidence(out, SCRIPTED, log=_lines(*PROBE_LINES))
+    assert await sandbox.close_egress(egress) == []
+    assert write_egress_summary(out, _jobs(), _ok_settle(CLAUDE))["isolation_probe"] == "pass"
+    job_dir = out / "egress" / CLAUDE
+    moved = job_dir.rename(tmp_path / "copied-logs")
+    job_dir.symlink_to(moved)
+    assert write_egress_summary(out, _jobs(), _ok_settle(CLAUDE))["isolation_probe"] == "fail"
+
+
+def test_failed_provider_connect_is_not_evidence_of_a_billed_connection(tmp_path: Path) -> None:
+    out = _clean_run(tmp_path)
+    failed = ANTHROPIC_LINE.replace("200 TCP_TUNNEL", "503 TCP_MISS")
+    (out / "egress" / CLAUDE / "access.log").write_text(_lines(*PROBE_LINES, failed, PYPI_LINE))
+    summary = write_egress_summary(out, _jobs(), _ok_settle(CLAUDE))
+    assert summary["isolation_probe"] == "fail"
+    assert summary["jobs"][CLAUDE]["hosts_allowed"] == []
+    assert summary["jobs"][CLAUDE]["hosts_denied"] == ["pypi.org:443"]
+
+
+@pytest.mark.parametrize(
+    "attempt",
+    ["CONNECT docs.python.org 443 503 NONE_NONE", "POST host.docker.internal 11434 503 TCP_MISS"],
+)
+def test_c3_fails_without_claiming_a_failed_request_reached_the_internet(
+    tmp_path: Path, attempt: str
+) -> None:
+    from tests.benchmarks.test_agentic_sandbox import _job
+
+    job = _job("gemma4-12b", "python-docs")
+    ollama = "2026-11-04T10:00:04.001Z 172.30.0.3 POST host.docker.internal 11434 200 TCP_MISS"
+    failed = f"2026-11-04T10:00:05.000Z 172.30.0.3 {attempt}"
+    _evidence(tmp_path, job.job_id, log=_lines(*PROBE_LINES, ollama, failed))
+    summary = write_egress_summary(tmp_path, [job], [])
+    checks = write_airgap_evidence(tmp_path, rounds=1, broken=False, job_ids=[job.job_id])
+    assert checks == {"all_passed": False, "checks": 1, "internet_hosts": []}
+    assert summary["isolation_probe"] == "fail"
+    assert summary["jobs"][job.job_id]["hosts_allowed"] == ["host.docker.internal:11434"]
+    assert summary["jobs"][job.job_id]["hosts_denied"] == []
 
 
 async def test_no_false_clean_when_collection_failed_or_the_provider_never_appears(
