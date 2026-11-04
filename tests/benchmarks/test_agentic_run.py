@@ -1100,3 +1100,189 @@ def _cli_args(tmp_path: Path) -> list[str]:
         "--questions",
         "SYN-EX-001,SYN-EX-002",
     ]
+
+
+# --- the live gate inside run_agentic, and the agentic-run CLI (Task 13) -------------------------
+
+
+def _container(tmp_path: Path, keys_file: Path | None = None) -> tuple[ContainerLauncher, Any]:
+    from tests.benchmarks.test_agentic_sandbox import FakeDocker, Probes, _verified
+
+    docker = FakeDocker()
+    sandbox = Sandbox(
+        SandboxConfig(
+            image="sha256:" + "ab" * 32,
+            run_id="r1",
+            out_dir=tmp_path / "run",
+            index_path=tmp_path / "index.db",
+            keys_file=keys_file,
+            repo_commit="c" * 40,
+        ),
+        docker=docker,
+        verify=_verified,
+    )
+    probes = Probes()
+    return ContainerLauncher(sandbox, probe=probes, control=probes.control), docker
+
+
+def _live_config(tmp_path: Path, **overrides: Any) -> AgenticConfig:
+    values: dict[str, Any] = {
+        "matrix_path": COMMITTED_MATRIX,
+        "prices_path": COMMITTED_PRICES,
+        "models": ("claude-sonnet-5-5",),
+        "systems": ("no-docs",),
+        "questions": ("SYN-EX-001",),
+        "repeats": 1,
+    }
+    return _config(tmp_path, **(values | overrides))
+
+
+def test_the_gate_runs_before_any_key_is_read_or_container_started(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CI", "1")
+    launcher, docker = _container(tmp_path, keys_file=tmp_path / "missing.env")
+    with pytest.raises(BenchmarkValidationError, match="refused under CI"):
+        run_agentic(_live_config(tmp_path), launcher=launcher, today=date(2026, 11, 4))
+    assert docker.calls == []
+    summary = json.loads((tmp_path / "run" / "run-summary.json").read_text())
+    assert summary["status"] == "aborted" and "refused under CI" in summary["abort_reason"]
+
+
+def test_a_declined_confirmation_starts_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CI", raising=False)
+    launcher, docker = _container(tmp_path, keys_file=tmp_path / "missing.env")
+    shown: list[str] = []
+
+    def decline(text: str) -> bool:
+        shown.append(text)
+        return False
+
+    with pytest.raises(BenchmarkValidationError, match="not confirmed"):
+        run_agentic(
+            _live_config(tmp_path), launcher=launcher, today=date(2026, 11, 4), confirm=decline
+        )
+    assert docker.calls == []
+    assert len(shown) == 1 and shown[0].startswith("anthropic: 1 trajectories")
+    summary = json.loads((tmp_path / "run" / "run-summary.json").read_text())
+    assert summary["status"] == "aborted" and summary["live_confirmation"] == shown[0]
+
+
+def test_the_full_run_gate_stops_a_run_before_the_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CI", raising=False)
+    launcher, docker = _container(tmp_path)
+    config = _live_config(tmp_path, models=("gpt-6.1-sol",), repeats=91)
+
+    def never(text: str) -> bool:
+        raise AssertionError("the gate refuses first")
+
+    with pytest.raises(BenchmarkValidationError, match="--reference-run"):
+        run_agentic(config, launcher=launcher, today=date(2026, 11, 4), confirm=never)
+    assert docker.calls == []
+
+
+def test_the_default_model_set_is_the_hosted_arm(tmp_path: Path) -> None:
+    launcher, _ = _container(tmp_path)
+    config = _live_config(tmp_path, models=None, dry_run=True)
+    summary = run_agentic(config, launcher=launcher, today=date(2026, 11, 4))
+    assert summary["models"] == ["claude-sonnet-5-5", "gpt-6.1-sol", "gemini-3.8-flash"]
+    named = _live_config(tmp_path, models=("gemma4-12b",), dry_run=True, out_dir=tmp_path / "g")
+    assert run_agentic(named, launcher=launcher, today=date(2026, 11, 4))["models"] == [
+        "gemma4-12b"
+    ]
+
+
+def test_run_agentic_refuses_mixing_the_air_gapped_and_hosted_arms(tmp_path: Path) -> None:
+    launcher, _ = _container(tmp_path)
+    config = _live_config(tmp_path, models=("claude-sonnet-5-5", "gemma4-12b"), dry_run=True)
+    with pytest.raises(BenchmarkValidationError, match="the air-gapped arm runs alone"):
+        run_agentic(config, launcher=launcher, today=date(2026, 11, 4))
+
+
+def _cli(tmp_path: Path, *extra: str) -> list[str]:
+    return [
+        "agentic-run",
+        "--corpus",
+        str(SAMPLE_CORPUS),
+        "--out",
+        str(tmp_path / "run"),
+        "--matrix",
+        str(FIX / "model-matrix.yml"),
+        "--prices",
+        str(FIX / "prices.yml"),
+        "--ledger-dir",
+        str(tmp_path / "ledger"),
+        "--models",
+        "scripted-anthropic",
+        "--questions",
+        "SYN-EX-001",
+        "--repeats",
+        "1",
+        *extra,
+    ]
+
+
+def test_cli_container_launcher_defaults_to_a_dry_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import benchmarks.agentic.sandbox as sandbox_module
+
+    def no_docker(env: Any) -> Any:
+        async def run(argv: Any) -> Any:
+            raise AssertionError(f"docker must not run in a dry run: {argv}")
+
+        return run
+
+    monkeypatch.setattr(sandbox_module, "docker_runner", no_docker)
+    image = "sha256:" + "0" * 64
+    assert main(_cli(tmp_path, "--launcher", "container", "--image", image)) == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["dry_run"] is True and summary["planned_cells"] == 3
+    assert not (tmp_path / "ledger").exists()
+
+
+def test_cli_builds_the_production_sandbox_with_the_real_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Amendment 6: on the production path the sandbox keeps the real verify_image.
+    import benchmarks.agentic.run as agentic_run
+    from benchmarks.agentic.sandbox import verify_image
+
+    seen: dict[str, Any] = {}
+
+    def capture(config: AgenticConfig, **kwargs: Any) -> dict[str, Any]:
+        seen.update(config=config, **kwargs)
+        return {"dry_run": config.dry_run}
+
+    monkeypatch.setattr(agentic_run, "run_agentic", capture)
+    keys = tmp_path / "keys.env"
+    image = "sha256:" + "1" * 64
+    argv = ["--launcher", "container", "--image", image, "--keys-file", str(keys), "--live"]
+    assert main(_cli(tmp_path, *argv, "--run-id", "run-42", "--index", str(tmp_path / "i.db"))) == 0
+    launcher = seen["launcher"]
+    assert isinstance(launcher, ContainerLauncher)
+    assert launcher.sandbox.verify is verify_image
+    sandbox_config = launcher.sandbox.config
+    assert sandbox_config.run_id == seen["config"].run_id == "run-42"
+    assert (sandbox_config.image, sandbox_config.keys_file) == (image, keys)
+    assert sandbox_config.index_path == tmp_path / "i.db"
+    assert sandbox_config.out_dir == tmp_path / "run"
+    assert seen["config"].dry_run is False
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ("--live",),  # the local launcher runs scripted models only
+        ("--launcher", "container", "--image", "sha256:" + "0" * 64, "--live", "--dry-run"),
+        ("--launcher", "container"),  # no --image
+    ],
+)
+def test_cli_refuses_live_with_the_local_launcher(tmp_path: Path, extra: tuple[str, ...]) -> None:
+    with pytest.raises(SystemExit) as caught:
+        main(_cli(tmp_path, *extra))
+    assert caught.value.code == 2

@@ -16,7 +16,7 @@ import random
 import signal
 import sys
 from collections import Counter
-from collections.abc import Coroutine, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -36,6 +36,14 @@ from benchmarks.agentic.ledger import (
     LedgerService,
     load_price_snapshot,
     refuse_stale_snapshot,
+)
+from benchmarks.agentic.live import (
+    authorize_live,
+    confirmation_text,
+    full_run_gate,
+    interactive_confirm,
+    provider_plans,
+    reference_rates,
 )
 from benchmarks.agentic.loop import AIR_GAPPED_CAPS, HOSTED_CAPS
 from benchmarks.agentic.prompt import SYSTEM_PROMPT
@@ -93,6 +101,7 @@ class AgenticConfig:
     run_id: str | None = None
     dry_run: bool = False
     acknowledge_overrun: tuple[str, ...] = ()
+    reference_run: Path | None = None  # a finished pilot run, for the full-run gate
 
 
 async def _until_signalled(run: Coroutine[Any, Any, None]) -> None:
@@ -411,8 +420,13 @@ def run_agentic(
     launcher: Launcher | None = None,
     caps: Mapping[str, Decimal] = PROVIDER_CAPS,
     today: date | None = None,
+    confirm: Callable[[str], bool] = interactive_confirm,
 ) -> dict[str, Any]:
-    """Validate everything, then run every planned trajectory; return the run summary."""
+    """Validate everything, then run every planned trajectory; return the run summary.
+
+    A run with any live family passes the full-run gate and ``authorize_live`` (``confirm``)
+    after the ledger opens and before any key is read or any container starts.
+    """
     refuse_host_keys(os.environ)
     launcher = launcher or LocalLauncher()
     out = config.out_dir
@@ -428,7 +442,8 @@ def run_agentic(
     families = (
         _select(matrix, config.models, "model family")
         if config.models is not None
-        else [f for f in matrix if launcher.supports(f)]
+        # The air-gapped arm is named with --models, never run by default (round-2 D11).
+        else [f for f in matrix if f.arm == "hosted" and launcher.supports(f)]
     )
     if not families:
         raise BenchmarkValidationError("no model family to run")
@@ -436,7 +451,12 @@ def run_agentic(
     if unsupported:
         raise BenchmarkValidationError(
             f"{type(launcher).__name__} cannot run {unsupported}: the local launcher runs only "
-            "scripted models; live models need PR 4's container launcher"
+            "scripted models; use --launcher container"
+        )
+    if len({f.arm == "air-gapped" for f in families}) > 1:
+        raise BenchmarkValidationError(
+            "the air-gapped arm runs alone, with the host offline: name only air-gapped "
+            "families, or only others, in --models"
         )
     systems = _select(load_systems(config.manifest_path), config.systems, "system")
     snapshot = load_price_snapshot(config.prices_path)
@@ -592,6 +612,15 @@ def run_agentic(
                 f"spent {spent_before[provider]} of cap {cap}",
                 file=sys.stderr,
             )
+        if any(f.api != "scripted" for f in families):
+            # Before any key is read (bootstrap_frame) or any container starts (prepare).
+            rates = reference_rates(config.reference_run) if config.reference_run else None
+            plans = provider_plans(jobs, spent_before, caps, rates)
+            problems = full_run_gate(plans, jobs, rates)
+            if problems:
+                raise BenchmarkValidationError("the full-run gate refused: " + "; ".join(problems))
+            summary["live_confirmation"] = text = confirmation_text(plans)
+            authorize_live(text, confirm=confirm)
         prices = {f.model_id: snapshot.models[f.model_id] for f in families if f.provider in caps}
         service = LedgerService(ledger, prices, {f.model_id: f for f in families})
         asyncio.run(
