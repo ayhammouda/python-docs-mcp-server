@@ -265,6 +265,57 @@ came from. Container settings:
   key value and fails the step if the key appears. On the host, the harness
   also scans every artifact for key-shaped strings (each provider's key
   prefixes) and fails the run on a match.
+- Before each model-call spend reservation, the shared trajectory loop checks the
+  complete provider-rendered conversation, including native replay. MCP results
+  are checked before canonicalization and truncation, and again after rendering;
+  errors are checked before retry or publication. A match aborts with a clean
+  diagnostic and no transcript, without another provider call or reservation.
+  The worker reuses its private literal-key check alongside the key-shape scans,
+  including keys embedded in longer tokens or without a provider shape. Only a
+  checker callback reaches the content renderers and MCP bridge; the key stays
+  in the worker. Every tool call in a turn is checked before the first dispatch,
+  after settling the returned provider usage. Native function arguments are
+  checked both raw and as decoded JSON strings, including scalars, invalid
+  arguments and values hidden by duplicate object keys; replay keeps the raw
+  argument string. One frame-bounded, non-overlapping scan checks quoted strings
+  independently of document validity, including trailing text and the decodable
+  prefix of an unfinished string. Each token is decoded with the standard library;
+  incomplete or invalid escapes fail closed after checking their completed prefix.
+  The scan does not parse document structure or retry from interior quotes.
+  Integer conversion and nesting-limit failures during adapter normalization keep
+  the raw argument as invalid input so the loop can settle returned usage first.
+  JSON argument strings are limited to 64 nested objects/arrays, counting the root,
+  before decoding, so accepted arguments fit recursive transcript serialization
+  and MCP validation on supported Pythons. Deeper arguments follow the same invalid
+  input path, retaining exact native replay and evidence; the content scan still
+  checks the entire string, including values shadowed by duplicate object keys.
+  A content failure does not replace known usage with a lost worker charge.
+  Both the full MCP envelope and the truncated result are checked. Gemini
+  content scanning includes the SDK's ASCII JSON escaping before reservation.
+  Provider settings also pass the worker's check before free model-limit discovery.
+  Private credential bootstrap frames and SDK authentication headers are outside
+  this content boundary.
+- When the host recognizes a credential failure, it immediately stops fresh grants
+  across the invocation, including reservations waiting on another unit's provider
+  lock. Already granted units still settle or recover, and teardown and log
+  scrubbing finish before the original failure is reported. This stop does not
+  persist into a later invocation.
+  The host retains the recognized failure across sibling cleanup and attaches
+  redacted diagnostics from any storage errors. Operator interrupts take precedence.
+- An MCP stdio reply above the frame limit aborts the run before the SDK closes
+  its connection. The worker settles any known usage. The host stops new grants
+  and withholds subsequent trajectory reports while it cleans up the workers.
+  Credential failures take precedence over frame-limit errors. Ordinary MCP
+  protocol errors keep their documented trajectory behavior.
+  SDK reader failures can cancel their own job while it awaits a host grant or
+  settlement reply. The worker drains that job and reports the recognized failure.
+  An external cancellation instead cancels and drains the owned job, then propagates
+  the original interrupt, including when the SDK has also recognized a failure.
+- On protocol EOF the host waits for the owned worker's terminal status, up to
+  five seconds or the configured silence timeout, whichever is shorter. Status
+  3 reports a credential failure. Status 4 reports a frame-limit failure even
+  if the host cannot read the final error frame. The host uses its ordinary
+  loss accounting for other worker deaths and timeouts.
 
 ### 7.4 Air-gapped arm (**Call**)
 

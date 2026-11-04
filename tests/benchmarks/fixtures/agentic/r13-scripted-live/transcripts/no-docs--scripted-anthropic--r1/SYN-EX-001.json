@@ -1,0 +1,91 @@
+{
+  "answer": "Scripted answer.",
+  "canonical_messages": [
+    {
+      "content": "[SYNTHETIC FIXTURE] What does the fictional `synthstdlib.fixture_symbol_ex_1()` do in Python 3.13?",
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "text": "Scripted answer.",
+          "type": "text"
+        }
+      ],
+      "role": "assistant"
+    }
+  ],
+  "competitor_id": "no-docs--scripted-anthropic--r1",
+  "completed_at": "2026-11-04T11:57:04.197Z",
+  "corpus_id": "SYN-EX-001",
+  "error": null,
+  "model_calls": [
+    {
+      "attempts": [
+        {
+          "outcome": "ok",
+          "status": null,
+          "unit_id": "anthropic-ae497265ba2e47f8b1acd2feb3bb8887",
+          "wait_ms": 1.068,
+          "wall_ms": 0.041
+        }
+      ],
+      "buckets": {
+        "cache_write_input": 0,
+        "cached_input": 0,
+        "output": 100,
+        "reasoning": 0,
+        "uncached_input": 1000
+      },
+      "index": 0,
+      "input_bound": 1034,
+      "message_count": 1,
+      "output_bound": 1024,
+      "raw_response": {
+        "scripted_step": {
+          "text": "Scripted answer.",
+          "usage": {
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "input_tokens": 1000,
+            "output_tokens": 100
+          }
+        }
+      },
+      "raw_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 1000,
+        "output_tokens": 100
+      },
+      "reported_model": "scripted-1",
+      "request_params": {
+        "model": "scripted-1"
+      },
+      "stop_reason": "end_turn",
+      "tool_calls_requested": 0,
+      "wall_ms": 0.041
+    }
+  ],
+  "model_family_id": "scripted-anthropic",
+  "model_id": "scripted-1",
+  "provider": "anthropic",
+  "repeat": 1,
+  "started_at": "2026-11-04T11:57:04.195Z",
+  "status": "succeeded",
+  "system_id": "no-docs",
+  "system_prompt_sha256": "35a0b826e7fd8f16e5b9c369594962ebe51025c29c191335293af5a5385e5c9b",
+  "timing": {
+    "failed_attempt_ms": 0.0,
+    "grant_wait_ms": 1.068,
+    "model_ms": 0.041,
+    "overhead_ms": 0.482,
+    "retry_wait_ms": 0.0,
+    "tool_ms": 0.0,
+    "used_ms": 0.041,
+    "wall_ms": 1.592
+  },
+  "tool_calls": [],
+  "tool_model_key": "no-docs:anthropic/scripted-1",
+  "tools_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+}

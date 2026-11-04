@@ -15,9 +15,11 @@ from benchmarks.agentic.bridge import (
     canonical_text,
     load_systems,
     open_bridge,
+    server_env,
     system_spec_from_raw,
     truncate_utf8,
 )
+from benchmarks.agentic.protocol import KeyLeakError
 from tests.test_mcp_get_docs_cache_smoke import _create_contentful_json_index
 from tests.test_stdio_smoke import _isolated_cache_env
 
@@ -56,6 +58,14 @@ def test_canonical_text_prefers_compact_structured_content() -> None:
     assert canonical_text(r) == '{"a":"é","b":[1,2]}'
 
 
+def test_structured_tool_result_refuses_a_key_before_converting_to_text() -> None:
+    key = "AIza" + "g" * 35
+    result = CallToolResult(content=[], structured_content={"extra": [{"\n" + key: True}]})
+    with pytest.raises(KeyLeakError) as caught:
+        canonical_text(result)
+    assert key not in str(caught.value)
+
+
 def test_canonical_text_joins_text_blocks_and_marks_other_blocks() -> None:
     r = CallToolResult(
         content=[
@@ -84,10 +94,15 @@ def test_load_systems_reads_the_committed_manifest() -> None:
     systems = {s.id: s for s in load_systems(AGENTIC_MANIFEST_PATH)}
     assert set(systems) == {"python-docs", "docs-fetch", "no-docs"}
     assert systems["python-docs"].command == ("{python}", "-m", "mcp_server_python_docs", "serve")
-    assert systems["python-docs"].env == {"PYTHON_DOCS_MCP_DISABLE_AUTO_INDEX": "1"}
+    assert systems["python-docs"].env == {
+        "PYTHON_DOCS_MCP_DISABLE_AUTO_INDEX": "1",
+        "HTTPS_PROXY": "{egress}",
+        "HTTP_PROXY": "{egress}",
+    }
     assert systems["python-docs"].pass_env == ("HOME", "XDG_CACHE_HOME")
     assert systems["docs-fetch"].command == ("mcp-server-fetch",)
-    assert systems["docs-fetch"].pass_env == ("HOME", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY")
+    assert systems["docs-fetch"].env == {"HTTPS_PROXY": "{egress}", "HTTP_PROXY": "{egress}"}
+    assert systems["docs-fetch"].pass_env == ("HOME",)
     assert systems["no-docs"].transport == "none"
     assert all(system_spec_from_raw(s.raw) == s for s in systems.values())
 
@@ -208,3 +223,28 @@ async def test_server_env_holds_only_the_listed_variables(monkeypatch: pytest.Mo
         text = (await bridge.call("env_names", {})).text
     assert '"MARKER"' in text and '"HOME"' in text
     assert "ANTHROPIC_API_KEY" not in text
+
+
+def _committed(system_id: str) -> SystemSpec:
+    return {s.id: s for s in load_systems(AGENTIC_MANIFEST_PATH)}[system_id]
+
+
+@pytest.mark.parametrize("system_id", ["python-docs", "docs-fetch"])
+def test_server_env_points_both_proxy_variables_at_the_egress(system_id: str) -> None:
+    env = server_env(_committed(system_id), {"BENCHMARK_EGRESS_URL": "http://egress:3128"})
+    assert env["HTTPS_PROXY"] == env["HTTP_PROXY"] == "http://egress:3128"
+    if system_id == "python-docs":
+        assert env["PYTHON_DOCS_MCP_DISABLE_AUTO_INDEX"] == "1"
+
+
+@pytest.mark.parametrize("system_id", ["python-docs", "docs-fetch"])
+def test_server_env_drops_the_proxy_variables_without_an_egress(system_id: str) -> None:
+    env = server_env(_committed(system_id), {"HOME": "/tmp"})
+    assert "HTTPS_PROXY" not in env and "HTTP_PROXY" not in env
+    assert "{egress}" not in env.values() and env["HOME"] == "/tmp"
+
+
+def test_no_worker_proxy_variable_reaches_an_mcp_server() -> None:
+    environ = {"HTTPS_PROXY": "socks5://x:1", "ALL_PROXY": "socks5://x:1", "HOME": "/tmp"}
+    env = server_env(_committed("docs-fetch"), environ)
+    assert not [name for name in env if name.upper().endswith("_PROXY")]

@@ -43,6 +43,22 @@ def to_openai_responses(tools: Sequence[ToolSpec]) -> list[dict[str, Any]]:
     ]
 
 
+def to_openai_chat(tools: Sequence[ToolSpec]) -> list[dict[str, Any]]:
+    """Chat Completions tools (Ollama's OpenAI-compatible endpoint), ``strict`` explicitly false."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.input_schema,
+                "strict": False,
+            },
+        }
+        for t in tools
+    ]
+
+
 def _reduce(schema: Any, path: str, dropped: list[str]) -> Any:
     if not isinstance(schema, dict):
         return schema

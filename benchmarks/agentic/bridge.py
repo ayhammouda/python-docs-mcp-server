@@ -7,20 +7,26 @@ canonical text string by the same rule.
 
 from __future__ import annotations
 
-import json
 import os
 import sys
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from mcp import ClientSession, MCPError, StdioServerParameters, stdio_client
+from mcp import ClientSession, MCPError, StdioServerParameters
 from mcp.types import CONNECTION_CLOSED, CallToolResult, PaginatedRequestParams, TextContent
 
-from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
-from benchmarks.agentic.protocol import assert_no_key_shaped
+from benchmarks.adapters.guard import EGRESS_URL_ENV, PROVIDER_API_KEY_ENV
+from benchmarks.agentic.mcp_stdio import ReplyGuard, checked_stdio_client
+from benchmarks.agentic.protocol import (
+    KeyLeakError,
+    assert_no_key_shaped,
+    find_frame_too_large,
+    find_key_leak,
+    scanned_json_bytes,
+)
 from benchmarks.agentic.types import ToolSpec
 from benchmarks.runner import (
     _SAFE_ID,
@@ -32,6 +38,8 @@ from benchmarks.runner import (
 )
 
 TRUNCATION_MARKER = "\n[benchmark harness: tool result truncated at {limit} UTF-8 bytes]"
+#: A manifest env value replaced by the run's egress proxy URL, or dropped without one.
+EGRESS_PLACEHOLDER = "{egress}"
 
 _TRANSPORTS: dict[str, Literal["stdio", "none"]] = {"mcp-stdio": "stdio", "none": "none"}
 #: System id -> its own competitor key, the only provider key a system may receive.
@@ -110,15 +118,32 @@ def system_spec_from_raw(raw: Mapping[str, Any]) -> SystemSpec:
 
 
 def load_systems(manifest_path: Path) -> list[SystemSpec]:
-    data = _load_yaml_mapping(manifest_path, "manifest")
+    return systems_from_mapping(_load_yaml_mapping(manifest_path, "manifest"))
+
+
+def systems_from_mapping(data: dict[str, Any]) -> list[SystemSpec]:
     _validate_manifest_eligibility(data)
     return [system_spec_from_raw(competitor.raw) for competitor in _load_competitors(data)]
 
 
-def canonical_text(result: CallToolResult) -> str:
+def canonical_text(
+    result: CallToolResult, *, check_content: Callable[[bytes], None] | None = None
+) -> str:
     """Compact JSON of ``structured_content`` when present, else the joined text blocks."""
+    # Check the decoded MCP envelope before canonicalization drops text, metadata or fields.
+    scanned_json_bytes(
+        result.model_dump(mode="json", by_alias=True),
+        where="MCP tool result",
+        check_content=check_content,
+    )
     if result.structured_content is not None:
-        return json.dumps(result.structured_content, ensure_ascii=False, separators=(",", ":"))
+        return scanned_json_bytes(
+            result.structured_content,
+            where="structured tool result",
+            check_content=check_content,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).decode()
     return "\n".join(
         block.text if isinstance(block, TextContent) else f"[{block.type} content omitted]"
         for block in result.content
@@ -138,6 +163,9 @@ def truncate_utf8(text: str, limit: int) -> tuple[str, bool]:
 class Bridge:
     """One live MCP session; implements :class:`ToolBridge`."""
 
+    check_content: Callable[[bytes], None] | None = None
+    _reply_guard: ReplyGuard | None = None
+
     def __init__(
         self,
         session: ClientSession,
@@ -152,28 +180,76 @@ class Bridge:
         ]
 
     async def call(self, name: str, arguments: dict[str, Any]) -> ToolOutcome:
+        self.raise_if_failed()
         try:
             result = await self._session.call_tool(name, arguments)
-        except MCPError as exc:
-            if exc.code == CONNECTION_CLOSED:
-                raise BridgeCrash(f"MCP connection closed during {name}: {exc}") from exc
-            return ToolOutcome(text=str(exc.message), is_error=True)
-        except Exception as exc:  # noqa: BLE001 - any other failure means the session is gone
+        except BaseException as exc:
+            if leak := find_key_leak(exc):
+                raise leak
+            if self._reply_guard is not None and isinstance(
+                self._reply_guard.failure, KeyLeakError
+            ):
+                self._reply_guard.raise_if_failed()
+            if not isinstance(exc, Exception):
+                raise
+            self.raise_if_failed()
+            if frame := find_frame_too_large(exc):
+                raise frame
+            if isinstance(exc, MCPError):
+                scanned_json_bytes(
+                    exc.error.model_dump(mode="json"),
+                    where="MCP tool error",
+                    check_content=self.check_content,
+                )
+                if exc.code == CONNECTION_CLOSED:
+                    raise BridgeCrash(f"MCP connection closed during {name}: {exc}") from exc
+                return ToolOutcome(text=str(exc.message), is_error=True)
+            scanned_json_bytes(
+                str(exc), where="MCP tool exception", check_content=self.check_content
+            )
             failure = cell_failure_from(exc, timeout_seconds=0.0, label=f"MCP tool {name}")
             raise BridgeCrash(str(failure)) from exc
-        return ToolOutcome(text=canonical_text(result), is_error=bool(result.is_error))
+        self.raise_if_failed()
+        return ToolOutcome(
+            text=canonical_text(result, check_content=self.check_content),
+            is_error=bool(result.is_error),
+        )
+
+    def raise_if_failed(self) -> None:
+        """Check the receive task before dispatch, reservation or publication."""
+        if self._reply_guard is not None:
+            self._reply_guard.raise_if_failed()
+
+
+def server_env(system: SystemSpec, environ: Mapping[str, str]) -> dict[str, str]:
+    """The MCP server's environment: its manifest ``env``, then its ``pass_env`` names.
+
+    An ``env`` value of ``{egress}`` becomes the worker's ``BENCHMARK_EGRESS_URL``, and the
+    variable is dropped when that is unset: no other proxy ever reaches a server.
+    """
+    env: dict[str, str] = {}
+    for name, value in system.env.items():
+        if value != EGRESS_PLACEHOLDER:
+            env[name] = value
+        elif egress := environ.get(EGRESS_URL_ENV):
+            env[name] = egress
+    env.update({name: environ[name] for name in system.pass_env if name in environ})
+    return env
 
 
 @asynccontextmanager
-async def open_bridge(system: SystemSpec) -> AsyncIterator[Bridge]:
+async def open_bridge(
+    system: SystemSpec, *, check_content: Callable[[bytes], None] | None = None
+) -> AsyncIterator[Bridge]:
     if system.transport != "stdio":
         raise BenchmarkValidationError(f"system {system.id!r} has no MCP server to open")
     command = [sys.executable if part == "{python}" else part for part in system.command]
-    env = dict(system.env)
-    env.update({name: os.environ[name] for name in system.pass_env if name in os.environ})
-    params = StdioServerParameters(command=command[0], args=command[1:], env=env)
+    params = StdioServerParameters(
+        command=command[0], args=command[1:], env=server_env(system, os.environ)
+    )
     # errlog read now, not at import: the worker points sys.stderr at its redactor.
-    async with stdio_client(params, errlog=sys.stderr) as (read, write):
+    guard = ReplyGuard(check_content)
+    async with checked_stdio_client(params, errlog=sys.stderr, guard=guard) as (read, write):
         async with ClientSession(read, write) as session:
             initialized = await session.initialize()
             tools_raw: list[dict[str, Any]] = []
@@ -191,4 +267,7 @@ async def open_bridge(system: SystemSpec) -> AsyncIterator[Bridge]:
             server_info = initialized.server_info.model_dump(
                 mode="json", by_alias=True, exclude_unset=True
             )
-            yield Bridge(session, server_info, tools_raw)
+            bridge = Bridge(session, server_info, tools_raw)
+            bridge._reply_guard = guard
+            bridge.check_content = check_content
+            yield bridge

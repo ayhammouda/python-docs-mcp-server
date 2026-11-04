@@ -13,17 +13,21 @@ this note says "not documented" and names the check that settles it.
 
 | Item | Pin | Published | Source |
 |---|---|---|---|
-| Python base image | `python:3.14.8-slim-trixie@sha256:fbecd461fc72d21b2143c6eaba25143738079154a6d0ea3da3aec724f50eed4a` (index; arm64 `sha256:eaecc1a821ac5f032c7cc29d6fdd2cca4199ca97f8d11ea79417e9f647dbd809`) | pushed 2026-10-21T08:09Z | https://hub.docker.com/v2/repositories/library/python/tags/3.14.8-slim-trixie |
+| Python base image | `python:3.14.10-slim-trixie@sha256:930e1abba7c4e8f96ed93e8012c35d174d7732752731bbd5e8e757d7ec6f3966` (index; arm64 `sha256:29434a59c93070e470f84663e4289026e04644ea44b5220ef7e07d653318ca1f`) | pushed 2026-11-02T08:08Z | https://hub.docker.com/v2/repositories/library/python/tags/3.14.10-slim-trixie |
 | uv | `ghcr.io/astral-sh/uv:0.13.4@sha256:9f130421e930bfbdc563c00740466603f8723158e90297d07957c2294640262b` (index) | release 2026-10-20T15:24Z | https://github.com/astral-sh/uv/releases/tag/0.13.4 ; digest from the ghcr.io registry manifest |
-| Squid proxy image | `ubuntu/squid:6.6-24.04_edge@sha256:8a3baed477e2c282ab8aa5edad442f69873246964f225c5c2ae8364b6610963c` (index; arm64 `sha256:2580be07409d64c1b5bff32d218649771a53616b06ef102bc3005e81534beccf`), Squid 6.6 | pushed 2026-05-07T21:56Z | https://hub.docker.com/v2/repositories/ubuntu/squid/tags/6.6-24.04_edge |
+| Squid proxy image | `ubuntu/squid:6.6-24.04_edge@sha256:8a3baed477e2c282ab8aa5edad442f69873246964f225c5c2ae8364b6610963c` (index; arm64 `sha256:2580be07409d64c1b5bff32d218649771a53616b06ef102bc3005e81534beccf`), Squid 6.14 | pushed 2026-05-07T21:56Z | https://hub.docker.com/v2/repositories/ubuntu/squid/tags/6.6-24.04_edge |
 | `mcp-server-fetch` | `2026.10.19`, `requires_dist` includes `mcp<3,>=2.3` and `httpx[socks]>=0.27` | 2026-10-19T06:48Z | https://pypi.org/pypi/mcp-server-fetch/2026.10.19/json |
 | Docker Desktop (maintainer's machine) | 4.96.1, bundling Engine 29.9.2 | 2026-10-21 | https://docs.docker.com/desktop/release-notes/ |
 | Ollama | v0.40.8 is the newest release on or before 2026-10-21 (2026-10-21T16:20Z); v0.40.14 (2026-11-03) changes OpenAI-endpoint sampler defaults, see D.3 | as stated | https://github.com/ollama/ollama/releases/tag/v0.40.8 , https://github.com/ollama/ollama/releases/tag/v0.40.14 |
 
 Notes on the pins:
 
-- `python:3.14-slim` now points at 3.14.10 (pushed 2026-11-02) and 3.14.9
-  was pushed 2026-10-22: both are too new. 3.14.8 is exactly 14 days old.
+- The Python pin uses the security exception to the 14-day rule.
+  Python 3.14.10 blocks compromised eMudhra keys in the SSL module
+  (CVE-2026-115557) and fixes link handling in tarfile (CVE-2026-114583).
+  [CPython release advisory](https://www.python.org/downloads/release/python-31410/).
+- The pinned Squid image reports version 6.14 from `/usr/sbin/squid -v`.
+  The 6.6 in its registry tag is not the installed version.
 - The Squid image is Canonical's (Docker Hub "Verified Publisher"). There
   is no Docker Official Squid image. Its config runs `entrypoint.sh` as
   root (`User` is empty), which calls `make-ssl-cert` and needs root, so
@@ -126,21 +130,23 @@ https://www.squid-cache.org/Versions/v6/cfgman/).
   (`buffered_logs` applies only to the daemon, tcp and udp modules).
 - `logformat` codes: `%tg` GMT time with a strftime argument, `%tu`
   sub-second milliseconds, `%>a` client IP, `%rm` method, `%>rd` request
-  domain, `%>rP` request port, `%>Hs` status sent, `%Ss` Squid result
-  (`TCP_DENIED`, `TCP_TUNNEL`, ...; https://wiki.squid-cache.org/SquidFaq/SquidLogs).
+  domain, `%>rP` request port, `%>Hs` status sent to the client, `%Ss` Squid result
+  (such as `TCP_DENIED` or `TCP_TUNNEL`), `%Sh` hierarchy code and `%<Hs` HTTP
+  status received from the peer. The last two distinguish a response from the origin
+  from a proxy-generated error. [Squid logformat](https://www.squid-cache.org/Doc/config/logformat/).
 - `pid_filename none` disables the pid file; `cache deny all` disables
   caching; `shutdown_lifetime` (default 30 s) is how long Squid waits for
   open clients after SIGTERM; `cache_effective_user` applies only when
   Squid starts as root.
 - **Exit status after SIGTERM.** The directive docs do not state it; the
-  Squid 6.6 source does (`src/main.cc` at tag `SQUID_6_6`,
-  https://github.com/squid-cache/squid/blob/SQUID_6_6/src/main.cc):
+  Squid 6.14 source does (`src/main.cc` at tag `SQUID_6_14`,
+  https://github.com/squid-cache/squid/blob/SQUID_6_14/src/main.cc):
   - `shutdown_status` starts as `EXIT_SUCCESS` (line 154);
   - the SIGTERM/SIGINT handler `shut_down()` sets `EXIT_FAILURE` only for `SIGTTIN` (lines 756–763);
-  - `SquidShutdown()` ends with `exit(shutdown_status)` (line 2142).
+  - `SquidShutdown()` ends with `exit(shutdown_status)` (line 2141).
   So a Squid that shuts down on SIGTERM within `shutdown_lifetime` exits
   0. Run with `-N`, Squid is PID 1 in its container and installs that
-  handler itself, so `docker stop` reaches it. Ubuntu's 6.6 package may
+  handler itself, so `docker stop` reaches it. Ubuntu's 6.14 package may
   carry patches; the opt-in docker test observes the real exit code.
 - Why not tinyproxy 1.11.3 (https://github.com/tinyproxy/tinyproxy/releases/tag/1.11.3):
   its log format is not configurable, and its `Filter` does not bind a

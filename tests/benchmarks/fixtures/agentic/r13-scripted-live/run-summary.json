@@ -1,0 +1,78 @@
+{
+  "artifact_root": "/tmp/tmpix0pgw2w/run",
+  "competitors": [
+    "no-docs--scripted-anthropic--r1"
+  ],
+  "completed_at": "2026-11-04T11:57:04Z",
+  "corpus_ids": [
+    "SYN-EX-001"
+  ],
+  "corpus_path": "/private/var/folders/fg/qy05cq110zb7rzbcyt5tnkr40000gn/T/pdmcp-201.AJGNg8/r13int/tests/benchmarks/fixtures/corpus.sample.yml",
+  "correctness_denominator_cells": 1,
+  "discarded": [],
+  "dry_run": false,
+  "failed_cells": 0,
+  "failed_cells_included_in_correctness_denominator": true,
+  "families": {
+    "scripted-anthropic": {
+      "answer_turns": 1,
+      "failed_attempt_s": 0.0,
+      "first_started_at": "2026-11-04T11:57:04.195Z",
+      "grant_wait_s": 0.001,
+      "last_completed_at": "2026-11-04T11:57:04.197Z",
+      "output_cap_stops": 0,
+      "reruns": 0,
+      "retries": {},
+      "retry_wait_s": 0.0,
+      "timeouts": 0,
+      "wall_s": 0.002
+    }
+  },
+  "ledger": {
+    "anthropic": {
+      "cap": "180",
+      "input_bound_exceeded": 0,
+      "spent_after": "0.002",
+      "spent_before": "0",
+      "stopped": null
+    },
+    "google": {
+      "cap": "180",
+      "input_bound_exceeded": 0,
+      "spent_after": "0",
+      "spent_before": "0",
+      "stopped": null
+    },
+    "openai": {
+      "cap": "65",
+      "input_bound_exceeded": 0,
+      "spent_after": "0",
+      "spent_before": "0",
+      "stopped": null
+    }
+  },
+  "manifest_path": "/private/var/folders/fg/qy05cq110zb7rzbcyt5tnkr40000gn/T/pdmcp-201.AJGNg8/r13int/docs/benchmarks/agentic-manifest.yml",
+  "mode": "agentic",
+  "model_limits_mismatch": [],
+  "models": [
+    "scripted-anthropic"
+  ],
+  "not_run": [],
+  "planned_cells": 1,
+  "price_snapshot": {
+    "captured_on": "2026-10-31",
+    "expires_on": null
+  },
+  "repeats": 1,
+  "repo_commit": "a0108c311d3c665b257a21103dded84a98e0e4dd",
+  "run_id": "20261104T115702Z",
+  "scored_cells": 1,
+  "seed": 7,
+  "started_at": "2026-11-04T11:57:02Z",
+  "status": "completed",
+  "succeeded_cells": 1,
+  "systems": [
+    "no-docs"
+  ],
+  "worker_errors": []
+}

@@ -1,0 +1,7 @@
+# Scripted air-gapped model: one answer per trajectory, usage in the Chat Completions
+# shape Ollama reports.
+steps:
+  - text: "Scripted local answer."
+    usage:
+      prompt_tokens: 1000
+      completion_tokens: 100

@@ -10,13 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import os
 import random
 import signal
 import sys
 from collections import Counter
-from collections.abc import Coroutine, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -27,24 +26,50 @@ import platformdirs
 
 import benchmarks
 from benchmarks.adapters.claude_tokens import ANTHROPIC_API_VERSION, DEFAULT_COUNT_MODEL
-from benchmarks.agentic.bridge import SystemSpec, load_systems
+from benchmarks.agentic.airgap import (
+    AirGapWatch,
+    host_offline_checks,
+    ollama_preflight,
+    write_airgap_evidence,
+)
+from benchmarks.agentic.bridge import SystemSpec, systems_from_mapping
+from benchmarks.agentic.cleanup import add_cleanup_cause
+from benchmarks.agentic.egress import write_egress_summary
 from benchmarks.agentic.host import Launcher, LocalLauncher, WorkerJob, refuse_host_keys, run_jobs
+from benchmarks.agentic.inputs import CapturedInput
 from benchmarks.agentic.ledger import (
     PROVIDER_CAPS,
     Ledger,
     LedgerService,
-    load_price_snapshot,
+    price_snapshot_from_mapping,
     refuse_stale_snapshot,
+)
+from benchmarks.agentic.live import (
+    authorize_live,
+    confirmation_text,
+    full_run_gate,
+    interactive_confirm,
+    provider_plans,
+    reference_rates,
 )
 from benchmarks.agentic.loop import AIR_GAPPED_CAPS, HOSTED_CAPS
 from benchmarks.agentic.prompt import SYSTEM_PROMPT
-from benchmarks.agentic.protocol import assert_no_key_shaped
+from benchmarks.agentic.protocol import (
+    KeyLeakError,
+    assert_no_key_shaped_json,
+    redact_key_shaped_text,
+    scanned_json_bytes,
+)
+from benchmarks.agentic.protocol import (
+    write_json_evidence as _write,
+)
+from benchmarks.agentic.sandbox import ContainerLauncher
 from benchmarks.agentic.worker import _client_versions
 from benchmarks.model_matrix import (
     _HOSTED_REQUIRED_FIELDS,
     METHODOLOGY_TOKEN_LABEL,
     ModelFamily,
-    load_model_matrix,
+    model_matrix_from_mapping,
 )
 from benchmarks.runner import (
     BenchmarkCell,
@@ -54,10 +79,8 @@ from benchmarks.runner import (
     _default_run_id,
     _environment_metadata,
     _load_questions,
-    _load_yaml_mapping,
     _scoring_record,
     _utc_now,
-    _write_json,
 )
 
 #: Answer-turn stop reasons that mean the output cap cut the answer; the pilot's 1% rule
@@ -91,6 +114,7 @@ class AgenticConfig:
     run_id: str | None = None
     dry_run: bool = False
     acknowledge_overrun: tuple[str, ...] = ()
+    reference_run: Path | None = None  # a finished pilot run, for the full-run gate
 
 
 async def _until_signalled(run: Coroutine[Any, Any, None]) -> None:
@@ -101,8 +125,17 @@ async def _until_signalled(run: Coroutine[Any, Any, None]) -> None:
     that cannot take signals runs without the handlers, and each disposition the handlers
     replaced is restored afterwards.
     """
-    task = asyncio.ensure_future(run)
+    task = asyncio.create_task(run)
     loop = asyncio.get_running_loop()
+    signal_seen = False
+
+    def interrupt(signum: signal.Signals) -> None:
+        nonlocal signal_seen
+        if not signal_seen:
+            signal_seen = True
+            if not task.cancelling():
+                task.cancel(f"signal {signum.name}")
+
     wanted = [  # an ignored signal stays ignored, as under nohup
         (signum, previous)
         for signum in (signal.SIGTERM, signal.SIGHUP)
@@ -111,7 +144,7 @@ async def _until_signalled(run: Coroutine[Any, Any, None]) -> None:
     installed: list[tuple[signal.Signals, Any]] = []  # each with the disposition it replaced
     try:
         for signum, previous in wanted:
-            loop.add_signal_handler(signum, task.cancel, f"signal {signum.name}")
+            loop.add_signal_handler(signum, interrupt, signum)
             installed.append((signum, previous))
     except (RuntimeError, NotImplementedError, ValueError) as exc:
         # Not the main thread, or a loop without signal support: run without those handlers.
@@ -127,6 +160,28 @@ async def _until_signalled(run: Coroutine[Any, Any, None]) -> None:
         for signum, previous in installed:
             loop.remove_signal_handler(signum)  # leaves SIG_DFL behind
             signal.signal(signum, signal.SIG_DFL if previous is None else previous)
+
+
+def limits_mismatch(reported: Mapping[str, Any] | None, family: ModelFamily) -> list[str]:
+    """Each difference between a worker's reported model limits and the model matrix.
+
+    The maintainer corrects model-matrix.yml by hand; the run itself goes on.
+    """
+    if reported is None:
+        return []
+    if "error" in reported:
+        return [f"model limits could not be read ({reported['error']})"]
+    problems = []
+    max_input = reported.get("max_input_tokens")
+    if max_input is not None and max_input != family.max_input_tokens:
+        problems.append(
+            f"max_input_tokens {max_input} != max_input_tokens {family.max_input_tokens} "
+            "in the model matrix"
+        )
+    max_tokens, cap = reported.get("max_tokens"), family.max_output_tokens
+    if max_tokens is not None and cap is not None and max_tokens < cap:
+        problems.append(f"max_tokens {max_tokens} < max_output_tokens {cap} in the model matrix")
+    return problems
 
 
 def cell_id(system_id: str, family_id: str, repeat: int) -> str:
@@ -167,11 +222,6 @@ def plan_jobs(
             )
             jobs.append(WorkerJob(f"{family.id}--{system.id}", family, system, trajectories, caps))
     return jobs
-
-
-def _write(path: Path, data: dict[str, Any]) -> None:
-    assert_no_key_shaped(json.dumps(data, sort_keys=True), where=str(path))
-    _write_json(path, data)
 
 
 class _HasId(Protocol):
@@ -250,22 +300,28 @@ class _Collector:
         self.succeeded = 0
         self.failed = 0
         self.discarded: list[dict[str, Any]] = []
+        self.transcript_inventory: list[dict[str, Any]] = []
         self.not_run: list[dict[str, Any]] = []
         self.worker_errors: list[dict[str, Any]] = []
+        self.limits_mismatch: list[str] = []
 
     async def on_message(self, job: WorkerJob, message: dict[str, Any]) -> None:
         kind = message["type"]
         if kind == "system_info":
             info = {k: v for k, v in message.items() if k != "type"}
             _write(self.out / "systems" / f"{job.job_id}.json", info)
+            self.limits_mismatch += [
+                f"{job.job_id}: {line}"
+                for line in limits_mismatch(message.get("model_limits"), job.family)
+            ]
             return
         if kind == "worker_error":
             self.worker_errors.append({"job_id": job.job_id, "reason": message["reason"]})
             return
         if kind not in ("trajectory", "discarded", "not_run"):
             return
-        cell = cell_id(job.system.id, job.family.id, message["repeat"])
-        corpus_id = message["corpus_id"]
+        corpus_id, repeat = job.report_coordinates(message)
+        cell = cell_id(job.system.id, job.family.id, repeat)
         if kind == "not_run":
             self.not_run.append(
                 {
@@ -280,45 +336,49 @@ class _Collector:
         stats = self.families[job.family.id]
         stats.add(record)
         stats.reruns += message["attempt"] > 1  # a rerun counts once it has run
+        ident = {**self._ident(job, cell, corpus_id, repeat), "attempt": message["attempt"]}
         if kind == "discarded":
             reason, attempt = message["reason"], message["attempt"]
             self.discarded.append(
                 {"cell": cell, "corpus_id": corpus_id, "reason": reason, "attempt": attempt}
             )
             path = self.out / "discarded" / cell / f"{corpus_id}--attempt{attempt}.json"
-            _write(path, {**record, **self._ident(job, cell, message), "reason": reason})
+            self._write_transcript(path, {**record, **ident, "reason": reason}, ident)
             return
-        self._write_cell(job, cell, message, record, stats)
+        self._write_cell(ident, record)
 
-    def _ident(self, job: WorkerJob, cell: str, message: dict[str, Any]) -> dict[str, Any]:
+    def _write_transcript(self, path: Path, record: dict[str, Any], ident: dict[str, Any]) -> None:
+        content = _write(path, record)
+        self.transcript_inventory.append(
+            {
+                **ident,
+                "path": path.relative_to(self.out).as_posix(),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        )
+
+    def _ident(self, job: WorkerJob, cell: str, corpus_id: str, repeat: int) -> dict[str, Any]:
         family, system = job.family, job.system
         return {
             "competitor_id": cell,
-            "corpus_id": message["corpus_id"],
+            "corpus_id": corpus_id,
             "system_id": system.id,
             "model_family_id": family.id,
             "provider": family.provider,
             "model_id": family.model_id,
-            "repeat": message["repeat"],
-            "attempt": message.get("attempt"),
+            "repeat": repeat,
             "tool_model_key": tool_model_key(system.id, family.provider, family.model_id),
         }
 
-    def _write_cell(
-        self,
-        job: WorkerJob,
-        cell: str,
-        message: dict[str, Any],
-        record: dict[str, Any],
-        stats: _FamilyStats,
-    ) -> None:
-        ident = self._ident(job, cell, message)
-        ident.pop("attempt")
+    def _write_cell(self, ident: dict[str, Any], record: dict[str, Any]) -> None:
+        cell = ident["competitor_id"]
         corpus_id, key = ident["corpus_id"], ident["tool_model_key"]
         status, error = record["status"], record["error"]
         question = self.questions[corpus_id]
         base = {"competitor_id": cell, "tool_model_key": key, "corpus_id": corpus_id}
-        _write(self.out / "transcripts" / cell / f"{corpus_id}.json", {**record, **ident})
+        self._write_transcript(
+            self.out / "transcripts" / cell / f"{corpus_id}.json", {**record, **ident}, ident
+        )
         _write(
             self.out / "scoring" / cell / f"{corpus_id}.json",
             _scoring_record(
@@ -376,15 +436,48 @@ class _Collector:
         self.cells.add(cell)
 
 
+def _finalization_failure(primary: BaseException | None, later: BaseException) -> BaseException:
+    if primary is None:
+        return later
+    if isinstance(primary, Exception):
+        # Preserve an operator interrupt even if an earlier ordinary operation failed.
+        if not isinstance(later, Exception):
+            add_cleanup_cause(later, BenchmarkValidationError(redact_key_shaped_text(str(primary))))
+            return later
+        if isinstance(later, KeyLeakError) and not isinstance(primary, KeyLeakError):
+            return KeyLeakError(
+                f"{redact_key_shaped_text(str(later))}; "
+                f"earlier failure: {redact_key_shaped_text(str(primary))}"
+            )
+    detail = f"{type(later).__name__}: {redact_key_shaped_text(str(later))}"
+    add_cleanup_cause(primary, BenchmarkValidationError(detail))
+    return primary
+
+
 def run_agentic(
     config: AgenticConfig,
     *,
     launcher: Launcher | None = None,
     caps: Mapping[str, Decimal] = PROVIDER_CAPS,
     today: date | None = None,
+    confirm: Callable[[str], bool] = interactive_confirm,
+    offline_checks: Callable[[], list[dict[str, Any]]] = host_offline_checks,
+    preflight: Callable[[str], dict[str, Any]] = ollama_preflight,
 ) -> dict[str, Any]:
-    """Validate everything, then run every planned trajectory; return the run summary."""
+    """Validate everything, then run every planned trajectory; return the run summary.
+
+    A run with any live family passes the full-run gate and ``authorize_live`` (``confirm``)
+    after the ledger opens and before any key is read or any container starts.
+    """
     refuse_host_keys(os.environ)
+    for value in vars(config).values():
+        assert_no_key_shaped_json(
+            str(value) if isinstance(value, Path) else value, where="run options"
+        )
+    corpus_input = CapturedInput.read(config.corpus_path, "corpus.yml", "corpus")
+    matrix_input = CapturedInput.read(config.matrix_path, "model-matrix.yml", "model matrix")
+    manifest_input = CapturedInput.read(config.manifest_path, "competitor-manifest.yml", "manifest")
+    prices_input = CapturedInput.read(config.prices_path, "price-snapshot.yml", "price snapshot")
     launcher = launcher or LocalLauncher()
     out = config.out_dir
     if out.exists() and any(out.iterdir()):
@@ -393,13 +486,14 @@ def run_agentic(
         )
     if config.repeats < 1:
         raise BenchmarkValidationError("--repeats must be at least 1")
-    corpus = _load_questions(_load_yaml_mapping(config.corpus_path, "corpus"))
+    corpus = _load_questions(corpus_input.mapping)
     questions = _select(corpus, config.questions, "corpus question")
-    matrix = load_model_matrix(config.matrix_path).model_families
+    matrix = model_matrix_from_mapping(matrix_input.mapping).model_families
     families = (
         _select(matrix, config.models, "model family")
         if config.models is not None
-        else [f for f in matrix if launcher.supports(f)]
+        # The air-gapped arm is named with --models, never run by default (round-2 D11).
+        else [f for f in matrix if f.arm == "hosted" and launcher.supports(f)]
     )
     if not families:
         raise BenchmarkValidationError("no model family to run")
@@ -407,10 +501,32 @@ def run_agentic(
     if unsupported:
         raise BenchmarkValidationError(
             f"{type(launcher).__name__} cannot run {unsupported}: the local launcher runs only "
-            "scripted models; live models need PR 4's container launcher"
+            "scripted models; use --launcher container"
         )
-    systems = _select(load_systems(config.manifest_path), config.systems, "system")
-    snapshot = load_price_snapshot(config.prices_path)
+    if len({f.arm == "air-gapped" for f in families}) > 1:
+        raise BenchmarkValidationError(
+            "the air-gapped arm runs alone, with the host offline: name only air-gapped "
+            "families, or only others, in --models"
+        )
+    requested_systems = config.systems
+    if families[0].arm == "air-gapped":
+        for family in families:
+            if family.api != "scripted" and (
+                family.provider != "ollama" or family.api != "openai-chat-completions"
+            ):
+                raise BenchmarkValidationError(
+                    f"the air-gapped arm requires local Ollama for live family {family.id!r}"
+                )
+        offline_systems = ("python-docs", "no-docs")
+        if requested_systems is None:
+            requested_systems = offline_systems
+        elif not requested_systems or not set(requested_systems).issubset(offline_systems):
+            raise BenchmarkValidationError(
+                f"the air-gapped arm permits only {offline_systems} in --systems, "
+                f"got {requested_systems}"
+            )
+    systems = _select(systems_from_mapping(manifest_input.mapping), requested_systems, "system")
+    snapshot = price_snapshot_from_mapping(prices_input.mapping)
     for family in families:
         if family.output_cap_includes_reasoning is False:
             raise BenchmarkValidationError(
@@ -423,7 +539,8 @@ def run_agentic(
             missing = [name for name in _HOSTED_REQUIRED_FIELDS if getattr(family, name) is None]
             if missing:
                 raise BenchmarkValidationError(f"model family {family.id!r} must set {missing}")
-    if any(family.api != "scripted" for family in families):
+    if any(family.api != "scripted" and family.provider in caps for family in families):
+        # Only a live, metered family is priced: the air-gapped arm never reads the snapshot.
         refuse_stale_snapshot(snapshot, today=today or datetime.now(UTC).date())
 
     run_id = config.run_id or _default_run_id()
@@ -440,19 +557,12 @@ def run_agentic(
         seed=seed,
         matrix_dir=config.matrix_path.parent,
     )
-    inputs = {
-        "corpus.yml": config.corpus_path.read_bytes(),
-        "competitor-manifest.yml": config.manifest_path.read_bytes(),
-        "model-matrix.yml": config.matrix_path.read_bytes(),
-        "price-snapshot.yml": config.prices_path.read_bytes(),
-    }
-    for name, data in inputs.items():  # every input, before any snapshot is written
-        assert_no_key_shaped(data.decode("utf-8", errors="replace"), where=f"input {name}")
+    rates = reference_rates(config.reference_run) if config.reference_run else None
     out.mkdir(parents=True, exist_ok=True)
     snapshots = out / "snapshots"
     snapshots.mkdir()
-    for name, data in inputs.items():  # the exact bytes that were scanned
-        (snapshots / name).write_bytes(data)
+    for source in (corpus_input, matrix_input, manifest_input, prices_input):
+        (snapshots / source.name).write_bytes(source.content)
     (snapshots / "system-prompt.txt").write_text(SYSTEM_PROMPT, encoding="utf-8")
     environment = {
         **_environment_metadata(run_id=run_id, dry_run=config.dry_run),
@@ -493,24 +603,59 @@ def run_agentic(
     if config.dry_run:  # never opens the ledger
         return summary
 
-    ledger = Ledger.open(config.ledger_dir, run_id=run_id, caps=caps)
-    spent_before = {provider: ledger.spent(provider) for provider in caps}  # after any recovery
+    spent_before: dict[str, Decimal] = {}
     collector = _Collector(out, {q.id: q for q in questions}, families)
+    # The air-gapped arm runs alone (checked above), so either every family is in it or none.
+    watch = AirGapWatch(out, offline_checks) if families[0].arm == "air-gapped" else None
 
-    def write_outcome() -> None:
+    async def on_message(job: WorkerJob, message: dict[str, Any]) -> None:
+        await collector.on_message(job, message)
+        if watch is not None and message["type"] in ("trajectory", "discarded"):
+            # Before the host acknowledges it, so before the worker starts its next trajectory.
+            cell = cell_id(job.system.id, job.family.id, message["repeat"])
+            await watch.check(f"after {cell}/{message['corpus_id']}")
+
+    async def run_arm() -> None:
+        if watch is not None:
+            await watch.check("before_first")
+        await run_jobs(
+            jobs,
+            launcher=launcher,
+            ledger=service,
+            on_message=on_message,
+            log_dir=out / "logs",
+            cwd=_REPO_ROOT,
+        )
+        if watch is not None:
+            await watch.check("after_last")
+
+    def write_outcome(ledger: Ledger) -> None:
         """ledger-events.jsonl and run-summary.json, for a completed or an aborted run."""
-        run_events = ledger.events(run_id)
-        events = "".join(json.dumps(e, sort_keys=True) + "\n" for e in run_events)
+        run_events = ledger.invocation_events()
+        events = b"".join(
+            scanned_json_bytes(e, where="ledger-events.jsonl", sort_keys=True) + b"\n"
+            for e in run_events
+        )
         # The pilot reads how often reported input passed its bound (design §12).
         exceeded = Counter(
             e["provider"]
             for e in run_events
             if e["event"] == "settle" and e["input_bound_exceeded"]
         )
-        assert_no_key_shaped(events, where="ledger-events.jsonl")
-        (out / "ledger-events.jsonl").write_text(events, encoding="utf-8")
+        (out / "ledger-events.jsonl").write_bytes(events)
+        if isinstance(launcher, ContainerLauncher):  # C1 evidence, "fail" for a stopped run
+            write_egress_summary(out, jobs, run_events)
         scored = collector.succeeded + collector.failed
         summary.setdefault("status", "completed")
+        if watch is not None:  # design §7.4: how many rounds ran, and whether the arm stopped
+            summary["airgap"] = {"checks": watch.rounds, "broken": watch.broken}
+            # C3 evidence, after the C1 summary it reads; an aborted arm never passes.
+            write_airgap_evidence(
+                out,
+                rounds=watch.rounds,
+                broken=watch.broken or summary["status"] == "aborted",
+                job_ids=[job.job_id for job in jobs],
+            )
         summary.update(
             {
                 "completed_at": _utc_now(),
@@ -521,12 +666,16 @@ def run_agentic(
                 "failed_cells_included_in_correctness_denominator": True,
                 "competitors": sorted(collector.cells),
                 "discarded": collector.discarded,
+                "transcript_inventory": collector.transcript_inventory,
                 "not_run": collector.not_run,
                 "worker_errors": collector.worker_errors,
+                "model_limits_mismatch": collector.limits_mismatch,
                 "families": {fid: stats.summary() for fid, stats in collector.families.items()},
                 "ledger": {
                     provider: {
-                        "spent_before": str(spent_before[provider]),
+                        "spent_before": str(spent_before[provider])
+                        if provider in spent_before
+                        else None,
                         "spent_after": str(ledger.spent(provider)),
                         "cap": str(caps[provider]),
                         "stopped": ledger.stopped(provider),
@@ -544,7 +693,12 @@ def run_agentic(
         )
         _write(out / "run-summary.json", summary)
 
-    try:  # every step after the open, the overrun check included, ends in write_outcome
+    failure: BaseException | None = None
+    ledger: Ledger | None = None
+    try:
+        ledger = Ledger.open(config.ledger_dir, run_id=run_id, caps=caps)
+        for provider in caps:
+            spent_before[provider] = ledger.spent(provider)  # after recovery
         for provider in config.acknowledge_overrun:
             ledger.acknowledge_overrun(provider)
         overrun = sorted({f.provider for f in families if ledger.stopped(f.provider) == "overrun"})
@@ -559,26 +713,36 @@ def run_agentic(
                 f"spent {spent_before[provider]} of cap {cap}",
                 file=sys.stderr,
             )
+        if any(f.api != "scripted" for f in families):
+            # Before any key is read (bootstrap_frame) or any container starts (prepare).
+            plans = provider_plans(jobs, spent_before, caps, rates)
+            problems = full_run_gate(plans, jobs, rates)
+            if problems:
+                raise BenchmarkValidationError("the full-run gate refused: " + "; ".join(problems))
+            summary["live_confirmation"] = text = confirmation_text(plans)
+            authorize_live(text, confirm=confirm)
         prices = {f.model_id: snapshot.models[f.model_id] for f in families if f.provider in caps}
         service = LedgerService(ledger, prices, {f.model_id: f for f in families})
-        asyncio.run(
-            _until_signalled(
-                run_jobs(
-                    jobs,
-                    launcher=launcher,
-                    ledger=service,
-                    on_message=collector.on_message,
-                    log_dir=out / "logs",
-                    cwd=_REPO_ROOT,
-                )
-            )
-        )
-    except BaseException as exc:  # still write what was spent and what ran
-        summary |= {"status": "aborted", "abort_reason": f"{type(exc).__name__}: {exc}"}
-        raise
+        if watch is not None:  # local Ollama only, never through a proxy variable
+            loaded = {f.id: preflight(f.model_id) for f in families if f.api != "scripted"}
+            if loaded:
+                _write(out / "ollama.json", loaded)
+        asyncio.run(_until_signalled(run_arm()))
+    except BaseException as exc:
+        failure = exc
+        detail = redact_key_shaped_text(str(exc))
+        summary |= {"status": "aborted", "abort_reason": f"{type(exc).__name__}: {detail}"}
     finally:
-        try:
-            write_outcome()
-        finally:
-            ledger.close()
+        if ledger is not None:
+            try:
+                write_outcome(ledger)
+            except BaseException as exc:  # retain the interrupt or leak while closing the ledger
+                failure = _finalization_failure(failure, exc)
+            finally:
+                try:
+                    ledger.close()
+                except BaseException as exc:
+                    failure = _finalization_failure(failure, exc)
+    if failure is not None:
+        raise failure
     return summary

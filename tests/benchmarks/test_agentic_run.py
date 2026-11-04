@@ -6,18 +6,22 @@ Every model is scripted and every worker is keyless: no test reaches a network h
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import json
+import os
 import random
 import signal
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 import yaml
@@ -32,12 +36,15 @@ from benchmarks.agentic.protocol import KEY_SHAPED, KeyLeakError
 from benchmarks.agentic.run import (
     OUTPUT_CAP_STOPS,
     AgenticConfig,
+    _Collector,
     _until_signalled,
     cell_id,
+    limits_mismatch,
     plan_jobs,
     run_agentic,
     tool_model_key,
 )
+from benchmarks.agentic.sandbox import ContainerLauncher, Sandbox, SandboxConfig
 from benchmarks.agentic.types import Buckets
 from benchmarks.model_matrix import load_model_matrix
 from benchmarks.report import generate_report
@@ -212,6 +219,55 @@ def test_cell_and_tool_model_keys() -> None:
     assert OUTPUT_CAP_STOPS == {"max_tokens", "max_output_tokens", "MAX_TOKENS", "CONTINUATION"}
 
 
+@pytest.mark.parametrize("kind", ["discarded", "trajectory"])
+async def test_forged_report_cannot_write_outside_run(tmp_path: Path, kind: str) -> None:
+    question = _load_questions(_load_yaml_mapping(SAMPLE_CORPUS, "corpus"))[0]
+    family = load_model_matrix(FIX / "model-matrix.yml").model_families[0]
+    system = load_systems(COMMITTED_MANIFEST)[0]
+    (job,) = plan_jobs([question], [family], [system], repeats=1, seed=7, matrix_dir=FIX)
+    collector = _Collector(tmp_path / "run", {question.id: question}, [family])
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    canary = outside / ("proof--attempt1.json" if kind == "discarded" else f"{question.id}.json")
+    canary.write_text("untouched")
+    record = {
+        "status": "discarded" if kind == "discarded" else "succeeded",
+        "error": None,
+        "answer": "ok",
+        "model_calls": [],
+        "started_at": "2026-11-04T00:00:00Z",
+        "completed_at": "2026-11-04T00:00:01Z",
+        "timing": {
+            f"{k}_ms": 0 for k in ("grant_wait", "failed_attempt", "retry_wait", "used", "overhead")
+        },
+    }
+    report = {
+        "type": kind,
+        "reason": "budget_stop",
+        "record": record,
+        "attempt": 1,
+        "corpus_id": str(outside / "proof") if kind == "discarded" else question.id,
+        "repeat": 1 if kind == "discarded" else "/../../../outside",
+    }
+    try:
+        with pytest.raises(BenchmarkValidationError):
+            await collector.on_message(job, report)
+    finally:
+        assert canary.read_text() == "untouched"
+    assert collector.families[family.id].first_started_at is None
+    assert not collector.out.exists()
+
+    await collector.on_message(job, {**report, "corpus_id": question.id, "repeat": 1, "attempt": 3})
+    cell = cell_id(system.id, family.id, 1)
+    path = (
+        collector.out / "discarded" / cell / f"{question.id}--attempt3.json"
+        if kind == "discarded"
+        else collector.out / "transcripts" / cell / f"{question.id}.json"
+    )
+    stored = json.loads(path.read_text())
+    assert (stored["corpus_id"], stored["repeat"]) == (question.id, 1)
+
+
 def test_agentic_run_budget_stop_discards_and_lists_cells_not_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -245,6 +301,130 @@ def test_a_live_run_refuses_an_expired_price_snapshot(tmp_path: Path) -> None:
     with pytest.raises(BenchmarkValidationError, match="2026-12-31"):
         run_agentic(config, launcher=EveryFamily(), today=date(2026, 12, 31))
     assert not (tmp_path / "ledger").exists()
+
+
+class _EveryFamily(LocalLauncher):
+    def supports(self, family: Any) -> bool:
+        return True
+
+    def command(self, job: Any) -> Any:
+        raise AssertionError("no process may start")
+
+
+def test_an_air_gapped_dry_run_ignores_the_price_snapshot_expiry(tmp_path: Path) -> None:
+    def config(models: tuple[str, ...], out: str) -> AgenticConfig:
+        return _config(
+            tmp_path,
+            matrix_path=COMMITTED_MATRIX,
+            prices_path=COMMITTED_PRICES,
+            models=models,
+            out_dir=tmp_path / out,
+            dry_run=True,
+        )
+
+    late = date(2027, 1, 2)
+    summary = run_agentic(config(("gemma4-12b",), "local"), launcher=_EveryFamily(), today=late)
+    assert summary["dry_run"] is True and summary["models"] == ["gemma4-12b"]
+    with pytest.raises(BenchmarkValidationError, match="expires"):
+        run_agentic(config(("claude-sonnet-5-5",), "hosted"), launcher=_EveryFamily(), today=late)
+
+
+def test_every_reserve_event_names_its_job(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path,
+        models=("scripted-anthropic", "scripted-openai"),
+        systems=("no-docs",),
+        questions=("SYN-EX-001",),
+        repeats=1,
+    )
+    summary = run_agentic(config)
+    assert summary["status"] == "completed"
+    providers = {"scripted-anthropic": "anthropic", "scripted-openai": "openai"}
+    lines = (tmp_path / "run" / "ledger-events.jsonl").read_text().splitlines()
+    reserves = [e for e in map(json.loads, lines) if e["event"] == "reserve"]
+    assert {e["job_id"] for e in reserves} == {f"{f}--no-docs" for f in providers}
+    for event in reserves:
+        family_id, system_id = event["job_id"].split("--")
+        assert system_id == "no-docs" and providers[family_id] == event["provider"]
+
+
+def test_limits_mismatch_reports_each_difference() -> None:
+    family = {f.id: f for f in load_model_matrix(COMMITTED_MATRIX).model_families}[
+        "claude-sonnet-5-5"
+    ]
+    assert limits_mismatch(None, family) == []
+    assert limits_mismatch({"max_input_tokens": 1_000_000, "max_tokens": 128_000}, family) == []
+    assert limits_mismatch({"max_input_tokens": 999, "max_tokens": 1_024}, family) == [
+        "max_input_tokens 999 != max_input_tokens 1000000 in the model matrix",
+        "max_tokens 1024 < max_output_tokens 32768 in the model matrix",
+    ]
+    assert limits_mismatch({"error": "APIConnectionError"}, family) == [
+        "model limits could not be read (APIConnectionError)"
+    ]
+
+
+class _ReportsLimits(LocalLauncher):
+    """A worker that reports model limits in its system_info, then finishes."""
+
+    def command(self, job: Any) -> tuple[list[str], dict[str, str]]:
+        _, env = super().command(job)
+        info = {"type": "system_info", "model_limits": {"max_input_tokens": 999}}
+        code = (
+            "import json, sys\n"
+            "inp, out = sys.stdin.buffer, sys.stdout.buffer\n"
+            "inp.read(int.from_bytes(inp.read(8), 'big'))\n"
+            f"for frame in ({info!r}, {{'type': 'done'}}):\n"
+            "    body = json.dumps(frame).encode()\n"
+            "    out.write(len(body).to_bytes(8, 'big') + body)\n"
+            "    out.flush()\n"
+        )
+        return [sys.executable, "-c", code], env
+
+
+def test_a_mismatch_reaches_the_run_summary(tmp_path: Path) -> None:
+    summary = run_agentic(_scripted_config(tmp_path), launcher=_ReportsLimits())
+    assert summary["model_limits_mismatch"] == [
+        "scripted-anthropic--no-docs: max_input_tokens 999 != max_input_tokens 200000 in the "
+        "model matrix"
+    ]
+    written = json.loads((tmp_path / "run" / "run-summary.json").read_text())
+    assert written["model_limits_mismatch"] == summary["model_limits_mismatch"]
+
+
+def test_a_failed_probe_run_still_writes_fail(tmp_path: Path) -> None:
+    from tests.benchmarks.test_agentic_sandbox import FakeDocker, Probes, _verified
+
+    config = _config(
+        tmp_path,
+        models=("scripted-anthropic",),
+        systems=("no-docs", "python-docs"),
+        questions=("SYN-EX-001",),
+        repeats=1,
+    )
+    sandbox = Sandbox(
+        SandboxConfig(
+            image="sha256:" + "ab" * 32,
+            run_id="r1",
+            out_dir=config.out_dir,
+            index_path=tmp_path / "index.db",
+            keys_file=None,
+            repo_commit="c" * 40,
+        ),
+        docker=FakeDocker(),
+        verify=_verified,
+    )
+    sandbox.config.index_path.touch()
+    probes = Probes(fail_on="scripted-anthropic--python-docs")
+    launcher = ContainerLauncher(sandbox, probe=probes, control=probes.control)
+    with pytest.raises(BenchmarkValidationError, match="isolation probe failed"):
+        run_agentic(config, launcher=launcher)
+    summary = json.loads((tmp_path / "run" / "egress" / "summary.json").read_text())
+    assert summary["isolation_probe"] == "fail"
+    assert set(summary["jobs"]) == {
+        "scripted-anthropic--no-docs",
+        "scripted-anthropic--python-docs",
+    }
+    assert json.loads((tmp_path / "run" / "run-summary.json").read_text())["status"] == "aborted"
 
 
 def test_run_summary_counts_retries_and_reruns(tmp_path: Path) -> None:
@@ -324,7 +504,10 @@ def _start_host(tmp_path: Path, prelude: str = "") -> tuple[subprocess.Popen[byt
         "inp.read()\n"
     )
     host_code = (
-        prelude + "import sys\n"
+        # Only this child resets inherited ignores; a prelude can install its own handlers.
+        "import signal\n"
+        "signal.signal(signal.SIGHUP, signal.SIG_DFL)\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_DFL)\n" + prelude + "import sys\n"
         "from pathlib import Path\n"
         "from benchmarks.agentic.host import LocalLauncher\n"
         "from benchmarks.agentic.run import AgenticConfig, run_agentic\n"
@@ -448,8 +631,19 @@ def _scripted_config(tmp_path: Path) -> AgenticConfig:
     )
 
 
+@pytest.fixture
+def default_signal_handlers(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    getsignal = signal.getsignal
+    before = {s: getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
+    monkeypatch.setattr(
+        signal, "getsignal", lambda s: signal.SIG_DFL if s in before else getsignal(s)
+    )
+    yield
+    assert {s: getsignal(s) for s in before} == before
+
+
 def test_run_agentic_completes_off_the_main_thread(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], default_signal_handlers: None
 ) -> None:
     # No signal handler can be installed off the main thread: the run goes on without one,
     # and says so.
@@ -462,6 +656,7 @@ def test_run_agentic_completes_off_the_main_thread(
 
 def test_a_loop_without_signal_support_runs_without_handlers(
     capsys: pytest.CaptureFixture[str],
+    default_signal_handlers: None,
 ) -> None:
     before = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGHUP)}
     removed: list[int] = []
@@ -487,6 +682,34 @@ def test_a_loop_without_signal_support_runs_without_handlers(
     assert {signum: signal.getsignal(signum) for signum in before} == before
     err = capsys.readouterr().err
     assert "SIGTERM, SIGHUP" in err and "NotImplementedError" in err
+
+
+def test_an_ignored_sighup_is_left_out_of_the_skipped_handlers_line(
+    capsys: pytest.CaptureFixture[str],
+    default_signal_handlers: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    getsignal = signal.getsignal
+    monkeypatch.setattr(
+        signal, "getsignal", lambda s: signal.SIG_IGN if s == signal.SIGHUP else getsignal(s)
+    )
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+
+        def unsupported(*args: Any) -> None:
+            raise NotImplementedError
+
+        loop.add_signal_handler = unsupported  # type: ignore[method-assign]
+
+        async def run() -> None:
+            return None
+
+        await _until_signalled(run())
+
+    asyncio.run(scenario())
+    line = next(line for line in capsys.readouterr().err.splitlines() if "handler" in line)
+    assert "SIGTERM" in line and "SIGHUP" not in line
 
 
 def test_run_agentic_restores_the_previous_signal_dispositions(tmp_path: Path) -> None:
@@ -673,6 +896,27 @@ def test_late_max_tokens_answers_count_as_answer_turns_and_cap_stops(
     assert (fam["output_cap_stops"], fam["answer_turns"]) == (2, 100)
 
 
+def test_run_refuses_escaped_keys_before_writing_json_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    key = "AIza" + "g" * 35
+    config = _config(tmp_path, run_id="run\n" + key, dry_run=True)
+    with pytest.raises(KeyLeakError) as caught:
+        run_agentic(config)
+    assert key not in str(caught.value)
+    assert not (config.out_dir / "environment.json").exists()
+
+    # Check the run's exported events separately from the persistent provider ledger.
+    config = _config(tmp_path, out_dir=tmp_path / "export")
+    events = [{"event": "stop", "provider": "google", "reason": "é" + key}]
+    monkeypatch.setattr(Ledger, "invocation_events", lambda self: events)
+    monkeypatch.setattr("benchmarks.agentic.run.run_jobs", AsyncMock())
+    with pytest.raises(KeyLeakError) as caught:
+        run_agentic(config)
+    assert key not in str(caught.value)
+    assert not (config.out_dir / "ledger-events.jsonl").exists()
+
+
 def test_a_key_shape_in_an_input_file_is_refused_before_any_snapshot(tmp_path: Path) -> None:
     manifest = tmp_path / "manifest.yml"
     key_shape = "sk-ant-api03-" + "A" * 90
@@ -681,6 +925,235 @@ def test_a_key_shape_in_an_input_file_is_refused_before_any_snapshot(tmp_path: P
         run_agentic(_config(tmp_path, manifest_path=manifest, dry_run=True))
     assert key_shape not in str(caught.value)
     assert not (tmp_path / "run" / "snapshots").exists()
+
+
+@pytest.mark.parametrize("escape_key", [False, True])
+def test_dry_run_refuses_an_escaped_key_in_corpus_before_writing_snapshots(
+    tmp_path: Path, escape_key: bool
+) -> None:
+    data = yaml.safe_load(SAMPLE_CORPUS.read_bytes())
+    key = "AIza" + "g" * 35
+    data["questions"][0]["prompt"] += "\n" + key
+    text = json.dumps(data)
+    if escape_key:
+        text = text.replace(key, r"\u0041" + key[1:])
+    corpus = tmp_path / "encoded.yml"
+    corpus.write_text(text)
+    with pytest.raises(KeyLeakError) as error:
+        run_agentic(_config(tmp_path, corpus_path=corpus, dry_run=True))
+    assert key not in str(error.value)
+    assert not (tmp_path / "run" / "snapshots").exists()
+
+
+def _assert_input_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], args: list[str], key: str
+) -> None:
+    with pytest.raises(SystemExit) as caught:
+        main([*_cli_args(tmp_path), "--dry-run", *args])
+    output = capsys.readouterr()
+    assert caught.value.code == 3
+    assert "key leak" in output.err and key not in output.err and not output.out
+    assert not (tmp_path / "run").exists()
+    assert not (tmp_path / "ledger").exists()
+
+
+@pytest.mark.parametrize(
+    "case, delimiter",
+    [("merge", r"\_"), ("merge", r"\x20"), ("duplicate", r"\_"), ("alias", r"\_")],
+)
+def test_cli_checks_scalar_before_yaml_discards_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], case: str, delimiter: str
+) -> None:
+    key = "AIza" + "g" * 35
+    quoted = f'"defaults{delimiter}{key}"'
+    entries = {
+        "merge": f"    <<: {{prompt: {quoted}}}\n",
+        "duplicate": f"    prompt: {quoted}\n",
+        "alias": f"    prompt: &hidden {quoted}\n    other: *hidden\n    other: safe\n",
+    }
+    corpus = tmp_path / "input.yml"
+    corpus.write_text("questions:\n  - id: SYN-EX-001\n" + entries[case] + "    prompt: safe\n")
+    _assert_input_refused(
+        tmp_path, capsys, ["--corpus", str(corpus), "--questions", "SYN-EX-001"], key
+    )
+
+
+@pytest.mark.parametrize("field, original", [("model_id", "scripted-1"), ("api", "scripted")])
+def test_cli_checks_matrix_before_validation_or_price_lookup(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], field: str, original: str
+) -> None:
+    key = "AIza" + "g" * 35
+    matrix = tmp_path / "matrix.yml"
+    matrix.write_text(
+        (FIX / "model-matrix.yml").read_text().replace(f"{field}: {original}", f"{field}: {key}", 1)
+    )
+    _assert_input_refused(tmp_path, capsys, ["--matrix", str(matrix)], key)
+
+
+@pytest.mark.parametrize(
+    "option", ["--models", "--systems", "--questions", "--out", "--image", "--repeats"]
+)
+def test_cli_checks_runtime_inputs_before_errors_or_artifacts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], option: str
+) -> None:
+    key = "AIza" + "g" * 35
+    value = str(tmp_path / key) if option == "--out" else key
+    extra = ["--launcher", "container"] if option == "--image" else []
+    _assert_input_refused(tmp_path, capsys, [*extra, option, value], key)
+    assert not (tmp_path / key).exists()
+
+
+@pytest.mark.parametrize(
+    "bad", ['"private-source\\q"', "[private-source, }", "!private-source discarded"]
+)
+def test_cli_reports_malformed_yaml_without_source_excerpt(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], bad: str
+) -> None:
+    corpus = tmp_path / "malformed.yml"
+    corpus.write_text(f"questions: {bad}\n")
+    with pytest.raises(SystemExit) as caught:
+        main([*_cli_args(tmp_path), "--dry-run", "--corpus", str(corpus)])
+    output = capsys.readouterr()
+    assert caught.value.code == 2
+    assert "corpus" in output.err and "YAML" in output.err and "line 1" in output.err
+    assert "private-source" not in output.err and not output.out
+    assert not (tmp_path / "run").exists()
+    assert not (tmp_path / "ledger").exists()
+
+
+def test_cli_accepts_benign_yaml_overrides_aliases_and_token_boundaries(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    corpus = tmp_path / "valid.yml"
+    key = "AIza" + "g" * 35
+    corpus.write_text(
+        f"defaults: &base {{prompt: prefix{key}}}\n"
+        "unused: &loop [*loop]\n"
+        "questions:\n  - <<: *base\n    id: SYN-EX-001\n    prompt: first\n    prompt: second\n"
+    )
+    assert (
+        main(
+            [
+                *_cli_args(tmp_path),
+                "--dry-run",
+                "--corpus",
+                str(corpus),
+                "--questions",
+                "SYN-EX-001",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["corpus_ids"] == ["SYN-EX-001"]
+    assert (tmp_path / "run" / "snapshots" / "corpus.yml").read_bytes() == corpus.read_bytes()
+
+
+def test_cli_plans_and_snapshots_the_same_files_even_if_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = _cli_args(tmp_path)
+    sources: dict[Path, bytes] = {}
+    for flag, name, original in (
+        ("--corpus", "corpus.yml", SAMPLE_CORPUS),
+        ("--manifest", "competitor-manifest.yml", COMMITTED_MANIFEST),
+        ("--matrix", "model-matrix.yml", FIX / "model-matrix.yml"),
+        ("--prices", "price-snapshot.yml", FIX / "prices.yml"),
+    ):
+        path = tmp_path / name
+        sources[path] = original.read_bytes()
+        path.write_bytes(sources[path])
+        args.extend([flag, str(path)])
+    opened: list[Path] = []
+    original_open = Path.open
+
+    def open_then_replace(path: Path, *args: Any, **kwargs: Any) -> Any:
+        stream = original_open(path, *args, **kwargs)
+        if path in sources:
+            opened.append(path)
+            replacement = tmp_path / "replacement"
+            replacement.write_bytes(b"questions: []\n")
+            replacement.replace(path)  # the open descriptor still refers to the original
+        return stream
+
+    monkeypatch.setattr(Path, "open", open_then_replace)
+    assert main([*args, "--dry-run", "--repeats", "1"]) == 0
+    assert json.loads(capsys.readouterr().out)["planned_cells"] == 18
+    assert sorted(opened) == sorted(sources)
+    for path, data in sources.items():
+        assert (tmp_path / "run" / "snapshots" / path.name).read_bytes() == data
+
+
+def test_decoded_scan_visits_yaml_aliases_only_once() -> None:
+    from benchmarks.agentic.protocol import assert_no_key_shaped_json
+
+    key = "AIza" + "g" * 35
+    value = yaml.safe_load('items: &loop [*loop, "text\\n' + key + '"]')
+    with pytest.raises(KeyLeakError):
+        assert_no_key_shaped_json(value, where="aliased input")
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "malformed",
+        "malformed-hex",
+        "valid-nested",
+        "native-url",
+        "serialized-field",
+        "truncated",
+        "base64",
+    ],
+)
+def test_transcript_checks_escaped_tool_arguments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    key = "AIza" + "g" * 35
+    raw = '{"url":"failure' + r"\n" + key + '"'  # missing the closing brace
+    arguments: str | dict[str, Any] = raw
+    if case == "valid-nested":
+        arguments = json.dumps({"url": r"\n" + key}, indent=2)
+    elif case == "truncated":
+        # Only the clipped tool error ends exactly at the 39-character Google shape.
+        arguments = raw[:-1] + "X"
+        limit = len("tool arguments must be a JSON object: " + arguments) - 1
+        monkeypatch.setattr("benchmarks.agentic.run.HOSTED_CAPS", Caps(result_bytes=limit))
+    elif case == "base64":
+        arguments = raw.replace(r"\n", "bn")
+    elif case == "malformed-hex":
+        arguments = '{"url":"bad' + r"\x20" + key + '"}'
+    elif case == "native-url":
+        arguments = {"url": "https://docs.python.org/3/?token=" + key}
+    elif case == "serialized-field":
+        arguments = json.dumps({"nested": [{key: True}]})
+    usage = {"input_tokens": 1000, "output_tokens": 100}
+    steps = [
+        {"tools": [{"name": "fetch", "arguments": arguments}], "usage": usage},
+        {"text": "done", "usage": usage},
+    ]
+    config = _config(
+        tmp_path,
+        manifest_path=_write_manifest(tmp_path),
+        matrix_path=_matrix_with(tmp_path, {"scripted-anthropic": steps}),
+        models=("scripted-anthropic",),
+        systems=("docs-fetch",),
+        questions=("SYN-EX-001",),
+        repeats=1,
+    )
+    transcript = config.out_dir / "transcripts/docs-fetch--scripted-anthropic--r1/SYN-EX-001.json"
+    if case == "base64":
+        assert run_agentic(config)["succeeded_cells"] == 1
+        (call,) = json.loads(transcript.read_text())["tool_calls"]
+        assert call["raw_arguments"] == arguments and arguments in call["result"]
+    else:
+        with pytest.raises(KeyLeakError) as caught:
+            run_agentic(config)
+        if case == "native-url":
+            assert "worker output failed its credential check" in str(caught.value)
+        assert key not in str(caught.value)
+        assert not transcript.exists()
+        assert all(
+            key.encode() not in p.read_bytes() for p in config.out_dir.rglob("*") if p.is_file()
+        )
 
 
 def _ref_tools_manifest(tmp_path: Path, **fields: Any) -> Path:
@@ -921,6 +1394,116 @@ def test_runs_share_one_durable_ledger_by_default(
     assert (expected / "anthropic.jsonl").is_file()
 
 
+@pytest.mark.parametrize("stage", ["opening_balance", "collector"])
+def test_initialization_interrupt_does_not_leave_an_open_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    interrupt = KeyboardInterrupt("stop during setup")
+    config = _config(tmp_path, models=("scripted-anthropic",), systems=("no-docs",))
+    with monkeypatch.context() as setup:
+        if stage == "opening_balance":
+            original = Ledger.spent
+            interrupted = False
+
+            def spent(ledger: Ledger, provider: str) -> Decimal:
+                nonlocal interrupted
+                if not interrupted:
+                    interrupted = True
+                    raise interrupt
+                return original(ledger, provider)
+
+            setup.setattr(Ledger, "spent", spent)
+        else:
+
+            def interrupted_collector(*args: Any, **kwargs: Any) -> None:
+                raise interrupt
+
+            setup.setattr("benchmarks.agentic.run._Collector", interrupted_collector)
+        with pytest.raises(KeyboardInterrupt) as error:
+            run_agentic(config)
+        assert error.value is interrupt
+    Ledger.open(config.ledger_dir, run_id="next-invocation").close()
+
+
+@pytest.mark.parametrize("stage", ["export", "run", "export_after_failure"])
+def test_keyboard_interrupt_survives_finalization_and_releases_the_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    interrupt = KeyboardInterrupt("operator interrupt")
+    config = _config(tmp_path, models=("scripted-anthropic",), systems=("no-docs",))
+
+    def before_workers(*args: Any, **kwargs: Any) -> None:
+        if stage == "run":
+            raise interrupt
+        if stage == "export_after_failure":
+            raise BenchmarkValidationError("earlier failure")
+
+    def fail_export(path: Path, data: bytes) -> int:
+        if path.name == "ledger-events.jsonl":
+            if stage == "run":
+                raise KeyLeakError("key found in evidence")
+            raise interrupt
+        return write(path, data)
+
+    write = Path.write_bytes
+    monkeypatch.setattr(Path, "write_bytes", fail_export)
+    monkeypatch.setattr("benchmarks.agentic.run.LedgerService", before_workers)
+    monkeypatch.setattr("benchmarks.agentic.run.run_jobs", AsyncMock())
+    with pytest.raises(KeyboardInterrupt) as error:
+        run_agentic(config)
+    assert error.value is interrupt
+    if stage != "export":
+        reason = "key found in evidence" if stage == "run" else "earlier failure"
+        assert reason in str(interrupt.__cause__)
+    Ledger.open(config.ledger_dir, run_id="after-interrupt").close()
+
+
+def test_cli_leak_stays_primary_when_the_artifact_volume_is_full(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from tests.benchmarks.test_agentic_host import SYNTHETIC_KEY, _fake_worker, _reserve_frame
+
+    code = f"import os; os.write(2, {SYNTHETIC_KEY.encode()!r})\n" + _fake_worker(
+        _reserve_frame(1024)
+    )
+    monkeypatch.setattr(
+        LocalLauncher, "command", lambda self, job: ([sys.executable, "-I", "-c", code], {})
+    )
+    replace = os.replace
+    write = Path.write_bytes
+    failures = []
+
+    def no_space(src: Any, dst: Any, **kwargs: Any) -> None:
+        if str(dst).endswith(".stderr.log"):
+            failures.append("stderr")
+            raise OSError(errno.ENOSPC, "artifact volume full")
+        replace(src, dst, **kwargs)
+
+    def no_export(path: Path, data: bytes) -> int:
+        if path.name == "ledger-events.jsonl":
+            failures.append("export")
+            raise OSError(errno.ENOSPC, "artifact volume full")
+        return write(path, data)
+
+    monkeypatch.setattr(os, "replace", no_space)
+    monkeypatch.setattr(Path, "write_bytes", no_export)
+    with pytest.raises(SystemExit) as error:
+        main([*_cli_args(tmp_path), "--models", "scripted-anthropic", "--systems", "no-docs"])
+    assert error.value.code == 3
+    message = capsys.readouterr().err
+    assert "key leak" in message and SYNTHETIC_KEY not in message
+    assert failures == ["stderr", "export"]
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "ledger" / "anthropic.jsonl").read_text().splitlines()
+    ]
+    reserve, settle = (e for e in events if e["event"] in ("reserve", "settle"))
+    assert settle["outcome"] == "worker_lost" and Decimal(settle["booked"]) == 2 * Decimal(
+        reserve["bound"]
+    )
+    assert not list((tmp_path / "run" / "logs").glob("*.stderr.log"))
+
+
 def _cli_args(tmp_path: Path) -> list[str]:
     return [
         "agentic-run",
@@ -937,3 +1520,222 @@ def _cli_args(tmp_path: Path) -> list[str]:
         "--questions",
         "SYN-EX-001,SYN-EX-002",
     ]
+
+
+# --- the live gate inside run_agentic, and the agentic-run CLI (Task 13) -------------------------
+
+
+def _container(tmp_path: Path, keys_file: Path | None = None) -> tuple[ContainerLauncher, Any]:
+    from tests.benchmarks.test_agentic_sandbox import FakeDocker, Probes, _verified
+
+    docker = FakeDocker()
+    sandbox = Sandbox(
+        SandboxConfig(
+            image="sha256:" + "ab" * 32,
+            run_id="r1",
+            out_dir=tmp_path / "run",
+            index_path=tmp_path / "index.db",
+            keys_file=keys_file,
+            repo_commit="c" * 40,
+        ),
+        docker=docker,
+        verify=_verified,
+    )
+    probes = Probes()
+    return ContainerLauncher(sandbox, probe=probes, control=probes.control), docker
+
+
+def _live_config(tmp_path: Path, **overrides: Any) -> AgenticConfig:
+    values: dict[str, Any] = {
+        "matrix_path": COMMITTED_MATRIX,
+        "prices_path": COMMITTED_PRICES,
+        "models": ("claude-sonnet-5-5",),
+        "systems": ("no-docs",),
+        "questions": ("SYN-EX-001",),
+        "repeats": 1,
+    }
+    return _config(tmp_path, **(values | overrides))
+
+
+def test_the_gate_runs_before_any_key_is_read_or_container_started(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CI", "1")
+    launcher, docker = _container(tmp_path, keys_file=tmp_path / "missing.env")
+    with pytest.raises(BenchmarkValidationError, match="refused under CI"):
+        run_agentic(_live_config(tmp_path), launcher=launcher, today=date(2026, 11, 4))
+    assert docker.calls == []
+    summary = json.loads((tmp_path / "run" / "run-summary.json").read_text())
+    assert summary["status"] == "aborted" and "refused under CI" in summary["abort_reason"]
+
+
+def test_a_declined_confirmation_starts_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CI", raising=False)
+    launcher, docker = _container(tmp_path, keys_file=tmp_path / "missing.env")
+    shown: list[str] = []
+
+    def decline(text: str) -> bool:
+        shown.append(text)
+        return False
+
+    with pytest.raises(BenchmarkValidationError, match="not confirmed"):
+        run_agentic(
+            _live_config(tmp_path), launcher=launcher, today=date(2026, 11, 4), confirm=decline
+        )
+    assert docker.calls == []
+    assert len(shown) == 1 and shown[0].startswith("anthropic: 1 trajectories")
+    summary = json.loads((tmp_path / "run" / "run-summary.json").read_text())
+    assert summary["status"] == "aborted" and summary["live_confirmation"] == shown[0]
+
+
+def test_the_full_run_gate_stops_a_run_before_the_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CI", raising=False)
+    launcher, docker = _container(tmp_path)
+    config = _live_config(tmp_path, models=("gpt-6.1-sol",), repeats=91)
+
+    def never(text: str) -> bool:
+        raise AssertionError("the gate refuses first")
+
+    with pytest.raises(BenchmarkValidationError, match="--reference-run"):
+        run_agentic(config, launcher=launcher, today=date(2026, 11, 4), confirm=never)
+    assert docker.calls == []
+
+
+def test_the_default_model_set_is_the_hosted_arm(tmp_path: Path) -> None:
+    launcher, _ = _container(tmp_path)
+    config = _live_config(tmp_path, models=None, dry_run=True)
+    summary = run_agentic(config, launcher=launcher, today=date(2026, 11, 4))
+    assert summary["models"] == ["claude-sonnet-5-5", "gpt-6.1-sol", "gemini-3.8-flash"]
+    named = _live_config(tmp_path, models=("gemma4-12b",), dry_run=True, out_dir=tmp_path / "g")
+    assert run_agentic(named, launcher=launcher, today=date(2026, 11, 4))["models"] == [
+        "gemma4-12b"
+    ]
+
+
+def test_run_agentic_refuses_mixing_the_air_gapped_and_hosted_arms(tmp_path: Path) -> None:
+    launcher, _ = _container(tmp_path)
+    config = _live_config(tmp_path, models=("claude-sonnet-5-5", "gemma4-12b"), dry_run=True)
+    with pytest.raises(BenchmarkValidationError, match="the air-gapped arm runs alone"):
+        run_agentic(config, launcher=launcher, today=date(2026, 11, 4))
+
+
+def _cli(tmp_path: Path, *extra: str) -> list[str]:
+    return [
+        "agentic-run",
+        "--corpus",
+        str(SAMPLE_CORPUS),
+        "--out",
+        str(tmp_path / "run"),
+        "--matrix",
+        str(FIX / "model-matrix.yml"),
+        "--prices",
+        str(FIX / "prices.yml"),
+        "--ledger-dir",
+        str(tmp_path / "ledger"),
+        "--models",
+        "scripted-anthropic",
+        "--questions",
+        "SYN-EX-001",
+        "--repeats",
+        "1",
+        *extra,
+    ]
+
+
+def test_cli_container_launcher_defaults_to_a_dry_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import benchmarks.agentic.sandbox as sandbox_module
+
+    def no_docker(env: Any) -> Any:
+        async def run(argv: Any) -> Any:
+            raise AssertionError(f"docker must not run in a dry run: {argv}")
+
+        return run
+
+    monkeypatch.setattr(sandbox_module, "docker_runner", no_docker)
+    image = "sha256:" + "0" * 64
+    assert main(_cli(tmp_path, "--launcher", "container", "--image", image)) == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["dry_run"] is True and summary["planned_cells"] == 3
+    assert not (tmp_path / "ledger").exists()
+
+
+def test_cli_builds_the_production_sandbox_with_the_real_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Amendment 6: on the production path the sandbox keeps the real verify_image.
+    import benchmarks.agentic.run as agentic_run
+    from benchmarks.agentic.sandbox import verify_image
+
+    seen: dict[str, Any] = {}
+
+    def capture(config: AgenticConfig, **kwargs: Any) -> dict[str, Any]:
+        seen.update(config=config, **kwargs)
+        return {"dry_run": config.dry_run}
+
+    monkeypatch.setattr(agentic_run, "run_agentic", capture)
+    keys = tmp_path / "keys.env"
+    image = "sha256:" + "1" * 64
+    argv = ["--launcher", "container", "--image", image, "--keys-file", str(keys), "--live"]
+    assert main(_cli(tmp_path, *argv, "--run-id", "run-42", "--index", str(tmp_path / "i.db"))) == 0
+    launcher = seen["launcher"]
+    assert isinstance(launcher, ContainerLauncher)
+    assert launcher.sandbox.verify is verify_image
+    sandbox_config = launcher.sandbox.config
+    assert sandbox_config.run_id == seen["config"].run_id == "run-42"
+    assert (sandbox_config.image, sandbox_config.keys_file) == (image, keys)
+    assert sandbox_config.index_path == tmp_path / "i.db"
+    assert sandbox_config.out_dir == tmp_path / "run"
+    assert seen["config"].dry_run is False
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ("--live",),  # the local launcher runs scripted models only
+        ("--launcher", "container", "--image", "sha256:" + "0" * 64, "--live", "--dry-run"),
+        ("--launcher", "container"),  # no --image
+    ],
+)
+def test_cli_refuses_live_with_the_local_launcher(tmp_path: Path, extra: tuple[str, ...]) -> None:
+    with pytest.raises(SystemExit) as caught:
+        main(_cli(tmp_path, *extra))
+    assert caught.value.code == 2
+
+
+async def test_first_managed_signal_survives_spawn_unwinding(
+    default_signal_handlers: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = asyncio.get_running_loop()
+    callbacks: dict[int, Any] = {}
+
+    def register(signum: int, callback: Any, *args: Any) -> None:
+        callbacks[signum] = lambda: callback(*args)
+
+    monkeypatch.setattr(loop, "add_signal_handler", register)
+    monkeypatch.setattr(loop, "remove_signal_handler", lambda signum: True)
+    monkeypatch.setattr(signal, "signal", lambda *args: None)
+    ready, unwinding, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def spawning() -> None:
+        ready.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            unwinding.set()
+            await release.wait()
+            raise
+
+    run = asyncio.create_task(_until_signalled(spawning()))
+    await asyncio.wait_for(ready.wait(), 2)
+    callbacks[signal.SIGTERM]()
+    await asyncio.wait_for(unwinding.wait(), 2)
+    callbacks[signal.SIGHUP]()
+    release.set()
+    with pytest.raises(asyncio.CancelledError, match="signal SIGTERM"):
+        await run

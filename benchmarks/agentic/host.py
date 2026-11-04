@@ -9,31 +9,38 @@ its bound.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import signal
 import subprocess
 import sys
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from contextlib import suppress
+import tempfile
+import traceback
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass
+from functools import partial
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, BinaryIO, Protocol
 
 from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
 from benchmarks.agentic.bridge import SystemSpec
+from benchmarks.agentic.cleanup import add_cleanup_cause, add_safe_cleanup_cause, finish
 from benchmarks.agentic.ledger import LedgerService
 from benchmarks.agentic.loop import Caps
 from benchmarks.agentic.protocol import (
+    KEY_SHAPED,
     MAX_FRAME_BYTES,
+    WORKER_FRAME_LIMIT_EXIT,
+    WORKER_LEAK_REASON,
     FrameTooLarge,
     KeyLeakError,
-    assert_no_key_shaped,
     encode_frame,
     read_frame,
     redact_key_shaped,
+    redact_key_shaped_text,
 )
 from benchmarks.agentic.types import Buckets
+from benchmarks.agentic.worker import MAX_RERUNS
 from benchmarks.model_matrix import ModelFamily
 from benchmarks.runner import BenchmarkValidationError
 
@@ -41,6 +48,8 @@ from benchmarks.runner import BenchmarkValidationError
 _LOCAL_ENV = ("PATH", "HOME", "LANG", "TMPDIR", "XDG_CACHE_HOME", "VIRTUAL_ENV")
 #: How long teardown waits for a killed worker to exit before it scrubs and settles anyway.
 _EXIT_WAIT_S = 30.0
+#: Scan a whole snapshot so a token cannot straddle scan boundaries. Fail closed above this size.
+_MAX_LOG_BYTES = 8 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -51,6 +60,21 @@ class WorkerJob:
     trajectories: tuple[dict[str, Any], ...]  # {"corpus_id", "prompt", "repeat"}, in run order
     caps: Caps
 
+    def report_coordinates(self, message: dict[str, Any]) -> tuple[str, int]:
+        """Validate a cell report and return its host-planned output coordinates."""
+        if message["type"] != "not_run" or "attempt" in message:
+            attempt = message.get("attempt")
+            if type(attempt) is not int or not 1 <= attempt <= 1 + MAX_RERUNS:
+                raise BenchmarkValidationError(f"worker {self.job_id} reported an invalid attempt")
+
+        corpus_id, repeat = message.get("corpus_id"), message.get("repeat")
+        # JSON booleans and floats can compare equal to an integer repeat.
+        if isinstance(corpus_id, str) and type(repeat) is int:
+            for item in self.trajectories:
+                if (item["corpus_id"], item["repeat"]) == (corpus_id, repeat):
+                    return item["corpus_id"], item["repeat"]
+        raise BenchmarkValidationError(f"worker {self.job_id} reported an unassigned trajectory")
+
 
 class Launcher(Protocol):
     def supports(self, family: ModelFamily) -> bool:
@@ -59,6 +83,22 @@ class Launcher(Protocol):
 
     def command(self, job: WorkerJob) -> tuple[list[str], dict[str, str]]:
         """The worker's argv and its whole environment."""
+        raise NotImplementedError
+
+    def bootstrap_frame(self, job: WorkerJob) -> dict[str, Any] | None:
+        """The private first frame for the worker's stdin, or None. Called once, after prepare."""
+        raise NotImplementedError
+
+    async def prepare(self, jobs: Sequence[WorkerJob]) -> None:
+        """Before any worker starts; raise to stop the run with nothing spent."""
+        raise NotImplementedError
+
+    async def stop_worker(self, job: WorkerJob) -> None:
+        """After the group kill and before the job's in-flight unit is settled."""
+        raise NotImplementedError
+
+    async def close(self) -> list[str]:
+        """After every worker is gone: release all; return problems, raise only KeyLeakError."""
         raise NotImplementedError
 
 
@@ -71,6 +111,18 @@ class LocalLauncher:
     def command(self, job: WorkerJob) -> tuple[list[str], dict[str, str]]:
         env = {name: os.environ[name] for name in _LOCAL_ENV if name in os.environ}
         return [sys.executable, "-m", "benchmarks", "agentic-worker"], env
+
+    def bootstrap_frame(self, job: WorkerJob) -> dict[str, Any] | None:
+        return None
+
+    async def prepare(self, jobs: Sequence[WorkerJob]) -> None:
+        return None
+
+    async def stop_worker(self, job: WorkerJob) -> None:
+        return None
+
+    async def close(self) -> list[str]:
+        return []
 
 
 def refuse_host_keys(environ: Mapping[str, str]) -> None:
@@ -92,7 +144,8 @@ def _start_anchor() -> subprocess.Popen[bytes]:
     its pid, which is the group id, cannot be reused while the host may still signal it. It
     reads its stdin, a pipe only the host holds, so it also ends with a host killed outright.
     """
-    # shortcut: needs cat on PATH (every CI runner image has it); PR 4's worker image must too
+    # The host's `cat`; run.sh checks for it, and the worker image has it too
+    # (benchmarks/sandbox/Dockerfile).
     return subprocess.Popen(
         ["cat"],
         stdin=subprocess.PIPE,
@@ -107,8 +160,8 @@ def _kill_group(anchor: subprocess.Popen[bytes]) -> None:
 
     The anchor is not reaped before this, so the group id is still this job's.
     """
-    # shortcut: reaches only this host's process tree; PR 4's container launcher must give the
-    # same guarantee, which removing the container does, and signal only what it holds.
+    # Reaches only this host's process tree. A container launcher's `stop_worker` removes its
+    # own container, which ends everything in it, before the unit is settled.
     # ESRCH, or EPERM (macOS, when the group holds only zombies, the anchor included).
     with suppress(ProcessLookupError, PermissionError):
         os.killpg(anchor.pid, signal.SIGKILL)
@@ -122,45 +175,123 @@ async def _reap(anchor: subprocess.Popen[bytes]) -> None:
         await asyncio.to_thread(anchor.wait, _EXIT_WAIT_S)
 
 
+def _diagnostic(message: str) -> None:
+    # During terminal hangup even stderr can be closed.
+    if sys.stderr is not None:
+        with suppress(OSError, ValueError):
+            print(redact_key_shaped_text(message), file=sys.stderr, flush=True)
+
+
 async def _teardown(
-    proc: asyncio.subprocess.Process,
+    proc: asyncio.subprocess.Process | None,
     anchor: subprocess.Popen[bytes],
     log_path: Path,
     ledger: LedgerService,
     in_flight: str | None,
-) -> str | None:
-    """Kill the worker's group, scrub its log and book its open unit; the log's key pattern."""
-    try:
-        # The whole group, even after the worker exited: no descendant outlives it to write.
+    worker_log: BinaryIO,
+    stop_worker: Callable[[], Awaitable[None]] | None = None,
+    on_leak: Callable[[KeyLeakError], None] | None = None,
+) -> None:
+    """Kill the worker, scrub its log and book any open unit before teardown returns."""
+
+    errors: list[BaseException] = []
+    location = f"worker teardown ({log_path.name})"
+
+    @contextmanager
+    def attempt() -> Iterator[None]:
+        # Report each job's failures before gather drains it, and attempt every cleanup step.
         try:
-            _kill_group(anchor)
-            with suppress(TimeoutError):  # a worker that never exits cannot hang the run
+            yield
+        except BaseException as exc:  # noqa: BLE001 - propagate after all cleanup steps
+            if isinstance(exc, KeyLeakError):
+                ledger.stop_grants()
+                if on_leak is not None:
+                    on_leak(exc)
+            errors.append(exc)
+
+    with attempt():
+        _kill_group(anchor)
+        if proc is not None:
+            with suppress(TimeoutError):
                 await asyncio.wait_for(proc.wait(), _EXIT_WAIT_S)
-        finally:
-            await _reap(anchor)
-        return _publish_scrubbed(log_path)
-    finally:  # whatever happened to the log
-        if in_flight is not None:  # may have been billed: booked at twice its bound
+    with attempt():
+        await _reap(anchor)
+    if stop_worker is not None:
+        with attempt():
+            await stop_worker()
+    with attempt():
+        redacted, pattern = _scrubbed_snapshot(worker_log)
+        if pattern:
+            ledger.stop_grants()
+        detected = f"a key-shaped string ({pattern} pattern) was found in {log_path}"
+        leak = KeyLeakError(detected) if pattern else None
+        if leak is not None and on_leak is not None:
+            on_leak(leak)
+        try:
+            _publish_worker_log(redacted, log_path)
+        except Exception:
+            if leak is not None:
+                # Keep the leak primary and report the storage error after settlement.
+                leak.args = (f"{detected}; scrubbed log publication failed",)
+                errors.append(leak)
+            raise
+        if leak is not None:
+            leak.args = (f"{detected}; redacted there",)
+            raise leak
+    with attempt():
+        worker_log.close()
+    if in_flight is not None:
+        with attempt():
             await ledger.settle(in_flight, outcome="worker_lost", buckets=None)
 
+    # Formatting failures must never interrupt mandatory scrubbing or accounting.
+    for i, exc in enumerate(errors):
+        try:
+            detail = f"{location}: {type(exc).__name__}: {redact_key_shaped_text(str(exc))}"
+            if KEY_SHAPED.search("".join(traceback.format_exception(exc, limit=0))):
+                # An outer exception may be clean while its notes or chained daemon error leak.
+                leak = KeyLeakError(detail + " (key shape redacted)")
+                errors[i] = leak
+                ledger.stop_grants()
+                if on_leak is not None:
+                    on_leak(leak)
+            else:
+                exc.add_note(location)
+            _diagnostic(detail)
+        except Exception:  # noqa: BLE001 - an unscannable failure must not enter the traceback
+            leak = KeyLeakError(f"{location}: could not safely report {type(exc).__name__}")
+            errors[i] = leak
+            ledger.stop_grants()
+            if on_leak is not None:
+                on_leak(leak)
+    if errors:
+        for primary, secondary in zip(errors, errors[1:]):
+            add_cleanup_cause(primary, secondary)
+        raise errors[0]
 
-def _publish_scrubbed(log_path: Path) -> str | None:
-    """Replace the log by its scrubbed snapshot; the key pattern it held, if any.
 
-    On every exit, a raise or a cancel included, the leaked bytes never stay on disk. The copy
-    replaces the log, so a writer still holding it writes into an unlinked file. If the copy
-    cannot be published, the log is unlinked instead, for the same reason.
-    """
-    redacted, pattern = redact_key_shaped(log_path.read_bytes())
-    scrubbed = log_path.with_name(log_path.name + ".tmp")
+def _scrubbed_snapshot(worker_log: BinaryIO) -> tuple[bytes, str | None]:
+    """Late writers keep their anonymous inode and offset."""
+    fd = worker_log.fileno()
+    size = os.fstat(fd).st_size
+    if size > _MAX_LOG_BYTES:
+        raise BenchmarkValidationError(f"worker log exceeds the {_MAX_LOG_BYTES}-byte scan limit")
+    data = os.pread(fd, size, 0)
+    if len(data) != size:
+        raise OSError("incomplete worker log read")
+    return redact_key_shaped(data)
+
+
+def _publish_worker_log(redacted: bytes, log_path: Path) -> None:
+    stage = tempfile.NamedTemporaryFile(dir=log_path.parent, suffix=".tmp", delete=False)
     try:
-        scrubbed.write_bytes(redacted)
-        os.replace(scrubbed, log_path)
-    except OSError:  # a full or read-only disk, say
-        log_path.unlink(missing_ok=True)
-        scrubbed.unlink(missing_ok=True)
+        with stage:
+            if stage.write(redacted) != len(redacted):
+                raise OSError("incomplete scrubbed log write")
+        os.replace(stage.name, log_path)
+    except BaseException:
+        os.unlink(stage.name)
         raise
-    return pattern
 
 
 async def _supervise(
@@ -172,32 +303,55 @@ async def _supervise(
     log_dir: Path,
     cwd: Path,
     max_frame_bytes: int,
+    aborted: asyncio.Event,
+    on_failure: Callable[[KeyLeakError | FrameTooLarge], None],
 ) -> None:
     argv, env = launcher.command(job)
     log_path = log_dir / f"{job.job_id}.stderr.log"
-    anchor = _start_anchor()
+    # On POSIX the TemporaryFile fallback unlinks before returning the descriptor.
+    with tempfile.TemporaryDirectory() as private_dir:
+        log = tempfile.TemporaryFile(dir=private_dir, buffering=0)
     try:
-        with log_path.open("wb") as log:
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                env=env,
-                cwd=cwd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=log,
-                process_group=anchor.pid,  # the anchor's group, which teardown kills whole
-            )
-    except BaseException:  # the start error, never a kill error, reaches the summary
-        _kill_group(anchor)
-        await _reap(anchor)
+        anchor = _start_anchor()
+    except BaseException:
+        log.close()
         raise
-    assert proc.stdin is not None and proc.stdout is not None
+    proc = None
     in_flight: str | None = None
     reported: set[tuple[str, int]] = set()
     done = False
     lost_reason = "worker_lost"
     try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            env=env,
+            cwd=cwd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=log,
+            process_group=anchor.pid,  # the anchor's group, which teardown kills whole
+        )
+        assert proc.stdin is not None and proc.stdout is not None
+        silence_s = job.caps.trajectory_s + job.caps.model_call_timeout_s
+
+        async def check_terminal_status() -> None:
+            # EOF can precede process exit (including the redactor's final drain). Only
+            # inspect this owned child, before teardown can replace its status with SIGKILL.
+            with suppress(TimeoutError):
+                status = await asyncio.wait_for(proc.wait(), min(silence_s, 5))
+                if status == 3:
+                    raise KeyLeakError(f"worker {job.job_id}: {WORKER_LEAK_REASON} (exit 3)")
+                if status == WORKER_FRAME_LIMIT_EXIT:
+                    raise FrameTooLarge(
+                        f"worker {job.job_id}: protocol frame limit exceeded (exit {status})"
+                    )
+
         try:
+            # The private key frame first, then the job. The frame is never logged or kept.
+            if (bootstrap := launcher.bootstrap_frame(job)) is not None:
+                proc.stdin.write(encode_frame(bootstrap))
+                del bootstrap
+                await proc.stdin.drain()
             job_frame = {
                 "type": "job",
                 "job_id": job.job_id,
@@ -206,18 +360,19 @@ async def _supervise(
                 "trajectories": list(job.trajectories),
                 "caps": asdict(job.caps),
             }
-            proc.stdin.write(encode_frame(job_frame))
+            proc.stdin.write(encode_frame(job_frame, where="job frame"))
             await proc.stdin.drain()
             # Between two frames a worker runs one model call or a trajectory's other tool
             # calls, plus a backoff of at most 120 s: silent for longer, it is lost.
-            silence_s = job.caps.trajectory_s + job.caps.model_call_timeout_s
-            while (
-                message := await asyncio.wait_for(
-                    read_frame(proc.stdout, limit=max_frame_bytes), silence_s
-                )
-            ) is not None:
-                where = f"a frame from worker {job.job_id}"
-                assert_no_key_shaped(json.dumps(message, ensure_ascii=False), where=where)
+            while True:
+                # Decode in this task so a credential failure latches before another task runs.
+                async with asyncio.timeout(silence_s):
+                    message = await read_frame(
+                        proc.stdout, limit=max_frame_bytes, where="worker frame"
+                    )
+                if message is None:
+                    await check_terminal_status()
+                    break
                 kind = message.get("type")
                 reply: dict[str, Any] | None = None
                 if kind == "reserve":
@@ -233,6 +388,7 @@ async def _supervise(
                             int(message["output_bound"]), job.family.max_output_tokens or 0
                         ),
                         kind=str(message.get("kind", "model_call")),
+                        job_id=job.job_id,
                     )
                     reply = (
                         {"type": "grant", "unit_id": in_flight} if in_flight else {"type": "deny"}
@@ -252,49 +408,57 @@ async def _supervise(
                     reply = {"type": "ack"}
                 elif kind == "error":
                     reason = str(message.get("reason"))
+                    recognized: KeyLeakError | FrameTooLarge | None = None
+                    if reason in (WORKER_LEAK_REASON, "own key found in output"):
+                        recognized = KeyLeakError(f"worker {job.job_id}: {reason}")
+                    elif reason.startswith("FrameTooLarge:"):
+                        recognized = FrameTooLarge(f"worker {job.job_id}: {reason}")
+                    if recognized is not None:
+                        on_failure(recognized)  # before waiting for exit or sibling cleanup
                     with suppress(TimeoutError):  # its drain writes the last lines to the log
                         await asyncio.wait_for(proc.wait(), 5)
-                    if reason == "own key found in output":
-                        raise KeyLeakError(f"worker {job.job_id}: {reason}")
-                    if reason.startswith("FrameTooLarge:"):
-                        raise FrameTooLarge(f"worker {job.job_id}: {reason}")
+                    if recognized is not None:
+                        raise recognized
                     # Any other failure costs only this job's cells, like a lost worker.
                     lost_reason = "worker_error"
                     await on_message(job, {"type": "worker_error", "reason": reason})
                     break
                 else:
-                    await on_message(job, message)
-                    # Only a final report: a retries_exhausted discard still owes its rerun,
-                    # and its last attempt sends its own not_run.
-                    if kind in ("trajectory", "not_run") or (
-                        kind == "discarded" and message["reason"] == "budget_stop"
-                    ):
-                        reported.add((message["corpus_id"], message["repeat"]))
+                    if kind in ("trajectory", "discarded", "not_run"):
+                        coordinates = job.report_coordinates(message)
+                        # A retries_exhausted discard still owes its rerun or a final not_run.
+                        if kind != "discarded" or message["reason"] == "budget_stop":
+                            reported.add(coordinates)
+                    if not aborted.is_set():
+                        await on_message(job, message)
                     done = done or kind == "done"
                     if kind in ("trajectory", "discarded"):
                         reply = {"type": "ack"}
                 if reply is not None:
-                    proc.stdin.write(encode_frame(reply))
+                    proc.stdin.write(encode_frame(reply, where="host reply"))
                     await proc.stdin.drain()
-        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+        except (BrokenPipeError, ConnectionResetError):
+            await check_terminal_status()
+        except TimeoutError:
             pass  # the worker died or stalled; handled as a lost worker below
+    except (KeyLeakError, FrameTooLarge) as recognized:
+        on_failure(recognized)
+        raise
     finally:
-        # Runs to its end even when a second abort cancels this task meanwhile; then re-raise.
-        teardown = asyncio.ensure_future(_teardown(proc, anchor, log_path, ledger, in_flight))
-        cancelled: asyncio.CancelledError | None = None
-        while not teardown.done():
-            try:
-                await asyncio.shield(teardown)
-            except asyncio.CancelledError as exc:
-                cancelled = exc
-        pattern = teardown.result()
-        if cancelled is not None:
-            raise cancelled
-    if pattern:
-        raise KeyLeakError(
-            f"a key-shaped string ({pattern} pattern) was found in {log_path}; redacted there"
+        await finish(
+            _teardown(
+                proc,
+                anchor,
+                log_path,
+                ledger,
+                in_flight,
+                log,
+                partial(launcher.stop_worker, job),
+                on_failure,
+            ),
+            sys.exception(),
         )
-    if not done:
+    if not done and not aborted.is_set():
         for item in job.trajectories:
             if (item["corpus_id"], item["repeat"]) not in reported:
                 await on_message(
@@ -324,27 +488,118 @@ async def run_jobs(
     if unsupported:
         raise BenchmarkValidationError(
             f"the {type(launcher).__name__} cannot run model families {unsupported}: "
-            "the local launcher runs only scripted models (live runs need PR 4's containers)"
+            "the local launcher runs only scripted models; use --launcher container"
         )
     log_dir.mkdir(parents=True, exist_ok=True)
-    tasks = [
-        asyncio.create_task(
-            _supervise(
-                job,
-                launcher=launcher,
-                ledger=ledger,
-                on_message=on_message,
-                log_dir=log_dir,
-                cwd=cwd,
-                max_frame_bytes=max_frame_bytes,
-            )
-        )
-        for job in jobs
-    ]
+    primary: KeyLeakError | FrameTooLarge | None = None
+    aborted = asyncio.Event()
+
+    def recognize(failure: KeyLeakError | FrameTooLarge) -> None:
+        nonlocal primary
+        ledger.stop_grants()
+        aborted.set()
+        if primary is None:
+            primary = failure
+        elif isinstance(primary, FrameTooLarge) and isinstance(failure, KeyLeakError):
+            add_safe_cleanup_cause(failure, primary)
+            primary = failure
+
+    failed = True
     try:
-        await asyncio.gather(*tasks)
-    except BaseException:
-        for task in tasks:
-            task.cancel()  # each supervisor kills its worker on the way out
-        await asyncio.gather(*tasks, return_exceptions=True)
-        raise
+        await launcher.prepare(jobs)  # raises before any worker starts
+        tasks = [
+            asyncio.create_task(
+                _supervise(
+                    job,
+                    launcher=launcher,
+                    ledger=ledger,
+                    on_message=on_message,
+                    log_dir=log_dir,
+                    cwd=cwd,
+                    max_frame_bytes=max_frame_bytes,
+                    aborted=aborted,
+                    on_failure=recognize,
+                )
+            )
+            for job in jobs
+        ]
+        failure: BaseException | None = None
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException as exc:
+            for task in tasks:
+                task.cancel()  # each supervisor kills its worker on the way out
+
+            async def outcome(task: asyncio.Task[None]) -> BaseException | None:
+                try:
+                    await task
+                except BaseException as error:
+                    # gather(return_exceptions=True) substitutes a fresh CancelledError,
+                    # losing any teardown failure chained to the original cancellation.
+                    return error
+                return None
+
+            drained = asyncio.gather(*(outcome(task) for task in tasks))
+            try:
+                await finish(drained, exc)
+            except BaseException as interrupted:
+                failure = interrupted
+            else:
+                failure = exc
+            if primary is not None:
+                # Preserve interrupts, then credential failures, then structural frame failures,
+                # even when the recognizing supervisor was cancelled during cleanup.
+                selected = failure if not isinstance(failure, Exception) else primary
+                prior = selected.__cause__ if selected is not primary else None
+                if prior is not None and prior is not primary:
+                    selected.__cause__ = None
+                seen = {id(selected)}
+                if selected.__cause__ is primary:
+                    seen.add(id(primary))
+                for error in (failure, primary, prior, selected.__context__, *drained.result()):
+                    if isinstance(error, asyncio.CancelledError):
+                        error = error.__cause__ or error.__context__
+                    if isinstance(error, Exception) and id(error) not in seen:
+                        seen.add(id(error))
+                        add_safe_cleanup_cause(selected, error)
+                # A cancellation raised by finish while handling a sibling exception
+                # acquires that raw exception as implicit context. Keep only its safe copy.
+                selected.__context__ = None
+                failure = selected
+        if failure is not None:
+            # Outside the handler: don't retain the losing raw exception as __context__.
+            raise failure
+        failed = False
+    finally:
+        reported: BenchmarkValidationError | None = None
+
+        async def close() -> None:
+            nonlocal reported
+            if problems := await launcher.close():
+                detail = redact_key_shaped_text("; ".join(problems))
+                if failed:
+                    _diagnostic(f"launcher cleanup problems: {detail}")
+                reason = (
+                    "launcher cleanup problems"
+                    if failed
+                    else "the run completed, but the launcher reported problems"
+                )
+                reported = BenchmarkValidationError(f"{reason}: {detail}")
+                raise reported
+
+        pending = sys.exception()
+        try:
+            await finish(close(), pending)
+        except KeyLeakError as leak:
+            if leak is pending:
+                raise
+            if isinstance(pending, Exception):
+                # The CLI prints only the final message. Keep earlier resource IDs visible.
+                earlier = redact_key_shaped_text(str(pending))
+                raise KeyLeakError(
+                    f"{redact_key_shaped_text(str(leak))}; earlier failure: {earlier}"
+                ) from None
+            raise
+        except BenchmarkValidationError as exc:
+            if not failed or exc is not reported:
+                raise

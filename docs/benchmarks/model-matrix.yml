@@ -61,8 +61,9 @@ model_families:
       Provider default effort; no sampling parameters (Claude 5.5 rejects
       them). Adaptive thinking is on by default and cannot be disabled; the
       documented default effort is `high`.
-    # Documented as "1M tokens". The exact integer needs the Models API,
-    # which PR 4's smoke run reads.
+    # Documented as "1M tokens". The exact integer needs the Models API: each
+    # live worker reads it at startup, and the smoke run's run-summary.json
+    # lists any difference under model_limits_mismatch.
     max_input_tokens: 1000000
     # Documented maximum 128,000.
     max_output_tokens: 32768
@@ -143,6 +144,10 @@ model_families:
       seven tool schemas plus a docs result, and the OpenAI-compatible
       endpoint cannot change it per request). 12B fits the maintainer's
       16 GB M1 Pro; 26B and 31B do not.
+    # The loop's per-call bounds need both; neither is ever sent to Ollama
+    # (Ollama defaults, no max_tokens) and the unit is never priced.
+    max_output_tokens: 32768
+    framing_allowance_tokens: 256
     headline_eligible: false
     headline_ineligibility_reason: >-
       No live benchmark run has been executed against this model family yet;

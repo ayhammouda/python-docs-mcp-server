@@ -11,7 +11,9 @@
 # - adapter: `mcp-stdio` (a stdio MCP server) or `none` (no tools).
 # - command: argv of the server; "{python}" is replaced by the worker's
 #   interpreter at spawn.
-# - env: variables set for the server.
+# - env: variables set for the server. The value "{egress}" is replaced by the
+#   run's egress proxy URL (BENCHMARK_EGRESS_URL in the sandbox), and the
+#   variable is dropped when there is none.
 # - pass_env: variables copied from the worker's environment when present.
 #   The server gets these two and the MCP SDK's default set, nothing else.
 schema_version: 1
@@ -24,16 +26,23 @@ competitors:
     env:
       # Never let a missing index trigger the server's network auto-build.
       PYTHON_DOCS_MCP_DISABLE_AUTO_INDEX: "1"
+      # lookup_package_docs reaches PyPI only through the egress proxy, which
+      # logs the attempt as denied (design section 5, C1).
+      HTTPS_PROXY: "{egress}"
+      HTTP_PROXY: "{egress}"
     pass_env: [HOME, XDG_CACHE_HOME]
 
   - id: docs-fetch
     name: mcp-server-fetch, limited to docs.python.org by the egress proxy
     adapter: mcp-stdio
-    # No flags: keep the robots.txt default (design section 5.1). Its version is
-    # pinned in PR 4's sandbox image.
+    # No flags: keep the robots.txt default (design section 5.1). The sandbox
+    # image installs mcp-server-fetch 2026.10.19 from the hashed
+    # benchmarks/sandbox/fetch-requirements.txt.
     command: [mcp-server-fetch]
-    env: {}
-    pass_env: [HOME, HTTPS_PROXY, HTTP_PROXY, NO_PROXY]
+    env:
+      HTTPS_PROXY: "{egress}"
+      HTTP_PROXY: "{egress}"
+    pass_env: [HOME]
 
   - id: no-docs
     name: No documentation tools (correctness floor)

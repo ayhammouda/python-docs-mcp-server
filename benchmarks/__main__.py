@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from benchmarks.corpus import validate_corpus
 from benchmarks.report import generate_readme_summary, generate_report
@@ -178,7 +179,33 @@ def _build_parser() -> argparse.ArgumentParser:
     agentic.add_argument("--repeats", type=int, default=3)
     agentic.add_argument("--seed", type=int)
     agentic.add_argument("--run-id")
-    agentic.add_argument("--dry-run", action="store_true", help="Write the plan; no ledger.")
+    mode = agentic.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true", help="Write the plan; no ledger.")
+    mode.add_argument(
+        "--live",
+        action="store_true",
+        help="Container launcher only: run for real, after the CI refusal and a typed 'yes'.",
+    )
+    agentic.add_argument(
+        "--launcher",
+        choices=("local", "container"),
+        default="local",
+        help="local: scripted models only. container: the sandbox, a dry run unless --live.",
+    )
+    agentic.add_argument("--image", help="The sandbox worker image ID (sha256:...).")
+    agentic.add_argument(
+        "--keys-file",
+        type=Path,
+        help="Mode-600 NAME=VALUE file; only the container launcher reads it, one key per worker.",
+    )
+    agentic.add_argument(
+        "--index", type=Path, help="The docs index for python-docs jobs (default: the cache's)."
+    )
+    agentic.add_argument(
+        "--reference-run",
+        type=Path,
+        help="A finished pilot run whose per-cell cost and time the full-run gate scales.",
+    )
     agentic.add_argument(
         "--acknowledge-overrun",
         action="append",
@@ -191,11 +218,42 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "agentic-worker", help="Internal: run one agentic (model, system) job for the host."
     )
+    # Run by the container launcher in a keyless probe container, never by hand.
+    probe = subparsers.add_parser(
+        "agentic-probe", help="Internal: check a sandbox network's isolation from inside it."
+    )
+    probe.add_argument("--spec", required=True, help="The probe's checks, as JSON.")
     return parser
+
+
+def _container_launcher(args: argparse.Namespace, run_id: str) -> Any:
+    """The production sandbox: the real image check, the real probes, docker on this host."""
+    from benchmarks.agentic.sandbox import ContainerLauncher, Sandbox, SandboxConfig
+    from benchmarks.runner import _repo_commit_sha
+    from mcp_server_python_docs.storage.db import get_index_path
+
+    config = SandboxConfig(
+        image=args.image,
+        run_id=run_id,
+        out_dir=args.out,
+        index_path=args.index or get_index_path(),
+        keys_file=args.keys_file,
+        repo_commit=_repo_commit_sha(),
+    )
+    return ContainerLauncher(Sandbox(config))
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "agentic-run":
+        # argparse itself quotes invalid values (e.g. --repeats) in its diagnostics.
+        from benchmarks.agentic.protocol import KeyLeakError, assert_no_key_shaped_json
+
+        try:
+            assert_no_key_shaped_json(argv[1:], where="agentic-run arguments")
+        except KeyLeakError as exc:
+            parser.exit(3, f"agentic run stopped on a key leak: {exc}\n")
     args = parser.parse_args(argv)
 
     if args.command == "agentic-worker":
@@ -204,11 +262,22 @@ def main(argv: list[str] | None = None) -> int:
 
         return main_worker()
 
+    if args.command == "agentic-probe":
+        from benchmarks.agentic.probe import probe_main
+
+        return probe_main(["--spec", args.spec])
+
     if args.command == "agentic-run":
         # Lazy, like agentic-worker: only agentic commands load the provider SDKs.
         from benchmarks.agentic import run as agentic_run
-        from benchmarks.agentic.protocol import KeyLeakError
+        from benchmarks.agentic.protocol import KeyLeakError, scanned_json_bytes
+        from benchmarks.runner import _default_run_id
 
+        if args.live and args.launcher != "container":
+            parser.error("--live needs --launcher container: the local launcher is scripted only")
+        if args.launcher == "container" and not args.image:
+            parser.error("--launcher container needs --image sha256:...")
+        run_id = args.run_id or _default_run_id()  # one id for the run and its sandbox
         config = agentic_run.AgenticConfig(
             corpus_path=args.corpus,
             matrix_path=args.matrix,
@@ -221,17 +290,21 @@ def main(argv: list[str] | None = None) -> int:
             questions=args.questions,
             repeats=args.repeats,
             seed=args.seed,
-            run_id=args.run_id,
-            dry_run=args.dry_run,
+            run_id=run_id,
+            # The container launcher is a dry run unless --live is given.
+            dry_run=args.dry_run or (args.launcher == "container" and not args.live),
             acknowledge_overrun=tuple(args.acknowledge_overrun),
+            reference_run=args.reference_run,
         )
         try:
-            summary = agentic_run.run_agentic(config)
+            launcher = _container_launcher(args, run_id) if args.launcher == "container" else None
+            summary = agentic_run.run_agentic(config, launcher=launcher)
+            output = scanned_json_bytes(summary, where="run summary", indent=2, sort_keys=True)
         except KeyLeakError as exc:  # before its base class
             parser.exit(3, f"agentic run stopped on a key leak: {exc}\n")
         except BenchmarkValidationError as exc:
             parser.exit(2, f"agentic run failed: {exc}\n")
-        print(json.dumps(summary, indent=2, sort_keys=True))
+        print(output.decode())
         return 0
 
     if args.command == "run":

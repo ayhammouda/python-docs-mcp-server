@@ -21,6 +21,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Literal
 
+from benchmarks.agentic.protocol import scanned_json_bytes
 from benchmarks.agentic.types import Buckets
 from benchmarks.model_matrix import ModelFamily
 from benchmarks.runner import BenchmarkValidationError, _load_yaml_mapping
@@ -36,6 +37,9 @@ PROVIDER_MARGINS: dict[str, Decimal] = {
     "openai": Decimal(10),
     "google": Decimal(20),
 }
+
+#: Local providers: one unit in flight at a time, never priced, capped or booked.
+UNMETERED_PROVIDERS = frozenset({"ollama"})
 
 Outcome = Literal[
     "ok",
@@ -85,7 +89,10 @@ class PriceSnapshot:
 
 
 def load_price_snapshot(path: Path) -> PriceSnapshot:
-    data = _load_yaml_mapping(path, "price snapshot")
+    return price_snapshot_from_mapping(_load_yaml_mapping(path, "price snapshot"))
+
+
+def price_snapshot_from_mapping(data: dict[str, Any]) -> PriceSnapshot:
     captured_on = _date(data.get("captured_on"), "captured_on")
     if captured_on is None:
         raise BenchmarkValidationError("price snapshot must set 'captured_on'")
@@ -236,6 +243,7 @@ class Ledger:
         self._caps = caps
         self._lock_fd: int | None = lock_fd
         self._events: list[dict[str, Any]] = []
+        self._invocation_start = 0
         self._spent: dict[str, Decimal] = {}
         self._stops: dict[str, str] = {}
         self._units: dict[str, tuple[str, Decimal]] = {}  # unit id -> (provider, bound)
@@ -248,28 +256,28 @@ class Ledger:
         ledger_dir.mkdir(parents=True, exist_ok=True)
         lock_path = ledger_dir / ".lock"
         fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-        os.fchmod(fd, 0o600)  # also an existing lock file, whatever mode it was left with
         try:
-            # shortcut: fcntl is POSIX only; the harness runs on macOS and Linux, add msvcrt.locking if Windows runs are ever needed  # noqa: E501
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            os.close(fd)
-            raise BenchmarkValidationError(
-                f"spend ledger {lock_path} is locked by another process; one run at a time"
-            ) from exc
-        ledger = cls(ledger_dir, run_id, dict(caps), fd)
-        try:
+            os.fchmod(fd, 0o600)  # an existing lock file must also be private
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raise BenchmarkValidationError(
+                    f"spend ledger {lock_path} is locked by another process; one run at a time"
+                ) from exc
+            ledger = cls(ledger_dir, run_id, dict(caps), fd)
             ledger._load()
+            return ledger
         except BaseException:
-            ledger.close()
+            os.close(fd)  # closing also releases any lock acquired before the interruption
             raise
-        return ledger
 
     def close(self) -> None:
-        if self._lock_fd is not None:
-            fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
-            os.close(self._lock_fd)
-            self._lock_fd = None
+        fd, self._lock_fd = self._lock_fd, None
+        if fd is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
 
     def _load(self) -> None:
         pending: dict[str, None] = {}  # ordered set of reserves without a settle
@@ -288,6 +296,7 @@ class Ledger:
                     pending[event["unit_id"]] = None
                 elif event["event"] == "settle":
                     pending.pop(event["unit_id"], None)
+        self._invocation_start = len(self._events)
         for unit_id in pending:
             provider, _ = self._units[unit_id]
             self._in_flight[provider] = unit_id
@@ -314,8 +323,9 @@ class Ledger:
 
     def _append(self, provider: str, fields: dict[str, Any]) -> None:
         event = {"run_id": self._run_id, "provider": provider, "at": _utc_now(), **fields}
-        with (self._dir / f"{provider}.jsonl").open("a", encoding="utf-8") as file:
-            file.write(json.dumps(event, sort_keys=True) + "\n")
+        line = scanned_json_bytes(event, where="spend ledger", sort_keys=True) + b"\n"
+        with (self._dir / f"{provider}.jsonl").open("ab") as file:
+            file.write(line)
         self._events.append(event)
 
     def spent(self, provider: str) -> Decimal:
@@ -337,6 +347,7 @@ class Ledger:
         bound: Decimal,
         input_bound: int,
         output_bound: int,
+        job_id: str | None = None,
     ) -> str | None:
         cap = self._caps.get(provider)
         if cap is None:
@@ -361,6 +372,7 @@ class Ledger:
                 "bound": str(bound),
                 "input_bound": input_bound,
                 "output_bound": output_bound,
+                "job_id": job_id,  # set by the host; attributes the unit's settle (C1)
             },
         )
         self._units[unit_id] = (provider, bound)
@@ -403,6 +415,10 @@ class Ledger:
             del self._stops[provider]
             self._append(provider, {"event": "resume"})
 
+    def invocation_events(self) -> list[dict[str, Any]]:
+        """Events written since this open, including recovery of earlier pending units."""
+        return [dict(event) for event in self._events[self._invocation_start :]]
+
     def events(self, run_id: str) -> list[dict[str, Any]]:
         return [dict(event) for event in self._events if event["run_id"] == run_id]
 
@@ -421,6 +437,12 @@ class LedgerService:
         self._families = dict(families)
         self._locks: dict[str, asyncio.Lock] = {}
         self._units: dict[str, tuple[str, ModelPrice, int]] = {}
+        self._unmetered: dict[str, str] = {}  # unit id -> provider
+        self._grants_stopped = False
+
+    def stop_grants(self) -> None:
+        """Latch this invocation's stop without changing settlement or durable provider caps."""
+        self._grants_stopped = True
 
     async def reserve(
         self,
@@ -430,7 +452,19 @@ class LedgerService:
         input_bound: int,
         output_bound: int,
         kind: str = "model_call",
+        job_id: str | None = None,
     ) -> str | None:
+        if self._grants_stopped:
+            return None
+        if provider in UNMETERED_PROVIDERS:  # the Ledger never sees it
+            lock = self._locks.setdefault(provider, asyncio.Lock())
+            await lock.acquire()
+            if self._grants_stopped:
+                lock.release()
+                return None
+            unit_id = f"{provider}-{uuid.uuid4().hex}"
+            self._unmetered[unit_id] = provider
+            return unit_id
         price = self._prices.get(model_id)
         if price is None:
             raise BenchmarkValidationError(f"no price snapshot entry for model {model_id!r}")
@@ -440,6 +474,9 @@ class LedgerService:
         bound = bound_cost(price, input_bound=input_bound, output_bound=output_bound)
         lock = self._locks.setdefault(provider, asyncio.Lock())
         await lock.acquire()  # held until this unit's settle
+        if self._grants_stopped:
+            lock.release()
+            return None
         try:
             unit_id = self._ledger.reserve(
                 provider,
@@ -448,6 +485,7 @@ class LedgerService:
                 bound=bound,
                 input_bound=input_bound,
                 output_bound=output_bound,
+                job_id=job_id,
             )
         except BaseException:
             lock.release()
@@ -459,6 +497,9 @@ class LedgerService:
         return unit_id
 
     async def settle(self, unit_id: str, *, outcome: Outcome, buckets: Buckets | None) -> None:
+        if (local := self._unmetered.pop(unit_id, None)) is not None:
+            self._locks[local].release()
+            return
         provider, price, input_bound = self._units.pop(unit_id)
         try:
             if outcome == "ok" and (buckets is None or buckets.is_empty):

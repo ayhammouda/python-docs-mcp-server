@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ from benchmarks.agentic.loop import (
     run_trajectory,
 )
 from benchmarks.agentic.prompt import SYSTEM_PROMPT
+from benchmarks.agentic.protocol import KeyLeakError
 from benchmarks.agentic.schemas import schemas_sha256
 from benchmarks.agentic.types import Buckets, Conversation, ModelTurn, ToolSpec
 from benchmarks.model_matrix import ModelFamily, load_model_matrix, model_family_from_raw
@@ -251,7 +253,18 @@ async def test_reservations_carry_independently_computed_bounds(harness: Harness
         {"tools": [SEARCH], "usage": None},  # call 1, retry
         {"text": "done", "usage": openai_usage},  # call 2, after the call without usage
     ]
-    sizes = {(0, 1): 500, (1, 3): 300, (0, 5): 2_000}
+    # Full rendering at call 1 is also validated before each attempt, but does not
+    # replace the usage-based incremental bound or change any reserved amount.
+    sizes = {
+        (0, 1): 500,
+        (1, 3): 300,
+        (0, 3): 9_000,
+        (0, 5): 2_000,
+        # Post-settlement replay scans never contribute to reservation bounds.
+        (0, 2): 800,
+        (0, 4): 1_900,
+        (0, 6): 2_200,
+    }
     client = FixedBytesClient(sizes, "openai", "gpt-6.1-sol", steps)
     record = await harness.run(client=client, family=family, price=price)
     assert record["status"] == "succeeded"
@@ -273,7 +286,12 @@ async def test_reservations_carry_independently_computed_bounds(harness: Harness
 async def test_all_zero_usage_counts_as_no_usage(harness: Harness) -> None:
     zero = {"input_tokens": 0, "output_tokens": 0}
     steps = [{"tools": [SEARCH], "usage": zero}, ANSWER]
-    client = FixedBytesClient({(0, 1): 500, (0, 3): 2_000}, "anthropic", "scripted-1", steps)
+    client = FixedBytesClient(
+        {(0, 1): 500, (0, 3): 2_000, (0, 2): 1_000, (0, 4): 2_500},
+        "anthropic",
+        "scripted-1",
+        steps,
+    )
     record = await harness.run(client=client)
     assert _outcomes(record, 0) == ["no_usage"]
     # The next bound is the full request again (2_000 + 256 * 4), not 0 + 0 + added bytes.
@@ -370,6 +388,29 @@ async def test_unknown_tool_call_is_returned_to_the_model_and_the_loop_continues
     record = await harness.run([unknown, ANSWER], bridge=bridge)
     assert record["tool_calls"][0]["is_error"] is True and record["status"] == "succeeded"
     assert record["canonical_messages"][2]["content"][0]["is_error"] is True
+
+
+@pytest.mark.parametrize("case", ["native-url", "serialized-field", "raw-only", "malformed"])
+async def test_contaminated_tool_turn_aborts_before_any_bridge_call(
+    harness: Harness, case: str
+) -> None:
+    key = "AIza" + "g" * 35
+    arguments = {
+        "native-url": {"url": "https://docs.python.org/3/?token=" + key},
+        "serialized-field": json.dumps({"nested": [{key: True}]}).replace("AIza", r"\u0041Iza"),
+        # Decoding adds a token character just after the otherwise complete raw key.
+        "raw-only": '{"url":"' + key + r'\u0041"}',
+        "malformed": '{"url":"bad' + r"\x20" + key + '"}',
+    }[case]
+    bridge = FakeBridge(("fetch",))
+    tools = [
+        {"name": "fetch", "arguments": {"url": "https://docs.python.org/3/"}},
+        {"name": "fetch", "arguments": arguments},
+    ]
+    with pytest.raises(KeyLeakError, match="tool arguments") as caught:
+        await harness.run([{"tools": tools, "usage": USAGE}, ANSWER], bridge=bridge)
+    assert bridge.calls == []
+    assert key not in str(caught.value)
 
 
 @pytest.mark.parametrize("arguments", [[1, 2], "x", 3, None, True])

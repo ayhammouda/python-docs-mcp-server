@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
@@ -103,18 +104,32 @@ class ProviderCallError(Exception):
 class ModelClient(Protocol):
     provider: str
     model_id: str
+    api: str
 
     def request_params(self) -> dict[str, Any]:
         """Every setting sent except system, tools and messages."""
         raise NotImplementedError
 
-    def rendered_bytes(self, conv: Conversation, start: int) -> int:
-        """UTF-8 bytes of the provider-rendered request.
+    def rendered_bytes(
+        self,
+        conv: Conversation,
+        start: int,
+        *,
+        check_content: Callable[[bytes], None] | None = None,
+    ) -> int:
+        """Validate outgoing content and return its provider-rendered UTF-8 byte count.
 
         System, tools and ``entries[start:]`` when ``start == 0``, else ``entries[start:]`` only.
+        Check decoded strings and rendered JSON, including native replay, for key shapes.
+        The loop calls this with ``start == 0`` before every spend reservation.
+        ``check_content`` is an optional worker-local literal check, with no SDK auth.
         """
         raise NotImplementedError
 
     async def call(self, conv: Conversation) -> ModelTurn:
-        """One HTTP request; raises :class:`ProviderCallError`."""
+        """One HTTP request; raises :class:`ProviderCallError`.
+
+        Response content is untrusted. Normal adapters return it with usage so the
+        loop can settle the request before checking arguments and native replay.
+        """
         raise NotImplementedError

@@ -26,9 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import yaml
-
-from benchmarks.runner import _SAFE_ID, BenchmarkValidationError, Competitor
+from benchmarks.runner import _SAFE_ID, BenchmarkValidationError, Competitor, _load_yaml_mapping
 
 #: Label for tokens counted by the benchmark's own methodology tokenizer
 #: (Claude token counting after client-side rewrap, per
@@ -110,16 +108,10 @@ def load_model_matrix(path: Path) -> ModelMatrix:
     by ``benchmarks.runner``) on any structural problem, so callers can rely
     on one exception type across the benchmark's YAML-config surface.
     """
-    if not path.exists():
-        raise BenchmarkValidationError(f"model matrix file does not exist: {path}")
-    with path.open("r", encoding="utf-8") as file:
-        try:
-            data = yaml.safe_load(file)
-        except yaml.YAMLError as exc:
-            raise BenchmarkValidationError(f"model matrix file is not valid YAML: {exc}") from exc
-    if not isinstance(data, dict):
-        raise BenchmarkValidationError("model matrix file must contain a YAML mapping")
+    return model_matrix_from_mapping(_load_yaml_mapping(path, "model matrix"))
 
+
+def model_matrix_from_mapping(data: dict[str, Any]) -> ModelMatrix:
     token_label = data.get("methodology_token_label")
     if not isinstance(token_label, str) or not token_label.strip():
         raise BenchmarkValidationError(

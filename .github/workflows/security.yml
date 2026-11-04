@@ -46,3 +46,10 @@ jobs:
             --no-deps \
             --disable-pip \
             --progress-spinner off
+          # The sandbox image's hashed mcp-server-fetch venv. A separate call: pip-audit
+          # refuses to mix a hashed requirements file with an unhashed one.
+          uvx pip-audit \
+            --requirement benchmarks/sandbox/fetch-requirements.txt \
+            --no-deps \
+            --disable-pip \
+            --progress-spinner off

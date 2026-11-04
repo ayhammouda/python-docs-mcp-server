@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
+import os
 import subprocess
 import sys
 from datetime import date
@@ -16,6 +18,7 @@ import pytest
 from benchmarks.agentic.ledger import (
     PROVIDER_CAPS,
     PROVIDER_MARGINS,
+    UNMETERED_PROVIDERS,
     Ledger,
     LedgerService,
     ModelPrice,
@@ -27,8 +30,14 @@ from benchmarks.agentic.ledger import (
     load_price_snapshot,
     refuse_stale_snapshot,
 )
+from benchmarks.agentic.protocol import KeyLeakError
 from benchmarks.agentic.types import Buckets
-from benchmarks.agentic.usage import anthropic_buckets, gemini_buckets, openai_buckets
+from benchmarks.agentic.usage import (
+    anthropic_buckets,
+    gemini_buckets,
+    ollama_buckets,
+    openai_buckets,
+)
 from benchmarks.model_matrix import ModelFamily, load_model_matrix, model_family_from_raw
 from benchmarks.runner import BenchmarkValidationError
 
@@ -341,6 +350,27 @@ def test_actual_above_bound_stops_the_provider_until_acknowledged(tmp_path: Path
     ledger.close()
 
 
+def test_ledger_refuses_an_escaped_key_before_recording_a_reservation(tmp_path: Path) -> None:
+    key = "AIza" + "g" * 35
+    ledger = _open(tmp_path, anthropic="10")
+    try:
+        with pytest.raises(KeyLeakError) as caught:
+            ledger.reserve(
+                "anthropic",
+                model_id="é" + key,
+                kind="model_call",
+                bound=D(1),
+                input_bound=1,
+                output_bound=1,
+            )
+        assert key not in str(caught.value)
+        assert not (tmp_path / "anthropic.jsonl").exists()
+        assert ledger.invocation_events() == []
+        assert _reserve(ledger, "anthropic", "1")
+    finally:
+        ledger.close()
+
+
 def test_ledger_files_hold_money_as_decimal_strings(tmp_path: Path) -> None:
     ledger = _open(tmp_path, anthropic="10")
     unit = _reserve(ledger, "anthropic", "2")
@@ -373,6 +403,43 @@ def test_a_second_open_on_the_same_directory_is_refused(tmp_path: Path) -> None:
         _open(tmp_path, anthropic="10")
     ledger.close()
     _open(tmp_path, anthropic="10").close()  # released by close()
+
+
+def test_ledger_open_closes_its_descriptor_when_setup_is_interrupted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened = []
+
+    def interrupt(fd: int, mode: int) -> None:
+        opened.append(fd)
+        raise KeyboardInterrupt("chmod interrupted")
+
+    with monkeypatch.context() as setup:
+        setup.setattr(os, "fchmod", interrupt)
+        with pytest.raises(KeyboardInterrupt, match="chmod interrupted"):
+            Ledger.open(tmp_path, run_id=RUN_ID)
+    (fd,) = opened
+    with pytest.raises(OSError):
+        os.fstat(fd)
+    Ledger.open(tmp_path, run_id=RUN_ID).close()
+
+
+def test_ledger_close_closes_its_descriptor_if_unlock_is_interrupted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger = Ledger.open(tmp_path, run_id=RUN_ID)
+    with monkeypatch.context() as setup:
+
+        def interrupt(*args: Any) -> None:
+            raise KeyboardInterrupt("unlock interrupted")
+
+        setup.setattr(fcntl, "flock", interrupt)
+        with pytest.raises(KeyboardInterrupt, match="unlock interrupted"):
+            ledger.close()
+    try:
+        Ledger.open(tmp_path, run_id="following").close()
+    finally:
+        ledger.close()
 
 
 def test_the_lock_file_is_private_to_its_owner(tmp_path: Path) -> None:
@@ -475,6 +542,73 @@ async def test_service_releases_the_provider_when_a_reserve_is_refused(tmp_path:
     ledger.close()
 
 
+@pytest.mark.parametrize("provider,model_id", [("anthropic", "a"), ("ollama", "local")])
+async def test_service_stop_denies_fresh_and_queued_grants_but_settles_existing_units(
+    tmp_path: Path, provider: str, model_id: str
+) -> None:
+    ledger, service = _service(tmp_path, anthropic="10", openai="10")
+    pending = []
+    try:
+        first = await service.reserve(
+            provider=provider, model_id=model_id, input_bound=10, output_bound=10
+        )
+        other = await service.reserve(
+            provider="openai", model_id="o", input_bound=10, output_bound=10
+        )
+        assert first is not None and other is not None
+        for _ in range(2):
+            pending.append(asyncio.create_task(service.reserve(
+                provider=provider, model_id=model_id, input_bound=10, output_bound=10
+            )))
+        await asyncio.sleep(0)
+        assert all(not task.done() for task in pending)
+        before = ledger.invocation_events()
+        service.stop_grants()
+        service.stop_grants()  # irreversible and idempotent for this invocation
+        # Refuse even while these providers still hold their already granted units.
+        for p, model in ((provider, model_id), ("openai", "o")):
+            assert await asyncio.wait_for(service.reserve(
+                provider=p, model_id=model, input_bound=10, output_bound=10
+            ), 1) is None
+        await service.settle(first, outcome="ok", buckets=Buckets(10, 0, 0, 10))
+        await service.settle(other, outcome="worker_lost", buckets=None)
+        assert await asyncio.wait_for(asyncio.gather(*pending), 1) == [None, None]
+        assert all(not lock.locked() for lock in service._locks.values())
+        assert [e for e in ledger.invocation_events() if e["event"] == "reserve"] == before
+        assert ledger.spent("openai") == D("0.00004")
+        assert not [e for e in ledger.invocation_events() if e["event"] == "stop"]
+    finally:
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        ledger.close()
+
+
+async def test_service_stop_is_invocation_local_and_preserves_pending_unit_recovery(
+    tmp_path: Path,
+) -> None:
+    ledger, service = _service(tmp_path, anthropic="10")
+    try:
+        unit = await service.reserve(
+            provider="anthropic", model_id="a", input_bound=10, output_bound=10
+        )
+        assert unit is not None
+        service.stop_grants()
+    finally:
+        ledger.close()  # simulate a lost process after the stop, before settlement
+    ledger, service = _service(tmp_path, anthropic="10")
+    try:
+        assert _event(ledger, "settle", unit)["outcome"] == "unsettled_at_load"
+        assert ledger.spent("anthropic") == D("0.00004")
+        fresh = await service.reserve(
+            provider="anthropic", model_id="a", input_bound=10, output_bound=10
+        )
+        assert fresh is not None
+        await service.settle(fresh, outcome="ok", buckets=Buckets(10, 0, 0, 10))
+    finally:
+        ledger.close()
+
+
 async def test_service_prices_a_bound_above_the_tier_threshold_at_the_high_tier(
     tmp_path: Path,
 ) -> None:
@@ -559,3 +693,76 @@ def test_caps_and_margins_add_up_to_the_budget() -> None:
         "openai": D(75),
         "google": D(200),
     }
+
+
+def test_ollama_buckets_split_cached_prompt_tokens() -> None:
+    usage = {
+        "prompt_tokens": 120,
+        "completion_tokens": 30,
+        "prompt_tokens_details": {"cached_tokens": 20},
+    }
+    assert ollama_buckets(usage) == Buckets(100, 0, 20, 30, 0)
+
+
+def test_ollama_buckets_without_cache_details() -> None:
+    usage: dict[str, Any] = {"prompt_tokens": 120, "completion_tokens": 30}
+    assert ollama_buckets(usage) == Buckets(120, 0, 0, 30, 0)
+    assert ollama_buckets({**usage, "prompt_tokens_details": None}) == Buckets(120, 0, 0, 30, 0)
+
+
+async def test_an_unmetered_provider_gets_one_unit_at_a_time_and_is_never_booked(
+    tmp_path: Path,
+) -> None:
+    assert UNMETERED_PROVIDERS == frozenset({"ollama"})
+    ledger, service = _service(tmp_path, anthropic="10", openai="10")
+    first = await service.reserve(
+        provider="ollama", model_id="gemma4:12b", input_bound=1_000, output_bound=1_000
+    )
+    assert first is not None and first.startswith("ollama-")
+    second = asyncio.ensure_future(
+        service.reserve(
+            provider="ollama", model_id="gemma4:12b", input_bound=1_000, output_bound=1_000
+        )
+    )
+    await asyncio.sleep(0.05)
+    assert not second.done()  # one unit in flight per provider
+    await service.settle(first, outcome="ok", buckets=Buckets(10, 0, 0, 10))
+    unit = await asyncio.wait_for(second, timeout=1)
+    assert unit is not None and unit != first
+    await service.settle(unit, outcome="worker_lost", buckets=None)
+    assert not (tmp_path / "ollama.jsonl").exists()
+    assert ledger.events(RUN_ID) == []
+    assert (ledger.spent("anthropic"), ledger.spent("openai")) == (0, 0)
+    ledger.close()
+
+
+def test_reserve_events_without_job_id_still_load(tmp_path: Path) -> None:
+    ledger = _open(tmp_path, anthropic="10")
+    unit = _reserve(ledger, "anthropic", "1")
+    assert unit is not None
+    assert _event(ledger, "reserve", unit)["job_id"] is None
+    named = ledger.reserve
+    ledger.settle(unit, outcome="server", actual=None, buckets=None)
+    other = named(
+        "anthropic",
+        model_id="m",
+        kind="model_call",
+        bound=D("1"),
+        input_bound=1,
+        output_bound=1,
+        job_id="j--s",
+    )
+    assert other is not None and _event(ledger, "reserve", other)["job_id"] == "j--s"
+    ledger.settle(other, outcome="ok", actual=D("3"), buckets=None)  # an overrun: stops
+    spent, stopped = ledger.spent("anthropic"), ledger.stopped("anthropic")
+    ledger.close()
+    # The pre-PR-4 format: reserve lines without the job_id key at all.
+    path = tmp_path / "anthropic.jsonl"
+    lines = [json.loads(line) for line in path.read_text().splitlines()]
+    for event in lines:
+        event.pop("job_id", None)
+    path.write_text("".join(json.dumps(e, sort_keys=True) + "\n" for e in lines))
+    reopened = _open(tmp_path, anthropic="10")
+    assert (reopened.spent("anthropic"), reopened.stopped("anthropic")) == (spent, stopped)
+    assert spent == D("5") and stopped == "overrun"
+    reopened.close()

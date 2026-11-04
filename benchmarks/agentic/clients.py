@@ -11,11 +11,12 @@ import asyncio
 import json
 import os
 import ssl
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import anthropic
 import certifi
@@ -28,11 +29,19 @@ from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 
 from benchmarks.adapters.guard import (
+    EGRESS_URL_ENV,
+    LIVE_LATCH_ENV,
     PAID_KEY_ENVS,
     PROVIDER_API_KEY_ENV,
     require_live_environment,
 )
-from benchmarks.agentic.schemas import to_anthropic, to_gemini, to_openai_responses
+from benchmarks.agentic.protocol import MAX_FRAME_BYTES, check_json_text, scanned_json_bytes
+from benchmarks.agentic.schemas import (
+    to_anthropic,
+    to_gemini,
+    to_openai_chat,
+    to_openai_responses,
+)
 from benchmarks.agentic.types import (
     Conversation,
     ModelClient,
@@ -42,7 +51,12 @@ from benchmarks.agentic.types import (
     ToolResults,
     UserText,
 )
-from benchmarks.agentic.usage import anthropic_buckets, gemini_buckets, openai_buckets
+from benchmarks.agentic.usage import (
+    anthropic_buckets,
+    gemini_buckets,
+    ollama_buckets,
+    openai_buckets,
+)
 from benchmarks.model_matrix import ModelFamily
 from benchmarks.runner import BenchmarkValidationError, _load_yaml_mapping
 
@@ -51,20 +65,66 @@ _LIVE_APIS = {
     "anthropic-messages": "anthropic",
     "openai-responses": "openai",
     "gemini-generate-content": "google",
+    "openai-chat-completions": "ollama",  # keyless: OLLAMA_BASE_URL instead
 }
 
+# Count the root container too. Leave headroom for dataclasses.asdict, evidence
+# envelopes and the MCP SDK's recursive JSON validation on Python 3.12–3.14.
+MAX_TOOL_ARGUMENT_DEPTH = 64
 
-def tool_arguments(value: Any) -> tuple[dict[str, Any], str | None]:
-    """A JSON object passes; anything else is ``({}, raw)`` and never reaches a tool."""
-    parsed = value
+
+def _argument_depth_exceeded(text: str) -> bool:
+    """Bound decoding without recursion or allocating a tree, including shadowed fields.
+
+    This is only a depth preflight; json.loads still decides validity. Content
+    inspection runs separately after usage settlement and scans the entire text.
+    """
+    depth = 0
+    quoted = escaped = False
+    for char in text:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+        elif char == '"':
+            quoted = True
+        elif char in "[{":
+            depth += 1
+            if depth > MAX_TOOL_ARGUMENT_DEPTH:
+                return True
+        elif char in "]}":
+            depth -= 1
+    return False
+
+
+def _parse_tool_arguments(value: Any) -> tuple[dict[str, Any], str | None]:
+    """Normalize a response without raising a content failure before usage is settled."""
     if isinstance(value, str):
+        if len(value) > MAX_FRAME_BYTES or _argument_depth_exceeded(value):
+            return {}, value  # The bounded content check runs after usage settlement.
         try:
             parsed = json.loads(value)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):
+            # Includes the stdlib integer conversion and nesting limits. Keep the
+            # original argument for inspection/error feedback, and return known usage.
             return {}, value
-    if isinstance(parsed, dict):
-        return parsed, None
-    return {}, value if isinstance(value, str) else json.dumps(value)
+        return (parsed, None) if isinstance(parsed, dict) else ({}, value)
+    if isinstance(value, dict):
+        return value, None
+    return {}, json.dumps(value)
+
+
+def tool_arguments(
+    value: Any, *, check_content: Callable[[bytes], None] | None = None
+) -> tuple[dict[str, Any], str | None]:
+    """Check raw and decoded arguments, then accept only a JSON object for dispatch."""
+    scanned_json_bytes(value, where="tool arguments", check_content=check_content)
+    if isinstance(value, str):
+        check_json_text(value, where="tool arguments", check_content=check_content)
+    return _parse_tool_arguments(value)
 
 
 def parse_retry_after(headers: Mapping[str, str]) -> float | None:
@@ -97,8 +157,24 @@ def _status_error(status: int, headers: Mapping[str, str], message: str) -> Prov
     return ProviderCallError("rejected", message, status=status)
 
 
-def _utf8_len(payload: Any) -> int:
-    return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+def _utf8_len(
+    payload: Any,
+    *,
+    check_content: Callable[[bytes], None] | None = None,
+    ensure_ascii: bool = False,
+) -> int:
+    # All supported renderers use this boundary, including native assistant replay.
+    # Check decoded fields and the exact rendered JSON: encoding can create a token boundary.
+    # SDK credentials and HTTP authentication headers are deliberately outside this payload.
+    return len(
+        scanned_json_bytes(
+            payload,
+            where="outgoing provider content",
+            check_content=check_content,
+            ensure_ascii=ensure_ascii,
+            separators=(",", ":"),
+        )
+    )
 
 
 #: Pinned, so no *_BASE_URL variable can send a key to another host.
@@ -107,45 +183,84 @@ OPENAI_BASE_URL = "https://api.openai.com/v1"
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/"
 
 
-def _client_args(transport: Any | None) -> dict[str, Any]:
+def egress_proxy(environ: Mapping[str, str]) -> str | None:
+    """The sandbox's egress proxy from ``BENCHMARK_EGRESS_URL``: ``http://<host>:<port>`` only."""
+    value = environ.get(EGRESS_URL_ENV)
+    if value is None:
+        return None
+    try:
+        parts = urlsplit(value)
+        ok = (
+            parts.scheme == "http"
+            and bool(parts.hostname)
+            and parts.port is not None
+            and "@" not in parts.netloc
+            and not (parts.path or parts.query or parts.fragment)
+        )
+    except ValueError:  # a port that is not a number
+        ok = False
+    if not ok:  # never the value: it may hold user info
+        raise BenchmarkValidationError(
+            f"{EGRESS_URL_ENV} must be http://<host>:<port>, with no user info, path, query "
+            "or fragment"
+        )
+    return value
+
+
+def _client_args(
+    transport: Any | None, proxy: str | None = None, *, http: Any = httpx2
+) -> dict[str, Any]:
     """Never follow a redirect: it would be a second request, possibly carrying the key away.
 
     trust_env=False: no HTTPS_PROXY or SSL_CERT_FILE in a worker's env steers the connection.
-    The Anthropic SDK mounts env proxies even then, so each proxy route is mounted direct.
-    Tests inject only a transport; every other client setting is the production one.
+    The Anthropic SDK mounts env proxies even then, so each route is mounted explicitly: direct,
+    or through ``proxy`` with the direct route's own pinned trust store. ``http`` is the httpx
+    module the SDK uses. Tests inject only a transport, which then carries every request; every
+    other client setting is the production one.
     """
-    # shortcut: no proxy from the env; PR 4's egress proxy must be passed explicitly (proxy=...),
-    # and PR 4's container launcher must build the worker env from an allowlist with no
-    # *_PROXY, SSL_CERT_* or REQUESTS_CA_BUNDLE (a SOCKS ALL_PROXY crashes the Anthropic SDK).
+    # No proxy from the environment. In a sandbox the egress proxy comes only from
+    # BENCHMARK_EGRESS_URL, and the container launcher passes no *_PROXY, SSL_CERT_* or
+    # REQUESTS_CA_BUNDLE (Task 10).
+    route = None
+    if proxy is not None and transport is None:
+        route = http.AsyncHTTPTransport(proxy=proxy, trust_env=False)
     return {
         "follow_redirects": False,
         "trust_env": False,
-        "mounts": {"http://": None, "https://": None, "all://": None},
+        "mounts": {"http://": route, "https://": route, "all://": route},
         **({} if transport is None else {"transport": transport}),
     }
 
 
 def anthropic_sdk(
-    api_key: str, timeout_s: float, *, transport: httpx2.AsyncBaseTransport | None = None
+    api_key: str,
+    timeout_s: float,
+    *,
+    transport: httpx2.AsyncBaseTransport | None = None,
+    proxy: str | None = None,
 ) -> anthropic.AsyncAnthropic:
     return anthropic.AsyncAnthropic(
         api_key=api_key,
         base_url=ANTHROPIC_BASE_URL,
         max_retries=0,
         timeout=timeout_s,
-        http_client=anthropic.DefaultAsyncHttpxClient(**_client_args(transport)),
+        http_client=anthropic.DefaultAsyncHttpxClient(**_client_args(transport, proxy)),
     )
 
 
 def openai_sdk(
-    api_key: str, timeout_s: float, *, transport: httpx2.AsyncBaseTransport | None = None
+    api_key: str,
+    timeout_s: float,
+    *,
+    transport: httpx2.AsyncBaseTransport | None = None,
+    proxy: str | None = None,
 ) -> openai.AsyncOpenAI:
     return openai.AsyncOpenAI(
         api_key=api_key,
         base_url=OPENAI_BASE_URL,
         max_retries=0,
         timeout=timeout_s,
-        http_client=openai.DefaultAsyncHttpxClient(**_client_args(transport)),
+        http_client=openai.DefaultAsyncHttpxClient(**_client_args(transport, proxy)),
     )
 
 
@@ -153,6 +268,7 @@ class AnthropicClient:
     """Anthropic Messages: no sampling parameters, no ``cache_control``."""
 
     provider = "anthropic"
+    api = "anthropic-messages"
 
     def __init__(self, sdk: anthropic.AsyncAnthropic, model_id: str, max_output_tokens: int):
         self._sdk = sdk
@@ -186,12 +302,26 @@ class AnthropicClient:
                 messages.append({"role": "assistant", "content": entry.replay})
         return messages
 
-    def rendered_bytes(self, conv: Conversation, start: int) -> int:
+    def rendered_bytes(
+        self,
+        conv: Conversation,
+        start: int,
+        *,
+        check_content: Callable[[bytes], None] | None = None,
+    ) -> int:
         messages = self._messages(conv.entries[start:])
+        for message in messages:
+            if message["role"] == "assistant":
+                for block in message["content"]:
+                    if block.get("type") == "tool_use":
+                        tool_arguments(block["input"], check_content=check_content)
         if start:
-            return _utf8_len(messages)
+            return _utf8_len(messages, check_content=check_content)
         tools = to_anthropic(conv.tools)
-        return _utf8_len({"system": conv.system, "tools": tools, "messages": messages})
+        return _utf8_len(
+            {"system": conv.system, "tools": tools, "messages": messages},
+            check_content=check_content,
+        )
 
     async def call(self, conv: Conversation) -> ModelTurn:
         kwargs: dict[str, Any] = {
@@ -213,7 +343,7 @@ class AnthropicClient:
         calls = []
         for block in response.content:
             if isinstance(block, ToolUseBlock):
-                arguments, raw = tool_arguments(block.input)
+                arguments, raw = _parse_tool_arguments(block.input)
                 calls.append(ToolCall(block.id, block.name, arguments, raw))
         usage = response.usage.model_dump(mode="json") if response.usage else None
         return ModelTurn(
@@ -233,6 +363,7 @@ class OpenAIResponsesClient:
     """OpenAI Responses: ``store=False``, encrypted reasoning replayed, no prompt-cache option."""
 
     provider = "openai"
+    api = "openai-responses"
 
     def __init__(self, sdk: openai.AsyncOpenAI, model_id: str, max_output_tokens: int):
         self._sdk = sdk
@@ -262,12 +393,24 @@ class OpenAIResponsesClient:
                 items += entry.replay
         return items
 
-    def rendered_bytes(self, conv: Conversation, start: int) -> int:
+    def rendered_bytes(
+        self,
+        conv: Conversation,
+        start: int,
+        *,
+        check_content: Callable[[bytes], None] | None = None,
+    ) -> int:
         items = self._input(conv.entries[start:])
+        for item in items:
+            if item.get("type") == "function_call":
+                tool_arguments(item["arguments"], check_content=check_content)
         if start:
-            return _utf8_len(items)
+            return _utf8_len(items, check_content=check_content)
         tools = to_openai_responses(conv.tools)
-        return _utf8_len({"instructions": conv.system, "tools": tools, "input": items})
+        return _utf8_len(
+            {"instructions": conv.system, "tools": tools, "input": items},
+            check_content=check_content,
+        )
 
     async def call(self, conv: Conversation) -> ModelTurn:
         kwargs: dict[str, Any] = {
@@ -294,7 +437,7 @@ class OpenAIResponsesClient:
         calls, texts = [], []
         for item in response.output:
             if item.type == "function_call":
-                arguments, raw = tool_arguments(item.arguments)
+                arguments, raw = _parse_tool_arguments(item.arguments)
                 calls.append(ToolCall(item.call_id, item.name, arguments, raw))
             elif item.type == "message":
                 texts += [part.text for part in item.content if part.type == "output_text"]
@@ -314,8 +457,133 @@ class OpenAIResponsesClient:
         )
 
 
+def ollama_sdk(
+    base_url: str,
+    timeout_s: float,
+    *,
+    transport: httpx2.AsyncBaseTransport | None = None,
+    proxy: str | None = None,
+) -> openai.AsyncOpenAI:
+    # "The client requires an API key value, but Ollama ignores it" (sandbox note D.1).
+    return openai.AsyncOpenAI(
+        api_key="ollama",
+        base_url=base_url,
+        max_retries=0,
+        timeout=timeout_s,
+        http_client=openai.DefaultAsyncHttpxClient(**_client_args(transport, proxy)),
+    )
+
+
+class OllamaChatClient:
+    """Ollama's OpenAI-compatible Chat Completions: Ollama defaults (design §7.1).
+
+    No ``max_tokens``, no ``tool_choice`` (unsupported; auto is Ollama's only behaviour) and no
+    sampling parameter is ever sent.
+    """
+
+    provider = "ollama"
+    api = "openai-chat-completions"
+
+    def __init__(self, sdk: openai.AsyncOpenAI, model_id: str):
+        self._sdk = sdk
+        self.model_id = model_id
+
+    def request_params(self) -> dict[str, Any]:
+        return {"model": self.model_id}
+
+    def _messages(self, entries: Sequence[Any]) -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = []
+        for entry in entries:
+            if isinstance(entry, UserText):
+                messages.append({"role": "user", "content": entry.text})
+            elif isinstance(entry, ToolResults):
+                messages += [
+                    {"role": "tool", "tool_call_id": r.call_id, "content": r.text}
+                    for r in entry.results
+                ]
+            else:
+                messages.append(entry.replay)
+        return messages
+
+    def rendered_bytes(
+        self,
+        conv: Conversation,
+        start: int,
+        *,
+        check_content: Callable[[bytes], None] | None = None,
+    ) -> int:
+        messages = self._messages(conv.entries[start:])
+        for message in messages:
+            for call in message.get("tool_calls", []):
+                if call.get("type") == "function":
+                    tool_arguments(call["function"]["arguments"], check_content=check_content)
+        if start:
+            return _utf8_len(messages, check_content=check_content)
+        system = {"role": "system", "content": conv.system}
+        return _utf8_len(
+            {"messages": [system, *messages], "tools": to_openai_chat(conv.tools)},
+            check_content=check_content,
+        )
+
+    async def call(self, conv: Conversation) -> ModelTurn:
+        kwargs: dict[str, Any] = {
+            "model": self.model_id,
+            "messages": [{"role": "system", "content": conv.system}, *self._messages(conv.entries)],
+        }
+        if conv.tools:
+            kwargs["tools"] = to_openai_chat(conv.tools)
+        try:
+            response = await self._sdk.chat.completions.create(**kwargs)
+        except openai.APIStatusError as exc:
+            raise _status_error(exc.status_code, exc.response.headers, str(exc)) from exc
+        except openai.APITimeoutError as exc:
+            raise ProviderCallError("timeout", str(exc)) from exc
+        except openai.APIConnectionError as exc:
+            raise ProviderCallError("connection", str(exc)) from exc
+        choice = response.choices[0] if response.choices else None
+        message = choice.message if choice else None
+        calls: list[ToolCall] = []
+        replayed: list[dict[str, Any]] = []
+        position = 0
+        for call in (message.tool_calls if message else None) or []:
+            if call.type != "function":
+                continue
+            position += 1
+            # A call without an id gets one by position; the replay carries the same id, so
+            # each tool result pairs with its call.
+            call_id = call.id or f"call_{position}"
+            arguments, raw = _parse_tool_arguments(call.function.arguments)
+            calls.append(ToolCall(call_id, call.function.name, arguments, raw))
+            replayed.append(
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": call.function.name, "arguments": call.function.arguments},
+                }
+            )
+        content = message.content if message else None
+        replay: dict[str, Any] = {"role": "assistant", "content": content}
+        if replayed:
+            replay["tool_calls"] = replayed
+        usage = response.usage.model_dump(mode="json") if response.usage else None
+        return ModelTurn(
+            text=content or "",
+            tool_calls=tuple(calls),
+            replay=replay,
+            raw_response=response.model_dump(mode="json"),
+            raw_usage=usage,
+            buckets=None if usage is None else ollama_buckets(usage),
+            reported_model=response.model,
+            stop_reason=choice.finish_reason if choice else None,
+        )
+
+
 def gemini_sdk(
-    api_key: str, timeout_s: float, *, transport: httpx.AsyncBaseTransport | None = None
+    api_key: str,
+    timeout_s: float,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+    proxy: str | None = None,
 ) -> genai.Client:
     # Without a context the SDK builds its own from SSL_CERT_FILE and SSL_CERT_DIR: one for
     # httpx ("verify") and one for websockets ("ssl").
@@ -327,8 +595,9 @@ def gemini_sdk(
             base_url=GEMINI_BASE_URL,
             timeout=int(timeout_s * 1000),
             retry_options=genai_types.HttpRetryOptions(attempts=1),
-            httpx_async_client=httpx.AsyncClient(**_client_args(transport)),
-            client_args={"verify": ca},
+            httpx_async_client=httpx.AsyncClient(**_client_args(transport, proxy, http=httpx)),
+            # The unused sync client reads no proxy variable either (a SOCKS one would crash it).
+            client_args={"verify": ca, "trust_env": False},
             async_client_args={"ssl": ca},
         ),
     )
@@ -338,6 +607,7 @@ class GeminiClient:
     """Gemini ``generate_content``: AUTO mode, no automatic calling, no continuation."""
 
     provider = "google"
+    api = "gemini-generate-content"
 
     def __init__(self, sdk: genai.Client, model_id: str, max_output_tokens: int):
         self._sdk = sdk
@@ -405,15 +675,27 @@ class GeminiClient:
             max_output_tokens=self._max_output_tokens,
         )
 
-    def rendered_bytes(self, conv: Conversation, start: int) -> int:
+    def rendered_bytes(
+        self,
+        conv: Conversation,
+        start: int,
+        *,
+        check_content: Callable[[bytes], None] | None = None,
+    ) -> int:
         contents = [
             c.model_dump(mode="json", exclude_none=True)
             for c in self._contents(conv.entries[start:])
         ]
+        # The pinned google-genai async transport uses json.dumps' ASCII escaping.
+        # A Unicode escape can create a lexical delimiter absent from decoded text.
         if start:
-            return _utf8_len(contents)
+            return _utf8_len(contents, check_content=check_content, ensure_ascii=True)
         tools = to_gemini(conv.tools)[0]
-        return _utf8_len({"systemInstruction": conv.system, "tools": tools, "contents": contents})
+        return _utf8_len(
+            {"systemInstruction": conv.system, "tools": tools, "contents": contents},
+            check_content=check_content,
+            ensure_ascii=True,
+        )
 
     async def call(self, conv: Conversation) -> ModelTurn:
         try:
@@ -436,7 +718,7 @@ class GeminiClient:
         for position, part in enumerate((p for p in parts if p.function_call), 1):
             call = part.function_call
             assert call is not None
-            arguments, raw = tool_arguments(call.args if call.args is not None else {})
+            arguments, raw = _parse_tool_arguments(call.args if call.args is not None else {})
             calls.append(ToolCall(call.id or f"call_{position}", call.name or "", arguments, raw))
         usage = response.usage_metadata.model_dump(mode="json") if response.usage_metadata else None
         reason = candidate.finish_reason if candidate else None
@@ -456,8 +738,9 @@ _SCRIPT_BUCKETS = {
     "anthropic": anthropic_buckets,
     "openai": openai_buckets,
     "google": gemini_buckets,
+    "ollama": ollama_buckets,
 }
-_SCRIPT_STOP = {"anthropic": "end_turn", "openai": "completed", "google": "STOP"}
+_SCRIPT_STOP = {"anthropic": "end_turn", "openai": "completed", "google": "STOP", "ollama": "stop"}
 
 
 def _fill_prompt(value: Any, prompt: str) -> Any:
@@ -478,6 +761,8 @@ class ScriptedClient:
     ``prompt_contains``. A tools step applies only when every tool it names was given.
     """
 
+    api = "scripted"
+
     def __init__(self, provider: str, model_id: str, steps: list[dict[str, Any]]):
         self.provider = provider
         self.model_id = model_id
@@ -489,7 +774,13 @@ class ScriptedClient:
     def request_params(self) -> dict[str, Any]:
         return {"model": self.model_id}
 
-    def rendered_bytes(self, conv: Conversation, start: int) -> int:
+    def rendered_bytes(
+        self,
+        conv: Conversation,
+        start: int,
+        *,
+        check_content: Callable[[bytes], None] | None = None,
+    ) -> int:
         rendered: list[Any] = []
         for entry in conv.entries[start:]:
             if isinstance(entry, UserText):
@@ -500,9 +791,12 @@ class ScriptedClient:
                 calls = [[c.id, c.name, c.arguments] for c in entry.tool_calls]
                 rendered.append({"role": "assistant", "text": entry.text, "calls": calls})
         if start:
-            return _utf8_len(rendered)
+            return _utf8_len(rendered, check_content=check_content)
         tools = to_anthropic(conv.tools)
-        return _utf8_len({"system": conv.system, "tools": tools, "messages": rendered})
+        return _utf8_len(
+            {"system": conv.system, "tools": tools, "messages": rendered},
+            check_content=check_content,
+        )
 
     def _applies(self, step: dict[str, Any], conv: Conversation, prompt: str) -> bool:
         if "prompt_contains" in step and str(step["prompt_contains"]) not in prompt:
@@ -548,6 +842,28 @@ class ScriptedClient:
         )
 
 
+async def fetch_model_limits(client: ModelClient) -> dict[str, Any] | None:
+    """The model's token limits from its provider's free models endpoint, in one GET.
+
+    Anthropic and Gemini only: the OpenAI and Ollama model endpoints report no limits, so
+    they make no request. It reserves no ledger unit (the endpoint is not billed), and an SDK
+    error is recorded as ``{"error": "<Type>"}``, never raised.
+    """
+    try:
+        if isinstance(client, AnthropicClient):
+            info = await client._sdk.models.retrieve(client.model_id)
+            return {"max_input_tokens": info.max_input_tokens, "max_tokens": info.max_tokens}
+        if isinstance(client, GeminiClient):
+            model = await client._sdk.aio.models.get(model=client.model_id)
+            return {
+                "max_input_tokens": model.input_token_limit,
+                "max_tokens": model.output_token_limit,
+            }
+    except Exception as exc:  # noqa: BLE001 - recorded in system_info, never fatal
+        return {"error": type(exc).__name__}
+    return None
+
+
 def make_client(
     family: ModelFamily, *, timeout_s: float, transport: Any | None = None
 ) -> ModelClient:
@@ -566,8 +882,7 @@ def make_client(
     provider = _LIVE_APIS.get(family.api or "")
     if provider is None:
         raise BenchmarkValidationError(
-            f"model family {family.id!r} uses api {family.api!r}, which has no client yet "
-            "(openai-chat-completions arrives with the Ollama client in PR 4)"
+            f"model family {family.id!r} uses api {family.api!r}, which has no client"
         )
     if family.provider != provider:
         raise BenchmarkValidationError(
@@ -575,6 +890,19 @@ def make_client(
             f"not provider {family.provider!r}"
         )
     require_live_environment(provider)
+    if provider in LIVE_LATCH_ENV:  # keyless: the Ollama worker holds no paid key at all
+        held = [name for name in PAID_KEY_ENVS if os.environ.get(name)]
+        if held:
+            raise BenchmarkValidationError(
+                f"a keyless {provider} worker holds no paid key, but {', '.join(held)} is set"
+            )
+        base_url = os.environ[LIVE_LATCH_ENV[provider]]
+        if not base_url.startswith(("http://", "https://")):
+            raise BenchmarkValidationError(
+                f"{LIVE_LATCH_ENV[provider]} must start with http:// or https://"
+            )
+        sdk = ollama_sdk(base_url, timeout_s, transport=transport, proxy=egress_proxy(os.environ))
+        return OllamaChatClient(sdk, family.model_id)
     own_key_env = PROVIDER_API_KEY_ENV[provider]
     others = [name for name in PAID_KEY_ENVS if name != own_key_env and os.environ.get(name)]
     if others:
@@ -583,12 +911,13 @@ def make_client(
         )
     if family.max_output_tokens is None:
         raise BenchmarkValidationError(f"model family {family.id!r} must set max_output_tokens")
+    proxy = egress_proxy(os.environ)
     key = os.environ[own_key_env]
     if provider == "anthropic":
-        sdk = anthropic_sdk(key, timeout_s, transport=transport)
+        sdk = anthropic_sdk(key, timeout_s, transport=transport, proxy=proxy)
         return AnthropicClient(sdk, family.model_id, family.max_output_tokens)
     if provider == "openai":
-        sdk = openai_sdk(key, timeout_s, transport=transport)
+        sdk = openai_sdk(key, timeout_s, transport=transport, proxy=proxy)
         return OpenAIResponsesClient(sdk, family.model_id, family.max_output_tokens)
-    sdk = gemini_sdk(key, timeout_s, transport=transport)
+    sdk = gemini_sdk(key, timeout_s, transport=transport, proxy=proxy)
     return GeminiClient(sdk, family.model_id, family.max_output_tokens)

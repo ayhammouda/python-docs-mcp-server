@@ -9,7 +9,7 @@ import importlib.util
 import json
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from email.utils import format_datetime
 from pathlib import Path
 from typing import Any
@@ -20,19 +20,29 @@ import httpx2
 import pytest
 import yaml
 
-from benchmarks.adapters.guard import PAID_KEY_ENVS, PROVIDER_API_KEY_ENV, LiveProviderDisabledError
+from benchmarks.adapters.guard import (
+    PAID_KEY_ENVS,
+    PROVIDER_API_KEY_ENV,
+    LiveProviderDisabledError,
+    require_live_environment,
+)
+from benchmarks.agentic import clients
 from benchmarks.agentic.clients import (
     AnthropicClient,
     GeminiClient,
+    OllamaChatClient,
     OpenAIResponsesClient,
     ScriptedClient,
     anthropic_sdk,
+    fetch_model_limits,
     gemini_sdk,
     make_client,
+    ollama_sdk,
     openai_sdk,
     parse_retry_after,
     tool_arguments,
 )
+from benchmarks.agentic.protocol import KeyLeakError
 from benchmarks.agentic.types import (
     Buckets,
     Conversation,
@@ -367,11 +377,27 @@ def test_tool_arguments(value: Any, expected: tuple[dict[str, Any], str | None])
     assert tool_arguments(value) == expected
 
 
-def test_parse_retry_after_accepts_an_http_date() -> None:
-    when = format_datetime(datetime.now(UTC) + timedelta(seconds=30), usegmt=True)
-    value = parse_retry_after({"retry-after": when})
-    assert value is not None and 28 < value <= 30
-    past = format_datetime(datetime.now(UTC) - timedelta(seconds=30), usegmt=True)
+@pytest.mark.parametrize("serialized", [True, False])
+def test_raw_tool_arguments_refuse_a_key_before_becoming_transcript_text(serialized: bool) -> None:
+    key = "AIza" + "g" * 35
+    arguments = ["\n" + key]
+    with pytest.raises(KeyLeakError) as caught:
+        tool_arguments(json.dumps(arguments) if serialized else arguments)
+    assert key not in str(caught.value)
+
+
+def test_parse_retry_after_accepts_an_http_date(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = datetime(2026, 11, 4, 12, 0, 0, tzinfo=UTC)
+
+    class Frozen(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> datetime:
+            return now
+
+    monkeypatch.setattr(clients, "datetime", Frozen)
+    when = format_datetime(now + timedelta(seconds=30), usegmt=True)
+    assert parse_retry_after({"retry-after": when}) == 30.0
+    past = format_datetime(now - timedelta(seconds=30), usegmt=True)
     assert parse_retry_after({"retry-after": past}) == 0
     assert parse_retry_after({"retry-after": "soon"}) is None
     assert parse_retry_after({}) is None
@@ -610,10 +636,46 @@ def test_make_client_refuses_a_second_paid_key(monkeypatch: pytest.MonkeyPatch) 
     assert "not-a-real-key" not in str(caught.value)
 
 
-def test_make_client_refuses_the_ollama_api_until_pr_4(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_make_client_builds_the_ollama_client_through_the_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _clear_keys(monkeypatch)
-    with pytest.raises(BenchmarkValidationError, match="openai-chat-completions"):
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    family = _matrix_family("gemma4-12b")
+    with pytest.raises(LiveProviderDisabledError):
+        make_client(family, timeout_s=600)
+    monkeypatch.setenv("BENCHMARK_LIVE_PROVIDERS_ENABLED", "1")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434/v1")
+    client = make_client(family, timeout_s=600)  # builds an SDK object; sends nothing
+    assert isinstance(client, OllamaChatClient) and client.provider == "ollama"
+    assert client.model_id == "gemma4:12b"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    with pytest.raises(BenchmarkValidationError, match="ANTHROPIC_API_KEY") as caught:
+        make_client(family, timeout_s=600)
+    assert "not-a-real-key" not in str(caught.value)
+
+
+def test_make_client_refuses_an_ollama_base_url_that_is_not_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_keys(monkeypatch)
+    monkeypatch.setenv("BENCHMARK_LIVE_PROVIDERS_ENABLED", "1")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "file:///etc/passwd")
+    with pytest.raises(BenchmarkValidationError, match="OLLAMA_BASE_URL"):
         make_client(_matrix_family("gemma4-12b"), timeout_s=600)
+
+
+def test_ollama_needs_the_live_flag_and_its_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_keys(monkeypatch)
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    monkeypatch.setenv("BENCHMARK_LIVE_PROVIDERS_ENABLED", "1")
+    with pytest.raises(LiveProviderDisabledError, match="OLLAMA_BASE_URL"):
+        require_live_environment("ollama")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1")
+    require_live_environment("ollama")  # no key is read: none is set
+    monkeypatch.delenv("BENCHMARK_LIVE_PROVIDERS_ENABLED")
+    with pytest.raises(LiveProviderDisabledError):
+        require_live_environment("ollama")
 
 
 def test_make_client_refuses_a_provider_that_does_not_match_its_api(
@@ -846,3 +908,230 @@ def test_a_ca_variable_cannot_swap_a_clients_trust_store(
     # No transport is injected and nothing is patched; no request is made.
     monkeypatch.setenv("SSL_CERT_FILE", "/nonexistent/ca.pem")
     build("test-key", 30)
+
+
+LIVE_HOSTS = [
+    ("claude-sonnet-5-5", "api.anthropic.com"),
+    ("gpt-6.1-sol", "api.openai.com"),
+    ("gemini-3.8-flash", "generativelanguage.googleapis.com"),
+]
+
+
+def _proxy_url(proxy: Any) -> str | None:
+    """A route's proxy as its URL string, whether given as a string or a proxy object."""
+    if proxy is None or isinstance(proxy, str):
+        return proxy
+    return str(getattr(proxy, "url", proxy))
+
+
+@pytest.mark.parametrize("family_id,host", LIVE_HOSTS)
+async def test_the_egress_proxy_carries_every_call(
+    monkeypatch: pytest.MonkeyPatch, family_id: str, host: str
+) -> None:
+    # As test_a_proxy_variable_cannot_steer_a_call, with the sandbox's explicit egress proxy
+    # set beside two hostile proxy variables: only the egress route may carry the call.
+    _clear_keys(monkeypatch)
+    family = _matrix_family(family_id)
+    monkeypatch.setenv("BENCHMARK_LIVE_PROVIDERS_ENABLED", "1")
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV[family.provider], "not-a-real-key")
+    monkeypatch.setenv("BENCHMARK_EGRESS_URL", "http://egress:3128")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:3128")
+    monkeypatch.setenv("ALL_PROXY", "socks5://proxy.invalid:1080")
+    kind = httpx if family.provider == "google" else httpx2
+    recorder = _recorder(
+        family.provider, _response(family.provider, 200, OK_BODIES[family.provider])
+    )
+    routes: list[Any] = []
+
+    def transport(**kwargs: Any) -> Any:
+        def handle(request: Any) -> Any:
+            routes.append(kwargs.get("proxy"))
+            return recorder(request)
+
+        return kind.MockTransport(handle)
+
+    for module in (kind, kind._client, anthropic._base_client):
+        monkeypatch.setattr(module, "AsyncHTTPTransport", transport)
+    await make_client(family, timeout_s=30).call(_conv())
+    assert [_proxy_url(p) for p in routes] == ["http://egress:3128"]
+    assert [r.url.host for r in recorder.seen] == [host]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "socks5://egress:1080",
+        "http://u:p@egress:3128",
+        "http://egress:3128/x",
+        "egress:3128",
+        "https://egress:3128",
+    ],
+)
+def test_a_malformed_egress_url_is_refused(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    _clear_keys(monkeypatch)
+    monkeypatch.setenv("BENCHMARK_LIVE_PROVIDERS_ENABLED", "1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    monkeypatch.setenv("BENCHMARK_EGRESS_URL", value)
+    with pytest.raises(BenchmarkValidationError, match="BENCHMARK_EGRESS_URL") as caught:
+        make_client(_matrix_family("claude-sonnet-5-5"), timeout_s=30)
+    assert "u:p" not in str(caught.value)
+
+
+@pytest.mark.parametrize("build", [anthropic_sdk, openai_sdk, gemini_sdk])
+def test_a_ca_variable_cannot_swap_the_proxy_routes_trust_store(
+    monkeypatch: pytest.MonkeyPatch, build: Callable[..., Any]
+) -> None:
+    # As test_a_ca_variable_cannot_swap_a_clients_trust_store, for the proxy route.
+    monkeypatch.setenv("SSL_CERT_FILE", "/nonexistent/ca.pem")
+    build("test-key", 30, proxy="http://egress:3128")
+
+
+def _chat_completion(message: dict[str, Any], finish: str = "stop") -> dict[str, Any]:
+    return {
+        "id": "chatcmpl-1",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "gemma4:12b",
+        "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+        "usage": {"prompt_tokens": 120, "completion_tokens": 30, "total_tokens": 150},
+    }
+
+
+def _ollama(recorder: Recorder) -> OllamaChatClient:
+    sdk = ollama_sdk("http://127.0.0.1:11434/v1", 600, transport=recorder.transport())
+    return OllamaChatClient(sdk, "gemma4:12b")
+
+
+def _tool_call(name: str, arguments: str, call_id: str | None) -> dict[str, Any]:
+    call = {"type": "function", "function": {"name": name, "arguments": arguments}}
+    return call if call_id is None else {"id": call_id, **call}
+
+
+async def test_ollama_client_round_trips_a_tool_call() -> None:
+    first = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [_tool_call("search_docs", '{"query": "json"}', "call_abc")],
+    }
+    recorder = Recorder(
+        _ok(_chat_completion(first, "tool_calls")),
+        _ok(_chat_completion({"role": "assistant", "content": "The answer."})),
+    )
+    client = _ollama(recorder)
+    conv = _conv()
+    turn = await client.call(conv)
+    body = recorder.body(0)
+    assert body["model"] == "gemma4:12b"
+    assert body["messages"][0] == {"role": "system", "content": "system prompt"}
+    assert body["messages"][1] == {"role": "user", "content": "q?"}
+    assert body["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "search_docs",
+                "description": TOOLS[0].description,
+                "parameters": TOOLS[0].input_schema,
+                "strict": False,
+            },
+        }
+    ]
+    for name in ("max_tokens", "max_completion_tokens", "tool_choice", "temperature", "top_p"):
+        assert name not in body
+    assert turn.tool_calls == (ToolCall("call_abc", "search_docs", {"query": "json"}),)
+    assert turn.stop_reason == "tool_calls" and turn.reported_model == "gemma4:12b"
+    assert turn.buckets == Buckets(120, 0, 0, 30, 0)
+    assert client.request_params() == {"model": "gemma4:12b"}
+    conv.entries += [turn, ToolResults((ToolResult("call_abc", "search_docs", "result", False),))]
+    answer = await client.call(conv)
+    messages = recorder.body(1)["messages"]
+    assert messages[2]["role"] == "assistant"
+    assert messages[2]["tool_calls"][0]["id"] == "call_abc"
+    assert messages[3] == {"role": "tool", "tool_call_id": "call_abc", "content": "result"}
+    assert answer.text == "The answer." and answer.tool_calls == ()
+
+
+async def test_ollama_tool_calls_without_ids_pair_by_position() -> None:
+    first = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            _tool_call("search_docs", '{"query": "a"}', None),
+            _tool_call("search_docs", '{"query": "b"}', None),
+        ],
+    }
+    recorder = Recorder(
+        _ok(_chat_completion(first, "tool_calls")),
+        _ok(_chat_completion({"role": "assistant", "content": "ok"})),
+    )
+    client = _ollama(recorder)
+    conv = _conv()
+    turn = await client.call(conv)
+    assert [c.id for c in turn.tool_calls] == ["call_1", "call_2"]
+    results = tuple(ToolResult(c.id, c.name, f"r{c.id}", False) for c in turn.tool_calls)
+    conv.entries += [turn, ToolResults(results)]
+    await client.call(conv)
+    messages = recorder.body(1)["messages"]
+    assert [c["id"] for c in messages[2]["tool_calls"]] == ["call_1", "call_2"]
+    assert [(m["role"], m["tool_call_id"]) for m in messages[3:]] == [
+        ("tool", "call_1"),
+        ("tool", "call_2"),
+    ]
+
+
+@pytest.mark.parametrize("status", [200, 500])
+async def test_ollama_client_sends_one_request_per_call(status: int) -> None:
+    body = _chat_completion({"role": "assistant", "content": "ok"}) if status == 200 else {}
+    recorder = Recorder(_ok(body, status), _ok(body, status))
+    sdk = ollama_sdk("http://127.0.0.1:11434/v1", 600, transport=recorder.transport())
+    assert sdk.max_retries == 0
+    client = OllamaChatClient(sdk, "gemma4:12b")
+    if status == 200:
+        await client.call(_conv())
+    else:
+        with pytest.raises(ProviderCallError):
+            await client.call(_conv())
+    assert len(recorder.seen) == 1
+
+
+ANTHROPIC_MODEL_INFO = {
+    "id": "claude-sonnet-5-5",
+    "type": "model",
+    "display_name": "Claude Sonnet 5.5",
+    "created_at": "2026-09-01T00:00:00Z",
+    "lifecycle": "active",
+    "max_input_tokens": 1_000_000,
+    "max_tokens": 128_000,
+}
+GEMINI_MODEL = {
+    "name": "models/gemini-3.8-flash",
+    "inputTokenLimit": 1_048_576,
+    "outputTokenLimit": 65_536,
+}
+
+
+@pytest.mark.parametrize("family_id", ["claude-sonnet-5-5", "gemini-3.8-flash"])
+async def test_fetch_model_limits_makes_one_free_get(family_id: str) -> None:
+    if family_id == "claude-sonnet-5-5":
+        recorder: Recorder = Recorder(_ok(ANTHROPIC_MODEL_INFO))
+        client: Any = _anthropic(recorder)
+        expected = {"max_input_tokens": 1_000_000, "max_tokens": 128_000}
+    else:
+        recorder = GeminiRecorder(_gemini_ok(GEMINI_MODEL))
+        client = _gemini(recorder)  # type: ignore[arg-type]
+        expected = {"max_input_tokens": 1_048_576, "max_tokens": 65_536}
+    assert await fetch_model_limits(client) == expected
+    assert [r.method for r in recorder.seen] == ["GET"]
+    assert recorder.seen[0].url.path.endswith(f"/models/{family_id}")
+
+
+async def test_fetch_model_limits_skips_providers_that_report_none() -> None:
+    recorder = Recorder()  # no response queued: any request would fail the test
+    assert await fetch_model_limits(_openai(recorder)) is None
+    assert await fetch_model_limits(_ollama(recorder)) is None
+    assert recorder.seen == []
+
+
+async def test_fetch_model_limits_records_an_error_without_raising() -> None:
+    recorder = Recorder(_ok(ERROR_BODY, 500))
+    assert await fetch_model_limits(_anthropic(recorder)) == {"error": "InternalServerError"}
+    assert len(recorder.seen) == 1
