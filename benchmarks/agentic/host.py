@@ -201,18 +201,15 @@ async def _teardown(
                 await stop_worker()  # a container's removal ends everything in it
             except BaseException as exc:  # noqa: BLE001 - kept, then re-raised below
                 stop_error = exc
+                report(exc)
         if pattern := _publish_scrubbed(log_path):
-            leak = KeyLeakError(
+            raise KeyLeakError(
                 f"a key-shaped string ({pattern} pattern) was found in {log_path}; redacted there"
             )
-            if stop_error is not None:
-                report(leak)
-                raise stop_error from leak
-            raise leak
-        if stop_error is not None:
-            raise stop_error
     except Exception as error:
         report(error)
+        if stop_error is not None and isinstance(error, KeyLeakError):
+            raise stop_error from error
         raise
     finally:  # whatever happened to the log
         if in_flight is not None:  # may have been billed: booked at twice its bound
@@ -221,6 +218,8 @@ async def _teardown(
             except Exception as error:
                 report(error)
                 raise
+    if stop_error is not None:
+        raise stop_error
 
 
 def _publish_scrubbed(log_path: Path) -> str | None:
