@@ -423,7 +423,8 @@ def run_agentic(
             missing = [name for name in _HOSTED_REQUIRED_FIELDS if getattr(family, name) is None]
             if missing:
                 raise BenchmarkValidationError(f"model family {family.id!r} must set {missing}")
-    if any(family.api != "scripted" for family in families):
+    if any(family.api != "scripted" and family.provider in caps for family in families):
+        # Only a live, metered family is priced: the air-gapped arm never reads the snapshot.
         refuse_stale_snapshot(snapshot, today=today or datetime.now(UTC).date())
 
     run_id = config.run_id or _default_run_id()

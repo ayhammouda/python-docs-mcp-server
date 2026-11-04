@@ -16,6 +16,7 @@ import pytest
 from benchmarks.agentic.ledger import (
     PROVIDER_CAPS,
     PROVIDER_MARGINS,
+    UNMETERED_PROVIDERS,
     Ledger,
     LedgerService,
     ModelPrice,
@@ -28,7 +29,12 @@ from benchmarks.agentic.ledger import (
     refuse_stale_snapshot,
 )
 from benchmarks.agentic.types import Buckets
-from benchmarks.agentic.usage import anthropic_buckets, gemini_buckets, openai_buckets
+from benchmarks.agentic.usage import (
+    anthropic_buckets,
+    gemini_buckets,
+    ollama_buckets,
+    openai_buckets,
+)
 from benchmarks.model_matrix import ModelFamily, load_model_matrix, model_family_from_raw
 from benchmarks.runner import BenchmarkValidationError
 
@@ -559,3 +565,44 @@ def test_caps_and_margins_add_up_to_the_budget() -> None:
         "openai": D(75),
         "google": D(200),
     }
+
+
+def test_ollama_buckets_split_cached_prompt_tokens() -> None:
+    usage = {
+        "prompt_tokens": 120,
+        "completion_tokens": 30,
+        "prompt_tokens_details": {"cached_tokens": 20},
+    }
+    assert ollama_buckets(usage) == Buckets(100, 0, 20, 30, 0)
+
+
+def test_ollama_buckets_without_cache_details() -> None:
+    usage: dict[str, Any] = {"prompt_tokens": 120, "completion_tokens": 30}
+    assert ollama_buckets(usage) == Buckets(120, 0, 0, 30, 0)
+    assert ollama_buckets({**usage, "prompt_tokens_details": None}) == Buckets(120, 0, 0, 30, 0)
+
+
+async def test_an_unmetered_provider_gets_one_unit_at_a_time_and_is_never_booked(
+    tmp_path: Path,
+) -> None:
+    assert UNMETERED_PROVIDERS == frozenset({"ollama"})
+    ledger, service = _service(tmp_path, anthropic="10", openai="10")
+    first = await service.reserve(
+        provider="ollama", model_id="gemma4:12b", input_bound=1_000, output_bound=1_000
+    )
+    assert first is not None and first.startswith("ollama-")
+    second = asyncio.ensure_future(
+        service.reserve(
+            provider="ollama", model_id="gemma4:12b", input_bound=1_000, output_bound=1_000
+        )
+    )
+    await asyncio.sleep(0.05)
+    assert not second.done()  # one unit in flight per provider
+    await service.settle(first, outcome="ok", buckets=Buckets(10, 0, 0, 10))
+    unit = await asyncio.wait_for(second, timeout=1)
+    assert unit is not None and unit != first
+    await service.settle(unit, outcome="worker_lost", buckets=None)
+    assert not (tmp_path / "ollama.jsonl").exists()
+    assert ledger.events(RUN_ID) == []
+    assert (ledger.spent("anthropic"), ledger.spent("openai")) == (0, 0)
+    ledger.close()

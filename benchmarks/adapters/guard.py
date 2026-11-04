@@ -54,6 +54,9 @@ PROVIDER_API_KEY_ENV = {
 #: The model providers' keys: they pay for every call, and no docs system ever receives one.
 PAID_KEY_ENVS = tuple(PROVIDER_API_KEY_ENV[p] for p in ("anthropic", "openai", "google"))
 
+#: Keyless live providers, and the variable that must be set instead of a key (#184 ruling 9).
+LIVE_LATCH_ENV = {"ollama": "OLLAMA_BASE_URL"}
+
 _TRUTHY = {"1", "true", "yes"}
 #: Every provider key is made of these; anything else could be quoted by an HTTP error.
 _KEY_CHARACTERS = re.compile(r"[A-Za-z0-9_.-]+")
@@ -77,7 +80,8 @@ def require_live_environment(provider: str) -> None:
 
     1. ``BENCHMARK_LIVE_PROVIDERS_ENABLED`` is set to a truthy value.
     2. The provider-specific API key environment variable (see
-       :data:`PROVIDER_API_KEY_ENV`) is set and non-empty.
+       :data:`PROVIDER_API_KEY_ENV`) is set and non-empty; for a keyless provider,
+       its :data:`LIVE_LATCH_ENV` variable instead, and nothing else.
     3. That variable's raw value uses only ``[A-Za-z0-9_.-]`` (an HTTP client error
        would quote any other character).
 
@@ -92,6 +96,14 @@ def require_live_environment(provider: str) -> None:
             f"for provider {provider!r} (this does not by itself enable live calls; "
             "see benchmarks/adapters/guard.py)"
         )
+    latch = LIVE_LATCH_ENV.get(provider)
+    if latch is not None:  # a keyless provider: its latch, and never a key
+        if not os.environ.get(latch, "").strip():
+            raise LiveProviderDisabledError(
+                f"live provider calls are disabled: missing required {latch} for "
+                f"provider {provider!r}"
+            )
+        return
     key_env = PROVIDER_API_KEY_ENV.get(provider)
     if key_env is None:
         raise LiveProviderDisabledError(f"unknown provider for live guard: {provider!r}")

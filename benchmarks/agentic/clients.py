@@ -30,11 +30,17 @@ from google.genai import types as genai_types
 
 from benchmarks.adapters.guard import (
     EGRESS_URL_ENV,
+    LIVE_LATCH_ENV,
     PAID_KEY_ENVS,
     PROVIDER_API_KEY_ENV,
     require_live_environment,
 )
-from benchmarks.agentic.schemas import to_anthropic, to_gemini, to_openai_responses
+from benchmarks.agentic.schemas import (
+    to_anthropic,
+    to_gemini,
+    to_openai_chat,
+    to_openai_responses,
+)
 from benchmarks.agentic.types import (
     Conversation,
     ModelClient,
@@ -44,7 +50,12 @@ from benchmarks.agentic.types import (
     ToolResults,
     UserText,
 )
-from benchmarks.agentic.usage import anthropic_buckets, gemini_buckets, openai_buckets
+from benchmarks.agentic.usage import (
+    anthropic_buckets,
+    gemini_buckets,
+    ollama_buckets,
+    openai_buckets,
+)
 from benchmarks.model_matrix import ModelFamily
 from benchmarks.runner import BenchmarkValidationError, _load_yaml_mapping
 
@@ -53,6 +64,7 @@ _LIVE_APIS = {
     "anthropic-messages": "anthropic",
     "openai-responses": "openai",
     "gemini-generate-content": "google",
+    "openai-chat-completions": "ollama",  # keyless: OLLAMA_BASE_URL instead
 }
 
 
@@ -355,6 +367,113 @@ class OpenAIResponsesClient:
         )
 
 
+def ollama_sdk(
+    base_url: str,
+    timeout_s: float,
+    *,
+    transport: httpx2.AsyncBaseTransport | None = None,
+    proxy: str | None = None,
+) -> openai.AsyncOpenAI:
+    # "The client requires an API key value, but Ollama ignores it" (sandbox note D.1).
+    return openai.AsyncOpenAI(
+        api_key="ollama",
+        base_url=base_url,
+        max_retries=0,
+        timeout=timeout_s,
+        http_client=openai.DefaultAsyncHttpxClient(**_client_args(transport, proxy)),
+    )
+
+
+class OllamaChatClient:
+    """Ollama's OpenAI-compatible Chat Completions: Ollama defaults (design §7.1).
+
+    No ``max_tokens``, no ``tool_choice`` (unsupported; auto is Ollama's only behaviour) and no
+    sampling parameter is ever sent.
+    """
+
+    provider = "ollama"
+
+    def __init__(self, sdk: openai.AsyncOpenAI, model_id: str):
+        self._sdk = sdk
+        self.model_id = model_id
+
+    def request_params(self) -> dict[str, Any]:
+        return {"model": self.model_id}
+
+    def _messages(self, entries: Sequence[Any]) -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = []
+        for entry in entries:
+            if isinstance(entry, UserText):
+                messages.append({"role": "user", "content": entry.text})
+            elif isinstance(entry, ToolResults):
+                messages += [
+                    {"role": "tool", "tool_call_id": r.call_id, "content": r.text}
+                    for r in entry.results
+                ]
+            else:
+                messages.append(entry.replay)
+        return messages
+
+    def rendered_bytes(self, conv: Conversation, start: int) -> int:
+        messages = self._messages(conv.entries[start:])
+        if start:
+            return _utf8_len(messages)
+        system = {"role": "system", "content": conv.system}
+        return _utf8_len({"messages": [system, *messages], "tools": to_openai_chat(conv.tools)})
+
+    async def call(self, conv: Conversation) -> ModelTurn:
+        kwargs: dict[str, Any] = {
+            "model": self.model_id,
+            "messages": [{"role": "system", "content": conv.system}, *self._messages(conv.entries)],
+        }
+        if conv.tools:
+            kwargs["tools"] = to_openai_chat(conv.tools)
+        try:
+            response = await self._sdk.chat.completions.create(**kwargs)
+        except openai.APIStatusError as exc:
+            raise _status_error(exc.status_code, exc.response.headers, str(exc)) from exc
+        except openai.APITimeoutError as exc:
+            raise ProviderCallError("timeout", str(exc)) from exc
+        except openai.APIConnectionError as exc:
+            raise ProviderCallError("connection", str(exc)) from exc
+        choice = response.choices[0] if response.choices else None
+        message = choice.message if choice else None
+        calls: list[ToolCall] = []
+        replayed: list[dict[str, Any]] = []
+        position = 0
+        for call in (message.tool_calls if message else None) or []:
+            if call.type != "function":
+                continue
+            position += 1
+            # A call without an id gets one by position; the replay carries the same id, so
+            # each tool result pairs with its call.
+            call_id = call.id or f"call_{position}"
+            arguments, raw = tool_arguments(call.function.arguments)
+            calls.append(ToolCall(call_id, call.function.name, arguments, raw))
+            replayed.append(
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": call.function.name, "arguments": call.function.arguments},
+                }
+            )
+        content = message.content if message else None
+        replay: dict[str, Any] = {"role": "assistant", "content": content}
+        if replayed:
+            replay["tool_calls"] = replayed
+        usage = response.usage.model_dump(mode="json") if response.usage else None
+        return ModelTurn(
+            text=content or "",
+            tool_calls=tuple(calls),
+            replay=replay,
+            raw_response=response.model_dump(mode="json"),
+            raw_usage=usage,
+            buckets=None if usage is None else ollama_buckets(usage),
+            reported_model=response.model,
+            stop_reason=choice.finish_reason if choice else None,
+        )
+
+
 def gemini_sdk(
     api_key: str,
     timeout_s: float,
@@ -502,8 +621,9 @@ _SCRIPT_BUCKETS = {
     "anthropic": anthropic_buckets,
     "openai": openai_buckets,
     "google": gemini_buckets,
+    "ollama": ollama_buckets,
 }
-_SCRIPT_STOP = {"anthropic": "end_turn", "openai": "completed", "google": "STOP"}
+_SCRIPT_STOP = {"anthropic": "end_turn", "openai": "completed", "google": "STOP", "ollama": "stop"}
 
 
 def _fill_prompt(value: Any, prompt: str) -> Any:
@@ -612,8 +732,7 @@ def make_client(
     provider = _LIVE_APIS.get(family.api or "")
     if provider is None:
         raise BenchmarkValidationError(
-            f"model family {family.id!r} uses api {family.api!r}, which has no client yet "
-            "(openai-chat-completions arrives with the Ollama client in PR 4)"
+            f"model family {family.id!r} uses api {family.api!r}, which has no client"
         )
     if family.provider != provider:
         raise BenchmarkValidationError(
@@ -621,6 +740,19 @@ def make_client(
             f"not provider {family.provider!r}"
         )
     require_live_environment(provider)
+    if provider in LIVE_LATCH_ENV:  # keyless: the Ollama worker holds no paid key at all
+        held = [name for name in PAID_KEY_ENVS if os.environ.get(name)]
+        if held:
+            raise BenchmarkValidationError(
+                f"a keyless {provider} worker holds no paid key, but {', '.join(held)} is set"
+            )
+        base_url = os.environ[LIVE_LATCH_ENV[provider]]
+        if not base_url.startswith(("http://", "https://")):
+            raise BenchmarkValidationError(
+                f"{LIVE_LATCH_ENV[provider]} must start with http:// or https://"
+            )
+        sdk = ollama_sdk(base_url, timeout_s, transport=transport, proxy=egress_proxy(os.environ))
+        return OllamaChatClient(sdk, family.model_id)
     own_key_env = PROVIDER_API_KEY_ENV[provider]
     others = [name for name in PAID_KEY_ENVS if name != own_key_env and os.environ.get(name)]
     if others:

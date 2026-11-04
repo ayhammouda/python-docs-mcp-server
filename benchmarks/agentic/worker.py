@@ -171,10 +171,17 @@ class _HostLedger:
 
 
 def _converted(provider: str, tools: list[ToolSpec]) -> tuple[list[dict[str, Any]], list[str]]:
-    from benchmarks.agentic.schemas import to_anthropic, to_gemini, to_openai_responses
+    from benchmarks.agentic.schemas import (
+        to_anthropic,
+        to_gemini,
+        to_openai_chat,
+        to_openai_responses,
+    )
 
     if provider == "google":
         return to_gemini(tools)
+    if provider == "ollama":
+        return to_openai_chat(tools), []
     if provider == "openai":
         return to_openai_responses(tools), []
     return to_anthropic(tools), []

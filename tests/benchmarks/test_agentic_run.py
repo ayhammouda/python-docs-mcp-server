@@ -247,6 +247,32 @@ def test_a_live_run_refuses_an_expired_price_snapshot(tmp_path: Path) -> None:
     assert not (tmp_path / "ledger").exists()
 
 
+class _EveryFamily(LocalLauncher):
+    def supports(self, family: Any) -> bool:
+        return True
+
+    def command(self, job: Any) -> Any:
+        raise AssertionError("no process may start")
+
+
+def test_an_air_gapped_dry_run_ignores_the_price_snapshot_expiry(tmp_path: Path) -> None:
+    def config(models: tuple[str, ...], out: str) -> AgenticConfig:
+        return _config(
+            tmp_path,
+            matrix_path=COMMITTED_MATRIX,
+            prices_path=COMMITTED_PRICES,
+            models=models,
+            out_dir=tmp_path / out,
+            dry_run=True,
+        )
+
+    late = date(2027, 1, 2)
+    summary = run_agentic(config(("gemma4-12b",), "local"), launcher=_EveryFamily(), today=late)
+    assert summary["dry_run"] is True and summary["models"] == ["gemma4-12b"]
+    with pytest.raises(BenchmarkValidationError, match="expires"):
+        run_agentic(config(("claude-sonnet-5-5",), "hosted"), launcher=_EveryFamily(), today=late)
+
+
 def test_run_summary_counts_retries_and_reruns(tmp_path: Path) -> None:
     limited = {"error": {"kind": "rate_limited", "status": 429, "retry_after_s": 0}}
     answer = {"text": "ok", "usage": {"input_tokens": 1000, "output_tokens": 100}}

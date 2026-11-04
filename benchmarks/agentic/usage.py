@@ -51,6 +51,14 @@ def openai_buckets(usage: Mapping[str, Any]) -> Buckets:
     )
 
 
+def ollama_buckets(usage: Mapping[str, Any]) -> Buckets:
+    """Chat Completions usage: cached tokens are nested inside the prompt tokens."""
+    cached = _count(usage.get("prompt_tokens_details"), "cached_tokens")
+    return _buckets(
+        _count(usage, "prompt_tokens") - cached, 0, cached, _count(usage, "completion_tokens"), 0
+    )
+
+
 def gemini_buckets(usage: Mapping[str, Any]) -> Buckets:
     cached = _count(usage, "cached_content_token_count")
     thoughts = _count(usage, "thoughts_token_count")

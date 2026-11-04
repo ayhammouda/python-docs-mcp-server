@@ -37,6 +37,9 @@ PROVIDER_MARGINS: dict[str, Decimal] = {
     "google": Decimal(20),
 }
 
+#: Local providers: one unit in flight at a time, never priced, capped or booked.
+UNMETERED_PROVIDERS = frozenset({"ollama"})
+
 Outcome = Literal[
     "ok",
     "rejected",
@@ -421,6 +424,7 @@ class LedgerService:
         self._families = dict(families)
         self._locks: dict[str, asyncio.Lock] = {}
         self._units: dict[str, tuple[str, ModelPrice, int]] = {}
+        self._unmetered: dict[str, str] = {}  # unit id -> provider
 
     async def reserve(
         self,
@@ -431,6 +435,11 @@ class LedgerService:
         output_bound: int,
         kind: str = "model_call",
     ) -> str | None:
+        if provider in UNMETERED_PROVIDERS:  # the Ledger never sees it
+            await self._locks.setdefault(provider, asyncio.Lock()).acquire()
+            unit_id = f"{provider}-{uuid.uuid4().hex}"
+            self._unmetered[unit_id] = provider
+            return unit_id
         price = self._prices.get(model_id)
         if price is None:
             raise BenchmarkValidationError(f"no price snapshot entry for model {model_id!r}")
@@ -459,6 +468,9 @@ class LedgerService:
         return unit_id
 
     async def settle(self, unit_id: str, *, outcome: Outcome, buckets: Buckets | None) -> None:
+        if (local := self._unmetered.pop(unit_id, None)) is not None:
+            self._locks[local].release()
+            return
         provider, price, input_bound = self._units.pop(unit_id)
         try:
             if outcome == "ok" and (buckets is None or buckets.is_empty):

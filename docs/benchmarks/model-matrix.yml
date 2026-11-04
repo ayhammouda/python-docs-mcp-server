@@ -143,6 +143,10 @@ model_families:
       seven tool schemas plus a docs result, and the OpenAI-compatible
       endpoint cannot change it per request). 12B fits the maintainer's
       16 GB M1 Pro; 26B and 31B do not.
+    # The loop's per-call bounds need both; neither is ever sent to Ollama
+    # (Ollama defaults, no max_tokens) and the unit is never priced.
+    max_output_tokens: 32768
+    framing_allowance_tokens: 256
     headline_eligible: false
     headline_ineligibility_reason: >-
       No live benchmark run has been executed against this model family yet;

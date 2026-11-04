@@ -10,6 +10,7 @@ from benchmarks.agentic.schemas import (
     schemas_sha256,
     to_anthropic,
     to_gemini,
+    to_openai_chat,
     to_openai_responses,
 )
 from benchmarks.agentic.types import ToolSpec
@@ -106,3 +107,17 @@ def test_gemini_schema_keys_come_from_the_pinned_sdk() -> None:
 def test_schemas_sha256_ignores_key_order() -> None:
     assert schemas_sha256([{"a": 1, "b": "é"}]) == schemas_sha256([{"b": "é", "a": 1}])
     assert schemas_sha256([{"a": 1}]) != schemas_sha256([{"a": 2}])
+
+
+def test_to_openai_chat_wraps_each_tool_with_strict_false() -> None:
+    converted = to_openai_chat(TOOLS)
+    assert len(converted) == 7
+    assert converted[0] == {
+        "type": "function",
+        "function": {
+            "name": TOOLS[0].name,
+            "description": TOOLS[0].description,
+            "parameters": TOOLS[0].input_schema,
+            "strict": False,
+        },
+    }
