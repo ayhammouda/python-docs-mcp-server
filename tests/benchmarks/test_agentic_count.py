@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx2
 import pytest
+from mcp.types import CallToolResult, TextContent
 
 from benchmarks.adapters.guard import PAID_KEY_ENVS, LiveProviderDisabledError
 from benchmarks.agentic.clients import anthropic_sdk
@@ -26,10 +27,19 @@ from benchmarks.agentic.count import (
     count_item_from_transcript,
     make_count_client,
 )
+from benchmarks.agentic.loop import Caps
 from benchmarks.agentic.prompt import SYSTEM_PROMPT
 from benchmarks.agentic.schemas import schemas_sha256
 from benchmarks.agentic.types import ProviderCallError, ToolSpec
 from benchmarks.runner import BenchmarkValidationError
+from tests.benchmarks.test_agentic_clients import (
+    Recorder,
+    _chat_completion,
+    _ok,
+    _ollama,
+    _tool_call,
+)
+from tests.benchmarks.test_agentic_outgoing import RecordingLedger, _bridge, _close, _run
 
 TOOLS_RAW = [
     {
@@ -331,6 +341,41 @@ async def test_malformed_arguments_are_counted_from_their_raw_text() -> None:
     ]
     record = await count_item(ScriptedCountClient(), item)
     assert record["raw_argument_calls"] == 1 and record["per_call"][-1]["output_tokens"] >= 1_000
+
+
+@pytest.mark.parametrize(
+    "caps, results",
+    [(Caps(model_calls=1), 0), (Caps(tool_calls=2, result_bytes=16), 2)],
+)
+async def test_count_ollama_arguments_from_a_capped_turn(caps: Caps, results: int) -> None:
+    deep = '{"query":' + "[" * 65 + "0" + "]" * 65 + "}"
+    arguments = ['{"query":"ordinary"}', RAW, "", deep]
+    calls = [_tool_call("search_docs", arg, None) for arg in arguments]
+    response = _chat_completion({"role": "assistant", "tool_calls": calls}, "tool_calls")
+    client = _ollama(Recorder(_ok(response)))
+    bridge, _ = _bridge(CallToolResult(content=[TextContent(type="text", text="ordinary " * 8)]))
+    try:
+        transcript = await _run(client, bridge, RecordingLedger(), caps=caps)
+    finally:
+        await _close(client)
+
+    assert transcript["status"] == "failed" and len(transcript["tool_calls"]) == results
+    assert all(call["truncated"] for call in transcript["tool_calls"])
+    canonical = transcript["canonical_messages"][1]["content"]
+    assert [block["input"] for block in canonical] == [{"query": "ordinary"}, {}, {}, {}]
+
+    counter = ScriptedCountClient()
+    item = _item({**transcript, "provider": client.provider}, bridge.tools_raw)
+    record = await count_item(counter, item)
+    blocks = counter.seen[1].messages[1]["content"]
+    assert [block["input"] for block in blocks] == [
+        {"query": "ordinary"},
+        {"raw_arguments": RAW},
+        {"raw_arguments": ""},
+        {"raw_arguments": deep},
+    ]
+    assert record["raw_argument_calls"] == 3
+    assert record["per_call"][0]["output_tokens"] >= 1_000
 
 
 async def test_a_failed_trajectory_ending_in_tool_use_is_counted() -> None:

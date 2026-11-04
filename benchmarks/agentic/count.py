@@ -78,6 +78,14 @@ def _raw_arguments(provider: str, raw_response: Any) -> list[Any]:
         return [
             o.get("arguments") for o in raw.get("output") or [] if o.get("type") == "function_call"
         ]
+    if provider == "ollama":
+        choices = raw.get("choices") or []
+        message = choices[0].get("message") if choices else None
+        return [
+            call["function"]["arguments"]
+            for call in (message or {}).get("tool_calls") or []
+            if call.get("type") == "function"
+        ]
     parts = [
         p
         for c in raw.get("candidates") or []
