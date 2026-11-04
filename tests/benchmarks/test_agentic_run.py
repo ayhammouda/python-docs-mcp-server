@@ -409,6 +409,7 @@ def test_a_failed_probe_run_still_writes_fail(tmp_path: Path) -> None:
         docker=FakeDocker(),
         verify=_verified,
     )
+    sandbox.config.index_path.touch()
     probes = Probes(fail_on="scripted-anthropic--python-docs")
     launcher = ContainerLauncher(sandbox, probe=probes, control=probes.control)
     with pytest.raises(BenchmarkValidationError, match="isolation probe failed"):
