@@ -12,8 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
-from benchmarks.grading.inputs import _DOCS_PATH_RE
-from benchmarks.urls import _URL_RE, extract_urls
+from benchmarks.urls import _URL_RE, DOCS_PATH_RE, extract_urls
 
 _DOCS_HOST = "docs.python.org"
 _VERSIONED = re.compile(r"(\d\.\d+|3)/(.+)")
@@ -48,9 +47,8 @@ def _url_ref(url: str) -> PageRef | None:
 def answer_citations(answer: str) -> list[PageRef]:
     """Every docs.python.org URL and every relative docs path in the answer."""
     refs = [ref for url in extract_urls(answer) if (ref := _url_ref(url)) is not None]
-    for match in _DOCS_PATH_RE.finditer(_URL_RE.sub(" ", answer)):
-        path, _, anchor = match.group(0).partition("#")
-        refs.append(_ref(path, anchor))
+    for match in DOCS_PATH_RE.finditer(_URL_RE.sub(" ", answer)):
+        refs.append(_ref(match["path"], match["anchor"]))
     return refs
 
 

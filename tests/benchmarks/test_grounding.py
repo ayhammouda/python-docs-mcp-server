@@ -90,6 +90,49 @@ def test_answer_citations_ignore_other_hosts() -> None:
     assert answer_citations("See https://example.com/library/json.html and nothing else.") == []
 
 
+@pytest.mark.parametrize(
+    "citation,page",
+    [
+        ("/3.13/library/json.html#json.dumps", "library/json.html#json.dumps"),
+        ("glossary.html#term-iterator", "glossary.html#term-iterator"),
+        ("/glossary.html#term-iterator", "glossary.html#term-iterator"),
+        ("3/glossary.html#term-iterator", "glossary.html#term-iterator"),
+        ("./glossary.html#term-iterator", "glossary.html#term-iterator"),
+        ("library/concurrent.futures", "library/concurrent.futures.html"),
+        (
+            "../library/itertools.html#itertools.accumulate",
+            "library/itertools.html#itertools.accumulate",
+        ),
+        (
+            "/3/library/itertools.html#itertools.accumulate",
+            "library/itertools.html#itertools.accumulate",
+        ),
+        (
+            "https://docs.python.org/3.13/library/json.html#json.dumps",
+            "library/json.html#json.dumps",
+        ),
+    ],
+)
+def test_docs_path_grounds_against_the_canonical_fetch(citation: str, page: str) -> None:
+    fetch = _call("fetch", "Page text", url=f"https://docs.python.org/3.13/{page}")
+    assert is_grounded(f"See ({citation}).", [fetch])
+    assert not is_grounded(f"See ({citation}).", [{**fetch, "is_error": True}])
+
+
+@pytest.mark.parametrize(
+    "citation",
+    [
+        "/3.12/library/json.html#json.dumps",
+        "/3.13/library/json.html#json.loads",
+        "ftp://docs.python.org/3.13/library/json.html#json.dumps",
+        "mailto:library/json.html#json.dumps",
+        "examples/library/json.html#json.dumps",
+    ],
+)
+def test_nonmatching_paths_do_not_ground_against_json(citation: str) -> None:
+    assert not is_grounded(f"See {citation}.", [GET_DOCS])
+
+
 def test_retrieved_pages_from_python_docs_results() -> None:
     assert retrieved_pages([GET_DOCS, SEARCH, WHATSNEW]) == [
         PageRef("3.13", "library/json.html", "json.dumps"),

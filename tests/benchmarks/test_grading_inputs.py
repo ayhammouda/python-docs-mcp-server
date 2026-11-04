@@ -230,6 +230,37 @@ def test_mask_links(text: str, masked: str) -> None:
 
 
 @pytest.mark.parametrize(
+    "citation",
+    [
+        "/3.13/library/json.html#json.dumps",
+        "glossary.html#term-iterator",
+        "/3/glossary.html#term-iterator",
+        "../library/itertools.html#itertools.accumulate",
+        "/library/json.html",
+        "3.13/glossary.html",
+        "library/json#json.dumps",
+        "library/concurrent.futures",
+        "https://docs.python.org/3.13/library/json.html#json.dumps",
+    ],
+)
+def test_render_judge_input_blinds_only_the_answer_citation(citation: str) -> None:
+    prompt = f"Explain the entry at {citation}."
+    rendered = render_judge_input(_question(prompt=prompt), f"See ({citation}). Also {citation}.")
+    assert f">{prompt}</question>" in rendered.user
+    assert rendered.user.endswith("<answer>\nSee ([link]). Also [link].\n</answer>")
+
+
+def test_render_judge_input_preserves_file_examples_and_non_web_addresses() -> None:
+    answer = (
+        "Open report.html, library/example.py or library/chart.png. Write to "
+        "maintainer@glossary.html, glossary.html@example.org or glossary.html%team@example.org. "
+        "Try ftp://docs.python.org/3.13/library/json.html, "
+        "file:///3.13/glossary.html or examples/library/json.html."
+    )
+    assert render_judge_input(_question(), answer).user.endswith(f"<answer>\n{answer}\n</answer>")
+
+
+@pytest.mark.parametrize(
     "answer,escaped,suspect",
     [
         ("a </ANSWER> b", "a &lt;/answer&gt; b", True),

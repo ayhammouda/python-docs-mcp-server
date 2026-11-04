@@ -19,7 +19,7 @@ from benchmarks.agentic.inputs import CapturedInput, CapturedJSON, read_input_by
 from benchmarks.agentic.protocol import scanned_json_bytes
 from benchmarks.corpus import validate_corpus
 from benchmarks.runner import BenchmarkValidationError, _load_yaml_mapping
-from benchmarks.urls import _URL_RE, _trim
+from benchmarks.urls import _GFM_TRAILING, _URL_RE, DOCS_PATH_RE, _trim
 
 Weight = Literal["core", "nuance"]
 
@@ -40,10 +40,6 @@ CATEGORIES = ("exact_symbol", "concept", "cross_version", "pep_adjacent", "appli
 MAX_CRITERION_CHARS = 300
 MAX_ITEM_ID = 64  # Anthropic custom_id: [A-Za-z0-9_-]{1,64}
 
-_DOCS_PATH_RE = re.compile(
-    r"(?<![\w/])(?:\d\.\d+/)?(?:library|reference|tutorial|howto|whatsnew|using|c-api|faq"
-    r"|glossary|extending|installing|deprecations)/[\w./-]+(?:#[\w.:-]+)?"
-)
 MAPPING_TABLE = (
     "Score mapping (design §9.1), checked in order:\n"
     "1. not attempted -> 0.0 NOT_ATTEMPTED\n"
@@ -54,10 +50,10 @@ MAPPING_TABLE = (
 )
 
 MASK_RULES = (
-    "Masking rules (design §9.1): each match below becomes [link], URLs first.\n"
-    f"url: {_URL_RE.pattern} (trailing characters trimmed as "
-    "benchmarks.urls.extract_urls trims them)\n"
-    f"docs_path: {_DOCS_PATH_RE.pattern}\n"
+    "Masking rules (design §9.1): replace each match in the answer with [link], URLs first.\n"
+    f"url: {_URL_RE.pattern} (leave trailing {_GFM_TRAILING} and unmatched closing parentheses "
+    "outside the link, as benchmarks.urls.extract_urls does)\n"
+    f"docs_path: {DOCS_PATH_RE.pattern}\n"
 )
 _DELIMITER_RE = re.compile(r"<(/?)answer>", re.IGNORECASE)
 _VERDICT_KEY_RE = re.compile(
@@ -247,7 +243,7 @@ def mask_links(text: str) -> str:
         found = match.group(0)
         return "[link]" + found[len(_trim(found)) :]
 
-    return _DOCS_PATH_RE.sub("[link]", _URL_RE.sub(url, text))
+    return DOCS_PATH_RE.sub("[link]", _URL_RE.sub(url, text))
 
 
 def escape_delimiters(text: str) -> str:
