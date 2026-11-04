@@ -11,7 +11,7 @@ import asyncio
 import json
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -130,7 +130,9 @@ def assert_no_key_shaped(text: str | bytes, *, where: str) -> None:
         raise KeyLeakError(f"a key-shaped string ({match.lastgroup} pattern) was found in {where}")
 
 
-def assert_no_key_shaped_json(value: object, *, where: str) -> None:
+def assert_no_key_shaped_json(
+    value: object, *, where: str, check_content: Callable[[bytes], None] | None = None
+) -> None:
     """Check decoded JSON strings and object names before escaping changes token boundaries."""
     stack = [value]
     visited: set[int] = set()
@@ -138,6 +140,8 @@ def assert_no_key_shaped_json(value: object, *, where: str) -> None:
         node = stack.pop()
         if isinstance(node, (str, bytes)):
             assert_no_key_shaped(node, where=where)
+            if check_content is not None:
+                check_content(node if isinstance(node, bytes) else node.encode("utf-8"))
         elif isinstance(node, (Mapping, list, tuple, set, frozenset)) and id(node) not in visited:
             # YAML snapshots can contain repeated or cyclic aliases.
             visited.add(id(node))
@@ -146,11 +150,19 @@ def assert_no_key_shaped_json(value: object, *, where: str) -> None:
                 stack.extend(node.values())
 
 
-def scanned_json_bytes(value: object, *, where: str, **options: Any) -> bytes:
+def scanned_json_bytes(
+    value: object,
+    *,
+    where: str,
+    check_content: Callable[[bytes], None] | None = None,
+    **options: Any,
+) -> bytes:
     """Serialize only after checking the fields, then check the exact UTF-8 JSON for publication."""
-    assert_no_key_shaped_json(value, where=where)
+    assert_no_key_shaped_json(value, where=where, check_content=check_content)
     body = json.dumps(value, **options).encode("utf-8")
     assert_no_key_shaped(body, where=where)
+    if check_content is not None:
+        check_content(body)
     return body
 
 

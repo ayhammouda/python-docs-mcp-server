@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
@@ -109,12 +110,19 @@ class ModelClient(Protocol):
         """Every setting sent except system, tools and messages."""
         raise NotImplementedError
 
-    def rendered_bytes(self, conv: Conversation, start: int) -> int:
+    def rendered_bytes(
+        self,
+        conv: Conversation,
+        start: int,
+        *,
+        check_content: Callable[[bytes], None] | None = None,
+    ) -> int:
         """Validate outgoing content and return its provider-rendered UTF-8 byte count.
 
         System, tools and ``entries[start:]`` when ``start == 0``, else ``entries[start:]`` only.
         Check decoded strings and rendered JSON, including native replay, for key shapes.
         The loop calls this with ``start == 0`` before every spend reservation.
+        ``check_content`` is an optional worker-local literal check, with no SDK auth.
         """
         raise NotImplementedError
 

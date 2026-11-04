@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -119,14 +119,21 @@ def systems_from_mapping(data: dict[str, Any]) -> list[SystemSpec]:
     return [system_spec_from_raw(competitor.raw) for competitor in _load_competitors(data)]
 
 
-def canonical_text(result: CallToolResult) -> str:
+def canonical_text(
+    result: CallToolResult, *, check_content: Callable[[bytes], None] | None = None
+) -> str:
     """Compact JSON of ``structured_content`` when present, else the joined text blocks."""
     # Check the decoded MCP envelope before canonicalization drops text, metadata or fields.
-    scanned_json_bytes(result.model_dump(mode="json", by_alias=True), where="MCP tool result")
+    scanned_json_bytes(
+        result.model_dump(mode="json", by_alias=True),
+        where="MCP tool result",
+        check_content=check_content,
+    )
     if result.structured_content is not None:
         return scanned_json_bytes(
             result.structured_content,
             where="structured tool result",
+            check_content=check_content,
             ensure_ascii=False,
             separators=(",", ":"),
         ).decode()
@@ -149,6 +156,8 @@ def truncate_utf8(text: str, limit: int) -> tuple[str, bool]:
 class Bridge:
     """One live MCP session; implements :class:`ToolBridge`."""
 
+    check_content: Callable[[bytes], None] | None = None
+
     def __init__(
         self,
         session: ClientSession,
@@ -166,15 +175,24 @@ class Bridge:
         try:
             result = await self._session.call_tool(name, arguments)
         except MCPError as exc:
-            scanned_json_bytes(exc.error.model_dump(mode="json"), where="MCP tool error")
+            scanned_json_bytes(
+                exc.error.model_dump(mode="json"),
+                where="MCP tool error",
+                check_content=self.check_content,
+            )
             if exc.code == CONNECTION_CLOSED:
                 raise BridgeCrash(f"MCP connection closed during {name}: {exc}") from exc
             return ToolOutcome(text=str(exc.message), is_error=True)
         except Exception as exc:  # noqa: BLE001 - any other failure means the session is gone
-            assert_no_key_shaped(str(exc), where="MCP tool exception")
+            scanned_json_bytes(
+                str(exc), where="MCP tool exception", check_content=self.check_content
+            )
             failure = cell_failure_from(exc, timeout_seconds=0.0, label=f"MCP tool {name}")
             raise BridgeCrash(str(failure)) from exc
-        return ToolOutcome(text=canonical_text(result), is_error=bool(result.is_error))
+        return ToolOutcome(
+            text=canonical_text(result, check_content=self.check_content),
+            is_error=bool(result.is_error),
+        )
 
 
 def server_env(system: SystemSpec, environ: Mapping[str, str]) -> dict[str, str]:

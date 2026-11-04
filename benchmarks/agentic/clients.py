@@ -11,7 +11,7 @@ import asyncio
 import json
 import os
 import ssl
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -119,13 +119,22 @@ def _status_error(status: int, headers: Mapping[str, str], message: str) -> Prov
     return ProviderCallError("rejected", message, status=status)
 
 
-def _utf8_len(payload: Any) -> int:
+def _utf8_len(
+    payload: Any,
+    *,
+    check_content: Callable[[bytes], None] | None = None,
+    ensure_ascii: bool = False,
+) -> int:
     # All supported renderers use this boundary, including native assistant replay.
     # Check decoded fields and the exact rendered JSON: encoding can create a token boundary.
     # SDK credentials and HTTP authentication headers are deliberately outside this payload.
     return len(
         scanned_json_bytes(
-            payload, where="outgoing provider content", ensure_ascii=False, separators=(",", ":")
+            payload,
+            where="outgoing provider content",
+            check_content=check_content,
+            ensure_ascii=ensure_ascii,
+            separators=(",", ":"),
         )
     )
 
@@ -255,12 +264,21 @@ class AnthropicClient:
                 messages.append({"role": "assistant", "content": entry.replay})
         return messages
 
-    def rendered_bytes(self, conv: Conversation, start: int) -> int:
+    def rendered_bytes(
+        self,
+        conv: Conversation,
+        start: int,
+        *,
+        check_content: Callable[[bytes], None] | None = None,
+    ) -> int:
         messages = self._messages(conv.entries[start:])
         if start:
-            return _utf8_len(messages)
+            return _utf8_len(messages, check_content=check_content)
         tools = to_anthropic(conv.tools)
-        return _utf8_len({"system": conv.system, "tools": tools, "messages": messages})
+        return _utf8_len(
+            {"system": conv.system, "tools": tools, "messages": messages},
+            check_content=check_content,
+        )
 
     async def call(self, conv: Conversation) -> ModelTurn:
         kwargs: dict[str, Any] = {
@@ -332,12 +350,21 @@ class OpenAIResponsesClient:
                 items += entry.replay
         return items
 
-    def rendered_bytes(self, conv: Conversation, start: int) -> int:
+    def rendered_bytes(
+        self,
+        conv: Conversation,
+        start: int,
+        *,
+        check_content: Callable[[bytes], None] | None = None,
+    ) -> int:
         items = self._input(conv.entries[start:])
         if start:
-            return _utf8_len(items)
+            return _utf8_len(items, check_content=check_content)
         tools = to_openai_responses(conv.tools)
-        return _utf8_len({"instructions": conv.system, "tools": tools, "input": items})
+        return _utf8_len(
+            {"instructions": conv.system, "tools": tools, "input": items},
+            check_content=check_content,
+        )
 
     async def call(self, conv: Conversation) -> ModelTurn:
         kwargs: dict[str, Any] = {
@@ -432,12 +459,21 @@ class OllamaChatClient:
                 messages.append(entry.replay)
         return messages
 
-    def rendered_bytes(self, conv: Conversation, start: int) -> int:
+    def rendered_bytes(
+        self,
+        conv: Conversation,
+        start: int,
+        *,
+        check_content: Callable[[bytes], None] | None = None,
+    ) -> int:
         messages = self._messages(conv.entries[start:])
         if start:
-            return _utf8_len(messages)
+            return _utf8_len(messages, check_content=check_content)
         system = {"role": "system", "content": conv.system}
-        return _utf8_len({"messages": [system, *messages], "tools": to_openai_chat(conv.tools)})
+        return _utf8_len(
+            {"messages": [system, *messages], "tools": to_openai_chat(conv.tools)},
+            check_content=check_content,
+        )
 
     async def call(self, conv: Conversation) -> ModelTurn:
         kwargs: dict[str, Any] = {
@@ -589,15 +625,27 @@ class GeminiClient:
             max_output_tokens=self._max_output_tokens,
         )
 
-    def rendered_bytes(self, conv: Conversation, start: int) -> int:
+    def rendered_bytes(
+        self,
+        conv: Conversation,
+        start: int,
+        *,
+        check_content: Callable[[bytes], None] | None = None,
+    ) -> int:
         contents = [
             c.model_dump(mode="json", exclude_none=True)
             for c in self._contents(conv.entries[start:])
         ]
+        # The pinned google-genai async transport uses json.dumps' ASCII escaping.
+        # A Unicode escape can create a lexical delimiter absent from decoded text.
         if start:
-            return _utf8_len(contents)
+            return _utf8_len(contents, check_content=check_content, ensure_ascii=True)
         tools = to_gemini(conv.tools)[0]
-        return _utf8_len({"systemInstruction": conv.system, "tools": tools, "contents": contents})
+        return _utf8_len(
+            {"systemInstruction": conv.system, "tools": tools, "contents": contents},
+            check_content=check_content,
+            ensure_ascii=True,
+        )
 
     async def call(self, conv: Conversation) -> ModelTurn:
         try:
@@ -676,7 +724,13 @@ class ScriptedClient:
     def request_params(self) -> dict[str, Any]:
         return {"model": self.model_id}
 
-    def rendered_bytes(self, conv: Conversation, start: int) -> int:
+    def rendered_bytes(
+        self,
+        conv: Conversation,
+        start: int,
+        *,
+        check_content: Callable[[bytes], None] | None = None,
+    ) -> int:
         rendered: list[Any] = []
         for entry in conv.entries[start:]:
             if isinstance(entry, UserText):
@@ -687,9 +741,12 @@ class ScriptedClient:
                 calls = [[c.id, c.name, c.arguments] for c in entry.tool_calls]
                 rendered.append({"role": "assistant", "text": entry.text, "calls": calls})
         if start:
-            return _utf8_len(rendered)
+            return _utf8_len(rendered, check_content=check_content)
         tools = to_anthropic(conv.tools)
-        return _utf8_len({"system": conv.system, "tools": tools, "messages": rendered})
+        return _utf8_len(
+            {"system": conv.system, "tools": tools, "messages": rendered},
+            check_content=check_content,
+        )
 
     def _applies(self, step: dict[str, Any], conv: Conversation, prompt: str) -> bool:
         if "prompt_contains" in step and str(step["prompt_contains"]) not in prompt:

@@ -270,6 +270,13 @@ came from. Container settings:
   are checked before canonicalization and truncation, and again after rendering;
   errors are checked before retry or publication. A match aborts with a clean
   diagnostic and no transcript, without another provider call or reservation.
+  The worker reuses its private literal-key check alongside the key-shape scans,
+  including keys embedded in longer tokens or without a provider shape. Only a
+  checker callback reaches the content renderers and MCP bridge; the key stays
+  in the worker. Every tool call in a turn is checked before the first dispatch,
+  and both the full MCP envelope and the truncated result are checked. Gemini
+  content scanning includes the SDK's ASCII JSON escaping before reservation.
+  Provider settings also pass the worker's check before free model-limit discovery.
   Private credential bootstrap frames and SDK authentication headers are outside
   this content boundary.
 

@@ -157,6 +157,7 @@ class _Trajectory:
         caps: Caps,
         seen_tool_args: set[str],
         sleep: Callable[[float], Awaitable[None]],
+        check_content: Callable[[bytes], None] | None,
     ) -> None:
         if family.max_output_tokens is None or family.framing_allowance_tokens is None:
             raise BenchmarkValidationError(
@@ -165,6 +166,7 @@ class _Trajectory:
             )
         self.client, self.bridge, self.ledger, self.caps = client, bridge, ledger, caps
         self.seen, self.sleep = seen_tool_args, sleep
+        self.check_content = check_content
         self.output_bound = family.max_output_tokens
         self.framing = family.framing_allowance_tokens
         tools = list(bridge.tools) if bridge is not None else []
@@ -198,8 +200,11 @@ class _Trajectory:
             "started_at": self.started_at,
             "completed_at": _utc_now_ms(),
         }
-        scanned_json_bytes(record, where="trajectory record")
+        self.scan(record, where="trajectory record")
         return record
+
+    def scan(self, value: object, *, where: str) -> None:
+        scanned_json_bytes(value, where=where, check_content=self.check_content)
 
     def discard(
         self, reason: Literal["budget_stop", "retries_exhausted"], message: str
@@ -268,8 +273,11 @@ class _Trajectory:
             # alone omit earlier native replay; validate the complete rendered request even
             # when usage lets us reserve using only the added entries. Rendering checks both
             # decoded fields and the JSON actually used for provider messages, never SDK auth.
-            scanned_json_bytes(self.client.request_params(), where="outgoing provider settings")
-            self.client.rendered_bytes(self.conv, 0)
+            self.scan(self.client.request_params(), where="outgoing provider settings")
+            if self.check_content is None:
+                self.client.rendered_bytes(self.conv, 0)
+            else:
+                self.client.rendered_bytes(self.conv, 0, check_content=self.check_content)
             waited = time.perf_counter()
             unit = await self.ledger.reserve(
                 provider=self.client.provider,
@@ -321,7 +329,7 @@ class _Trajectory:
             self.seconds["failed_attempt"] += wall
             # A failed attempt is already billed/settled. Unsafe diagnostics must stop here,
             # before retry backoff, another reservation, or publishing a failure transcript.
-            scanned_json_bytes(str(error), where="provider error")
+            self.scan(str(error), where="provider error")
             if error.kind not in RETRYABLE:
                 raise _Failed("provider_rejected", str(error), "ProviderCallError")
             retries += 1
@@ -343,7 +351,7 @@ class _Trajectory:
                 self.conv.entries.append(ToolResults(tuple(results)))
 
     async def _run_tools(self, turn: ModelTurn, results: list[ToolResult]) -> None:
-        scanned_json_bytes([asdict(call) for call in turn.tool_calls], where="outgoing MCP calls")
+        self.scan([asdict(call) for call in turn.tool_calls], where="outgoing MCP calls")
         for call in turn.tool_calls:
             if len(self.tool_calls) >= self.caps.tool_calls:
                 raise _Failed(
@@ -386,9 +394,9 @@ class _Trajectory:
                 wall = time.perf_counter() - started
                 self.seen.add(key)
                 text, is_error = outcome.text, outcome.is_error
-            scanned_json_bytes(text, where="raw tool result")
+            self.scan(text, where="raw tool result")
             sent, truncated = truncate_utf8(text, self.caps.result_bytes)
-            scanned_json_bytes(sent, where="outgoing tool result")
+            self.scan(sent, where="outgoing tool result")
             entry |= {
                 "result": text,
                 "result_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
@@ -410,9 +418,12 @@ async def run_trajectory(
     caps: Caps,
     seen_tool_args: set[str],
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    check_content: Callable[[bytes], None] | None = None,
 ) -> dict[str, Any]:
     """Run one trajectory to an answer or a scored failure; raise TrajectoryDiscarded."""
-    trajectory = _Trajectory(client, bridge, family, prompt, ledger, caps, seen_tool_args, sleep)
+    trajectory = _Trajectory(
+        client, bridge, family, prompt, ledger, caps, seen_tool_args, sleep, check_content
+    )
     try:
         answer = await trajectory.run()
     except _Failed as failure:
@@ -420,6 +431,6 @@ async def run_trajectory(
         return trajectory.record("failed", error, "")
     except Exception as exc:
         # Unexpected bridge/client failures must not escape with untrusted diagnostics.
-        scanned_json_bytes(str(exc), where="trajectory exception")
+        trajectory.scan(str(exc), where="trajectory exception")
         raise
     return trajectory.record("succeeded", None, answer)

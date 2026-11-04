@@ -33,6 +33,7 @@ from benchmarks.agentic.protocol import (
     encode_frame,
     read_frame,
     read_frame_fd,
+    scanned_json_bytes,
 )
 from benchmarks.agentic.types import Buckets, ToolSpec
 from benchmarks.model_matrix import model_family_from_raw
@@ -110,9 +111,13 @@ class ProtocolChannel:
     def send(self, message: dict[str, Any]) -> None:
         """Write one frame; refuse a frame that holds any of the worker's secrets."""
         frame = encode_frame(message, where="worker frame")
-        if any(secret in frame for secret in self._secrets):
-            raise KeyLeakError("own key found in output")
+        self.check_content(frame)
         _write_all(self._fd, frame)
+
+    def check_content(self, content: bytes) -> None:
+        """Worker-local literal check; callers supply content, never SDK auth or argv."""
+        if any(secret in content for secret in self._secrets):
+            raise KeyLeakError("own key found in output")
 
     def close(self) -> None:
         """Drain the redactor: every byte written so far reaches the sink. Restores nothing."""
@@ -295,6 +300,12 @@ async def _run_job(
     if family.api != "scripted" and not bootstrapped:
         raise BenchmarkValidationError("a live job needs its key bootstrap frame first")
     client = make_client(family, timeout_s=caps.model_call_timeout_s)
+    # Model-limit discovery is also an outgoing provider request, before the loop.
+    scanned_json_bytes(
+        client.request_params(),
+        where="outgoing provider settings",
+        check_content=channel.check_content,
+    )
     execution = {"provider": client.provider, "model_id": client.model_id, "api": client.api}
     # One free models GET per live worker, outside the ledger (round-2 ruling D10).
     limits = None if family.api == "scripted" else await fetch_model_limits(client)
@@ -304,6 +315,8 @@ async def _run_job(
     stack = AsyncExitStack()
     try:
         bridge = await _open(stack, system)
+        if bridge is not None:
+            bridge.check_content = channel.check_content
         channel.send(_system_info(system, family.provider, bridge, limits))
         while queue:
             item, attempt = queue.popleft()
@@ -317,6 +330,7 @@ async def _run_job(
                     ledger=host,
                     caps=caps,
                     seen_tool_args=seen,
+                    check_content=channel.check_content,
                 )
             except TrajectoryDiscarded as discarded:
                 await host.request(
@@ -358,6 +372,8 @@ async def _run_job(
                 await _close(stack)
                 stack = AsyncExitStack()
                 bridge = await _open(stack, system)
+                if bridge is not None:
+                    bridge.check_content = channel.check_content
     finally:
         await _close(stack)  # the MCP server exits and drops its copy of fd 2
     channel.send({"type": "done"})

@@ -8,7 +8,7 @@ from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from mcp import MCPError
@@ -19,6 +19,7 @@ from benchmarks.agentic.clients import GeminiClient, ScriptedClient, gemini_sdk
 from benchmarks.agentic.loop import Caps, run_trajectory
 from benchmarks.agentic.protocol import KEY_SHAPED, KeyLeakError
 from benchmarks.agentic.types import ModelClient, ProviderCallError
+from benchmarks.agentic.worker import ProtocolChannel
 from tests.benchmarks.test_agentic_clients import (
     ANTHROPIC_ANSWER,
     ANTHROPIC_TOOL_TURN,
@@ -192,8 +193,15 @@ async def test_tool_evidence_stops_before_the_next_request_and_reservation(provi
         await _close(client)
 
 
-@pytest.mark.parametrize("provider", PROVIDERS)
-@pytest.mark.parametrize("source", ["prompt", "schema", "replay", "replay-json"])
+@pytest.mark.parametrize(
+    "provider,source",
+    [
+        (provider, source)
+        for provider in PROVIDERS
+        for source in ("prompt", "schema", "replay", "replay-json")
+    ]
+    + [("google", "replay-ascii")],
+)
 async def test_first_request_and_provider_replay_are_checked(provider, source):
     client, recorder = _client(provider)
     ledger = RecordingLedger()
@@ -205,7 +213,10 @@ async def test_first_request_and_provider_replay_are_checked(provider, source):
         bridge.tools[0].input_schema["description"] = MARKER
     else:
         original = client.call
-        value = "\x00xxx" + MARKER if source == "replay-json" else MARKER
+        value = {
+            "replay-json": "\x00xxx" + MARKER,
+            "replay-ascii": "éx" + MARKER,
+        }.get(source, MARKER)
 
         async def poisoned(conv):
             turn = await original(conv)
@@ -315,8 +326,9 @@ async def test_synthetic_sdk_auth_headers_are_allowed(provider):
     else:
         client._sdk.api_key = MARKER
     ledger = RecordingLedger()
+    channel = ProtocolChannel(-1, (MARKER.encode(),), -1, Mock(), (Mock(), Mock()))
     try:
-        record = await _run(client, None, ledger)
+        record = await _run(client, None, ledger, check_content=channel.check_content)
         assert record["status"] == "succeeded"
         assert len(recorder.seen) == len(ledger.reserves) == 2
         header = {"anthropic": "x-api-key", "openai": "authorization", "google": "x-goog-api-key"}[
@@ -324,6 +336,45 @@ async def test_synthetic_sdk_auth_headers_are_allowed(provider):
         ]
         assert MARKER in recorder.seen[0].headers[header]
         assert all(MARKER.encode() not in request.content for request in recorder.seen)
+    finally:
+        await _close(client)
+
+
+@pytest.mark.parametrize("provider", PROVIDERS)
+@pytest.mark.parametrize("shaped", [False, True])
+async def test_worker_literal_check_covers_native_provider_replay(provider, shaped):
+    literal = ("AIza" + "q" * 35) if shaped else "dummy_bootstrap_opaque"
+    value = "prefix" + literal + "-suffix"
+    assert KEY_SHAPED.search(value) is None
+    channel = ProtocolChannel(-1, (literal.encode(),), -1, Mock(), (Mock(), Mock()))
+    client, recorder = _client(provider)
+    ledger = RecordingLedger()
+    bridge, call = _bridge(CallToolResult(content=[TextContent(type="text", text="safe")]))
+    original = client.call
+
+    async def poisoned(conv):
+        turn = await original(conv)
+        if provider == "anthropic":
+            turn.replay[0]["signature"] = value
+        elif provider == "openai":
+            turn.replay.append({"type": "reasoning", "encrypted_content": value})
+        elif provider == "google":
+            turn.replay.parts[0].text = value
+        elif provider == "ollama":
+            turn.replay["content"] = value
+        else:
+            turn = replace(turn, text=value)
+        return turn
+
+    client.call = poisoned
+    try:
+        with pytest.raises(KeyLeakError) as caught:
+            await _run(client, bridge, ledger, check_content=channel.check_content)
+        assert literal not in str(caught.value)
+        assert len(recorder.seen) == len(ledger.reserves) == len(ledger.settles) == 1
+        call.assert_awaited_once()
+        if provider != "scripted":
+            assert all(literal.encode() not in request.content for request in recorder.seen)
     finally:
         await _close(client)
 
