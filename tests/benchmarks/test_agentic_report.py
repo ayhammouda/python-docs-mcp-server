@@ -29,6 +29,7 @@ from benchmarks.grading.batch import BatchItemResult
 from benchmarks.grading.mapping import MAPPING_TABLE
 from benchmarks.grading.panel import load_panel
 from benchmarks.grading.score import score_run_dir
+from benchmarks.model_matrix import ModelFamily, load_model_matrix
 from benchmarks.report import _load_run_bundle, _render_report, generate_readme_summary
 from benchmarks.report import generate_report as _generate_report
 
@@ -112,7 +113,7 @@ def _vote(
     )
 
 
-def _transcript(cell: str, family: str, system: str, qid: str) -> dict[str, Any]:
+def _transcript(cell: str, family: ModelFamily, system: str, qid: str) -> dict[str, Any]:
     calls = [
         {
             "index": 0,
@@ -126,7 +127,7 @@ def _transcript(cell: str, family: str, system: str, qid: str) -> dict[str, Any]
                 "output": 100,
                 "reasoning": 20,
             },
-            "reported_model": f"{family}-v1",
+            "reported_model": family.model_id,
             "attempts": [{"outcome": "ok"}],
         }
     ]
@@ -150,9 +151,9 @@ def _transcript(cell: str, family: str, system: str, qid: str) -> dict[str, Any]
         "corpus_id": qid,
         "tool_model_key": f"{system}:p/m",
         "system_id": system,
-        "model_family_id": family,
+        "model_family_id": family.id,
         "repeat": 1,
-        "provider": "anthropic",
+        "provider": family.provider,
         "status": "succeeded",
         "error": None,
         "answer": f"Answer {qid} from {system}.",
@@ -162,7 +163,13 @@ def _transcript(cell: str, family: str, system: str, qid: str) -> dict[str, Any]
     }
 
 
-def _build(tmp_path: Path) -> Path:
+def _build(
+    tmp_path: Path,
+    *,
+    families_run: tuple[str, ...] = FAMILIES,
+    systems_run: tuple[str, ...] = SYSTEMS,
+    matrix: Path = MATRIX,
+) -> Path:
     run = tmp_path / "run"
     snapshots = run / "snapshots"
     snapshots.mkdir(parents=True)
@@ -171,7 +178,7 @@ def _build(tmp_path: Path) -> Path:
         REPO_ROOT / "docs" / "benchmarks" / "agentic-manifest.yml",
         snapshots / "competitor-manifest.yml",
     )
-    shutil.copy(MATRIX, snapshots / "model-matrix.yml")
+    shutil.copy(matrix, snapshots / "model-matrix.yml")
     shutil.copy(FIX / "agentic" / "prices.yml", snapshots / "price-snapshot.yml")
     _json(
         run / "environment.json",
@@ -196,8 +203,9 @@ def _build(tmp_path: Path) -> Path:
         probes_path=GFIX / "probes.sample.yml",
     )
     planned, cells = [], []
-    for family in FAMILIES:
-        for system in SYSTEMS:
+    models = {f.id: f for f in load_model_matrix(matrix).model_families}
+    for family in families_run:
+        for system in systems_run:
             cell = f"{system}--{family}--r1"
             cells.append(cell)
             for qid in QUESTIONS:
@@ -214,7 +222,7 @@ def _build(tmp_path: Path) -> Path:
                 base = {"competitor_id": cell, "corpus_id": qid, "tool_model_key": f"{system}:p/m"}
                 _json(
                     run / "transcripts" / cell / f"{qid}.json",
-                    _transcript(cell, family, system, qid),
+                    _transcript(cell, models[family], system, qid),
                 )
                 _json(
                     run / "scoring" / cell / f"{qid}.json",
@@ -306,13 +314,13 @@ def _build(tmp_path: Path) -> Path:
     families = {
         f: {
             "answer_turns": 100,
-            "output_cap_stops": 2 if f == FAMILIES[0] else 0,
+            "output_cap_stops": 2 if f == families_run[0] else 0,
             "wall_s": 3600.0,
             "retries": {},
             "timeouts": 0,
             "reruns": 0,
         }
-        for f in FAMILIES
+        for f in families_run
     }
     _json(
         run / "run-summary.json",
@@ -321,7 +329,7 @@ def _build(tmp_path: Path) -> Path:
             "repo_commit": "abc",
             "artifact_root": str(run),
             "mode": "agentic",
-            "models": list(FAMILIES),
+            "models": list(families_run),
             "competitors": cells,
             "corpus_ids": list(QUESTIONS),
             "planned_cells": len(planned),
@@ -520,13 +528,13 @@ def test_input_bound_exceeded_is_surfaced_for_answering_and_grading(agentic_bund
 
 
 @pytest.fixture
-def agentic_bundle_with_fallback(agentic_bundle: Path) -> Path:
+def agentic_bundle_with_fallback(tmp_path: Path) -> Path:
+    matrix = REPO_ROOT / "docs/benchmarks/model-matrix.yml"
+    agentic_bundle = _score(
+        _build(tmp_path, families_run=("gemini-3.8-flash",), matrix=matrix), tmp_path
+    )
     inputs = agentic_bundle / "grading" / "inputs"
     shutil.copy(REPO_ROOT / "docs" / "benchmarks" / "grading" / "panel.yml", inputs / "panel.yml")
-    shutil.copy(
-        REPO_ROOT / "docs" / "benchmarks" / "model-matrix.yml",
-        agentic_bundle / "snapshots" / "model-matrix.yml",
-    )
     _edit_summary(
         agentic_bundle,
         composition="haiku+luna+flash",
@@ -935,3 +943,156 @@ def test_readme_refuses_sensitive_rendered_text_before_publication(
         generate_readme_summary(agentic_bundle, methodology_path=methodology)
     assert marker not in str(caught.value)
     assert out.read_text() == "previous summary"
+
+
+def _c1_row(run: Path, system: str) -> list[str]:
+    c1 = _render(run).split("### C1:", 1)[1].split("### C2:", 1)[0]
+    row = next(line for line in c1.splitlines() if line.startswith(f"| {system} |"))
+    return [
+        re.sub(r"\\([!-/:-@\[-`{-~])", r"\1", cell.strip()) for cell in row.strip("|").split("|")
+    ]
+
+
+def test_hosted_c1_reports_only_observed_jobs_and_separates_denials(tmp_path: Path) -> None:
+    from benchmarks.agentic.egress import write_egress_summary
+    from tests.benchmarks.test_agentic_egress import (
+        ANTHROPIC_LINE,
+        PROBE_LINES,
+        PYPI_LINE,
+        _evidence,
+        _lines,
+        _ok_settle,
+    )
+    from tests.benchmarks.test_agentic_sandbox import _job
+
+    family = "claude-sonnet-5-5"
+    run = _build(
+        tmp_path,
+        families_run=(family,),
+        systems_run=("python-docs",),
+        matrix=REPO_ROOT / "docs/benchmarks/model-matrix.yml",
+    )
+    job = _job(family, "python-docs")
+    _evidence(run, job.job_id, log=_lines(*PROBE_LINES, ANTHROPIC_LINE, PYPI_LINE))
+    record = next((run / "transcripts").glob("*/*.json"))
+    transcript = json.loads(record.read_text())
+    transcript["tool_calls"][0]["tool"] = "lookup_package_docs"
+    _json(record, transcript)
+    summary = write_egress_summary(run, [job], _ok_settle(job.job_id))
+    assert summary["isolation_probe"] == "pass"
+    row = _c1_row(run, "python-docs")
+    assert row[2:4] == ["api.anthropic.com:443", "pypi.org:443"]
+    assert row[-1] == "1"
+    missing = _c1_row(run, "docs-fetch")
+    assert missing[2] == missing[-1] == "unknown"
+
+    # A successful hosted model call must have reached its provider through the proxy.
+    summary["jobs"][job.job_id]["hosts_allowed"] = []
+    _json(run / "egress/summary.json", summary)
+    row = _c1_row(run, "python-docs")
+    assert row[2] == "unknown" and "pypi.org:443" in row[3]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "empty",
+        "missing-job",
+        "wrong-job",
+        "no-counter",
+        "boolean",
+        "negative",
+        "string",
+        "failed",
+        "no-probe",
+    ],
+)
+def test_inadequate_c1_never_reports_zero_or_no_hosts(agentic_bundle: Path, bad: str) -> None:
+    jobs = {
+        f"{f}--{s}": {"hosts_allowed": [], "hosts_denied": [], "lookup_package_docs_attempts": 0}
+        for f in FAMILIES
+        for s in SYSTEMS
+    }
+    evidence: dict[str, Any] = {"jobs": jobs, "isolation_probe": "pass"}
+    target = f"{FAMILIES[0]}--python-docs"
+    if bad == "empty":
+        jobs.clear()
+    elif bad in {"missing-job", "wrong-job"}:
+        entry = jobs.pop(target)
+        if bad == "wrong-job":
+            jobs["unplanned--python-docs"] = entry
+    elif bad == "failed":
+        evidence["isolation_probe"] = "fail"
+    elif bad == "no-probe":
+        del evidence["isolation_probe"]
+    elif bad == "no-counter":
+        del jobs[target]["lookup_package_docs_attempts"]
+    else:
+        jobs[target]["lookup_package_docs_attempts"] = {
+            "boolean": True,
+            "negative": -1,
+            "string": "0",
+        }[bad]
+    _json(agentic_bundle / "egress/summary.json", evidence)
+    row = _c1_row(agentic_bundle, "python-docs")
+    assert row[2] == row[-1] == "unknown"
+    if bad not in {"empty", "failed", "no-probe"}:
+        other = _c1_row(agentic_bundle, "docs-fetch")
+        assert other[2] == "none" and other[-1] == "0"
+
+
+def test_gemma_only_run_discloses_google_and_unestimable_spi(tmp_path: Path) -> None:
+    run = _build(
+        tmp_path,
+        families_run=("gemma4-12b",),
+        systems_run=("python-docs", "no-docs"),
+        matrix=REPO_ROOT / "docs/benchmarks/model-matrix.yml",
+    )
+    jobs = {
+        f"gemma4-12b--{system}": {
+            "hosts_allowed": ["host.docker.internal:11434"],
+            "hosts_denied": ["pypi.org:443"] if system == "python-docs" else [],
+            "lookup_package_docs_attempts": int(system == "python-docs"),
+        }
+        for system in ("python-docs", "no-docs")
+    }
+    _json(run / "egress/summary.json", {"jobs": jobs, "isolation_probe": "pass"})
+    _json(run / "airgap/checks.json", {"all_passed": True, "internet_hosts": [], "checks": 6})
+    _score(run, tmp_path)
+    summary = json.loads((run / "grading/summary.json").read_text())
+    assert summary["diagnostics"]["self_preference"] == {f"{j}/google": None for j in JUDGES}
+    report = _render(run)
+    assert "shares a provider family (google) with the evaluated model gemma4-12b" in report
+    assert "Self-preference index, flash-lite/google: not estimable" in report
+    assert "with the evaluated model gemini-3.8-flash" not in report
+    assert summary["offline"]["ok"] is True
+    assert summary["offline"]["denied_attempts"] == [
+        {"job_id": "gemma4-12b--python-docs", "host": "pypi.org:443"}
+    ]
+    row = _c1_row(run, "python-docs")
+    assert row[2:4] == ["unknown", "unknown"]  # no hosted job ran
+    assert row[-2:] == ["yes (air-gapped arm)", "1"]
+
+    _json(run / "egress/summary.json", {"jobs": jobs, "isolation_probe": "fail"})
+    _score(run, tmp_path)
+    offline = json.loads((run / "grading/summary.json").read_text())["offline"]
+    assert offline["ok"] is False
+    assert offline["denied_attempts"] == summary["offline"]["denied_attempts"]
+
+
+def test_partial_c1_keeps_observed_values_without_claiming_totals(agentic_bundle: Path) -> None:
+    observed = {
+        "hosts_allowed": ["api.openai.com:443"],
+        "hosts_denied": ["pypi.org:443"],
+        "lookup_package_docs_attempts": 2,
+    }
+    _json(
+        agentic_bundle / "egress/summary.json",
+        {"jobs": {"scripted-openai--python-docs": observed}, "isolation_probe": "pass"},
+    )
+    row = _c1_row(agentic_bundle, "python-docs")
+    assert row[2:4] == [
+        "unknown (observed: api.openai.com:443)",
+        "unknown (observed: pypi.org:443)",
+    ]
+    assert row[-1] == "unknown (observed: 2)"

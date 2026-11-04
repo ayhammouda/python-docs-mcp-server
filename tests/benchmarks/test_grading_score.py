@@ -581,3 +581,37 @@ def test_cli_agentic_score_needs_no_network_and_exits_2_on_bad_input(
     with pytest.raises(SystemExit) as exited:
         main(["agentic-score", "--workspace", str(tmp_path), "--run-dir", str(tmp_path)])
     assert exited.value.code == 2
+
+
+@pytest.mark.parametrize("paired", [True, False])
+def test_spi_keeps_observed_point_when_question_draws_drop_a_family(
+    tmp_path: Path, paired: bool
+) -> None:
+    families = {
+        FAMILY: {"python-docs": QUESTIONS if paired else QUESTIONS[:1]},
+        "scripted-openai": {"python-docs": QUESTIONS if paired else QUESTIONS[1:]},
+    }
+    run = _build_run(tmp_path, families=families)
+    for q in families[FAMILY]["python-docs"]:
+        item = safe_id(_cell("python-docs", FAMILY), q)
+        shutil.rmtree(run / "grading/votes/answers/haiku/low/pass1" / item)
+        _vote(run / "grading", "haiku", item, _vote_text(attempted=False))
+    spi = _score(run, tmp_path)["diagnostics"]["self_preference"]
+    assert spi["haiku/anthropic"] == {
+        "point": -1.0,
+        "low": -1.0 if paired else None,
+        "high": -1.0 if paired else None,
+    }
+    assert spi["haiku/openai"]["point"] == 1.0
+
+
+def test_spi_discloses_family_when_all_its_comparisons_are_withheld(tmp_path: Path) -> None:
+    one = {"python-docs": QUESTIONS[:1]}
+    run = _build_run(tmp_path, families={FAMILY: one, "scripted-openai": one})
+    item = safe_id(_cell("python-docs", "scripted-openai"), QUESTIONS[0])
+    shutil.rmtree(run / "grading/votes/answers/luna/low/pass1" / item)
+    _vote(run / "grading", "luna", item, "withheld")
+    spi = _score(run, tmp_path)["diagnostics"]["self_preference"]
+    assert spi == {
+        f"{judge}/{family}": None for judge in JUDGES for family in ("anthropic", "openai")
+    }

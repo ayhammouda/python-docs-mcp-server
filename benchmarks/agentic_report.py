@@ -13,16 +13,23 @@ import json
 import re
 import statistics
 from collections import Counter, defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from benchmarks.agentic.egress import PROVIDER_HOSTS
 from benchmarks.agentic.inputs import CapturedInput, read_json, read_jsonl
 from benchmarks.agentic.ledger import actual_cost, load_price_snapshot
 from benchmarks.agentic.protocol import KeyLeakError
 from benchmarks.agentic.types import Buckets
-from benchmarks.grading.gates import load_egress_evidence, load_offline_evidence
+from benchmarks.grading.gates import (
+    EGRESS_JOB_FIELDS,
+    load_egress_evidence,
+    load_offline_evidence,
+    model_lineage,
+    read_evidence_json,
+)
 from benchmarks.grading.inputs import SNAPSHOT_NAMES
 from benchmarks.grading.stats import paired_bootstrap
 from benchmarks.model_matrix import KNOWN_APIS, ModelMatrix
@@ -208,7 +215,7 @@ class _Run(_RunMetadata):
         self.scoring = _cells(run / "scoring")
         self.tokens = _cells(run / "tokens")
         self.latency = _cells(run / "latency")
-        self.egress = load_egress_evidence(run)
+        self.egress = load_egress_evidence(run, partial=True)
         self.offline = load_offline_evidence(run)
         self.answer_events = _events(run / "ledger-events.jsonl")
         self.grading_events = _events(run / "grading" / "ledger-events.jsonl")
@@ -293,41 +300,100 @@ def _claim_rows(
     return rows
 
 
+def _planned_job_families(run: _Run) -> dict[str, set[str]]:
+    plan = read_evidence_json(run.dir, "planned-cells.json") or {}
+    cells = plan.get("cells")
+    if not isinstance(cells, list) or len(cells) != run.bundle.run_summary.get("planned_cells"):
+        return {}
+    systems: dict[str, set[str]] = defaultdict(set)
+    for cell in cells:
+        if not isinstance(cell, dict):
+            return {}
+        family, system = cell.get("model_family_id"), cell.get("system_id")
+        if not isinstance(system, str) or not isinstance(family, str) or family not in run.families:
+            return {}
+        systems[system].add(family)
+    return systems
+
+
+def _hosted_job_complete(run: _Run, family: str, system: str, job: Mapping[str, Any]) -> bool:
+    if job.keys() != EGRESS_JOB_FIELDS:
+        return False
+    model = run.families[family]
+    if model.get("api") == "scripted":
+        return True
+    provider_hosts = {f"{h}:{p}" for h, p in PROVIDER_HOSTS.get(model.get("provider", ""), ())}
+    if provider_hosts.intersection(job["hosts_allowed"]):
+        return True
+    # A successful hosted answer turn contradicts a log that never reached its provider.
+    keys = run.groups.get((family, system), [])
+    if any(run.transcripts[k].get("status") == "succeeded" for k in keys):
+        return False
+    return not any(
+        attempt.get("outcome") == "ok"
+        for key in keys
+        for call in run.transcripts[key].get("model_calls") or []
+        if isinstance(call, dict)
+        for attempt in call.get("attempts") or []
+        if isinstance(attempt, dict)
+    )
+
+
+def _c1_hosts(jobs: Iterable[Mapping[str, Any]], field: str, complete: bool) -> str:
+    hosts = ", ".join(sorted({h for job in jobs for h in job.get(field, [])}))
+    if complete:
+        return hosts or "none"
+    return f"unknown (observed: {hosts})" if hosts else "unknown"
+
+
 def _c1(run: _Run) -> list[str]:
     lines = ["### C1: no API key and no host but the model provider's at query time", ""]
     if run.egress is None:
-        return [*lines, "C1 is not evaluable: no egress evidence in this run."]
-    jobs: Mapping[str, Any] = run.egress["jobs"]
+        lines += ["C1 is not evaluable: no egress evidence in this run.", ""]
+    evidence = run.egress or {}
+    jobs = evidence.get("jobs", {})
+    probe = evidence.get("isolation_probe", "unknown")
+    expected = _planned_job_families(run)
     airgap = run.airgapped()
     offline_ok = (run.summary.get("offline") or {}).get("ok")
     rows = []
     for system_id, system in sorted(run.systems.items()):
-        mine = {jid: j for jid, j in jobs.items() if jid.endswith(f"--{system_id}")}
-        names = set(system.get("env") or {}) | set(system.get("pass_env") or [])
-        hosts = sorted(
-            {
-                h
-                for jid, j in mine.items()
-                if jid.rsplit("--", 1)[0] not in airgap
-                for h in j["hosts_allowed"]
-            }
+        families = expected.get(system_id, set())
+        mine = {f: jobs.get(f"{f}--{system_id}", {}) for f in families}
+        hosted = {f: job for f, job in mine.items() if run.families[f].get("arm") == "hosted"}
+        hosted_complete = (
+            probe == "pass"
+            and bool(hosted)
+            and all(_hosted_job_complete(run, f, system_id, job) for f, job in hosted.items())
         )
-        tested = any(jid.rsplit("--", 1)[0] in airgap for jid in mine)
+        complete = (
+            probe == "pass"
+            and bool(mine)
+            and all(j.keys() == EGRESS_JOB_FIELDS for j in mine.values())
+            and (not hosted or hosted_complete)
+        )
+        attempts = sum(j.get("lookup_package_docs_attempts", 0) for j in mine.values())
+        tested = bool(families & airgap)
         offline = (
             "yes (air-gapped arm)"
-            if tested and offline_ok
+            if tested and complete and offline_ok
             else "not shown"
             if tested
             else "not tested"
         )
-        attempts = sum(int(j.get("lookup_package_docs_attempts") or 0) for j in mine.values())
+        names = set(system.get("env") or {}) | set(system.get("pass_env") or [])
         rows.append(
             [
                 system_id,
                 "yes" if any("KEY" in n for n in names) else "no",
-                ", ".join(hosts) or "none",
+                _c1_hosts(hosted.values(), "hosts_allowed", hosted_complete),
+                _c1_hosts(hosted.values(), "hosts_denied", hosted_complete),
                 offline,
-                str(attempts),
+                str(attempts)
+                if complete
+                else f"unknown (observed: {attempts})"
+                if attempts
+                else "unknown",
             ]
         )
     return [
@@ -336,16 +402,16 @@ def _c1(run: _Run) -> list[str]:
             [
                 "System",
                 "API key required",
-                "Hosts contacted at query time",
+                "Hosts contacted at query time (hosted)",
+                "Hosts denied at query time (hosted)",
                 "Works offline",
                 "lookup_package_docs attempts",
             ],
             rows,
         ),
         "",
-        "Calls the model made to `lookup_package_docs` are reported apart, as the design "
-        "allows; the isolation probe was "
-        f"{_esc(run.egress.get('isolation_probe'))}.",
+        "Calls the model made to `lookup_package_docs` are reported separately. "
+        f"The isolation probe was {_esc(probe)}.",
     ]
 
 
@@ -480,18 +546,21 @@ def _disclosure(run: _Run) -> list[str]:
         "",
     ]
     reference = next((j for j, s in run.judges.items() if s.get("role") == "reference"), None)
+    evaluated = {fid for fid, _ in run.groups}
     for judge_id in [*efforts, *([reference] if reference else [])]:
         judge = run.judges.get(judge_id) or {}
         for fid, family in sorted(run.families.items()):
+            if fid not in evaluated:
+                continue
             judge_text = f"{_esc(judge_id)} ({_esc(judge.get('model_id'))})"
-            if judge.get("model_id") == family.get("model_id"):
+            if judge.get("model_id") and judge["model_id"] == family.get("model_id"):
                 lines.append(
                     f"- {judge_text} is the evaluated model {_esc(family.get('model_id'))}: "
                     "it grades its own answers."
                 )
-            elif judge.get("provider") == family.get("provider"):
+            elif judge.get("provider") and judge["provider"] == model_lineage(fid, family):
                 lines.append(
-                    f"- {judge_text} shares a provider family ({_esc(family.get('provider'))}) "
+                    f"- {judge_text} shares a provider family ({_esc(judge['provider'])}) "
                     f"with the evaluated model {_esc(fid)}."
                 )
     lines += ["", "### Frozen inputs", ""]
@@ -657,7 +726,13 @@ def _diagnostics(run: _Run) -> list[str]:
         f"- Test–retest alpha, {_esc(j)}: {_esc(r.get('alpha'))}" for j, r in sorted(retest.items())
     ] or ["- Test–retest: no second pass in this run"]
     for key, interval in sorted((diag.get("self_preference") or {}).items()):
-        lines.append(f"- Self-preference index, {_esc(key)}: {_esc(_interval(interval))}")
+        if interval is None:
+            value = "not estimable"
+        elif interval.get("low") is None or interval.get("high") is None:
+            value = f"{_fmt(interval.get('point'))}, 95% CI unknown"
+        else:
+            value = _interval(interval)
+        lines.append(f"- Self-preference index, {_esc(key)}: {_esc(value)}")
     lines.append(f"- Length–grade correlation: {_esc(diag.get('length_grade_correlation'))}")
     shares = diag.get("label_shares") or {}
     lines += [

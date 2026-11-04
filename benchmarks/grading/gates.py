@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Literal, TypeGuard
 
 from benchmarks.agentic.inputs import read_json
+from benchmarks.agentic.protocol import KeyLeakError
 from benchmarks.grading.panel import Panel, composition_key
 from benchmarks.grading.probes import PROBE_TYPES, Probe
 from benchmarks.grading.stats import (
@@ -27,6 +28,7 @@ from benchmarks.grading.stats import (
     Interval,
     bootstrap_alpha,
     paired_bootstrap,
+    percentile_interval,
     tokens_per_correct,
     wilson,
 )
@@ -559,10 +561,15 @@ def offline_verdict(
     ]
     if evidence is None or egress is None or evidence.checks < expected_checks:
         return OfflineVerdict(None, denied)
-    if any(job not in jobs for job in airgap_jobs):
+    if not airgap_jobs or any(job not in jobs for job in airgap_jobs):
         return OfflineVerdict(None, denied)
     reached = [h for job in airgap_jobs for h in jobs[job]["hosts_allowed"] if h != OLLAMA_HOST]
-    ok = evidence.all_passed and not evidence.internet_hosts and not reached
+    ok = (
+        egress["isolation_probe"] == "pass"
+        and evidence.all_passed
+        and not evidence.internet_hosts
+        and not reached
+    )
     return OfflineVerdict(ok, denied)
 
 
@@ -609,6 +616,33 @@ def c3(
     return ClaimResult("C3", model, interval.low > 0 and offline_ok, interval, None)
 
 
+_MODEL_LINEAGES = {
+    "claude-sonnet-5-5": "anthropic",
+    "gpt-6.1-sol": "openai",
+    "gemini-3.8-flash": "google",
+    "gemma4-12b": "google",
+    "gemma4:12b": "google",
+}
+
+
+def model_lineage(family_id: str, model: Mapping[str, Any]) -> str | None:
+    """Use the registered model family (#199 Task 7), including for aliased matrix entries."""
+    model_id = model.get("model_id")
+    lineage = _MODEL_LINEAGES.get(family_id)
+    if not lineage and isinstance(model_id, str):
+        lineage = _MODEL_LINEAGES.get(model_id)
+    # Scripted matrix entries name the family they represent in their provider field.
+    provider = model.get("provider")
+    return lineage or (provider if isinstance(provider, str) else None)
+
+
+@dataclass(frozen=True)
+class SelfPreferenceInterval:
+    point: float
+    low: float | None
+    high: float | None
+
+
 def self_preference(
     grades: Mapping[str, Mapping[str, float | None]],
     family_of: Mapping[str, str],
@@ -617,19 +651,22 @@ def self_preference(
     *,
     seed: str,
     resamples: int = 10_000,
-) -> dict[tuple[str, str], Interval]:
-    """SPI (grading note §3.4): a judge's excess over the others on one family's answers,
-    minus the same excess on the other families' answers, with a question bootstrap."""
-    complete = {i: g for i, g in grades.items() if all(v is not None for v in g.values())}
-    families = sorted({family_of[i] for i in complete})
-    result: dict[tuple[str, str], Interval] = {}
+) -> dict[tuple[str, str], SelfPreferenceInterval | None]:
+    """Compare each judge's excess over its peers on one lineage versus the others."""
+    complete = {
+        i: g
+        for i, g in grades.items()
+        if i in family_of and all(g.get(j) is not None for j in judge_family)
+    }
+    result: dict[tuple[str, str], SelfPreferenceInterval | None] = {}
     for judge in sorted(judge_family):
-        excess: dict[str, float] = {}
-        for item, g in complete.items():
-            others = [v for j, v in g.items() if j != judge]
-            if judge in g and others:
-                excess[item] = float(g[judge] or 0.0) - sum(o or 0.0 for o in others) / len(others)
-        for family in families:
+        peers = [j for j in judge_family if j != judge]
+        excess = {
+            i: float(g[judge] or 0.0) - statistics.mean(g[j] or 0.0 for j in peers)
+            for i, g in complete.items()
+            if peers
+        }
+        for family in sorted(set(family_of.values())):
             per_q: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0, 0.0, 0.0])
             for item, value in excess.items():
                 entry = per_q[question_of[item]]
@@ -637,17 +674,33 @@ def self_preference(
                 entry[offset] += value
                 entry[offset + 1] += 1
 
-            def spi(questions: Sequence[str], per_q: Mapping[str, list[float]] = per_q) -> float:
+            def spi(
+                questions: Sequence[str], per_q: Mapping[str, list[float]] = per_q
+            ) -> float | None:
                 inside = sum(per_q[q][0] for q in questions), sum(per_q[q][1] for q in questions)
                 outside = sum(per_q[q][2] for q in questions), sum(per_q[q][3] for q in questions)
-                # shortcut: a resample with no answer on one side scores 0 (no evidence either way)
                 if not inside[1] or not outside[1]:
-                    return 0.0
+                    return None
                 return inside[0] / inside[1] - outside[0] / outside[1]
 
-            result[(judge, family)] = paired_bootstrap(
-                sorted(per_q), spi, seed=f"{seed}/SPI/{judge}/{family}", resamples=resamples
-            )
+            ids = sorted(per_q)
+            point = spi(ids)
+            key = (judge, family)
+            result[key] = None
+            if point is not None:
+                rng = random.Random(f"{seed}/SPI/{judge}/{family}")
+                draws = []
+                for _ in range(resamples):
+                    draw = spi(rng.choices(ids, k=len(ids)))
+                    if draw is None:
+                        break  # The registered question bootstrap cannot supply a full interval.
+                    draws.append(draw)
+                bounds = (
+                    percentile_interval(draws)
+                    if draws and len(draws) == resamples
+                    else (None, None)
+                )
+                result[key] = SelfPreferenceInterval(point, *bounds)
     return result
 
 
@@ -693,23 +746,52 @@ def _strings(value: Any) -> TypeGuard[list[str]]:
     return isinstance(value, list) and all(isinstance(v, str) for v in value)
 
 
-def load_egress_evidence(run_dir: Path) -> dict[str, Any] | None:
-    """``<run>/egress/summary.json`` in the ruling-9 shape, or ``None`` (fail closed)."""
+def read_evidence_json(
+    run_dir: Path, filename: Literal["planned-cells.json", "egress/summary.json"]
+) -> dict[str, Any] | None:
+    """Read a fixed exported artifact, without following links or exposing unsafe text."""
     try:
-        data = json.loads((run_dir / "egress" / "summary.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        root = run_dir.resolve()
+        path = root / filename
+        if not path.is_relative_to(root) or path.resolve(strict=True) != path or not path.is_file():
+            return None
+        return read_json(path, filename)
+    except KeyLeakError:
+        raise
+    except (OSError, RuntimeError, ValueError):
         return None
-    if not isinstance(data, dict) or data.get("isolation_probe") not in ("pass", "fail"):
+
+
+EGRESS_JOB_FIELDS = {"hosts_allowed", "hosts_denied", "lookup_package_docs_attempts"}
+
+
+def load_egress_evidence(run_dir: Path, *, partial: bool = False) -> dict[str, Any] | None:
+    """Read ruling-9 evidence. C1 may disclose partial observations, C3 needs full records."""
+    data = read_evidence_json(run_dir, "egress/summary.json")
+    if not data or not isinstance(data.get("jobs"), dict):
         return None
-    jobs = data.get("jobs")
-    if not isinstance(jobs, dict) or not all(
-        isinstance(job, dict)
-        and _strings(job.get("hosts_allowed"))
-        and _strings(job.get("hosts_denied"))
-        for job in jobs.values()
-    ):
+    probe = data.get("isolation_probe")
+    if probe not in ("pass", "fail"):
+        if not partial:
+            return None
+        probe = "unknown"
+    jobs = {}
+    for jid, job in data["jobs"].items():
+        fields: dict[str, Any] = {}
+        if isinstance(job, dict):
+            for field in ("hosts_allowed", "hosts_denied"):
+                hosts = job.get(field)
+                if _strings(hosts) and all(h.strip() for h in hosts):
+                    fields[field] = hosts
+            count = job.get("lookup_package_docs_attempts")
+            if type(count) is int and count >= 0:
+                fields["lookup_package_docs_attempts"] = count
+        if not partial and fields.keys() != EGRESS_JOB_FIELDS:
+            return None
+        jobs[jid] = fields
+    if not jobs and not partial:
         return None
-    return data
+    return {"jobs": jobs, "isolation_probe": probe}
 
 
 def load_offline_evidence(run_dir: Path) -> OfflineEvidence | None:

@@ -50,6 +50,7 @@ from benchmarks.grading.gates import (
     length_grade_correlation,
     load_egress_evidence,
     load_offline_evidence,
+    model_lineage,
     offline_verdict,
     outcome_tier,
     pass1_composition,
@@ -544,10 +545,10 @@ def score_run_dir(
         for av in pass2.values()
         if any(v is not None for v in av.votes.values())
     }
-    providers = {fid: str(f.get("provider")) for fid, f in families.items()}
+    lineages = {fid: model_lineage(fid, f) for fid, f in families.items()}
     spi = self_preference(
         own,
-        {i: providers.get(family_of.get(i, ""), "") for i in own},
+        {i: lineage for i, fid in family_of.items() if (lineage := lineages.get(fid))},
         question_of,
         {j: panel.judges[j].provider for j in efforts},
         seed=seed,
@@ -600,7 +601,7 @@ def score_run_dir(
         )
         if own2
         else None,
-        "self_preference": {f"{j}/{f}": asdict(v) for (j, f), v in spi.items()},
+        "self_preference": {f"{j}/{f}": asdict(v) if v else None for (j, f), v in spi.items()},
         "length_grade_correlation": length_grade_correlation(
             [len(transcripts[k].get("answer") or "") for k, _ in graded],
             [f["score"] for _, f in graded],
