@@ -340,6 +340,7 @@ class Ledger:
         bound: Decimal,
         input_bound: int,
         output_bound: int,
+        job_id: str | None = None,
     ) -> str | None:
         cap = self._caps.get(provider)
         if cap is None:
@@ -364,6 +365,7 @@ class Ledger:
                 "bound": str(bound),
                 "input_bound": input_bound,
                 "output_bound": output_bound,
+                "job_id": job_id,  # set by the host; attributes the unit's settle (C1)
             },
         )
         self._units[unit_id] = (provider, bound)
@@ -434,6 +436,7 @@ class LedgerService:
         input_bound: int,
         output_bound: int,
         kind: str = "model_call",
+        job_id: str | None = None,
     ) -> str | None:
         if provider in UNMETERED_PROVIDERS:  # the Ledger never sees it
             await self._locks.setdefault(provider, asyncio.Lock()).acquire()
@@ -457,6 +460,7 @@ class LedgerService:
                 bound=bound,
                 input_bound=input_bound,
                 output_bound=output_bound,
+                job_id=job_id,
             )
         except BaseException:
             lock.release()

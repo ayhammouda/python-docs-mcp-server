@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from typing import Any
 
@@ -56,6 +57,33 @@ async def read_frame(
     except asyncio.IncompleteReadError:
         return None
     return json.loads(body)
+
+
+def _read_exactly(fd: int, size: int) -> bytes | None:
+    parts: list[bytes] = []
+    while size:
+        chunk = os.read(fd, size)
+        if not chunk:
+            return None
+        parts.append(chunk)
+        size -= len(chunk)
+    return b"".join(parts)
+
+
+def read_frame_fd(fd: int, *, limit: int = MAX_FRAME_BYTES) -> dict[str, Any] | None:
+    """Exactly one frame from ``fd``, unbuffered, so no byte of the next frame is consumed.
+
+    None at EOF or a partial frame. The worker reads its first frame this way, before any
+    stream wraps its stdin.
+    """
+    header = _read_exactly(fd, 8)
+    if header is None:
+        return None
+    length = int.from_bytes(header, "big")
+    if length > limit:
+        raise FrameTooLarge(f"a {length}-byte frame is over the {limit}-byte limit")
+    body = _read_exactly(fd, length)
+    return None if body is None else json.loads(body)
 
 
 def redact_key_shaped(data: bytes) -> tuple[bytes, str | None]:

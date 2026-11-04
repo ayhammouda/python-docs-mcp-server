@@ -273,6 +273,25 @@ def test_an_air_gapped_dry_run_ignores_the_price_snapshot_expiry(tmp_path: Path)
         run_agentic(config(("claude-sonnet-5-5",), "hosted"), launcher=_EveryFamily(), today=late)
 
 
+def test_every_reserve_event_names_its_job(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path,
+        models=("scripted-anthropic", "scripted-openai"),
+        systems=("no-docs",),
+        questions=("SYN-EX-001",),
+        repeats=1,
+    )
+    summary = run_agentic(config)
+    assert summary["status"] == "completed"
+    providers = {"scripted-anthropic": "anthropic", "scripted-openai": "openai"}
+    lines = (tmp_path / "run" / "ledger-events.jsonl").read_text().splitlines()
+    reserves = [e for e in map(json.loads, lines) if e["event"] == "reserve"]
+    assert {e["job_id"] for e in reserves} == {f"{f}--no-docs" for f in providers}
+    for event in reserves:
+        family_id, system_id = event["job_id"].split("--")
+        assert system_id == "no-docs" and providers[family_id] == event["provider"]
+
+
 def test_run_summary_counts_retries_and_reruns(tmp_path: Path) -> None:
     limited = {"error": {"kind": "rate_limited", "status": 429, "retry_after_s": 0}}
     answer = {"text": "ok", "usage": {"input_tokens": 1000, "output_tokens": 100}}

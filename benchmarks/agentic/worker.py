@@ -18,23 +18,46 @@ import shutil
 import sys
 import threading
 from collections import deque
+from collections.abc import Mapping
 from contextlib import AsyncExitStack, suppress
 from dataclasses import asdict
 from importlib.metadata import version
 from typing import Any
 
-from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
+from benchmarks.adapters.guard import PAID_KEY_ENVS, PROVIDER_API_KEY_ENV
 from benchmarks.agentic.bridge import Bridge, SystemSpec, open_bridge, system_spec_from_raw
 from benchmarks.agentic.ledger import Outcome
-from benchmarks.agentic.protocol import KeyLeakError, encode_frame, read_frame
+from benchmarks.agentic.protocol import KeyLeakError, encode_frame, read_frame, read_frame_fd
 from benchmarks.agentic.types import Buckets, ToolSpec
 from benchmarks.model_matrix import model_family_from_raw
 from benchmarks.runner import BenchmarkValidationError
 
 MAX_RERUNS = 2
+#: The type of the private first frame that carries a live worker's one key (ruling A1).
+BOOTSTRAP = "bootstrap"
 _REDACTED = b"[redacted]"
 #: A trajectory that ended in one of these leaves the MCP server unusable: reopen it.
 _REOPEN_AFTER = frozenset({"mcp_protocol_crash", "cap_tool_timeout"})
+
+
+def apply_bootstrap(frame: Mapping[str, Any]) -> None:
+    """Put the bootstrap frame's one paid key in this process's environment, in memory only.
+
+    ``env`` holds at most one name, a paid key's. Anything else is refused, naming the
+    variables and never a value.
+    """
+    env = frame.get("env")
+    names = sorted(str(name) for name in env) if isinstance(env, Mapping) else []
+    if (
+        not isinstance(env, Mapping)
+        or len(env) > 1
+        or not set(names) <= set(PAID_KEY_ENVS)
+        or not all(isinstance(value, str) and value for value in env.values())
+    ):
+        raise BenchmarkValidationError(
+            f"a bootstrap frame may set at most one paid key, got {names}"
+        )
+    os.environ.update(env)
 
 
 def _write_all(fd: int, data: bytes) -> None:
@@ -240,17 +263,25 @@ async def _close(stack: AsyncExitStack) -> None:
         print(f"closing the MCP bridge failed: {exc!r}", file=sys.stderr)
 
 
-async def _run_job(channel: ProtocolChannel, reader: asyncio.StreamReader) -> int:
+async def _run_job(
+    channel: ProtocolChannel,
+    reader: asyncio.StreamReader,
+    first: dict[str, Any] | None = None,
+    *,
+    bootstrapped: bool = False,
+) -> int:
     # Imported here, after protect_output: the provider SDKs load behind the redactor.
     from benchmarks.agentic.clients import make_client
     from benchmarks.agentic.loop import Caps, TrajectoryDiscarded, run_trajectory
 
-    job = await read_frame(reader)
+    job = first if first is not None else await read_frame(reader)
     if job is None or job.get("type") != "job":
         raise BenchmarkValidationError("the host sent no job")
     family = model_family_from_raw(job["family"])
     system = system_spec_from_raw(job["system"])
     caps = Caps(**job["caps"])
+    if family.api != "scripted" and not bootstrapped:
+        raise BenchmarkValidationError("a live job needs its key bootstrap frame first")
     client = make_client(family, timeout_s=caps.model_call_timeout_s)
     host = _HostLedger(channel, reader)
     queue = deque((item, 1) for item in job["trajectories"])
@@ -326,27 +357,44 @@ def _report(channel: ProtocolChannel, reason: str, code: int) -> int:
     return code
 
 
-async def run_worker(channel: ProtocolChannel, reader: asyncio.StreamReader) -> int:
+async def run_worker(
+    channel: ProtocolChannel,
+    reader: asyncio.StreamReader,
+    first: dict[str, Any] | None = None,
+    *,
+    bootstrapped: bool = False,
+) -> int:
     try:
-        return await _run_job(channel, reader)
+        return await _run_job(channel, reader, first, bootstrapped=bootstrapped)
     except KeyLeakError:
         return _report(channel, "own key found in output", 3)
     except Exception as exc:  # noqa: BLE001 - every failure is reported to the host
         return _report(channel, f"{type(exc).__name__}: {exc}", 2)
 
 
-async def _serve(channel: ProtocolChannel) -> int:
+async def _serve(
+    channel: ProtocolChannel, first: dict[str, Any] | None = None, *, bootstrapped: bool = False
+) -> int:
     reader = asyncio.StreamReader()
     await asyncio.get_running_loop().connect_read_pipe(
         lambda: asyncio.StreamReaderProtocol(reader), sys.stdin
     )
-    return await run_worker(channel, reader)
+    return await run_worker(channel, reader, first, bootstrapped=bootstrapped)
 
 
 def main_worker() -> int:
-    """``python -m benchmarks agentic-worker``: protect output first, then run the job."""
+    """``python -m benchmarks agentic-worker``: the key bootstrap, output protection, the job.
+
+    The first frame is read before anything else, so a bootstrap key is in the environment
+    when protect_output collects the secrets it redacts, and before any SDK is imported.
+    """
+    first = read_frame_fd(0)
+    bootstrapped = False
+    if first is not None and first.get("type") == BOOTSTRAP:
+        apply_bootstrap(first)
+        first, bootstrapped = None, True
     channel = protect_output()
     try:
-        return asyncio.run(_serve(channel))
+        return asyncio.run(_serve(channel, first, bootstrapped=bootstrapped))
     finally:
         channel.close()

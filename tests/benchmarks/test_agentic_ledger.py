@@ -606,3 +606,35 @@ async def test_an_unmetered_provider_gets_one_unit_at_a_time_and_is_never_booked
     assert ledger.events(RUN_ID) == []
     assert (ledger.spent("anthropic"), ledger.spent("openai")) == (0, 0)
     ledger.close()
+
+
+def test_reserve_events_without_job_id_still_load(tmp_path: Path) -> None:
+    ledger = _open(tmp_path, anthropic="10")
+    unit = _reserve(ledger, "anthropic", "1")
+    assert unit is not None
+    assert _event(ledger, "reserve", unit)["job_id"] is None
+    named = ledger.reserve
+    ledger.settle(unit, outcome="server", actual=None, buckets=None)
+    other = named(
+        "anthropic",
+        model_id="m",
+        kind="model_call",
+        bound=D("1"),
+        input_bound=1,
+        output_bound=1,
+        job_id="j--s",
+    )
+    assert other is not None and _event(ledger, "reserve", other)["job_id"] == "j--s"
+    ledger.settle(other, outcome="ok", actual=D("3"), buckets=None)  # an overrun: stops
+    spent, stopped = ledger.spent("anthropic"), ledger.stopped("anthropic")
+    ledger.close()
+    # The pre-PR-4 format: reserve lines without the job_id key at all.
+    path = tmp_path / "anthropic.jsonl"
+    lines = [json.loads(line) for line in path.read_text().splitlines()]
+    for event in lines:
+        event.pop("job_id", None)
+    path.write_text("".join(json.dumps(e, sort_keys=True) + "\n" for e in lines))
+    reopened = _open(tmp_path, anthropic="10")
+    assert (reopened.spent("anthropic"), reopened.stopped("anthropic")) == (spent, stopped)
+    assert spent == D("5") and stopped == "overrun"
+    reopened.close()

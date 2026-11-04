@@ -12,7 +12,8 @@ import signal
 import subprocess
 import sys
 import time
-from dataclasses import replace
+from collections.abc import Sequence
+from dataclasses import asdict, replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -27,7 +28,13 @@ from benchmarks.agentic.bridge import system_spec_from_raw
 from benchmarks.agentic.host import LocalLauncher, WorkerJob, refuse_host_keys, run_jobs
 from benchmarks.agentic.ledger import Ledger, LedgerService, ModelPrice, Rates, Tier
 from benchmarks.agentic.loop import HOSTED_CAPS, Caps
-from benchmarks.agentic.protocol import FrameTooLarge, KeyLeakError, assert_no_key_shaped
+from benchmarks.agentic.protocol import (
+    FrameTooLarge,
+    KeyLeakError,
+    assert_no_key_shaped,
+    encode_frame,
+    read_frame_fd,
+)
 from benchmarks.model_matrix import ModelFamily, load_model_matrix, model_family_from_raw
 from benchmarks.runner import BenchmarkValidationError
 
@@ -305,13 +312,13 @@ async def test_host_logs_and_artifacts_never_hold_a_workers_key(host: Host, tmp_
         "import os, sys\n"
         "from benchmarks.agentic import worker\n"
         "real = worker.run_worker\n"
-        "async def leaky(channel, reader):\n"
+        "async def leaky(channel, reader, *args, **kwargs):\n"
         "    key = os.environ['ANTHROPIC_API_KEY']\n"
         "    print(key)\n"
         "    sys.stderr.write(key + '\\n')\n"
         "    sys.stderr.flush()\n"
         "    os.write(2, key.encode() + b'\\n')\n"
-        "    return await real(channel, reader)\n"
+        "    return await real(channel, reader, *args, **kwargs)\n"
         "worker.run_worker = leaky\n"
         "sys.exit(worker.main_worker())\n"
     )
@@ -341,10 +348,10 @@ async def test_a_worker_redacts_every_provider_secret_it_holds(
         "import os, sys\n"
         "from benchmarks.agentic import worker\n"
         "real = worker.run_worker\n"
-        "async def leaky(channel, reader):\n"
+        "async def leaky(channel, reader, *args, **kwargs):\n"
         "    for name in ('ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'REF_API_KEY'):\n"
         "        print(os.environ[name])\n"
-        "    return await real(channel, reader)\n"
+        "    return await real(channel, reader, *args, **kwargs)\n"
         "worker.run_worker = leaky\n"
         "sys.exit(worker.main_worker())\n"
     )
@@ -1076,3 +1083,295 @@ def test_system_info_records_the_fetch_extraction_path(monkeypatch: pytest.Monke
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/node")
     assert worker._system_info(fetch, "anthropic", None)["fetch_extraction"] == "readability-js"
     assert worker._system_info(NO_DOCS, "anthropic", None)["fetch_extraction"] is None
+
+
+# --- the launcher seam: prepare, key bootstrap, stop worker, close ------------------------------
+
+SYNTHETIC_KEY = "sk-ant-api03-" + "a" * 90
+
+
+class RecordingLauncher:
+    """Wraps a launcher and logs every seam call to a shared list."""
+
+    def __init__(
+        self,
+        inner: Any = None,
+        *,
+        events: list[Any] | None = None,
+        bootstrap: dict[str, Any] | None = None,
+        prepare_error: Exception | None = None,
+        stop_error: Exception | None = None,
+        problems: Sequence[str] = (),
+    ) -> None:
+        self.inner = inner or LocalLauncher()
+        self.events = [] if events is None else events
+        self.bootstrap, self.prepare_error, self.stop_error = bootstrap, prepare_error, stop_error
+        self.problems = list(problems)
+
+    def supports(self, family: ModelFamily) -> bool:
+        return self.inner.supports(family)
+
+    def command(self, job: WorkerJob) -> tuple[list[str], dict[str, str]]:
+        self.events.append(("command", job.job_id))
+        return self.inner.command(job)
+
+    def bootstrap_frame(self, job: WorkerJob) -> dict[str, Any] | None:
+        self.events.append(("bootstrap", job.job_id))
+        return None if self.bootstrap is None else dict(self.bootstrap)
+
+    async def prepare(self, jobs: Sequence[WorkerJob]) -> None:
+        self.events.append(("prepare", [job.job_id for job in jobs]))
+        if self.prepare_error is not None:
+            raise self.prepare_error
+
+    async def stop_worker(self, job: WorkerJob) -> None:
+        self.events.append(f"stop_worker:{job.job_id}")
+        if self.stop_error is not None:
+            raise self.stop_error
+
+    async def close(self) -> list[str]:
+        self.events.append(("close",))
+        return self.problems
+
+
+def test_local_launcher_seam_defaults(tmp_path: Path) -> None:
+    job = _job(tmp_path, [ANSWER])
+    launcher = LocalLauncher()
+    assert launcher.bootstrap_frame(job) is None
+
+    async def seam() -> list[str]:
+        await launcher.prepare([job])
+        await launcher.stop_worker(job)
+        return await launcher.close()
+
+    assert asyncio.run(seam()) == []
+
+
+async def test_run_jobs_prepares_every_job_before_any_worker_starts(
+    host: Host, tmp_path: Path
+) -> None:
+    jobs = [_job(tmp_path, [ANSWER], count=1, job_id=job_id) for job_id in ("a", "b")]
+    launcher = RecordingLauncher()
+    await host.run(jobs, launcher=launcher)
+    assert launcher.events[0] == ("prepare", ["a", "b"])
+    assert {e for e in launcher.events if isinstance(e, tuple) and e[0] == "command"} == {
+        ("command", "a"),
+        ("command", "b"),
+    }
+    assert launcher.events[-1] == ("close",)
+
+
+async def test_a_failed_prepare_starts_no_worker_and_still_closes(
+    host: Host, tmp_path: Path
+) -> None:
+    launcher = RecordingLauncher(prepare_error=BenchmarkValidationError("probe failed"))
+    with pytest.raises(BenchmarkValidationError, match="probe failed"):
+        await host.run([_job(tmp_path, [ANSWER])], launcher=launcher)
+    assert [e for e in launcher.events if e[0] in ("command", "bootstrap")] == []
+    assert launcher.events[-1] == ("close",)
+
+
+async def test_supervise_writes_the_bootstrap_before_the_job_frame(
+    host: Host, tmp_path: Path
+) -> None:
+    code = (
+        "import json, sys\n"
+        "inp, out = sys.stdin.buffer, sys.stdout.buffer\n"
+        "def read():\n"
+        "    return json.loads(inp.read(int.from_bytes(inp.read(8), 'big')))\n"
+        "types = [read()['type'], read()['type']]\n"
+        "body = json.dumps({'type': 'seen', 'types': types}).encode()\n"
+        "out.write(len(body).to_bytes(8, 'big') + body)\n"
+        "out.flush()\n"
+    )
+    launcher = RecordingLauncher(
+        LostLauncher(code), bootstrap={"type": "bootstrap", "env": {}}
+    )
+    await host.run([_job(tmp_path, [ANSWER], count=1, job_id="lost")], launcher=launcher)
+    seen = [m for m in host.messages("lost") if m["type"] == "seen"]
+    assert seen == [{"type": "seen", "types": ["bootstrap", "job"]}]
+
+
+async def test_host_environ_is_unchanged_after_a_launch(host: Host, tmp_path: Path) -> None:
+    # A real worker takes the key from its bootstrap frame; the host never holds it.
+    before = dict(os.environ)
+    bootstrap = {"type": "bootstrap", "env": {"ANTHROPIC_API_KEY": SYNTHETIC_KEY}}
+    await host.run(
+        [_job(tmp_path, [ANSWER], count=1)], launcher=RecordingLauncher(bootstrap=bootstrap)
+    )
+    assert dict(os.environ) == before
+    refuse_host_keys(os.environ)
+    assert [m["type"] for m in host.messages()] == ["system_info", "trajectory", "done"]
+    for path in (tmp_path / "logs").iterdir():
+        assert SYNTHETIC_KEY not in path.read_text()
+
+
+def test_bootstrap_key_is_redacted_from_worker_output() -> None:
+    code = (
+        "import os, sys\n"
+        "from benchmarks.agentic.protocol import read_frame_fd\n"
+        "from benchmarks.agentic.worker import apply_bootstrap, protect_output\n"
+        "apply_bootstrap(read_frame_fd(0))\n"
+        "ch = protect_output()\n"
+        "key = os.environ['ANTHROPIC_API_KEY']\n"
+        "print(key)\n"
+        "sys.stderr.write(key + '\\n')\n"
+        "os.write(2, key.encode() + b'\\n')\n"
+        "ch.send({'type': 'done'})\n"
+        "ch.close()\n"
+    )
+    env = {k: v for k, v in os.environ.items() if k not in PROVIDER_API_KEY_ENV.values()}
+    bootstrap = {"type": "bootstrap", "env": {"ANTHROPIC_API_KEY": SYNTHETIC_KEY}}
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=REPO_ROOT,
+        input=encode_frame(bootstrap),
+        capture_output=True,
+        timeout=60,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert SYNTHETIC_KEY.encode() not in proc.stdout + proc.stderr
+    assert proc.stderr.count(b"[redacted]") == 3
+    assert _frames(proc.stdout) == [{"type": "done"}]
+
+
+class _Channel:
+    """A stand-in ProtocolChannel that keeps every frame sent."""
+
+    def __init__(self) -> None:
+        self.sent: list[dict[str, Any]] = []
+
+    def send(self, message: dict[str, Any]) -> None:
+        self.sent.append(message)
+
+
+async def test_worker_refuses_a_live_job_without_its_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import benchmarks.agentic.clients as clients
+
+    def never(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("make_client must not be called")
+
+    monkeypatch.setattr(clients, "make_client", never)
+    family = {f.id: f for f in load_model_matrix(MODEL_MATRIX_PATH).model_families}[
+        "claude-sonnet-5-5"
+    ]
+    job = {
+        "type": "job",
+        "job_id": "claude-sonnet-5-5--no-docs",
+        "family": family.raw,
+        "system": NO_DOCS.raw,
+        "trajectories": [{"corpus_id": "Q1", "prompt": "q", "repeat": 1}],
+        "caps": asdict(HOSTED_CAPS),
+    }
+    channel = _Channel()
+    code = await worker.run_worker(channel, asyncio.StreamReader(), job)  # type: ignore[arg-type]
+    assert code == 2
+    assert [m["type"] for m in channel.sent] == ["error"]
+    assert "bootstrap" in channel.sent[0]["reason"]
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"HTTPS_PROXY": "http://elsewhere.invalid:3128"},
+        {"ANTHROPIC_API_KEY": "not-a-real-key-1", "OPENAI_API_KEY": "not-a-real-key-2"},
+        {"REF_API_KEY": "not-a-real-key-3"},
+    ],
+)
+def test_a_bootstrap_with_a_foreign_or_second_variable_is_refused(
+    monkeypatch: pytest.MonkeyPatch, env: dict[str, str]
+) -> None:
+    for name in env:
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(BenchmarkValidationError) as caught:
+        worker.apply_bootstrap({"type": "bootstrap", "env": env})
+    assert all(name in str(caught.value) for name in env)
+    assert "not-a-real-key" not in str(caught.value) and "elsewhere" not in str(caught.value)
+    assert all(name not in os.environ for name in env)
+
+
+def test_read_frame_fd_reads_one_frame_and_leaves_the_next(tmp_path: Path) -> None:
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, encode_frame({"type": "bootstrap"}) + encode_frame({"type": "job"}))
+        os.close(write_fd)
+        assert read_frame_fd(read_fd) == {"type": "bootstrap"}
+        assert read_frame_fd(read_fd) == {"type": "job"}
+        assert read_frame_fd(read_fd) is None
+    finally:
+        os.close(read_fd)
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, (10**9).to_bytes(8, "big"))
+        os.close(write_fd)
+        with pytest.raises(FrameTooLarge):
+            read_frame_fd(read_fd, limit=1000)
+    finally:
+        os.close(read_fd)
+
+
+def _settles_recorded(service: LedgerService, events: list[Any]) -> None:
+    real = service.settle
+
+    async def settle(unit_id: str, **kwargs: Any) -> None:
+        events.append(f"settle:{kwargs['outcome']}")
+        await real(unit_id, **kwargs)
+
+    service.settle = settle  # type: ignore[method-assign]
+
+
+async def _run_lost(
+    host: Host, tmp_path: Path, launcher: RecordingLauncher, job: WorkerJob
+) -> None:
+    service = host.service(job.family)
+    _settles_recorded(service, launcher.events)
+    await run_jobs(
+        [job],
+        launcher=launcher,
+        ledger=service,
+        on_message=host.on_message,
+        log_dir=tmp_path / "logs",
+        cwd=REPO_ROOT,
+    )
+
+
+async def test_teardown_stops_the_worker_before_its_unit_is_settled(
+    host: Host, tmp_path: Path
+) -> None:
+    launcher = RecordingLauncher(LostLauncher(_fake_worker(_reserve_frame(1024))))
+    await _run_lost(host, tmp_path, launcher, _job(tmp_path, [ANSWER], job_id="lost"))
+    order = [e for e in launcher.events if isinstance(e, str)]
+    assert order == ["stop_worker:lost", "settle:worker_lost"]
+    assert host.ledger.spent("anthropic") == 2 * D("0.002024")
+
+
+async def test_a_failing_stop_worker_still_scrubs_the_log_and_settles_the_unit(
+    host: Host, tmp_path: Path
+) -> None:
+    leaky = (
+        f"import sys\nsys.stderr.write('debug: {SYNTHETIC_KEY}\\n')\nsys.stderr.flush()\n"
+        + _fake_worker(_reserve_frame(1024))
+    )
+    launcher = RecordingLauncher(
+        LostLauncher(leaky), stop_error=RuntimeError("docker rm -f failed")
+    )
+    with pytest.raises(RuntimeError, match="docker rm -f failed"):
+        await _run_lost(host, tmp_path, launcher, _job(tmp_path, [ANSWER], job_id="lost"))
+    log = tmp_path / "logs" / "lost.stderr.log"
+    assert not log.exists() or log.read_text() == "debug: [redacted]\n"
+    assert host.ledger.spent("anthropic") == 2 * D("0.002024")
+    assert [e for e in launcher.events if isinstance(e, str)] == [
+        "stop_worker:lost",
+        "settle:worker_lost",
+    ]
+    assert launcher.events[-1] == ("close",)
+
+
+async def test_close_problems_fail_a_clean_run(host: Host, tmp_path: Path) -> None:
+    launcher = RecordingLauncher(problems=["proxy pdmcp-x-proxy: exit 137"])
+    with pytest.raises(BenchmarkValidationError, match="exit 137"):
+        await host.run([_job(tmp_path, [ANSWER], count=1)], launcher=launcher)
+    assert [m["type"] for m in host.messages()][-1] == "done"  # the run itself completed

@@ -61,6 +61,22 @@ class Launcher(Protocol):
         """The worker's argv and its whole environment."""
         raise NotImplementedError
 
+    def bootstrap_frame(self, job: WorkerJob) -> dict[str, Any] | None:
+        """The private first frame for the worker's stdin, or None. Called once, after prepare."""
+        raise NotImplementedError
+
+    async def prepare(self, jobs: Sequence[WorkerJob]) -> None:
+        """Before any worker starts; raise to stop the run with nothing spent."""
+        raise NotImplementedError
+
+    async def stop_worker(self, job: WorkerJob) -> None:
+        """After the group kill and before the job's in-flight unit is settled."""
+        raise NotImplementedError
+
+    async def close(self) -> list[str]:
+        """After every worker is gone: release all; return problems, raise only KeyLeakError."""
+        raise NotImplementedError
+
 
 class LocalLauncher:
     """A local process with no provider key: scripted models only (PR 4 adds containers)."""
@@ -71,6 +87,18 @@ class LocalLauncher:
     def command(self, job: WorkerJob) -> tuple[list[str], dict[str, str]]:
         env = {name: os.environ[name] for name in _LOCAL_ENV if name in os.environ}
         return [sys.executable, "-m", "benchmarks", "agentic-worker"], env
+
+    def bootstrap_frame(self, job: WorkerJob) -> dict[str, Any] | None:
+        return None
+
+    async def prepare(self, jobs: Sequence[WorkerJob]) -> None:
+        return None
+
+    async def stop_worker(self, job: WorkerJob) -> None:
+        return None
+
+    async def close(self) -> list[str]:
+        return []
 
 
 def refuse_host_keys(environ: Mapping[str, str]) -> None:
@@ -92,7 +120,8 @@ def _start_anchor() -> subprocess.Popen[bytes]:
     its pid, which is the group id, cannot be reused while the host may still signal it. It
     reads its stdin, a pipe only the host holds, so it also ends with a host killed outright.
     """
-    # shortcut: needs cat on PATH (every CI runner image has it); PR 4's worker image must too
+    # The host's `cat`; run.sh checks for it, and the worker image has it too
+    # (benchmarks/sandbox/Dockerfile).
     return subprocess.Popen(
         ["cat"],
         stdin=subprocess.PIPE,
@@ -107,8 +136,8 @@ def _kill_group(anchor: subprocess.Popen[bytes]) -> None:
 
     The anchor is not reaped before this, so the group id is still this job's.
     """
-    # shortcut: reaches only this host's process tree; PR 4's container launcher must give the
-    # same guarantee, which removing the container does, and signal only what it holds.
+    # Reaches only this host's process tree. A container launcher's `stop_worker` removes its
+    # own container, which ends everything in it, before the unit is settled.
     # ESRCH, or EPERM (macOS, when the group holds only zombies, the anchor included).
     with suppress(ProcessLookupError, PermissionError):
         os.killpg(anchor.pid, signal.SIGKILL)
@@ -128,8 +157,14 @@ async def _teardown(
     log_path: Path,
     ledger: LedgerService,
     in_flight: str | None,
+    stop_worker: Callable[[], Awaitable[None]] | None = None,
 ) -> str | None:
-    """Kill the worker's group, scrub its log and book its open unit; the log's key pattern."""
+    """Kill the worker's group, stop its worker, scrub its log and book its open unit.
+
+    Returns the log's key pattern. A failed ``stop_worker`` is re-raised only after the log
+    is scrubbed and the unit settled, so the run aborts with nothing left unbooked.
+    """
+    stop_error: BaseException | None = None
     try:
         # The whole group, even after the worker exited: no descendant outlives it to write.
         try:
@@ -138,10 +173,18 @@ async def _teardown(
                 await asyncio.wait_for(proc.wait(), _EXIT_WAIT_S)
         finally:
             await _reap(anchor)
-        return _publish_scrubbed(log_path)
+        if stop_worker is not None:
+            try:
+                await stop_worker()  # a container's removal ends everything in it
+            except BaseException as exc:  # noqa: BLE001 - kept, then re-raised below
+                stop_error = exc
+        pattern = _publish_scrubbed(log_path)  # always, a failed stop_worker included
     finally:  # whatever happened to the log
         if in_flight is not None:  # may have been billed: booked at twice its bound
             await ledger.settle(in_flight, outcome="worker_lost", buckets=None)
+    if stop_error is not None:
+        raise stop_error
+    return pattern
 
 
 def _publish_scrubbed(log_path: Path) -> str | None:
@@ -198,6 +241,11 @@ async def _supervise(
     lost_reason = "worker_lost"
     try:
         try:
+            # The private key frame first, then the job. The frame is never logged or kept.
+            if (bootstrap := launcher.bootstrap_frame(job)) is not None:
+                proc.stdin.write(encode_frame(bootstrap))
+                del bootstrap
+                await proc.stdin.drain()
             job_frame = {
                 "type": "job",
                 "job_id": job.job_id,
@@ -233,6 +281,7 @@ async def _supervise(
                             int(message["output_bound"]), job.family.max_output_tokens or 0
                         ),
                         kind=str(message.get("kind", "model_call")),
+                        job_id=job.job_id,
                     )
                     reply = (
                         {"type": "grant", "unit_id": in_flight} if in_flight else {"type": "deny"}
@@ -280,7 +329,11 @@ async def _supervise(
             pass  # the worker died or stalled; handled as a lost worker below
     finally:
         # Runs to its end even when a second abort cancels this task meanwhile; then re-raise.
-        teardown = asyncio.ensure_future(_teardown(proc, anchor, log_path, ledger, in_flight))
+        teardown = asyncio.ensure_future(
+            _teardown(
+                proc, anchor, log_path, ledger, in_flight, lambda: launcher.stop_worker(job)
+            )
+        )
         cancelled: asyncio.CancelledError | None = None
         while not teardown.done():
             try:
@@ -324,27 +377,49 @@ async def run_jobs(
     if unsupported:
         raise BenchmarkValidationError(
             f"the {type(launcher).__name__} cannot run model families {unsupported}: "
-            "the local launcher runs only scripted models (live runs need PR 4's containers)"
+            "the local launcher runs only scripted models; use --launcher container"
         )
     log_dir.mkdir(parents=True, exist_ok=True)
-    tasks = [
-        asyncio.create_task(
-            _supervise(
-                job,
-                launcher=launcher,
-                ledger=ledger,
-                on_message=on_message,
-                log_dir=log_dir,
-                cwd=cwd,
-                max_frame_bytes=max_frame_bytes,
-            )
-        )
-        for job in jobs
-    ]
+    failed = True
     try:
-        await asyncio.gather(*tasks)
-    except BaseException:
-        for task in tasks:
-            task.cancel()  # each supervisor kills its worker on the way out
-        await asyncio.gather(*tasks, return_exceptions=True)
-        raise
+        await launcher.prepare(jobs)  # raises before any worker starts
+        tasks = [
+            asyncio.create_task(
+                _supervise(
+                    job,
+                    launcher=launcher,
+                    ledger=ledger,
+                    on_message=on_message,
+                    log_dir=log_dir,
+                    cwd=cwd,
+                    max_frame_bytes=max_frame_bytes,
+                )
+            )
+            for job in jobs
+        ]
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()  # each supervisor kills its worker on the way out
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        failed = False
+    finally:
+        # Every worker is gone. Runs to its end even when a second abort cancels meanwhile.
+        closing = asyncio.ensure_future(launcher.close())
+        cancelled: asyncio.CancelledError | None = None
+        while not closing.done():
+            try:
+                await asyncio.shield(closing)
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+        problems = closing.result()  # a KeyLeakError raises here
+        if problems and failed:  # the error already propagating is the one to report
+            print(f"launcher cleanup problems: {'; '.join(problems)}", file=sys.stderr)
+        if cancelled is not None:
+            raise cancelled
+    if problems:
+        raise BenchmarkValidationError(
+            f"the run completed, but the launcher reported problems: {'; '.join(problems)}"
+        )
