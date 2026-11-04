@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -11,8 +13,10 @@ from benchmarks.agentic.egress import (
     ProxyEvent,
     allowlist,
     forbidden_env_names,
+    lookup_attempts,
     parse_proxy_log,
     squid_conf,
+    write_egress_summary,
 )
 from benchmarks.model_matrix import ModelFamily, load_model_matrix
 from benchmarks.runner import BenchmarkValidationError
@@ -129,3 +133,177 @@ def test_every_allowlist_acl_disables_lookups() -> None:
     (access_log,) = [line for line in conf.splitlines() if line.startswith("access_log ")]
     assert access_log.split()[1].startswith("stdio:/var/log/squid-bench/")
     assert "rotate=0" in access_log.split() and "logfile_rotate 0" in conf.splitlines()
+
+
+# --- C1 evidence: egress/summary.json (#199, owner question 9) ----------------------------------
+
+PROBE_LINES = [
+    "2026-11-04T10:00:00.001Z 172.30.0.2 CONNECT example.com 443 403 TCP_DENIED",
+    "2026-11-04T10:00:00.002Z 172.30.0.2 GET host.docker.internal 50000 403 TCP_DENIED",
+]
+ANTHROPIC_LINE = "2026-11-04T10:00:05.000Z 172.30.0.3 CONNECT api.anthropic.com 443 200 TCP_TUNNEL"
+PYPI_LINE = "2026-11-04T10:00:06.000Z 172.30.0.3 CONNECT pypi.org 443 403 TCP_DENIED"
+CLAUDE = "claude-sonnet-5-5--python-docs"
+SCRIPTED = "scripted-anthropic--no-docs"
+
+
+def _jobs() -> list[Any]:
+    from tests.benchmarks.test_agentic_sandbox import _job
+
+    return [_job("claude-sonnet-5-5", "python-docs"), _job("scripted-anthropic", "no-docs")]
+
+
+def _evidence(
+    out: Path,
+    job_id: str,
+    *,
+    log: str | None,
+    prefix: list[str] = PROBE_LINES,
+    probe_passed: bool = True,
+    ok: bool = True,
+) -> None:
+    log_dir = out / "egress" / job_id
+    log_dir.mkdir(parents=True, exist_ok=True)
+    if log is not None:
+        (log_dir / "access.log").write_text(log, encoding="utf-8")
+    (log_dir / "collected.json").write_text(json.dumps({"ok": ok, "problems": []}))
+    (out / "probe").mkdir(exist_ok=True)
+    probe = {"passed": probe_passed, "failed": [], "proxy_prefix": prefix}
+    (out / "probe" / f"{job_id}.json").write_text(json.dumps(probe))
+    (out / "probe" / "control.json").write_text(json.dumps({"passed": True}))
+
+
+def _lines(*lines: str) -> str:
+    return "".join(f"{line}\n" for line in lines)
+
+
+def _ok_settle(job_id: str | None, unit: str = "anthropic-1") -> list[dict[str, Any]]:
+    return [
+        {"event": "reserve", "unit_id": unit, "provider": "anthropic", "job_id": job_id},
+        {"event": "settle", "unit_id": unit, "provider": "anthropic", "outcome": "ok"},
+    ]
+
+
+def _clean_run(tmp_path: Path) -> Path:
+    out = tmp_path / "run"
+    _evidence(out, CLAUDE, log=_lines(*PROBE_LINES, ANTHROPIC_LINE, PYPI_LINE))
+    _evidence(out, SCRIPTED, log=_lines(*PROBE_LINES))
+    return out
+
+
+def test_egress_summary_has_exactly_the_bound_keys(tmp_path: Path) -> None:
+    out = _clean_run(tmp_path)
+    summary = write_egress_summary(out, _jobs(), _ok_settle(CLAUDE))
+    written = json.loads((out / "egress" / "summary.json").read_text())
+    assert written == summary
+    assert set(written) == {"jobs", "isolation_probe"}
+    assert set(written["jobs"]) == {CLAUDE, SCRIPTED}
+    assert all(
+        set(j) == {"hosts_allowed", "hosts_denied", "lookup_package_docs_attempts"}
+        for j in written["jobs"].values()
+    )
+    assert written["isolation_probe"] == "pass"
+
+
+def test_probe_lines_never_reach_the_summary(tmp_path: Path) -> None:
+    out = _clean_run(tmp_path)
+    jobs = write_egress_summary(out, _jobs(), _ok_settle(CLAUDE))["jobs"]
+    assert jobs[CLAUDE]["hosts_allowed"] == ["api.anthropic.com:443"]
+    assert jobs[CLAUDE]["hosts_denied"] == ["pypi.org:443"]
+    assert jobs[SCRIPTED] == {
+        "hosts_allowed": [],
+        "hosts_denied": [],
+        "lookup_package_docs_attempts": 0,
+    }
+
+
+@pytest.mark.parametrize(
+    "log",
+    [
+        _lines(*PROBE_LINES, ANTHROPIC_LINE) + PYPI_LINE,  # unterminated last line
+        _lines(PYPI_LINE, *PROBE_LINES, ANTHROPIC_LINE),  # a line before the probe's prefix
+        _lines(PROBE_LINES[1], ANTHROPIC_LINE),  # the prefix lost a line
+    ],
+)
+def test_a_truncated_or_reprefixed_log_invalidates_the_evidence(tmp_path: Path, log: str) -> None:
+    out = _clean_run(tmp_path)
+    (out / "egress" / CLAUDE / "access.log").write_text(log, encoding="utf-8")
+    assert write_egress_summary(out, _jobs(), _ok_settle(CLAUDE))["isolation_probe"] == "fail"
+
+
+def test_a_missing_log_invalidates_the_evidence(tmp_path: Path) -> None:
+    out = _clean_run(tmp_path)
+    (out / "egress" / SCRIPTED / "access.log").unlink()
+    assert write_egress_summary(out, _jobs(), _ok_settle(CLAUDE))["isolation_probe"] == "fail"
+    out = _clean_run(tmp_path / "linked")
+    access = out / "egress" / SCRIPTED / "access.log"
+    access.unlink()
+    access.symlink_to(out / "egress" / CLAUDE / "access.log")  # a link is never followed
+    assert write_egress_summary(out, _jobs(), _ok_settle(CLAUDE))["isolation_probe"] == "fail"
+
+
+async def test_no_false_clean_when_collection_failed_or_the_provider_never_appears(
+    tmp_path: Path,
+) -> None:
+    from tests.benchmarks.test_agentic_sandbox import RUNNING, FakeDocker, _sandbox
+
+    # (a) A forced kill after our stop: the log is well formed but may be partial.
+    killed = {"Running": False, "ExitCode": 137, "OOMKilled": False}
+    sandbox = _sandbox(tmp_path, FakeDocker(states=(RUNNING, killed)))
+    egress = await sandbox.open_egress(CLAUDE, (("api.anthropic.com", 443),))
+    (egress.log_dir / "access.log").write_text(_lines(*PROBE_LINES, ANTHROPIC_LINE))
+    (egress.log_dir / "cache.log").write_text("squid\n")
+    await sandbox.close_egress(egress)
+    out = tmp_path / "run"
+    _evidence(out, SCRIPTED, log=_lines(*PROBE_LINES))
+    probe = {"passed": True, "proxy_prefix": PROBE_LINES}
+    (out / "probe" / f"{CLAUDE}.json").write_text(json.dumps(probe))
+    assert json.loads((egress.log_dir / "collected.json").read_text())["ok"] is False
+    assert write_egress_summary(out, _jobs(), _ok_settle(CLAUDE))["isolation_probe"] == "fail"
+    # (b) A hosted job billed an ok call, but its log shows no provider host.
+    out = tmp_path / "b" / "run"
+    _evidence(out, CLAUDE, log=_lines(*PROBE_LINES, PYPI_LINE))
+    _evidence(out, SCRIPTED, log=_lines(*PROBE_LINES))
+    assert write_egress_summary(out, _jobs(), _ok_settle(CLAUDE))["isolation_probe"] == "fail"
+    assert write_egress_summary(out, _jobs(), [])["isolation_probe"] == "pass"  # nothing billed
+
+
+def test_an_ok_settle_from_a_worker_that_died_early_fails_the_evidence(tmp_path: Path) -> None:
+    # No transcript or discarded record for the job: the ledger alone attributes the settle.
+    out = tmp_path / "run"
+    _evidence(out, CLAUDE, log=_lines(*PROBE_LINES))
+    _evidence(out, SCRIPTED, log=_lines(*PROBE_LINES))
+    assert not (out / "transcripts").exists()
+    assert write_egress_summary(out, _jobs(), _ok_settle(CLAUDE))["isolation_probe"] == "fail"
+
+
+@pytest.mark.parametrize("job_id", [None, "gpt-6.1-sol--python-docs"])
+def test_an_unattributed_ok_settle_fails_the_evidence(tmp_path: Path, job_id: str | None) -> None:
+    out = _clean_run(tmp_path)
+    events = _ok_settle(CLAUDE) + _ok_settle(job_id, unit="anthropic-2")
+    assert write_egress_summary(out, _jobs(), events)["isolation_probe"] == "fail"
+
+
+def test_a_failed_probe_or_control_fails_the_evidence(tmp_path: Path) -> None:
+    out = _clean_run(tmp_path)
+    (out / "probe" / "control.json").write_text(json.dumps({"passed": False}))
+    assert write_egress_summary(out, _jobs(), _ok_settle(CLAUDE))["isolation_probe"] == "fail"
+    out = _clean_run(tmp_path / "p")
+    (out / "probe" / f"{SCRIPTED}.json").unlink()
+    assert write_egress_summary(out, _jobs(), _ok_settle(CLAUDE))["isolation_probe"] == "fail"
+
+
+def _record(path: Path, tools: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"tool_calls": [{"tool": tool} for tool in tools]}))
+
+
+def test_lookup_attempts_count_scored_and_discarded_records(tmp_path: Path) -> None:
+    out = tmp_path / "run"
+    lookup = "lookup_package_docs"
+    _record(out / "transcripts" / "python-docs--m--r1" / "EX-001.json", [lookup, "x", lookup])
+    _record(out / "discarded" / "python-docs--m--r2" / "EX-002--attempt1.json", [lookup])
+    _record(out / "transcripts" / "docs-fetch--m--r1" / "EX-001.json", [lookup])
+    _record(out / "transcripts" / "python-docs--m-b--r1" / "EX-001.json", [lookup])
+    assert lookup_attempts(out, "m", "python-docs") == 3
+    assert lookup_attempts(out, "m", "no-docs") == 0

@@ -28,6 +28,7 @@ import platformdirs
 import benchmarks
 from benchmarks.adapters.claude_tokens import ANTHROPIC_API_VERSION, DEFAULT_COUNT_MODEL
 from benchmarks.agentic.bridge import SystemSpec, load_systems
+from benchmarks.agentic.egress import write_egress_summary
 from benchmarks.agentic.host import Launcher, LocalLauncher, WorkerJob, refuse_host_keys, run_jobs
 from benchmarks.agentic.ledger import (
     PROVIDER_CAPS,
@@ -39,6 +40,7 @@ from benchmarks.agentic.ledger import (
 from benchmarks.agentic.loop import AIR_GAPPED_CAPS, HOSTED_CAPS
 from benchmarks.agentic.prompt import SYSTEM_PROMPT
 from benchmarks.agentic.protocol import assert_no_key_shaped
+from benchmarks.agentic.sandbox import ContainerLauncher
 from benchmarks.agentic.worker import _client_versions
 from benchmarks.model_matrix import (
     _HOSTED_REQUIRED_FIELDS,
@@ -537,6 +539,8 @@ def run_agentic(
         )
         assert_no_key_shaped(events, where="ledger-events.jsonl")
         (out / "ledger-events.jsonl").write_text(events, encoding="utf-8")
+        if isinstance(launcher, ContainerLauncher):  # C1 evidence, "fail" for a stopped run
+            write_egress_summary(out, jobs, run_events)
         scored = collector.succeeded + collector.failed
         summary.setdefault("status", "completed")
         summary.update(

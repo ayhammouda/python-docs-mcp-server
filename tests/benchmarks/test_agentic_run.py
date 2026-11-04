@@ -39,6 +39,7 @@ from benchmarks.agentic.run import (
     run_agentic,
     tool_model_key,
 )
+from benchmarks.agentic.sandbox import ContainerLauncher, Sandbox, SandboxConfig
 from benchmarks.agentic.types import Buckets
 from benchmarks.model_matrix import load_model_matrix
 from benchmarks.report import generate_report
@@ -334,6 +335,41 @@ def test_a_mismatch_reaches_the_run_summary(tmp_path: Path) -> None:
     ]
     written = json.loads((tmp_path / "run" / "run-summary.json").read_text())
     assert written["model_limits_mismatch"] == summary["model_limits_mismatch"]
+
+
+def test_a_failed_probe_run_still_writes_fail(tmp_path: Path) -> None:
+    from tests.benchmarks.test_agentic_sandbox import FakeDocker, Probes, _verified
+
+    config = _config(
+        tmp_path,
+        models=("scripted-anthropic",),
+        systems=("no-docs", "python-docs"),
+        questions=("SYN-EX-001",),
+        repeats=1,
+    )
+    sandbox = Sandbox(
+        SandboxConfig(
+            image="sha256:" + "ab" * 32,
+            run_id="r1",
+            out_dir=config.out_dir,
+            index_path=tmp_path / "index.db",
+            keys_file=None,
+            repo_commit="c" * 40,
+        ),
+        docker=FakeDocker(),
+        verify=_verified,
+    )
+    probes = Probes(fail_on="scripted-anthropic--python-docs")
+    launcher = ContainerLauncher(sandbox, probe=probes, control=probes.control)
+    with pytest.raises(BenchmarkValidationError, match="isolation probe failed"):
+        run_agentic(config, launcher=launcher)
+    summary = json.loads((tmp_path / "run" / "egress" / "summary.json").read_text())
+    assert summary["isolation_probe"] == "fail"
+    assert set(summary["jobs"]) == {
+        "scripted-anthropic--no-docs",
+        "scripted-anthropic--python-docs",
+    }
+    assert json.loads((tmp_path / "run" / "run-summary.json").read_text())["status"] == "aborted"
 
 
 def test_run_summary_counts_retries_and_reruns(tmp_path: Path) -> None:
