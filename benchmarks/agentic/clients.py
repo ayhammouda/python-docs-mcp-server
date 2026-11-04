@@ -329,7 +329,7 @@ def gemini_sdk(
             retry_options=genai_types.HttpRetryOptions(attempts=1),
             httpx_async_client=httpx.AsyncClient(**_client_args(transport)),
             client_args={"verify": ca},
-            async_client_args={"verify": ca, "ssl": ca},
+            async_client_args={"ssl": ca},
         ),
     )
 
