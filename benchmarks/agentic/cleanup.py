@@ -35,6 +35,15 @@ def add_cleanup_cause(primary: BaseException, failure: BaseException) -> None:
         )
 
 
+def add_safe_cleanup_cause(primary: BaseException, failure: BaseException) -> None:
+    """Attach diagnostics without retaining raw exceptions, their notes or chains."""
+    try:
+        detail = redact_key_shaped_text("".join(traceback.format_exception(failure, limit=0)))
+    except Exception:  # even broken exception formatting must not replace recognition
+        detail = f"could not safely report {type(failure).__name__}"
+    add_cleanup_cause(primary, BenchmarkValidationError(f"cleanup failed: {detail.strip()}"))
+
+
 async def finish[T](operation: Awaitable[T], pending: BaseException | None = None) -> T:
     """Finish the operation before propagating cancellation.
 
@@ -59,12 +68,7 @@ async def finish[T](operation: Awaitable[T], pending: BaseException | None = Non
             raise leak
         if not isinstance(pending, (KeyLeakError, FrameTooLarge)):
             raise
-        # Copy notes and chains too, without retaining raw secret-bearing exceptions.
-        try:
-            detail = redact_key_shaped_text("".join(traceback.format_exception(error, limit=0)))
-        except Exception:  # even broken exception formatting must not replace the leak
-            detail = f"could not safely report {type(error).__name__}"
-        add_cleanup_cause(pending, BenchmarkValidationError(f"cleanup failed: {detail.strip()}"))
+        add_safe_cleanup_cause(pending, error)
     else:
         if cancelled is not None and cancelled is not pending:
             raise cancelled

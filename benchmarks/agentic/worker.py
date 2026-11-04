@@ -416,8 +416,11 @@ def _report(channel: ProtocolChannel, reason: str, code: int) -> int:
     try:
         channel.send({"type": "error", "reason": reason})
     except KeyLeakError:
-        channel.send({"type": "error", "reason": WORKER_LEAK_REASON})
-        return 3
+        code = 3
+        with suppress(OSError):
+            channel.send({"type": "error", "reason": WORKER_LEAK_REASON})
+    except OSError:
+        pass  # The owned worker's terminal status remains authoritative without a frame.
     return code
 
 

@@ -48,7 +48,7 @@ def _worker_code(*, leak: bool = True) -> str:
         "assert read()['type'] == 'grant'\n"
         "os.write(2, b'clean worker stderr\\n')\n"
         + (f"send({{'type': 'error', 'reason': {WORKER_LEAK_REASON!r}}})\n" if leak else "")
-        + "sys.exit(3)\n"
+        + f"sys.exit({3 if leak else 2})\n"
     )
 
 

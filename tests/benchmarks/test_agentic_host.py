@@ -752,7 +752,8 @@ async def test_raw_worker_stderr_is_private_before_publication(
     assert not visible_at_stop
     assert links.read_text() == "0"
     if read_only:
-        assert isinstance(error.value.__cause__, PermissionError)
+        assert isinstance(error.value.__cause__, BenchmarkValidationError)
+        assert "PermissionError" in str(error.value.__cause__)
         assert not log.exists()
     else:
         assert log.read_text() == "[redacted]"
@@ -1659,10 +1660,11 @@ async def test_a_failing_stop_worker_still_scrubs_the_log_and_settles_the_unit(
     launcher = RecordingLauncher(
         LostLauncher(leaky), stop_error=RuntimeError("docker rm -f failed")
     )
-    with pytest.raises(RuntimeError, match="docker rm -f failed") as error:
+    with pytest.raises(KeyLeakError, match="anthropic") as error:
         await _run_lost(host, tmp_path, launcher, _job(tmp_path, [ANSWER], job_id="lost"))
-    assert isinstance(error.value.__cause__, KeyLeakError)
-    assert SYNTHETIC_KEY not in str(error.value.__cause__)
+    assert isinstance(error.value.__cause__, BenchmarkValidationError)
+    assert "RuntimeError: docker rm -f failed" in str(error.value.__cause__)
+    assert SYNTHETIC_KEY not in "".join(traceback.format_exception(error.value))
     log = tmp_path / "logs" / "lost.stderr.log"
     assert not log.exists() or log.read_text() == "debug: [redacted]\n"
     assert host.ledger.spent("anthropic") == 2 * D("0.002024")

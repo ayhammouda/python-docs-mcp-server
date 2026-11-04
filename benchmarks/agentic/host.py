@@ -24,7 +24,7 @@ from typing import Any, BinaryIO, Protocol
 
 from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
 from benchmarks.agentic.bridge import SystemSpec
-from benchmarks.agentic.cleanup import add_cleanup_cause, finish
+from benchmarks.agentic.cleanup import add_cleanup_cause, add_safe_cleanup_cause, finish
 from benchmarks.agentic.ledger import LedgerService
 from benchmarks.agentic.loop import Caps
 from benchmarks.agentic.protocol import (
@@ -34,6 +34,7 @@ from benchmarks.agentic.protocol import (
     FrameTooLarge,
     KeyLeakError,
     encode_frame,
+    find_key_leak,
     read_frame,
     redact_key_shaped,
     redact_key_shaped_text,
@@ -189,6 +190,7 @@ async def _teardown(
     in_flight: str | None,
     worker_log: BinaryIO,
     stop_worker: Callable[[], Awaitable[None]] | None = None,
+    on_leak: Callable[[KeyLeakError], None] | None = None,
 ) -> None:
     """Kill the worker, scrub its log and book any open unit before teardown returns."""
 
@@ -203,6 +205,8 @@ async def _teardown(
         except BaseException as exc:  # noqa: BLE001 - propagate after all cleanup steps
             if isinstance(exc, KeyLeakError):
                 ledger.stop_grants()
+                if on_leak is not None:
+                    on_leak(exc)
             errors.append(exc)
 
     with attempt():
@@ -220,15 +224,20 @@ async def _teardown(
         if pattern:
             ledger.stop_grants()
         detected = f"a key-shaped string ({pattern} pattern) was found in {log_path}"
+        leak = KeyLeakError(detected) if pattern else None
+        if leak is not None and on_leak is not None:
+            on_leak(leak)
         try:
             _publish_worker_log(redacted, log_path)
         except Exception:
-            if pattern:
+            if leak is not None:
                 # Keep the leak primary and report the storage error after settlement.
-                errors.append(KeyLeakError(f"{detected}; scrubbed log publication failed"))
+                leak.args = (f"{detected}; scrubbed log publication failed",)
+                errors.append(leak)
             raise
-        if pattern:
-            raise KeyLeakError(f"{detected}; redacted there")
+        if leak is not None:
+            leak.args = (f"{detected}; redacted there",)
+            raise leak
     with attempt():
         worker_log.close()
     if in_flight is not None:
@@ -241,14 +250,20 @@ async def _teardown(
             detail = f"{location}: {type(exc).__name__}: {redact_key_shaped_text(str(exc))}"
             if KEY_SHAPED.search("".join(traceback.format_exception(exc, limit=0))):
                 # An outer exception may be clean while its notes or chained daemon error leak.
-                errors[i] = KeyLeakError(detail + " (key shape redacted)")
+                leak = KeyLeakError(detail + " (key shape redacted)")
+                errors[i] = leak
                 ledger.stop_grants()
+                if on_leak is not None:
+                    on_leak(leak)
             else:
                 exc.add_note(location)
             _diagnostic(detail)
         except Exception:  # noqa: BLE001 - an unscannable failure must not enter the traceback
-            errors[i] = KeyLeakError(f"{location}: could not safely report {type(exc).__name__}")
+            leak = KeyLeakError(f"{location}: could not safely report {type(exc).__name__}")
+            errors[i] = leak
             ledger.stop_grants()
+            if on_leak is not None:
+                on_leak(leak)
     if errors:
         for primary, secondary in zip(errors, errors[1:]):
             add_cleanup_cause(primary, secondary)
@@ -289,6 +304,7 @@ async def _supervise(
     cwd: Path,
     max_frame_bytes: int,
     aborted: asyncio.Event,
+    on_failure: Callable[[KeyLeakError | FrameTooLarge], None],
 ) -> None:
     argv, env = launcher.command(job)
     log_path = log_dir / f"{job.job_id}.stderr.log"
@@ -316,6 +332,16 @@ async def _supervise(
             process_group=anchor.pid,  # the anchor's group, which teardown kills whole
         )
         assert proc.stdin is not None and proc.stdout is not None
+        silence_s = job.caps.trajectory_s + job.caps.model_call_timeout_s
+
+        async def check_terminal_status() -> None:
+            # EOF can precede process exit (including the redactor's final drain). Only
+            # inspect this owned child, before teardown can replace its status with SIGKILL.
+            with suppress(TimeoutError):
+                status = await asyncio.wait_for(proc.wait(), min(silence_s, 5))
+                if status == 3:
+                    raise KeyLeakError(f"worker {job.job_id}: {WORKER_LEAK_REASON} (exit 3)")
+
         try:
             # The private key frame first, then the job. The frame is never logged or kept.
             if (bootstrap := launcher.bootstrap_frame(job)) is not None:
@@ -334,7 +360,6 @@ async def _supervise(
             await proc.stdin.drain()
             # Between two frames a worker runs one model call or a trajectory's other tool
             # calls, plus a backoff of at most 120 s: silent for longer, it is lost.
-            silence_s = job.caps.trajectory_s + job.caps.model_call_timeout_s
             while True:
                 # Decode in this task so a credential failure latches before another task runs.
                 async with asyncio.timeout(silence_s):
@@ -342,6 +367,7 @@ async def _supervise(
                         proc.stdout, limit=max_frame_bytes, where="worker frame"
                     )
                 if message is None:
+                    await check_terminal_status()
                     break
                 kind = message.get("type")
                 reply: dict[str, Any] | None = None
@@ -378,17 +404,17 @@ async def _supervise(
                     reply = {"type": "ack"}
                 elif kind == "error":
                     reason = str(message.get("reason"))
-                    if reason in (
-                        WORKER_LEAK_REASON, "own key found in output"
-                    ) or reason.startswith("FrameTooLarge:"):
-                        ledger.stop_grants()
-                        aborted.set()
+                    recognized: KeyLeakError | FrameTooLarge | None = None
+                    if reason in (WORKER_LEAK_REASON, "own key found in output"):
+                        recognized = KeyLeakError(f"worker {job.job_id}: {reason}")
+                    elif reason.startswith("FrameTooLarge:"):
+                        recognized = FrameTooLarge(f"worker {job.job_id}: {reason}")
+                    if recognized is not None:
+                        on_failure(recognized)  # before waiting for exit or sibling cleanup
                     with suppress(TimeoutError):  # its drain writes the last lines to the log
                         await asyncio.wait_for(proc.wait(), 5)
-                    if reason in (WORKER_LEAK_REASON, "own key found in output"):
-                        raise KeyLeakError(f"worker {job.job_id}: {reason}")
-                    if reason.startswith("FrameTooLarge:"):
-                        raise FrameTooLarge(f"worker {job.job_id}: {reason}")
+                    if recognized is not None:
+                        raise recognized
                     # Any other failure costs only this job's cells, like a lost worker.
                     lost_reason = "worker_error"
                     await on_message(job, {"type": "worker_error", "reason": reason})
@@ -407,16 +433,24 @@ async def _supervise(
                 if reply is not None:
                     proc.stdin.write(encode_frame(reply, where="host reply"))
                     await proc.stdin.drain()
-        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+        except (BrokenPipeError, ConnectionResetError):
+            await check_terminal_status()
+        except TimeoutError:
             pass  # the worker died or stalled; handled as a lost worker below
-    except (KeyLeakError, FrameTooLarge):
-        ledger.stop_grants()
-        aborted.set()
+    except (KeyLeakError, FrameTooLarge) as recognized:
+        on_failure(recognized)
         raise
     finally:
         await finish(
             _teardown(
-                proc, anchor, log_path, ledger, in_flight, log, partial(launcher.stop_worker, job)
+                proc,
+                anchor,
+                log_path,
+                ledger,
+                in_flight,
+                log,
+                partial(launcher.stop_worker, job),
+                on_failure,
             ),
             sys.exception(),
         )
@@ -453,10 +487,22 @@ async def run_jobs(
             "the local launcher runs only scripted models; use --launcher container"
         )
     log_dir.mkdir(parents=True, exist_ok=True)
+    primary: KeyLeakError | FrameTooLarge | None = None
+    aborted = asyncio.Event()
+
+    def recognize(failure: KeyLeakError | FrameTooLarge) -> None:
+        nonlocal primary
+        ledger.stop_grants()
+        aborted.set()
+        if primary is None:
+            primary = failure
+        elif isinstance(primary, FrameTooLarge) and isinstance(failure, KeyLeakError):
+            add_safe_cleanup_cause(failure, primary)
+            primary = failure
+
     failed = True
     try:
         await launcher.prepare(jobs)  # raises before any worker starts
-        aborted = asyncio.Event()
         tasks = [
             asyncio.create_task(
                 _supervise(
@@ -468,17 +514,42 @@ async def run_jobs(
                     cwd=cwd,
                     max_frame_bytes=max_frame_bytes,
                     aborted=aborted,
+                    on_failure=recognize,
                 )
             )
             for job in jobs
         ]
+        failure: BaseException | None = None
         try:
             await asyncio.gather(*tasks)
         except BaseException as exc:
             for task in tasks:
                 task.cancel()  # each supervisor kills its worker on the way out
-            await finish(asyncio.gather(*tasks, return_exceptions=True), exc)
-            raise
+            drained = asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                await finish(drained, exc)
+            except BaseException as interrupted:
+                failure = interrupted
+            else:
+                failure = exc
+            if primary is not None:
+                # Preserve interrupts, then credential failures, then structural frame failures,
+                # even when the recognizing supervisor was cancelled during cleanup.
+                selected = failure if not isinstance(failure, Exception) else primary
+                seen = {id(selected)}
+                if find_key_leak(selected) is primary:
+                    seen.add(id(primary))
+                for error in (failure, primary, selected.__context__, *drained.result()):
+                    if isinstance(error, Exception) and id(error) not in seen:
+                        seen.add(id(error))
+                        add_safe_cleanup_cause(selected, error)
+                # A cancellation raised by finish while handling a sibling exception
+                # acquires that raw exception as implicit context. Keep only its safe copy.
+                selected.__context__ = None
+                failure = selected
+        if failure is not None:
+            # Outside the handler: don't retain the losing raw exception as __context__.
+            raise failure
         failed = False
     finally:
         reported: BenchmarkValidationError | None = None
