@@ -73,7 +73,31 @@ It uses scripted models only, with no key and no provider call, on a clean check
 
 ### Docker Desktop results
 
-Pending: the implementer fills this in from the first run of the keyless docker test.
+First run: 2026-11-04, Docker Desktop on Apple silicon (context `desktop-linux`, Engine
+29.9.2), worker image built from `05e2ff8`, Squid image by its pinned digest. Result:
+7 passed, and no container or network with the run label remained.
+
+| Behaviour (#200 record) | Result |
+|---|---|
+| Internal-network reach to the Mac | None. From a job's internal network, `host.docker.internal` and `gateway.docker.internal` do not resolve (`gaierror`), and the Mac's LAN address (192.168.1.28) gives `OSError`, on the canary port and on 11434. The canary never saw the probe's token. |
+| The control probe | A container on the outside network reached the host canary through `host.docker.internal`, so the silent canary above is meaningful. |
+| DNS on internal networks | `pypi.org` does not resolve (`gaierror`). The strict DNS check passed: **no #200 ruling 5 fallback was needed.** |
+| `--ipv6=false` on Desktop | Honoured: `EnableIPv6` is false. The isolated gateway mode assigns no IPAM gateway address, so the probe has no gateway to try. |
+| `host.docker.internal` against a 127.0.0.1 bind | Reachable through the proxy: a service bound to the Mac's 127.0.0.1 only answered 200 to a GET through an egress allowing it. Ollama's default bind should work for the air-gapped arm; ruling 7's `OLLAMA_HOST=0.0.0.0` fallback stays for the case where the probe's Ollama check fails. |
+| Large `docker run -i` output | A trajectory frame over 150,000 bytes round-tripped intact through the attached stream. |
+| Attach with `--log-driver none` | Works: every worker frame and reply passed over the attached stdin and stdout. |
+| Squid writing to the bind mount | Works: `access.log` and `cache.log` appear in `egress/<job>/` (mode 640), one line per connection attempt. |
+| Squid's exit after `docker stop` | Exit code 0, `Running` false, "Exiting normally", within `shutdown_lifetime`. |
+| IP literal whose PTR names an allowed host | Denied: a `CONNECT 127.0.0.1:443` through an egress allowing `localhost:443` got 403 and logged `TCP_DENIED_ABORTED` (the probe closes after reading the status line). |
+| Proxies in the docker CLI config | A `config.json` with `proxies` makes the CLI inject `HTTPS_PROXY` into the probe container, and the isolation probe refuses the run, naming it. |
+
+Two observations for the owner:
+
+- The image tagged `6.6-24.04_edge` at the pinned digest runs **Squid 6.14**
+  ("Starting Squid Cache version 6.14"), not 6.6. Every directive used here works, and the
+  exit status after SIGTERM is 0.
+- Squid's ICMP `pinger` helper cannot start without `NET_RAW` (`cache.log`: "Unable to
+  open any ICMP sockets"). The proxy runs normally without it.
 
 ## 6. Smoke run (design §14)
 
