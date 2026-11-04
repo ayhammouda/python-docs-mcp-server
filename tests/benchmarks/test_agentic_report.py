@@ -594,7 +594,8 @@ def test_c3_disclosure_shows_a_denied_pypi_attempt_while_c3_passes(
     c3 = claims[claims.index("### C3") : claims.index("### S1")]
     assert "gemma4-12b" in c3 and "pass" in c3
     rendered = re.sub(r"\\([!-/:-@\[-`{-~])", r"\1", c3)  # GFM backslash escapes
-    assert "pypi.org:443" in rendered and "refused" in c3 and "nothing left the sandbox" in c3
+    denied = [line for line in rendered.splitlines() if line.startswith("- gemma4-12b")]
+    assert denied == ["- gemma4-12b--python-docs: pypi.org:443 (refused; nothing left the sandbox)"]
     c1 = claims[: claims.index("### C2")]
     assert "| python-docs | no |" in c1 and "lookup_package_docs" in c1
 

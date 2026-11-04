@@ -348,8 +348,10 @@ def _claims(run: _Run) -> list[str]:
         "",
         "### S2: repeat lookups",
         "",
-        "Reported as speed, never as tokens: see the cold and warm python-docs tool calls "
-        "under Latency.",
+        (
+            "Reported as speed, never as tokens: see the cold and warm python-docs tool "
+            "calls under Latency."
+        ),
     ]
     return lines
 
@@ -402,8 +404,10 @@ def _disclosure(run: _Run) -> list[str]:
         "",
         f"{REQUIRED_WORDING}.",
         "",
-        "Only answering ran in the air-gapped arm; grading ran on the providers' hosted batch "
-        "APIs.",
+        (
+            "Only answering ran in the air-gapped arm; grading ran on the providers' "
+            "hosted batch APIs."
+        ),
         "",
         f"The run was graded by the composition {_esc(summary.get('composition'))}.",
         "",
@@ -771,9 +775,11 @@ def _cost(run: _Run) -> list[str]:
     return [
         "## Cost per correct answer",
         "",
-        "Per model, from provider-reported usage and the run's price snapshot. Reasoning "
-        "tokens are shown for information (already inside output); cached tokens are "
-        "disclosed. Never compared across models.",
+        (
+            "Per model, from provider-reported usage and the run's price snapshot. "
+            "Reasoning tokens are shown for information (already inside output); cached "
+            "tokens are disclosed. Never compared across models."
+        ),
         "",
         *_table(
             [

@@ -51,10 +51,14 @@ JSON_SENTENCES = [
     "Serialize obj to a JSON formatted str using this conversion table.",
     "If skipkeys is true, then dict keys that are not of a basic type will be skipped.",
     "Short one.",
-    "If ensure_ascii is true, the output is guaranteed to have all incoming non-ASCII "
-    "characters escaped.",
-    "If check_circular is false, then the circular reference check for container types "
-    "will be skipped.",
+    (
+        "If ensure_ascii is true, the output is guaranteed to have all incoming "
+        "non-ASCII characters escaped."
+    ),
+    (
+        "If check_circular is false, then the circular reference check for container "
+        "types will be skipped."
+    ),
     "If allow_nan is false, then it will be a ValueError to serialize out of range float values.",
 ]
 
