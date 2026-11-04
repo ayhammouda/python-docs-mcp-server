@@ -158,7 +158,12 @@ def generate_report(
     _require_file(methodology_path, "methodology file")
 
     report_path = out_path or (run_dir / "REPORT.md")
-    content = _render_report(bundle, matrix, methodology_path, report_path)
+    if bundle.run_summary.get("mode") == "agentic":
+        from benchmarks.agentic_report import render_agentic_report  # it imports this module
+
+        content = render_agentic_report(bundle, matrix, methodology_path, report_path)
+    else:
+        content = _render_report(bundle, matrix, methodology_path, report_path)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(content, encoding="utf-8")
     return report_path
@@ -181,7 +186,12 @@ def generate_readme_summary(
     _require_file(methodology_path, "methodology file")
 
     summary_path = out_path or (run_dir / "README-SUMMARY.md")
-    content = _render_readme_summary(bundle, methodology_path, summary_path)
+    if bundle.run_summary.get("mode") == "agentic":
+        from benchmarks.agentic_report import render_agentic_readme_summary
+
+        content = render_agentic_readme_summary(bundle, methodology_path, summary_path)
+    else:
+        content = _render_readme_summary(bundle, methodology_path, summary_path)
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(content, encoding="utf-8")
     return summary_path
