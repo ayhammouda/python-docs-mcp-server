@@ -41,9 +41,9 @@ them.
   reads.
 
 **Tech Stack:**
-- Python ≥ 3.12 on the host; the worker image runs CPython 3.14.8.
+- Python ≥ 3.12 on the host; the worker image runs CPython 3.14.10.
 - Docker Desktop for Mac ≥ 4.96.1 (Engine ≥ 28.0, for the isolated
-  gateway mode); Squid 6.6 (`ubuntu/squid`); uv 0.13.4; `mcp-server-fetch`
+  gateway mode); Squid 6.14 (`ubuntu/squid`); uv 0.13.4; `mcp-server-fetch`
   2026.10.19 in its own hashed venv inside the image.
 - `openai` 3.32.0 (already in the dev group) for Ollama's
   OpenAI-compatible endpoint. No new Python dependency.
@@ -104,11 +104,11 @@ Executors read the design §7, the sandbox note and
 - **Authorization gate** (round-2 ruling D9): `live.authorize_live` is the one host-side check for every live entry point. It runs before any key is read and before any keyed container starts. It refuses when `CI` is set to a truthy value, and it requires an interactive `yes`.
 - **One free request outside the ledger:** at startup, a live Anthropic or Gemini worker makes one models-retrieve GET (free, not billable) and reports `model_limits` (round-2 ruling D10). Every billable call keeps exactly one request per reserved unit.
 - **Pins** (sandbox note §A), unchanged without an owner ruling:
-  - `python:3.14.8-slim-trixie@sha256:fbecd461fc72d21b2143c6eaba25143738079154a6d0ea3da3aec724f50eed4a`
+  - `python:3.14.10-slim-trixie@sha256:930e1abba7c4e8f96ed93e8012c35d174d7732752731bbd5e8e757d7ec6f3966`
   - `ghcr.io/astral-sh/uv:0.13.4@sha256:9f130421e930bfbdc563c00740466603f8723158e90297d07957c2294640262b`
   - `ubuntu/squid:6.6-24.04_edge@sha256:8a3baed477e2c282ab8aa5edad442f69873246964f225c5c2ae8364b6610963c`
   - `mcp-server-fetch==2026.10.19`, every transitive package hash-pinned and published on or before 2026-10-21.
-  - The two young pins (the Python image and `mcp-server-fetch`) are re-checked at implementation time (#200 ruling). Before Task 7, the implementer also checks https://www.python.org/downloads/ for a CPython 3.14.9+ security fix. If one exists and is at least 14 days old, they raise it in the PR body instead of switching silently.
+  - The owner selected Python 3.14.10 under the security exception for CVE-2026-115557 and CVE-2026-114583. The sandbox research note records the release advisory and image digest. The fetch pin meets the 14-day rule.
 - **Platform:** Docker Desktop for Mac only (context `desktop-linux`), Engine ≥ 28.0. Podman and Colima are out of scope for round 1.
 - **Local daemon only** (round-3 item 4): `verify_image` refuses unless the active context's endpoint and any `DOCKER_HOST` are `unix://`. A bootstrap frame therefore never crosses a network to a remote daemon.
 - **Dependencies:** no change to `pyproject.toml` or `uv.lock`. `mcp-server-fetch` lives only in the image's `/opt/fetch` venv, from a hashed requirements file.
@@ -705,7 +705,7 @@ The Dockerfile is fixed copy. There is deliberately no `# syntax=` line,
 because that would pull an unpinned frontend image:
 
 ```dockerfile
-FROM python:3.14.8-slim-trixie@sha256:fbecd461fc72d21b2143c6eaba25143738079154a6d0ea3da3aec724f50eed4a
+FROM python:3.14.10-slim-trixie@sha256:930e1abba7c4e8f96ed93e8012c35d174d7732752731bbd5e8e757d7ec6f3966
 COPY --from=ghcr.io/astral-sh/uv:0.13.4@sha256:9f130421e930bfbdc563c00740466603f8723158e90297d07957c2294640262b /uv /uvx /bin/
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=0 PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
@@ -934,7 +934,7 @@ git commit -m "feat(benchmarks): Squid config with lookup-free allowlists and a 
     - `async close_egress(egress: Egress) -> list[str]`:
       1. `docker inspect --format '{{json .State}}' <proxy>`, before our stop (round-3 item 1). The proxy ended abnormally when it is no longer `Running` (it ended on its own, for example exit 137 from a kill or an OOM) or `OOMKilled` is true.
       2. `docker stop -t 5 <proxy>`. Squid closes its log within `shutdown_lifetime`, and the access log is already on the host.
-      3. Inspect `State` again. It must show `Running` false (amendment 7), `ExitCode == 0` and `OOMKilled` false (round-4 item 1). A healthy Squid exits 0 within `shutdown_lifetime 1 seconds`, well inside `-t 5` (sandbox note §C, from the Squid 6.6 source). Any non-zero exit after our stop is abnormal, including 137 from `docker stop`'s forced kill of a hung Squid, because the log may then be partial even when it is well formed.
+      3. Inspect `State` again. It must show `Running` false (amendment 7), `ExitCode == 0` and `OOMKilled` false (round-4 item 1). A healthy Squid exits 0 within `shutdown_lifetime 1 seconds`, well inside `-t 5` (sandbox note §C, from the Squid 6.14 source). Any non-zero exit after our stop is abnormal, including 137 from `docker stop`'s forced kill of a hung Squid, because the log may then be partial even when it is well formed.
       4. Check the key shape of `access.log` and `cache.log` with `redact_key_shaped`, rewriting a file in place when a pattern is found.
       5. `docker rm -f <proxy>`, then `docker network rm <internal>`.
       6. Write `egress/<job_id>/collected.json` as `{"ok": bool, "problems": [...], "state_before_stop": {...}, "state_after_stop": {...}}`. `ok` is false after any failed step or an abnormal end.
@@ -1682,7 +1682,7 @@ From #200 (round 1), as amended by the round-2 message on #200:
     - a network that keeps IPv6 is refused, with no fallback (Task 10);
     - sandbox note §§B.2 and B.3 are corrected.
 15. **Round 4 (reviews of `32bbb17`):**
-    - after our stop the proxy must show `ExitCode == 0`, so a forced kill of a hung Squid (137) fails the collection; the Squid 6.6 source shows a graceful SIGTERM exits 0 (Task 10, sandbox note §C);
+    - after our stop the proxy must show `ExitCode == 0`, so a forced kill of a hung Squid (137) fails the collection; the Squid 6.14 source shows a graceful SIGTERM exits 0 (Task 10, sandbox note §C);
     - `Sandbox` takes an injectable `verify`, with the real `verify_image` as its default, and a test proves the real check refuses a dirty tree (Task 10);
     - the IPv6 refusal removes its network first (Task 10);
     - `squid.conf` is set to mode 0o644 (Task 10);

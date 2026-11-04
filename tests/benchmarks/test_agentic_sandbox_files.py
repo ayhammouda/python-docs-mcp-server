@@ -24,8 +24,8 @@ def test_fetch_requirements_pin_the_researched_release_with_hashes() -> None:
 
 
 PYTHON_IMAGE = (
-    "python:3.14.8-slim-trixie"
-    "@sha256:fbecd461fc72d21b2143c6eaba25143738079154a6d0ea3da3aec724f50eed4a"
+    "python:3.14.10-slim-trixie"
+    "@sha256:930e1abba7c4e8f96ed93e8012c35d174d7732752731bbd5e8e757d7ec6f3966"
 )
 UV_IMAGE = (
     "ghcr.io/astral-sh/uv:0.13.4"
