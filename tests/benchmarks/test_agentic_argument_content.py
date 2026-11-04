@@ -154,7 +154,6 @@ async def test_arguments_stop_before_dispatch_or_second_grant_with_first_usage_s
         ("null", False),
         ('{"query":"ordinary",', False),
         ('{"query":"ord\\u0069nary', False),
-        ('{"query":"quote: \\" slash: \\\\ emoji: \\ud83d\\ude00"}', True),
     ],
 )
 async def test_safe_arguments_keep_native_replay_dispatch_and_billing(provider, arguments, valid):
@@ -167,7 +166,7 @@ async def test_safe_arguments_keep_native_replay_dispatch_and_billing(provider, 
         assert record["status"] == "succeeded"
         assert len(recorder.seen) == len(ledger.reserves) == len(ledger.settles) == 2
         if valid:
-            dispatch.assert_awaited_once_with("search_docs", json.loads(arguments))
+            dispatch.assert_awaited_once_with("search_docs", {"query": "json"})
         else:
             dispatch.assert_not_awaited()
             assert record["tool_calls"][0]["is_error"] is True
@@ -262,6 +261,39 @@ async def test_argument_inspection_budget_fails_closed_after_settlement(monkeypa
             await _run(client, None, ledger)
         assert len(recorder.seen) == len(ledger.reserves) == len(ledger.settles) == 1
         assert ledger.settles[0]["outcome"] == "ok"
+    finally:
+        await _close(client)
+
+
+@pytest.mark.parametrize("provider", ["openai", "ollama"])
+async def test_safe_escaped_quotes_and_unicode_keep_dispatch_and_native_replay(provider):
+    query = 'quote: " slash: \\ emoji: 😀'
+    arguments = json.dumps({"query": query})
+    client, recorder = _argument_client(provider, arguments)
+    bridge, dispatch = _bridge(CallToolResult(content=[TextContent(type="text", text="safe")]))
+    ledger = RecordingLedger()
+    try:
+        record = await _run(client, bridge, ledger)
+        assert record["status"] == "succeeded"
+        dispatch.assert_awaited_once_with("search_docs", {"query": query})
+        assert len(recorder.seen) == len(ledger.settles) == 2
+    finally:
+        await _close(client)
+
+
+@pytest.mark.parametrize("provider", ["openai", "ollama"])
+async def test_decoded_scalar_keeps_rendered_key_boundary_check(provider):
+    marker = "AIza" + "g" * 35
+    value = "\0xxx" + marker
+    assert KEY_SHAPED.search(value) is None
+    arguments = json.dumps(value).replace("A", r"\u0041", 1)
+    assert KEY_SHAPED.search(arguments) is None
+    client, recorder = _argument_client(provider, arguments)
+    ledger = RecordingLedger()
+    try:
+        with pytest.raises(KeyLeakError):
+            await _run(client, None, ledger)
+        assert len(recorder.seen) == len(ledger.reserves) == len(ledger.settles) == 1
     finally:
         await _close(client)
 

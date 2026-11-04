@@ -47,7 +47,14 @@ fields. This includes malformed replies, error details, tool listings and handsh
 data. A detected credential ends the worker with exit 3 and stops new grants across
 the run; already granted calls still settle and clean diagnostics are retained.
 Task-group and chained exceptions cannot turn that detection into a scored MCP crash.
-Clean replies keep the SDK's normal validation outcomes. Each stdout line is limited
+Clean replies keep the SDK's normal validation outcomes, including malformed
+structure or trailing text whose strings can be inspected. Quoted fields are
+checked independently of JSON structure, including duplicate fields and unfinished
+strings. Broken escapes with an uninspectable suffix fail closed using the same
+credential-failure path; no such content is replayed or published. Tool arguments
+use this same bounded scan after returned provider usage has settled; integer and
+nesting-limit errors are retained as invalid raw arguments, without losing usage.
+Each stdout line is limited
 to 64 MiB, with no queued reply buffer, and subprocess shutdown remains bounded.
 
 ## 3. Dry run

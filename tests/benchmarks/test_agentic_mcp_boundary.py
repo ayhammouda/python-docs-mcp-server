@@ -280,7 +280,9 @@ async def test_stdio_line_limit_bounds_buffer_and_releases_process(monkeypatch):
     assert caught.value.subgroup(FrameTooLarge) is not None
 
 
-@pytest.mark.parametrize("suffix", [" trailing", ' "note":"ordinary', '\n'])
+@pytest.mark.parametrize(
+    "suffix", [" trailing", ' "note":"ordinary', ' "note":"ordinary\n', '\n']
+)
 def test_clean_malformed_reply_keeps_sdk_disposition(suffix):
     from mcp.client.stdio import _parse_line
 

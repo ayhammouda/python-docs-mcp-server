@@ -277,8 +277,14 @@ came from. Container settings:
   after settling the returned provider usage. Native function arguments are
   checked both raw and as decoded JSON strings, including scalars, invalid
   arguments and values hidden by duplicate object keys; replay keeps the raw
-  argument string. A content failure does not replace known usage with a lost
-  worker charge.
+  argument string. One frame-bounded, non-overlapping scan checks quoted strings
+  independently of document validity, including trailing text and the decodable
+  prefix of an unfinished string. Each token is decoded with the standard library;
+  incomplete or invalid escapes fail closed after checking their completed prefix.
+  The scan does not parse document structure or retry from interior quotes.
+  Integer conversion and nesting-limit failures during adapter normalization keep
+  the raw argument as invalid input so the loop can settle returned usage first.
+  A content failure does not replace known usage with a lost worker charge.
   Both the full MCP envelope and the truncated result are checked. Gemini
   content scanning includes the SDK's ASCII JSON escaping before reservation.
   Provider settings also pass the worker's check before free model-limit discovery.
