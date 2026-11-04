@@ -66,8 +66,9 @@ class ReplyGuard:
             raise
 
     def raise_if_failed(self) -> None:
-        if self.failure is not None:
-            raise self.failure
+        failure = self.failure
+        if isinstance(failure, KeyLeakError):
+            raise failure
 
 
 @asynccontextmanager
