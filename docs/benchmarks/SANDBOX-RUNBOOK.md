@@ -218,5 +218,12 @@ docker ps -a --filter label=org.python-docs-mcp.benchmark-run=<run_id>
 docker network ls --filter label=org.python-docs-mcp.benchmark-run=<run_id>
 ```
 
-Nothing should be listed. Every container and network the sandbox creates carries that
-label; remove only what it lists, by name.
+The first managed SIGTERM or SIGHUP stops the run. Docker management commands have
+their own process group and do not read terminal input, so a later foreground signal
+does not interrupt rollback. Worker cleanup failures are reported on stderr with the
+job ID.
+
+After cleanup both lists should be empty. A run ID can be reused. If a resource remains,
+match its full container or network ID, or the exact invocation-specific
+`org.python-docs-mcp.benchmark-resource` label from the cleanup diagnostic, to the
+stopped invocation before removing it by ID.
