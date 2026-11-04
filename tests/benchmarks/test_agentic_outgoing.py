@@ -414,7 +414,7 @@ def test_cli_worker_withholds_transcript_and_never_reserves_again(
         "        return await super().call(conv)\n"
         "clients.make_client = lambda family, **kw: RecordingClient(\n"
         "    family.provider, family.model_id, [TOOL, ANSWER])\n"
-        "async def open_bridge(stack, system):\n"
+        "async def open_bridge(stack, system, **kwargs):\n"
         f"    return _bridge(_result({case!r}))[0]\n"
         "worker._open = open_bridge\n"
         "raise SystemExit(worker.main_worker())\n"

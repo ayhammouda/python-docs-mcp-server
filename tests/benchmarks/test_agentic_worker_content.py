@@ -113,7 +113,7 @@ def test_bootstrap_literal_stops_worker_before_outgoing_side_effects(
             note('limits')
             return None
         clients.fetch_model_limits = fetch_limits
-        async def open_bridge(stack, system):
+        async def open_bridge(stack, system, **kwargs):
             text, structured = 'safe', None
             if source in ('text', 'error-result', 'hidden-text'):
                 text = value
@@ -230,7 +230,7 @@ async def test_bootstrapped_job_cannot_pass_worker_secret_to_mcp_child(monkeypat
     launch = Mock(side_effect=RuntimeError("child launch intercepted"))
     monkeypatch.setattr(clients, "make_client", create)
     monkeypatch.setattr(clients, "fetch_model_limits", limits)
-    monkeypatch.setattr(bridge, "stdio_client", launch)
+    monkeypatch.setattr(bridge, "checked_stdio_client", launch)
 
     with TemporaryFile() as output:
         channel = worker.ProtocolChannel(output.fileno(), (token.encode(),), -1, None, ())

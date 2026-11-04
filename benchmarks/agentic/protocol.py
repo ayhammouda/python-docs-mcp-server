@@ -42,6 +42,25 @@ class KeyLeakError(BenchmarkValidationError):
     """A provider key, or a string shaped like one, was about to leave a process."""
 
 
+def find_key_leak(error: BaseException) -> KeyLeakError | None:
+    """Find a recognized leak through task groups and MCP/cleanup exception chains."""
+    pending = [error]
+    visited: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in visited:
+            continue
+        visited.add(id(current))
+        if isinstance(current, KeyLeakError):
+            return current
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+        for linked in (current.__cause__, current.__context__):
+            if linked is not None:
+                pending.append(linked)
+    return None
+
+
 class FrameTooLarge(BenchmarkValidationError):
     """A frame over the size limit: a harness error, never a model failure."""
 

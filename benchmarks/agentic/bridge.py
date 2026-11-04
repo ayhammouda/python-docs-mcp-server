@@ -15,11 +15,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from mcp import ClientSession, MCPError, StdioServerParameters, stdio_client
+from mcp import ClientSession, MCPError, StdioServerParameters
 from mcp.types import CONNECTION_CLOSED, CallToolResult, PaginatedRequestParams, TextContent
 
 from benchmarks.adapters.guard import EGRESS_URL_ENV, PROVIDER_API_KEY_ENV
-from benchmarks.agentic.protocol import assert_no_key_shaped, scanned_json_bytes
+from benchmarks.agentic.mcp_stdio import ReplyGuard, checked_stdio_client
+from benchmarks.agentic.protocol import assert_no_key_shaped, find_key_leak, scanned_json_bytes
 from benchmarks.agentic.types import ToolSpec
 from benchmarks.runner import (
     _SAFE_ID,
@@ -157,6 +158,7 @@ class Bridge:
     """One live MCP session; implements :class:`ToolBridge`."""
 
     check_content: Callable[[bytes], None] | None = None
+    _reply_guard: ReplyGuard | None = None
 
     def __init__(
         self,
@@ -175,6 +177,10 @@ class Bridge:
         try:
             result = await self._session.call_tool(name, arguments)
         except MCPError as exc:
+            if self._reply_guard is not None:
+                self._reply_guard.raise_if_failed()
+            if leak := find_key_leak(exc):
+                raise leak
             scanned_json_bytes(
                 exc.error.model_dump(mode="json"),
                 where="MCP tool error",
@@ -184,6 +190,10 @@ class Bridge:
                 raise BridgeCrash(f"MCP connection closed during {name}: {exc}") from exc
             return ToolOutcome(text=str(exc.message), is_error=True)
         except Exception as exc:  # noqa: BLE001 - any other failure means the session is gone
+            if self._reply_guard is not None:
+                self._reply_guard.raise_if_failed()
+            if leak := find_key_leak(exc):
+                raise leak
             scanned_json_bytes(
                 str(exc), where="MCP tool exception", check_content=self.check_content
             )
@@ -212,7 +222,9 @@ def server_env(system: SystemSpec, environ: Mapping[str, str]) -> dict[str, str]
 
 
 @asynccontextmanager
-async def open_bridge(system: SystemSpec) -> AsyncIterator[Bridge]:
+async def open_bridge(
+    system: SystemSpec, *, check_content: Callable[[bytes], None] | None = None
+) -> AsyncIterator[Bridge]:
     if system.transport != "stdio":
         raise BenchmarkValidationError(f"system {system.id!r} has no MCP server to open")
     command = [sys.executable if part == "{python}" else part for part in system.command]
@@ -220,7 +232,8 @@ async def open_bridge(system: SystemSpec) -> AsyncIterator[Bridge]:
         command=command[0], args=command[1:], env=server_env(system, os.environ)
     )
     # errlog read now, not at import: the worker points sys.stderr at its redactor.
-    async with stdio_client(params, errlog=sys.stderr) as (read, write):
+    guard = ReplyGuard(check_content)
+    async with checked_stdio_client(params, errlog=sys.stderr, guard=guard) as (read, write):
         async with ClientSession(read, write) as session:
             initialized = await session.initialize()
             tools_raw: list[dict[str, Any]] = []
@@ -238,4 +251,7 @@ async def open_bridge(system: SystemSpec) -> AsyncIterator[Bridge]:
             server_info = initialized.server_info.model_dump(
                 mode="json", by_alias=True, exclude_unset=True
             )
-            yield Bridge(session, server_info, tools_raw)
+            bridge = Bridge(session, server_info, tools_raw)
+            bridge._reply_guard = guard
+            bridge.check_content = check_content
+            yield bridge

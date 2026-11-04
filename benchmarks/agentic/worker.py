@@ -18,7 +18,7 @@ import shutil
 import sys
 import threading
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import AsyncExitStack, suppress
 from dataclasses import asdict
 from importlib.metadata import version
@@ -31,6 +31,7 @@ from benchmarks.agentic.protocol import (
     WORKER_LEAK_REASON,
     KeyLeakError,
     encode_frame,
+    find_key_leak,
     read_frame,
     read_frame_fd,
     scanned_json_bytes,
@@ -267,16 +268,23 @@ def _client_versions() -> dict[str, str]:
     return {name: version(name) for name in ("anthropic", "openai", "google-genai", "mcp")}
 
 
-async def _open(stack: AsyncExitStack, system: SystemSpec) -> Bridge | None:
+async def _open(
+    stack: AsyncExitStack,
+    system: SystemSpec,
+    *,
+    check_content: Callable[[bytes], None] | None = None,
+) -> Bridge | None:
     if system.transport == "none":
         return None
-    return await stack.enter_async_context(open_bridge(system))
+    return await stack.enter_async_context(open_bridge(system, check_content=check_content))
 
 
 async def _close(stack: AsyncExitStack) -> None:
     try:
         await stack.aclose()
     except Exception as exc:  # noqa: BLE001 - a dead server may fail its own shutdown
+        if leak := find_key_leak(exc):
+            raise leak
         print(f"closing the MCP bridge failed: {exc!r}", file=sys.stderr)
 
 
@@ -315,7 +323,7 @@ async def _run_job(
     seen: set[str] = set()
     stack = AsyncExitStack()
     try:
-        bridge = await _open(stack, system)
+        bridge = await _open(stack, system, check_content=channel.check_content)
         if bridge is not None:
             bridge.check_content = channel.check_content
         channel.send(_system_info(system, family.provider, bridge, limits))
@@ -372,7 +380,7 @@ async def _run_job(
             if bridge is not None and (record["error"] or {}).get("category") in _REOPEN_AFTER:
                 await _close(stack)
                 stack = AsyncExitStack()
-                bridge = await _open(stack, system)
+                bridge = await _open(stack, system, check_content=channel.check_content)
                 if bridge is not None:
                     bridge.check_content = channel.check_content
     finally:
@@ -399,9 +407,11 @@ async def run_worker(
 ) -> int:
     try:
         return await _run_job(channel, reader, first, bootstrapped=bootstrapped)
-    except KeyLeakError:
-        return _report(channel, WORKER_LEAK_REASON, 3)
-    except Exception as exc:  # noqa: BLE001 - every failure is reported to the host
+    except BaseException as exc:  # task groups may combine a leak with cancellation
+        if find_key_leak(exc) is not None:
+            return _report(channel, WORKER_LEAK_REASON, 3)
+        if not isinstance(exc, Exception):
+            raise
         return _report(channel, f"{type(exc).__name__}: {exc}", 2)
 
 
