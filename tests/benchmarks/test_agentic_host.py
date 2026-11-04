@@ -599,28 +599,6 @@ async def test_every_worker_log_is_scrubbed_when_a_frame_leak_aborts_the_run(
         assert log.read_text() == "debug: [redacted]\n"
 
 
-# Holds A's pipes, so A's teardown waits on it; it leaves A's process group first, so the
-# group kill spares it. Marks when A is killed, which happens only in A's teardown, then exits
-# once the test releases it. Each wait is bounded and fails loudly.
-_GRANDCHILD = (
-    "import os, sys, time\n"
-    "from pathlib import Path\n"
-    "parent, entered, release = int(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])\n"
-    "os.setsid()\n"
-    "(entered.parent / 'escaped').touch()\n"
-    "deadline = time.monotonic() + 10\n"
-    "while os.getppid() == parent:\n"
-    "    if time.monotonic() > deadline:\n"
-    "        sys.exit('grandchild: A was never killed')\n"
-    "    time.sleep(0.01)\n"
-    "entered.touch()\n"
-    "while not release.exists():\n"
-    "    if time.monotonic() > deadline + 10:\n"
-    "        sys.exit('grandchild: never released')\n"
-    "    time.sleep(0.01)\n"
-)
-
-
 def _supervisor(job_id: str) -> asyncio.Task[Any] | None:
     """The running supervisor task of ``job_id``, found by its coroutine's frame."""
     for task in asyncio.all_tasks():
@@ -634,9 +612,13 @@ def _supervisor(job_id: str) -> asyncio.Task[Any] | None:
 async def test_a_teardown_cancelled_by_a_second_abort_still_scrubs_and_settles(
     host: Host, tmp_path: Path
 ) -> None:
-    # A holds a unit, then leaks a key; its teardown waits on a grandchild holding its pipes.
-    # Only then does B leak, and B's abort cancels A mid-teardown. If A's teardown ends before
-    # that, A is never cancelled and the bounded wait fails.
+    # A holds a unit, leaves its process group (as a misbehaving worker may), then leaks a key.
+    # The group kill then takes only A's sentinel, a child A left in the group, and A's
+    # teardown waits for A itself to exit. A sees its sentinel die, so its teardown has begun,
+    # and only then does B leak; B's abort cancels A mid-teardown. If A's teardown ended first,
+    # A would never be cancelled and the bounded wait would fail. Every step waits for a
+    # signal (a file, or a child's exit) within a bound: no step relies on timing, on how
+    # asyncio's Process.wait() treats pipes, or on the platform's child watcher.
     leaked = "sk-ant-api03-" + "z" * 90
     entered, release = tmp_path / "a-in-teardown", tmp_path / "release"
     code = (
@@ -652,24 +634,28 @@ async def test_a_teardown_cancelled_by_a_second_abort_still_scrubs_and_settles(
         "job = read()\n"
         f"sys.stderr.write('debug: {leaked}\\n')\n"
         "sys.stderr.flush()\n"
+        f"leak = {{'type': 'system_info', 'note': '{leaked}'}}\n"
+        "def until(done, failure):\n"
+        "    deadline = time.monotonic() + 10\n"
+        "    while not done():\n"
+        "        if time.monotonic() > deadline:\n"
+        "            sys.exit(failure)\n"
+        "        time.sleep(0.01)\n"
         "if job['job_id'] == 'a':\n"
         f"    send({_reserve_frame(1024)!r})\n"
         "    read()\n"
-        f"    signals = [str(os.getpid()), {str(entered)!r}, {str(release)!r}]\n"
-        f"    subprocess.Popen([sys.executable, '-c', {_GRANDCHILD!r}, *signals])\n"
-        "    deadline = time.monotonic() + 10\n"
-        f"    while not Path({str(tmp_path / 'escaped')!r}).exists():\n"
-        "        if time.monotonic() > deadline:\n"
-        "            sys.exit('A: the grandchild never left the group')\n"
-        "        time.sleep(0.01)\n"
+        "    quiet = {'stdin': subprocess.DEVNULL, 'stdout': subprocess.DEVNULL}\n"
+        "    sentinel = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],"
+        " **quiet)\n"
+        "    os.setsid()\n"
+        "    send(leak)\n"
+        "    until(lambda: sentinel.poll() is not None, 'A: its group was never killed')\n"
+        f"    Path({str(entered)!r}).touch()\n"
+        f"    until(Path({str(release)!r}).exists, 'A: never released')\n"
         "else:\n"
-        "    deadline = time.monotonic() + 10\n"
-        f"    while not Path({str(entered)!r}).exists():\n"
-        "        if time.monotonic() > deadline:\n"
-        "            sys.exit('B: A never entered its teardown')\n"
-        "        time.sleep(0.01)\n"
-        f"send({{'type': 'system_info', 'note': '{leaked}'}})\n"
-        "time.sleep(30)\n"
+        f"    until(Path({str(entered)!r}).exists, 'B: A never entered its teardown')\n"
+        "    send(leak)\n"
+        "    time.sleep(30)\n"
     )
     jobs = [_job(tmp_path, [ANSWER], job_id=job_id) for job_id in ("a", "b")]
     run = asyncio.create_task(host.run(jobs, launcher=KeyedLauncher(code, key="")))
@@ -777,12 +763,17 @@ def popens(monkeypatch: pytest.MonkeyPatch) -> list[subprocess.Popen[bytes]]:
 
 
 def _child_state(pid: int) -> str:
-    """'running', 'zombie' or 'reaped', for a child of this process; nothing is reaped here."""
-    try:
-        exited = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
-    except ChildProcessError:
+    """'running', 'zombie' or 'reaped' (or not this process's child); nothing is reaped here.
+
+    ps, not os.waitid(WNOWAIT): macOS has no waitid before Python 3.13. A pid whose parent
+    is not this process counts as reaped, so a reused pid is never taken for the child.
+    """
+    shown = subprocess.run(
+        ["ps", "-o", "ppid=,stat=", "-p", str(pid)], capture_output=True, text=True
+    ).stdout.split()
+    if len(shown) < 2 or int(shown[0]) != os.getpid():
         return "reaped"
-    return "running" if exited is None else "zombie"
+    return "zombie" if shown[1].startswith("Z") else "running"
 
 
 def _holding_worker(signals: Path, *, exit_after: str | None = None) -> str:
@@ -931,7 +922,10 @@ class _Exited:
 async def test_teardown_of_an_anchor_that_died_early(host: Host, tmp_path: Path) -> None:
     # Its group holds only a zombie, and macOS answers a group kill with EPERM.
     zombie = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
-    os.waitid(os.P_PID, zombie.pid, os.WEXITED | os.WNOWAIT)  # exited, left unreaped
+    deadline = time.monotonic() + 10
+    while _child_state(zombie.pid) != "zombie":  # exited, left unreaped
+        assert time.monotonic() < deadline, "the throwaway child never exited"
+        time.sleep(0.01)
     try:
         log = tmp_path / "exited.stderr.log"
         log.write_text("worker: done\n", encoding="utf-8")
