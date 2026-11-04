@@ -14,12 +14,12 @@ import re
 import socket
 import subprocess
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from benchmarks.runner import BenchmarkValidationError
+from benchmarks.runner import BenchmarkValidationError, _write_json
 
 #: A name (DNS must be down) and an address (IP must be down too): both must fail.
 OUTSIDE_TARGETS = (("pypi.org", 443), ("1.1.1.1", 443))
@@ -165,3 +165,35 @@ class AirGapWatch:
         if failed:
             self.broken = True
             raise AirGapBroken(f"air-gap check {failed[0]} failed {when}: the arm stops")
+
+
+#: The arm's own Ollama, reached through its proxy: never an internet host (round-2 ruling C7).
+_LOCAL_OLLAMA = "host.docker.internal:11434"
+
+
+def write_airgap_evidence(
+    out_dir: Path, *, rounds: int, broken: bool, job_ids: Sequence[str]
+) -> dict[str, Any]:
+    """``out_dir/airgap/checks.json``: the C3 evidence, with exactly the keys #199 binds.
+
+    ``internet_hosts`` is every host the air-gapped jobs actually reached (their
+    ``hosts_allowed`` in egress/summary.json) but local Ollama; a denied attempt left nothing
+    and stays in ``hosts_denied``. ``all_passed`` needs at least one round, every round
+    passed, the arm not stopped, a passing isolation probe and no internet host.
+    """
+    try:
+        egress = json.loads((out_dir / "egress" / "summary.json").read_text(encoding="utf-8"))
+        jobs = egress["jobs"]
+        reached = {h for job_id in job_ids for h in jobs.get(job_id, {}).get("hosts_allowed", [])}
+        probe_passed = egress.get("isolation_probe") == "pass" and set(job_ids) <= set(jobs)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        reached, probe_passed = set(), False
+    internet = sorted(reached - {_LOCAL_OLLAMA})
+    result = {
+        "all_passed": rounds > 0 and not broken and probe_passed and not internet,
+        "checks": rounds,
+        "internet_hosts": internet,
+    }
+    assert set(result) == {"all_passed", "checks", "internet_hosts"}  # round-2 ruling E18
+    _write_json(out_dir / "airgap" / "checks.json", result)
+    return result

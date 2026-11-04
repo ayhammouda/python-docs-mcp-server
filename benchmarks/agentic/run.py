@@ -27,7 +27,12 @@ import platformdirs
 
 import benchmarks
 from benchmarks.adapters.claude_tokens import ANTHROPIC_API_VERSION, DEFAULT_COUNT_MODEL
-from benchmarks.agentic.airgap import AirGapWatch, host_offline_checks, ollama_preflight
+from benchmarks.agentic.airgap import (
+    AirGapWatch,
+    host_offline_checks,
+    ollama_preflight,
+    write_airgap_evidence,
+)
 from benchmarks.agentic.bridge import SystemSpec, load_systems
 from benchmarks.agentic.egress import write_egress_summary
 from benchmarks.agentic.host import Launcher, LocalLauncher, WorkerJob, refuse_host_keys, run_jobs
@@ -591,6 +596,13 @@ def run_agentic(
         summary.setdefault("status", "completed")
         if watch is not None:  # design §7.4: how many rounds ran, and whether the arm stopped
             summary["airgap"] = {"checks": watch.rounds, "broken": watch.broken}
+            # C3 evidence, after the C1 summary it reads; an aborted arm never passes.
+            write_airgap_evidence(
+                out,
+                rounds=watch.rounds,
+                broken=watch.broken or summary["status"] == "aborted",
+                job_ids=[job.job_id for job in jobs],
+            )
         summary.update(
             {
                 "completed_at": _utc_now(),

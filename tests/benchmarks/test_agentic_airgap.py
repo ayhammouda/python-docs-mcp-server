@@ -18,6 +18,7 @@ from benchmarks.agentic.airgap import (
     default_routes,
     host_offline_checks,
     ollama_preflight,
+    write_airgap_evidence,
 )
 from benchmarks.agentic.run import run_agentic
 from benchmarks.runner import BenchmarkValidationError
@@ -211,3 +212,65 @@ def test_a_hosted_run_makes_no_offline_check(tmp_path: Path) -> None:
     config = _config(tmp_path, models=("scripted-anthropic",), systems=("no-docs",), repeats=1)
     summary = run_agentic(config, offline_checks=never)
     assert summary["status"] == "completed" and "airgap" not in summary
+
+
+# --- C3 evidence: airgap/checks.json (#199, owner question 9) -----------------------------------
+
+GEMMA = "gemma4-12b--python-docs"
+
+
+def _egress_summary(out: Path, allowed: list[str], *, probe: str = "pass") -> None:
+    jobs = {
+        GEMMA: {
+            "hosts_allowed": allowed,
+            "hosts_denied": ["pypi.org:443"],
+            "lookup_package_docs_attempts": 1,
+        }
+    }
+    (out / "egress").mkdir(parents=True, exist_ok=True)
+    summary = {"jobs": jobs, "isolation_probe": probe}
+    (out / "egress" / "summary.json").write_text(json.dumps(summary))
+
+
+def test_airgap_evidence_has_exactly_the_bound_keys(tmp_path: Path) -> None:
+    _egress_summary(tmp_path, ["host.docker.internal:11434"])
+    result = write_airgap_evidence(tmp_path, rounds=4, broken=False, job_ids=[GEMMA])
+    written = json.loads((tmp_path / "airgap" / "checks.json").read_text())
+    assert written == result and set(written) == {"all_passed", "checks", "internet_hosts"}
+
+
+def test_a_denied_pypi_attempt_keeps_all_passed_true(tmp_path: Path) -> None:
+    _egress_summary(tmp_path, ["host.docker.internal:11434"])
+    result = write_airgap_evidence(tmp_path, rounds=4, broken=False, job_ids=[GEMMA])
+    assert result == {"all_passed": True, "checks": 4, "internet_hosts": []}
+
+
+def test_a_reached_internet_host_fails_the_evidence(tmp_path: Path) -> None:
+    _egress_summary(tmp_path, ["pypi.org:443", "host.docker.internal:11434"])
+    result = write_airgap_evidence(tmp_path, rounds=4, broken=False, job_ids=[GEMMA])
+    assert result == {"all_passed": False, "checks": 4, "internet_hosts": ["pypi.org:443"]}
+
+
+def test_missing_egress_evidence_or_a_failed_probe_fails_the_evidence(tmp_path: Path) -> None:
+    result = write_airgap_evidence(tmp_path, rounds=4, broken=False, job_ids=[GEMMA])
+    assert result == {"all_passed": False, "checks": 4, "internet_hosts": []}
+    _egress_summary(tmp_path / "p", ["host.docker.internal:11434"], probe="fail")
+    result = write_airgap_evidence(tmp_path / "p", rounds=4, broken=False, job_ids=[GEMMA])
+    assert result["all_passed"] is False
+    _egress_summary(tmp_path / "b", ["host.docker.internal:11434"])
+    assert write_airgap_evidence(tmp_path / "b", rounds=4, broken=True, job_ids=[GEMMA]) == {
+        "all_passed": False,
+        "checks": 4,
+        "internet_hosts": [],
+    }
+    _egress_summary(tmp_path / "z", ["host.docker.internal:11434"])
+    result = write_airgap_evidence(tmp_path / "z", rounds=0, broken=False, job_ids=[GEMMA])
+    assert result["all_passed"] is False  # no round ran: nothing shows the host was offline
+
+
+def test_an_air_gapped_run_writes_checks_json_even_when_aborted(tmp_path: Path) -> None:
+    checks, _ = _counting(fail_on=2)
+    with pytest.raises(BenchmarkValidationError):
+        run_agentic(_local_config(tmp_path), offline_checks=checks)
+    written = json.loads((tmp_path / "run" / "airgap" / "checks.json").read_text())
+    assert written == {"all_passed": False, "checks": 2, "internet_hosts": []}
