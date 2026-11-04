@@ -349,7 +349,7 @@ def score_run_dir(
         key: is_grounded(t.get("answer") or "", t.get("tool_calls") or [])
         for key, t in transcripts.items()
     }
-    score_run(run_dir, schema_path=schema_path)
+    score_run(run_dir, schema_path=schema_path, current_llm_cells=finals.keys())
     apply_llm_grades(run_dir, finals, grounded=grounded, schema_path=schema_path)
     scoring = _cells(run_dir / "scoring")
     pending = sorted(f"{c}/{q}" for (c, q), r in scoring.items() if r.get("score") is None)

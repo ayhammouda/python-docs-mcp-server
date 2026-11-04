@@ -32,9 +32,11 @@ skips it (a human verdict is never overwritten by the automatic pass).
 Agentic runs (``environment.json`` ``mode: "agentic"``) are never graded by a
 human (design §9.3): the LLM panel grades them. :func:`apply_llm_grades` writes
 the panel's grades with ``scoring_method`` ``"llm_panel"`` or
-``"llm_reference"`` and their provenance, :func:`score_run` never rewrites
-those records, and :func:`ingest_adjudication_verdicts` refuses an agentic run.
-An agentic run's pending cells await LLM grading, not a human.
+``"llm_reference"`` and their provenance. The ordinary :func:`score_run` pass
+preserves those records. On ``agentic-score`` replay, only grades supported by
+the current votes are retained. :func:`ingest_adjudication_verdicts` refuses an agentic run.
+An agentic run's pending cells await LLM grading. Their queue identifies the
+transcript by cell without republishing its answer or tool calls.
 
 Grounding: the methodology also asks that an answer which "appears correct
 but lacks evidence from the supplied docs" be flagged and reported
@@ -57,7 +59,7 @@ per ``run-summary.json``'s ``correctness_denominator_cells`` /
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Set
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -65,7 +67,7 @@ from typing import Any
 
 import yaml
 
-from benchmarks.agentic.protocol import write_json_evidence
+from benchmarks.agentic.protocol import scanned_json_bytes, write_json_evidence
 from benchmarks.corpus import CorpusQuestion, validate_corpus
 from benchmarks.report import _sha256_of
 from benchmarks.runner import BenchmarkValidationError
@@ -84,7 +86,7 @@ SCORING_METHOD_HUMAN = "human"
 SCORING_METHOD_LLM_PANEL = "llm_panel"
 SCORING_METHOD_LLM_REFERENCE = "llm_reference"
 LLM_SCORING_METHODS = frozenset({SCORING_METHOD_LLM_PANEL, SCORING_METHOD_LLM_REFERENCE})
-#: Records score_run never rewrites.
+#: Records the ordinary automatic pass leaves untouched.
 _FINAL_METHODS = LLM_SCORING_METHODS | {SCORING_METHOD_HUMAN}
 
 _SCORING_REQUIRED_FIELDS = ("competitor_id", "corpus_id", "status")
@@ -125,7 +127,11 @@ class _AutomaticDecision:
 
 
 def score_run(
-    run_dir: Path, *, corpus_path: Path | None = None, schema_path: Path
+    run_dir: Path,
+    *,
+    corpus_path: Path | None = None,
+    schema_path: Path,
+    current_llm_cells: Set[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Apply the automatic correctness-scoring pass to one run directory.
 
@@ -137,7 +143,9 @@ def score_run(
 
     - A record already carrying a human verdict or an LLM grade
       (``scoring_method`` ``"human"``, ``"llm_panel"`` or ``"llm_reference"``)
-      is left untouched.
+      is left untouched. On agentic replay, ``current_llm_cells`` identifies the
+      cells with a grade supported by the current vote evidence. Previous LLM
+      grades outside that set go through the automatic pass again.
     - A failed cell is re-emitted with its existing ``score: 0.0`` (see
       module docstring; this is a passthrough, not a new decision).
     - A succeeded cell with an empty/blank answer is automatically scored
@@ -186,8 +194,19 @@ def score_run(
         path, record = scoring_records[key]
         competitor_id, corpus_id = key
 
-        if record.get("scoring_method") in _FINAL_METHODS:
-            already_human += record.get("scoring_method") == SCORING_METHOD_HUMAN
+        method = record.get("scoring_method")
+        if (
+            method in LLM_SCORING_METHODS
+            and agentic
+            and current_llm_cells is not None
+            and key not in current_llm_cells
+        ):
+            record = dict(record)
+            for field in ("label", "grading", "adjudicator", "scored_at", "grounded"):
+                record.pop(field, None)
+            record["status"] = "placeholder"
+        elif method in _FINAL_METHODS:
+            already_human += method == SCORING_METHOD_HUMAN
             finalized.append(record)
             continue
 
@@ -449,7 +468,7 @@ def apply_llm_grades(
         _build_queue_entry(record, answer_keys, paths.transcripts_dir, agentic=True)
         for record in pending
     ]
-    _write_json(
+    write_json_evidence(
         paths.queue_path, {"run_dir": str(run_dir), "generated_at": now, "cells": queue_entries}
     )
     rollups = _compute_rollups(finalized, answer_keys)
@@ -570,14 +589,18 @@ def _build_queue_entry(
         transcript = _read_json(transcript_path)
         answer = transcript.get("answer") or ""
         tool_calls = transcript.get("tool_calls")
+    payload = {"answer": answer, "tool_calls": tool_calls}
+    if agentic:
+        # Preserve the evidence check even though only a human queue needs the payload.
+        scanned_json_bytes(payload, where="pending answer", indent=2, sort_keys=True)
+        payload = {"answer": None, "tool_calls": None}
     question = answer_keys.get(corpus_id)
     return {
         "competitor_id": competitor_id,
         "corpus_id": corpus_id,
         "tool_model_key": record.get("tool_model_key") or competitor_id,
         "category": question.category if question is not None else "uncategorized",
-        "answer": answer,
-        "tool_calls": tool_calls,
+        **payload,
         "grounding_evidence_present": bool(record.get("grounding_evidence_present")),
         "answer_key": question.answer_key if question is not None else None,
         "citations": question.citations if question is not None else None,

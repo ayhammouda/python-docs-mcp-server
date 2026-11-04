@@ -382,6 +382,31 @@ def test_score_run_dir_needs_one_check_round_per_reported_attempt_plus_two(
         assert c3["passed"] is True
 
 
+def test_replay_without_required_reference_blocks_only_the_dependent_claim(
+    scripted_airgap_run: Path, tmp_path: Path
+) -> None:
+    run = scripted_airgap_run
+    _json(run / "airgap" / "checks.json", {"all_passed": True, "checks": 5, "internet_hosts": []})
+    local = "scripted-local"
+    cell, qid = _cell("python-docs", local), QUESTIONS[0]
+    item = safe_id(cell, qid)
+    _json(
+        run / "grading" / "items" / "answers" / f"{item}.json",
+        {"meta": {"competitor_id": cell, "corpus_id": qid, "suspect": True}},
+    )
+    _vote(run / "grading", "reference", item, _vote_text(), target="reference", effort="high")
+    complete = _score(run, tmp_path)
+    assert complete["claims"]["C3"][local]["passed"] is True
+    assert complete["claims"]["C2"][FAMILY]["passed"] is True
+    reference = run / "grading" / "votes" / "reference" / "reference" / "high" / "pass1" / item
+    next(reference.glob("*.json")).unlink()
+    replay = _score(run, tmp_path)
+    assert replay["pending_cells"] == [f"{cell}/{qid}"]
+    assert replay["diagnostics"]["no_final_record"] == {}  # All panel votes are still present.
+    assert replay["claims"]["C3"][local]["passed"] is None
+    assert replay["claims"]["C2"] == complete["claims"]["C2"]
+
+
 def _fields_for(expected_score: float, expected_label: str, weights: tuple[str, str]) -> dict:
     if expected_label == "NOT_ATTEMPTED":
         return {"attempted": False}
