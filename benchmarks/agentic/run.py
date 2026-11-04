@@ -32,7 +32,6 @@ from benchmarks.agentic.ledger import (
     PROVIDER_CAPS,
     Ledger,
     LedgerService,
-    PriceSnapshot,
     load_price_snapshot,
     refuse_stale_snapshot,
 )
@@ -459,7 +458,57 @@ def run_agentic(
         return summary
 
     ledger = Ledger.open(config.ledger_dir, run_id=run_id, caps=caps)
-    try:
+    spent_before = {provider: ledger.spent(provider) for provider in caps}  # after any recovery
+    collector = _Collector(out, {q.id: q for q in questions}, families)
+
+    def write_outcome() -> None:
+        """ledger-events.jsonl and run-summary.json, for a completed or an aborted run."""
+        run_events = ledger.events(run_id)
+        events = "".join(json.dumps(e, sort_keys=True) + "\n" for e in run_events)
+        # The pilot reads how often reported input passed its bound (design §12).
+        exceeded = Counter(
+            e["provider"]
+            for e in run_events
+            if e["event"] == "settle" and e["input_bound_exceeded"]
+        )
+        assert_no_key_shaped(events, where="ledger-events.jsonl")
+        (out / "ledger-events.jsonl").write_text(events, encoding="utf-8")
+        scored = collector.succeeded + collector.failed
+        summary.setdefault("status", "completed")
+        summary.update(
+            {
+                "completed_at": _utc_now(),
+                "scored_cells": scored,
+                "correctness_denominator_cells": scored,
+                "succeeded_cells": collector.succeeded,
+                "failed_cells": collector.failed,
+                "failed_cells_included_in_correctness_denominator": True,
+                "competitors": sorted(collector.cells),
+                "discarded": collector.discarded,
+                "not_run": collector.not_run,
+                "worker_errors": collector.worker_errors,
+                "families": {fid: stats.summary() for fid, stats in collector.families.items()},
+                "ledger": {
+                    provider: {
+                        "spent_before": str(spent_before[provider]),
+                        "spent_after": str(ledger.spent(provider)),
+                        "cap": str(caps[provider]),
+                        "stopped": ledger.stopped(provider),
+                        "input_bound_exceeded": exceeded[provider],
+                    }
+                    for provider in caps
+                },
+                "price_snapshot": {
+                    "captured_on": snapshot.captured_on.isoformat(),
+                    "expires_on": (
+                        None if snapshot.expires_on is None else snapshot.expires_on.isoformat()
+                    ),
+                },
+            }
+        )
+        _write(out / "run-summary.json", summary)
+
+    try:  # every step after the open, the overrun check included, ends in write_outcome
         for provider in config.acknowledge_overrun:
             ledger.acknowledge_overrun(provider)
         overrun = sorted({f.provider for f in families if ledger.stopped(f.provider) == "overrun"})
@@ -468,7 +517,6 @@ def run_agentic(
                 f"{overrun} stopped on a bound overrun: correct the bound, record the overrun, "
                 "then rerun with --acknowledge-overrun"
             )
-        spent_before = {provider: ledger.spent(provider) for provider in caps}
         for provider, cap in caps.items():  # stderr: stdout carries the summary JSON
             print(
                 f"ledger {config.ledger_dir}: {provider} "
@@ -477,74 +525,22 @@ def run_agentic(
             )
         prices = {f.model_id: snapshot.models[f.model_id] for f in families if f.provider in caps}
         service = LedgerService(ledger, prices, {f.model_id: f for f in families})
-        collector = _Collector(out, {q.id: q for q in questions}, families)
-        try:
-            asyncio.run(
-                run_jobs(
-                    jobs,
-                    launcher=launcher,
-                    ledger=service,
-                    on_message=collector.on_message,
-                    log_dir=out / "logs",
-                    cwd=_REPO_ROOT,
-                )
+        asyncio.run(
+            run_jobs(
+                jobs,
+                launcher=launcher,
+                ledger=service,
+                on_message=collector.on_message,
+                log_dir=out / "logs",
+                cwd=_REPO_ROOT,
             )
-        except BaseException as exc:  # still write what was spent and what ran
-            summary |= {"status": "aborted", "abort_reason": f"{type(exc).__name__}: {exc}"}
-            raise
-        finally:
-            _write_outcome(out, summary, collector, ledger, run_id, caps, spent_before, snapshot)
-        return summary
+        )
+    except BaseException as exc:  # still write what was spent and what ran
+        summary |= {"status": "aborted", "abort_reason": f"{type(exc).__name__}: {exc}"}
+        raise
     finally:
-        ledger.close()
-
-
-def _write_outcome(
-    out: Path,
-    summary: dict[str, Any],
-    collector: _Collector,
-    ledger: Ledger,
-    run_id: str,
-    caps: Mapping[str, Decimal],
-    spent_before: Mapping[str, Decimal],
-    snapshot: PriceSnapshot,
-) -> None:
-    """ledger-events.jsonl and run-summary.json, for a completed or an aborted run."""
-    run_events = ledger.events(run_id)
-    events = "".join(json.dumps(e, sort_keys=True) + "\n" for e in run_events)
-    # The pilot reads how often reported input passed its bound (design §12).
-    exceeded = Counter(
-        e["provider"] for e in run_events if e["event"] == "settle" and e["input_bound_exceeded"]
-    )
-    assert_no_key_shaped(events, where="ledger-events.jsonl")
-    (out / "ledger-events.jsonl").write_text(events, encoding="utf-8")
-    scored = collector.succeeded + collector.failed
-    summary.setdefault("status", "completed")
-    summary |= {
-        "completed_at": _utc_now(),
-        "scored_cells": scored,
-        "correctness_denominator_cells": scored,
-        "succeeded_cells": collector.succeeded,
-        "failed_cells": collector.failed,
-        "failed_cells_included_in_correctness_denominator": True,
-        "competitors": sorted(collector.cells),
-        "discarded": collector.discarded,
-        "not_run": collector.not_run,
-        "worker_errors": collector.worker_errors,
-        "families": {fid: stats.summary() for fid, stats in collector.families.items()},
-        "ledger": {
-            provider: {
-                "spent_before": str(spent_before[provider]),
-                "spent_after": str(ledger.spent(provider)),
-                "cap": str(caps[provider]),
-                "stopped": ledger.stopped(provider),
-                "input_bound_exceeded": exceeded[provider],
-            }
-            for provider in caps
-        },
-        "price_snapshot": {
-            "captured_on": snapshot.captured_on.isoformat(),
-            "expires_on": None if snapshot.expires_on is None else snapshot.expires_on.isoformat(),
-        },
-    }
-    _write(out / "run-summary.json", summary)
+        try:
+            write_outcome()
+        finally:
+            ledger.close()
+    return summary

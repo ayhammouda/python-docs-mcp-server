@@ -20,6 +20,7 @@ from benchmarks.__main__ import main
 from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
 from benchmarks.agentic.bridge import load_systems
 from benchmarks.agentic.host import LocalLauncher
+from benchmarks.agentic.ledger import Ledger
 from benchmarks.agentic.loop import MAX_RETRIES, Caps
 from benchmarks.agentic.protocol import KEY_SHAPED, KeyLeakError
 from benchmarks.agentic.run import (
@@ -30,6 +31,7 @@ from benchmarks.agentic.run import (
     run_agentic,
     tool_model_key,
 )
+from benchmarks.agentic.types import Buckets
 from benchmarks.model_matrix import load_model_matrix
 from benchmarks.report import generate_report
 from benchmarks.runner import BenchmarkValidationError, _load_questions, _load_yaml_mapping
@@ -466,6 +468,46 @@ def test_an_aborted_run_still_writes_its_summary_and_ledger_events(tmp_path: Pat
     summary = json.loads((run / "run-summary.json").read_text())
     assert summary["status"] == "aborted" and "KeyLeakError" in summary["abort_reason"]
     assert (run / "ledger-events.jsonl").read_text().count('"event": "reserve"') == 1
+
+
+def test_a_run_that_stops_on_a_reopened_overrun_still_writes_its_outcome(tmp_path: Path) -> None:
+    # An earlier run left an Anthropic $1 unit settled at $2 and an OpenAI $0.50 unit unsettled.
+    earlier = Ledger.open(tmp_path / "ledger", run_id="earlier")
+    units = {
+        provider: earlier.reserve(
+            provider,
+            model_id="m",
+            kind="model_call",
+            bound=Decimal(bound),
+            input_bound=1,
+            output_bound=1,
+        )
+        for provider, bound in (("anthropic", "1"), ("openai", "0.50"))
+    }
+    earlier.settle(
+        str(units["anthropic"]), outcome="ok", actual=Decimal("2"), buckets=Buckets(1, 0, 0, 1)
+    )
+    earlier.close()
+    config = _config(
+        tmp_path,
+        models=("scripted-anthropic", "scripted-openai"),
+        systems=("no-docs",),
+        questions=("SYN-EX-001",),
+        repeats=1,
+    )
+    with pytest.raises(BenchmarkValidationError, match="overrun"):
+        run_agentic(config)
+    run = tmp_path / "run"
+    summary = json.loads((run / "run-summary.json").read_text())
+    assert summary["status"] == "aborted" and "overrun" in summary["abort_reason"]
+    events = (run / "ledger-events.jsonl").read_text().splitlines()
+    (recovery,) = [json.loads(line) for line in events]
+    assert (recovery["provider"], recovery["outcome"], recovery["booked"]) == (
+        "openai",
+        "unsettled_at_load",
+        "1.00",
+    )
+    assert summary["ledger"]["openai"]["spent_after"] == "1.00"
 
 
 def test_agentic_run_refuses_a_non_empty_out_dir(tmp_path: Path) -> None:
