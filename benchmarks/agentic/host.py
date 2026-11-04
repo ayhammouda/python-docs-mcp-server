@@ -37,6 +37,8 @@ from benchmarks.runner import BenchmarkValidationError
 
 #: What a local worker may see of the host's environment. Never a key, never the live flag.
 _LOCAL_ENV = ("PATH", "HOME", "LANG", "TMPDIR", "XDG_CACHE_HOME", "VIRTUAL_ENV")
+#: How long teardown waits for a killed worker to exit before it scrubs and settles anyway.
+_EXIT_WAIT_S = 30.0
 
 
 @dataclass(frozen=True)
@@ -86,7 +88,8 @@ async def _teardown(
     """Kill the worker, scrub its log and book its open unit; the log's key pattern, if any."""
     if proc.returncode is None:
         proc.kill()
-    await proc.wait()
+    with suppress(TimeoutError):  # a worker that never exits cannot hang the run
+        await asyncio.wait_for(proc.wait(), _EXIT_WAIT_S)
     # On every exit, a raise or a cancel included: the leaked bytes never stay on disk.
     redacted, pattern = redact_key_shaped(log_path.read_bytes())
     if pattern:

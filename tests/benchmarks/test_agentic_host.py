@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 import yaml
 
+import benchmarks.agentic.host as agentic_host
 from benchmarks.adapters.guard import PAID_KEY_ENVS, PROVIDER_API_KEY_ENV
 from benchmarks.agentic.bridge import system_spec_from_raw
 from benchmarks.agentic.host import LocalLauncher, WorkerJob, refuse_host_keys, run_jobs
@@ -675,6 +676,39 @@ async def test_a_teardown_cancelled_by_a_second_abort_still_scrubs_and_settles(
         run.result()
     logs = sorted((tmp_path / "logs").iterdir())
     assert [log.read_text() for log in logs] == ["debug: [redacted]\n"] * 2
+    settles = [e for e in host.ledger.events("host-test") if e["event"] == "settle"]
+    assert [(s["outcome"], D(s["booked"])) for s in settles] == [
+        ("worker_lost", 2 * D("0.002024"))
+    ]
+
+
+class _Unending:
+    """A worker process that survives its kill: wait() never returns."""
+
+    returncode = None
+
+    def kill(self) -> None:
+        pass
+
+    async def wait(self) -> int:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+async def test_a_worker_that_never_exits_cannot_hang_its_teardown(
+    host: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agentic_host, "_EXIT_WAIT_S", 0.1, raising=False)
+    family = _job(tmp_path, [ANSWER]).family
+    service = host.service(family)
+    unit = await service.reserve(
+        provider="anthropic", model_id="scripted-1", input_bound=1000, output_bound=1024
+    )
+    log = tmp_path / "never-exits.stderr.log"
+    log.write_text("debug: sk-ant-api03-" + "z" * 90 + "\n", encoding="utf-8")
+    async with asyncio.timeout(5):  # the bound under test is 0.1 s
+        pattern = await agentic_host._teardown(_Unending(), log, service, unit)  # type: ignore[arg-type]
+    assert pattern is not None and log.read_text() == "debug: [redacted]\n"
     settles = [e for e in host.ledger.events("host-test") if e["event"] == "settle"]
     assert [(s["outcome"], D(s["booked"])) for s in settles] == [
         ("worker_lost", 2 * D("0.002024"))
