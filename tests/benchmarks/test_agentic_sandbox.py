@@ -701,6 +701,20 @@ async def test_the_real_check_passes_and_records_the_sandbox(tmp_path: Path) -> 
     assert docker.ran("image", "inspect", "--format", "{{json .}}", SQUID_IMAGE)
 
 
+@pytest.mark.parametrize("scheme", ["unix://", "tcp://"])
+async def test_sandbox_metadata_refuses_a_key_in_a_daemon_endpoint(
+    tmp_path: Path, scheme: str
+) -> None:
+    key = "AIza" + "Q" * 35
+    sandbox = _real(
+        tmp_path, FakeDocker(context_host=f"{scheme}/daemon\n{key}"), _git_repo(tmp_path / "repo")
+    )
+    with pytest.raises(KeyLeakError) as error:
+        await sandbox.verify(sandbox)
+    assert not (tmp_path / "run" / "sandbox.json").exists()
+    assert key not in "".join(traceback.format_exception(error.value))
+
+
 async def test_prepare_refuses_a_daemon_that_is_not_local(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

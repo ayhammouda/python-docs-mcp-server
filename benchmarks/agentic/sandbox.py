@@ -40,6 +40,7 @@ from benchmarks.agentic.egress import (
     read_log,
     squid_conf,
     write_new,
+    write_scanned_json,
 )
 from benchmarks.agentic.protocol import (
     KeyLeakError,
@@ -47,9 +48,10 @@ from benchmarks.agentic.protocol import (
     assert_no_key_shaped_json,
     redact_key_shaped,
     redact_key_shaped_text,
+    scanned_json_bytes,
 )
 from benchmarks.model_matrix import KNOWN_APIS, ModelFamily
-from benchmarks.runner import BenchmarkValidationError, _write_json
+from benchmarks.runner import BenchmarkValidationError
 
 if TYPE_CHECKING:
     from benchmarks.agentic.host import WorkerJob
@@ -243,12 +245,15 @@ async def verify_image(sandbox: Sandbox, *, repo_root: Path = REPO_ROOT) -> dict
     config = sandbox.config
     context = json.loads(await sandbox.output("context", "inspect", "--format", "{{json .}}"))
     endpoint = str(((context.get("Endpoints") or {}).get("docker") or {}).get("Host", ""))
+    assert_no_key_shaped_json([context.get("Name"), endpoint], where="Docker context")
     if not endpoint.startswith("unix://"):
         raise BenchmarkValidationError(
             f"docker context {context.get('Name')!r} points at {endpoint!r}: the sandbox "
             "runs only on a local unix:// daemon"
         )
     host = sandbox.env.get("DOCKER_HOST")
+    if host is not None:
+        assert_no_key_shaped(host, where="DOCKER_HOST")
     if host is not None and not host.startswith("unix://"):
         raise BenchmarkValidationError(
             f"DOCKER_HOST is {host!r}: the sandbox runs only on a local unix:// daemon"
@@ -257,6 +262,7 @@ async def verify_image(sandbox: Sandbox, *, repo_root: Path = REPO_ROOT) -> dict
         await sandbox.output("image", "inspect", "--format", "{{json .}}", config.image)
     )
     revision = ((image.get("Config") or {}).get("Labels") or {}).get(_REVISION_LABEL)
+    assert_no_key_shaped_json([image.get("Id"), revision], where="Docker worker image")
     if image.get("Id") != config.image:
         raise BenchmarkValidationError(f"image {config.image} inspects as {image.get('Id')}")
     if revision != config.repo_commit:
@@ -268,6 +274,7 @@ async def verify_image(sandbox: Sandbox, *, repo_root: Path = REPO_ROOT) -> dict
         await sandbox.output("image", "inspect", "--format", "{{json .}}", SQUID_IMAGE)
     )
     engine = (await sandbox.output("version", "--format", "{{.Server.Version}}")).strip()
+    assert_no_key_shaped(engine, where="Docker Engine version")
     if _engine(engine) < MIN_ENGINE:
         raise BenchmarkValidationError(
             f"Docker Engine {engine} is older than {'.'.join(map(str, MIN_ENGINE))}, which the "
@@ -294,7 +301,7 @@ async def verify_image(sandbox: Sandbox, *, repo_root: Path = REPO_ROOT) -> dict
         "docker_context": str(context.get("Name")),
         "docker_endpoint": endpoint,
     }
-    _write_json(config.out_dir / "sandbox.json", record)
+    write_scanned_json(config.out_dir / "sandbox.json", record)
     return record
 
 
@@ -668,11 +675,12 @@ class Sandbox:
         }
 
         def encode_record() -> bytes:
-            assert_no_key_shaped_json(collected, where="collection diagnostics")
-            data = (json.dumps(collected, indent=2, sort_keys=True) + "\n").encode()
-            if redact_key_shaped(data)[1]:
-                raise KeyLeakError("a key-shaped string was found in collection diagnostics")
-            return data
+            return (
+                scanned_json_bytes(
+                    collected, where="collection diagnostics", indent=2, sort_keys=True
+                )
+                + b"\n"
+            )
 
         try:
             try:
