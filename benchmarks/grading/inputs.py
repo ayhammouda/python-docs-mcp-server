@@ -108,6 +108,8 @@ def _version(value: Any) -> str:
 
 
 def _criteria(entries: Any, properties: list[str], qid: str) -> tuple[Criterion, Criterion]:
+    if len(properties) != 2:
+        raise BenchmarkValidationError(f"criteria for {qid} require two expected properties")
     if not isinstance(entries, list) or len(entries) != 2:
         raise BenchmarkValidationError(f"criteria for {qid} must be a list of two entries")
     criteria: list[Criterion] = []

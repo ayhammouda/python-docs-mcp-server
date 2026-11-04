@@ -132,6 +132,24 @@ def _sample_criteria() -> dict[str, Any]:
     return yaml.safe_load((FIX / "criteria.sample.yml").read_text(encoding="utf-8"))
 
 
+@pytest.mark.parametrize("count", [1, 3])
+def test_grading_refuses_a_corpus_question_without_two_properties(
+    tmp_path: Path, count: int
+) -> None:
+    corpus = yaml.safe_load(SAMPLE_CORPUS.read_bytes())
+    props = corpus["questions"][0]["expected_properties"]
+    corpus["questions"][0]["expected_properties"] = (props + ["extra"])[:count]
+    corpus_path = _write(tmp_path / "corpus.yml", corpus)
+    criteria = _sample_criteria()
+    criteria["corpus_sha256"] = hashlib.sha256(corpus_path.read_bytes()).hexdigest()
+    with pytest.raises(BenchmarkValidationError, match="SYN-EX-001.*two"):
+        load_criteria(
+            _write(tmp_path / "criteria.yml", criteria),
+            corpus_path=corpus_path,
+            schema_path=CORPUS_SCHEMA,
+        )
+
+
 def test_criteria_refuse_a_question_without_a_core_criterion(tmp_path: Path) -> None:
     data = _sample_criteria()
     for entry in data["questions"]["SYN-EX-001"]:
