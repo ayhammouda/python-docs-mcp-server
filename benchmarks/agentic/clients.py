@@ -108,9 +108,17 @@ GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/"
 def _client_args(transport: Any | None) -> dict[str, Any]:
     """Never follow a redirect: it would be a second request, possibly carrying the key away.
 
+    trust_env=False: no HTTPS_PROXY or SSL_CERT_FILE in a worker's env steers the connection.
+    The Anthropic SDK mounts env proxies even then, so each proxy route is mounted direct.
     Tests inject only a transport; every other client setting is the production one.
     """
-    return {"follow_redirects": False, **({} if transport is None else {"transport": transport})}
+    # shortcut: no proxy from the env; PR 4's egress proxy must be passed explicitly (proxy=...)
+    return {
+        "follow_redirects": False,
+        "trust_env": False,
+        "mounts": {"http://": None, "https://": None, "all://": None},
+        **({} if transport is None else {"transport": transport}),
+    }
 
 
 def anthropic_sdk(

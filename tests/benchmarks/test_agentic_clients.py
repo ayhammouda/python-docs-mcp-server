@@ -14,6 +14,7 @@ from email.utils import format_datetime
 from pathlib import Path
 from typing import Any
 
+import anthropic
 import httpx
 import httpx2
 import pytest
@@ -795,4 +796,43 @@ async def test_a_base_url_variable_cannot_redirect_a_key(
     )
     client = make_client(family, timeout_s=30, transport=recorder.transport())
     await client.call(_conv())
+    assert [r.url.host for r in recorder.seen] == [host]
+
+
+@pytest.mark.parametrize(
+    "family_id,host",
+    [
+        ("claude-sonnet-5-5", "api.anthropic.com"),
+        ("gpt-6.1-sol", "api.openai.com"),
+        ("gemini-3.8-flash", "generativelanguage.googleapis.com"),
+    ],
+)
+async def test_a_proxy_variable_cannot_steer_a_call(
+    monkeypatch: pytest.MonkeyPatch, family_id: str, host: str
+) -> None:
+    # No transport injected: the client builds its own, one per route, and the test sees
+    # which one carries the call. A proxy variable would mount a proxy route for https.
+    _clear_keys(monkeypatch)
+    family = _matrix_family(family_id)
+    monkeypatch.setenv("BENCHMARK_LIVE_PROVIDERS_ENABLED", "1")
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV[family.provider], "not-a-real-key")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:3128")
+    kind = httpx if family.provider == "google" else httpx2
+    recorder = _recorder(
+        family.provider, _response(family.provider, 200, OK_BODIES[family.provider])
+    )
+    routes: list[Any] = []
+
+    def transport(**kwargs: Any) -> Any:
+        def handle(request: Any) -> Any:
+            routes.append(kwargs.get("proxy"))
+            return recorder(request)
+
+        return kind.MockTransport(handle)
+
+    # Every place a transport is built, the Anthropic SDK's own included: none is real.
+    for module in (kind._client, anthropic._base_client):
+        monkeypatch.setattr(module, "AsyncHTTPTransport", transport)
+    await make_client(family, timeout_s=30).call(_conv())
+    assert routes == [None]  # the direct route, never a proxy
     assert [r.url.host for r in recorder.seen] == [host]
