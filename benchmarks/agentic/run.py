@@ -13,9 +13,10 @@ import hashlib
 import json
 import os
 import random
+import signal
 import sys
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -90,6 +91,23 @@ class AgenticConfig:
     run_id: str | None = None
     dry_run: bool = False
     acknowledge_overrun: tuple[str, ...] = ()
+
+
+async def _until_signalled(run: Coroutine[Any, Any, None]) -> None:
+    """Await ``run``; SIGTERM or SIGHUP cancels it, so every worker is torn down as on Ctrl-C.
+
+    Workers run in process groups of their own, so no signal sent to the host's group reaches
+    them: only the host's teardown can end them.
+    """
+    task = asyncio.ensure_future(run)
+    loop = asyncio.get_running_loop()
+    for signum in (signal.SIGTERM, signal.SIGHUP):
+        loop.add_signal_handler(signum, task.cancel, f"signal {signum.name}")
+    try:
+        await task
+    finally:
+        for signum in (signal.SIGTERM, signal.SIGHUP):
+            loop.remove_signal_handler(signum)
 
 
 def cell_id(system_id: str, family_id: str, repeat: int) -> str:
@@ -525,13 +543,15 @@ def run_agentic(
         prices = {f.model_id: snapshot.models[f.model_id] for f in families if f.provider in caps}
         service = LedgerService(ledger, prices, {f.model_id: f for f in families})
         asyncio.run(
-            run_jobs(
-                jobs,
-                launcher=launcher,
-                ledger=service,
-                on_message=collector.on_message,
-                log_dir=out / "logs",
-                cwd=_REPO_ROOT,
+            _until_signalled(
+                run_jobs(
+                    jobs,
+                    launcher=launcher,
+                    ledger=service,
+                    on_message=collector.on_message,
+                    log_dir=out / "logs",
+                    cwd=_REPO_ROOT,
+                )
             )
         )
     except BaseException as exc:  # still write what was spent and what ran

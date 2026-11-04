@@ -7,8 +7,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
+import signal
+import subprocess
 import sys
+import time
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -297,6 +301,87 @@ class _LostAfterDiscard(LocalLauncher):
             "sys.exit(1)\n"
         )
         return [sys.executable, "-c", code], env
+
+
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP])
+def test_a_termination_signal_tears_the_run_down_like_ctrl_c(
+    tmp_path: Path, signum: signal.Signals
+) -> None:
+    # The host runs in a subprocess this test creates, and only it is signalled. Its worker
+    # holds a unit, marks that it is ready, and sleeps; workers have process groups of their
+    # own, so only the host's teardown can end it.
+    ready = tmp_path / "worker.pid"
+    reserve = {"type": "reserve", "input_bound": 1000, "output_bound": 100, "kind": "model_call"}
+    worker = (
+        "import json, os, sys, time\n"
+        "inp, out = sys.stdin.buffer, sys.stdout.buffer\n"
+        "inp.read(int.from_bytes(inp.read(8), 'big'))\n"
+        f"body = json.dumps({reserve!r}).encode()\n"
+        "out.write(len(body).to_bytes(8, 'big') + body)\n"
+        "out.flush()\n"
+        "inp.read(int.from_bytes(inp.read(8), 'big'))\n"
+        f"open({str(ready)!r}, 'w').write(str(os.getpid()))\n"
+        "time.sleep(20)\n"
+    )
+    host_code = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from benchmarks.agentic.host import LocalLauncher\n"
+        "from benchmarks.agentic.run import AgenticConfig, run_agentic\n"
+        "class Launcher(LocalLauncher):\n"
+        "    def command(self, job):\n"
+        f"        return [sys.executable, '-c', {worker!r}], super().command(job)[1]\n"
+        "config = AgenticConfig(\n"
+        f"    corpus_path=Path({str(SAMPLE_CORPUS)!r}),\n"
+        f"    matrix_path=Path({str(FIX / 'model-matrix.yml')!r}),\n"
+        f"    manifest_path=Path({str(COMMITTED_MANIFEST)!r}),\n"
+        f"    prices_path=Path({str(FIX / 'prices.yml')!r}),\n"
+        f"    ledger_dir=Path({str(tmp_path / 'ledger')!r}),\n"
+        f"    out_dir=Path({str(tmp_path / 'run')!r}),\n"
+        "    models=('scripted-anthropic',),\n"
+        "    systems=('no-docs',),\n"
+        "    questions=('SYN-EX-001',),\n"
+        "    repeats=1,\n"
+        "    seed=7,\n"
+        ")\n"
+        "run_agentic(config, launcher=Launcher())\n"
+    )
+    host = subprocess.Popen(
+        [sys.executable, "-c", host_code],
+        cwd=REPO_ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 20
+        while not ready.exists():  # bounded: a worker that never holds its unit fails loudly
+            assert host.poll() is None, "the host ended before its worker got ready"
+            assert time.monotonic() < deadline, "the worker never got ready"
+            time.sleep(0.01)
+        host.send_signal(signum)
+        host.wait(timeout=20)
+    finally:
+        if host.poll() is None:
+            host.kill()
+            host.wait()
+    pid = int(ready.read_text())
+    deadline = time.monotonic() + 5
+    while True:  # the worker is dead, and its host reaped it
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        assert time.monotonic() < deadline, "the worker outlived its host"
+        time.sleep(0.01)
+    lines = (tmp_path / "ledger" / "anthropic.jsonl").read_text(encoding="utf-8").splitlines()
+    events = [json.loads(line) for line in lines]
+    assert [(e["event"], e.get("outcome")) for e in events] == [
+        ("reserve", None),
+        ("settle", "worker_lost"),
+    ]
+    assert Decimal(events[1]["booked"]) == 2 * Decimal(events[0]["bound"])
+    summary = json.loads((tmp_path / "run" / "run-summary.json").read_text())
+    assert summary["status"] == "aborted" and signum.name in summary["abort_reason"]
 
 
 def test_a_rerun_that_never_ran_is_not_counted(tmp_path: Path) -> None:
