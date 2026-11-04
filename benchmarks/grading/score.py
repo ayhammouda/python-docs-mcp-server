@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import shutil
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
@@ -21,7 +20,11 @@ from typing import Any
 
 import yaml
 
-from benchmarks.agentic.protocol import assert_no_key_shaped
+from benchmarks.agentic.protocol import (
+    assert_no_key_shaped,
+    assert_no_key_shaped_json,
+    scanned_json_bytes,
+)
 from benchmarks.grading.aggregate import (
     LLM_PANEL,
     AnswerVotes,
@@ -108,12 +111,23 @@ def _jsonable(value: Any) -> Any:
 
 
 def _write(path: Path, data: Any) -> Any:
-    clean = _jsonable(data)
-    text = json.dumps(clean, indent=2, sort_keys=True) + "\n"
-    assert_no_key_shaped(text, where=str(path))
+    body = scanned_json_bytes(_jsonable(data), where="grading evidence", indent=2, sort_keys=True)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
-    return json.loads(text)
+    path.write_bytes(body + b"\n")
+    return json.loads(body)
+
+
+def _read_g1(path: Path) -> tuple[bytes, dict[str, Any]]:
+    try:
+        body = path.read_bytes()
+        text = body.decode("utf-8")
+        # A raw copy also publishes duplicate members discarded by normal JSON parsing.
+        pairs = json.loads(text, object_pairs_hook=list)
+    except (OSError, ValueError) as exc:
+        raise BenchmarkValidationError("could not read G1 evidence as UTF-8 JSON") from exc
+    assert_no_key_shaped(body, where="G1 evidence")
+    assert_no_key_shaped_json(pairs, where="G1 evidence")
+    return body, json.loads(text)
 
 
 def _cells(base: Path) -> dict[tuple[str, str], dict[str, Any]]:
@@ -233,6 +247,7 @@ def score_run_dir(
         )
         final = final_grade(av, questions[av.corpus_id], inputs=manifest) if complete else None
         if final is not None:
+            assert_no_key_shaped_json(final, where="cell grade")
             finals[key] = final
     grounded = {
         key: is_grounded(t.get("answer") or "", t.get("tool_calls") or [])
@@ -268,12 +283,12 @@ def score_run_dir(
     copies: list[dict[str, str]] = []
     entries: dict[str, Any] = {}
     for path in g1_paths:
-        data = _read(path)
+        body, data = _read_g1(path)
         entries.update(data.get("entries") or {})
-        sha = _sha256(path)
+        sha = hashlib.sha256(body).hexdigest()
         dest = grading / "disclosure" / "g1" / f"{sha}.json"
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(path, dest)
+        dest.write_bytes(body)
         copies.append({"source": str(path), "path": str(dest.relative_to(grading)), "sha256": sha})
     if entries:
         g1_result = select_g1(entries, binding)

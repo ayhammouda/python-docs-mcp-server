@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from benchmarks.agentic.protocol import assert_no_key_shaped
+from benchmarks.agentic.protocol import assert_no_key_shaped_json, scanned_json_bytes
 from benchmarks.agentic.run import OUTPUT_CAP_STOPS
 from benchmarks.grading.batch import BatchItemResult
 from benchmarks.grading.inputs import VOTE_FIELDS, GradingQuestion
@@ -102,7 +102,16 @@ def write_vote_record(
         "input_sha256": input_sha256,
         "graded_at": _now(),
     }
-    text = json.dumps(record, indent=2, sort_keys=True) + "\n"
+    # The original reply is evidence even when the vote is withheld. Retain all
+    # object pairs for the scan, including fields shadowed by a duplicate name.
+    if result.text is not None:
+        try:
+            reply = json.loads(result.text, object_pairs_hook=list)
+        except ValueError:
+            pass  # A non-JSON reply is scanned as plain text in the record below.
+        else:
+            assert_no_key_shaped_json(reply, where="judge reply")
+    body = scanned_json_bytes(record, where="vote record", indent=2, sort_keys=True) + b"\n"
     path = vote_dir(
         root,
         target=target,
@@ -112,10 +121,9 @@ def write_vote_record(
         item_id=result.item_id,
     )
     path = path / f"{grading_run_id}--a{attempt}.json"
-    assert_no_key_shaped(text, where=str(path))
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="utf-8") as file:
-        file.write(text)
+    with path.open("xb") as file:
+        file.write(body)
     return path
 
 

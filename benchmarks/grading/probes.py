@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from benchmarks.agentic.protocol import assert_no_key_shaped, assert_no_key_shaped_json
 from benchmarks.grading.batch import BatchRequest
 from benchmarks.grading.inputs import PROBE_SPEC_PATH, GradingQuestion, safe_id
 from benchmarks.grading.mapping import Label, grade
@@ -325,7 +326,10 @@ def write_probe_file(path: Path, probe_file: ProbeFile) -> None:
         "probes": [asdict(p) for p in probe_file.probes],
         "dropped": list(probe_file.dropped),
     }
-    path.write_text(yaml.safe_dump(data, sort_keys=False, width=100), encoding="utf-8")
+    assert_no_key_shaped_json(data, where="probe file")
+    body = yaml.safe_dump(data, sort_keys=False, width=100).encode("utf-8")
+    assert_no_key_shaped(body, where="probe file")
+    path.write_bytes(body)
 
 
 def _sha256(path: Path) -> str:
