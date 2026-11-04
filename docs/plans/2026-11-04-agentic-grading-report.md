@@ -107,8 +107,8 @@ Global Constraints before Task 1.
 10. **Unequal question sets.** A planned cell with no scored record makes only the claims comparing its system "not evaluable": `docs-fetch` → C2, `no-docs` → C3, `python-docs` → both. Test: Task 7 `test_a_missing_planned_cell_affects_only_the_claims_that_compare_its_system`.
 11. **Injection suspects.** An answer holding `</answer>` or verdict-shaped JSON is escaped and flagged, and its reference grade replaces the panel's everywhere, G4 included. Tests: Task 1 `test_escape_delimiters_and_suspects`; Task 6 `test_a_suspect_answer_takes_the_reference_grade`; Task 7 `test_g4_uses_the_reference_grade_for_suspects`.
 12. **Envelopes.** A trajectory that does not end cleanly is still counted with valid envelopes. That covers repeated Gemini ids, unknown tool names, a final `tool_use` turn with malformed raw arguments, an empty answer, and `no-docs` without `tools`. Tests: Task 9 `test_every_envelope_ends_with_a_user_message`, `test_malformed_arguments_are_counted_from_their_raw_text`.
-13. **Grading through PR 4's launcher.** Live grading and counting use PR 4's flags, gate and bootstrap frame, and the launcher writes under `<run>/grading/sandbox/<grading_run_id>/`, never over the answering run's C1 evidence. Every grading `reserve` event names its job, so #200's C6 attribution rule holds. Tests: Task 8 `test_live_grading_passes_pr4s_authorization_gate`, `test_grading_never_overwrites_the_runs_c1_evidence`; Task 4 `test_a_live_batch_job_without_its_bootstrap_is_refused`, `test_every_grading_reserve_event_names_its_job`.
-14. **Terminal failures.** Exhausted retries are final and withheld, including an exhaustion with no results frame (three failed submits). The reference proceeds on them, and a rerun never resubmits them. Tests: Task 4 `test_errored_items_are_retried_at_most_twice`, `test_three_failed_submits_write_terminal_records_without_a_results_frame`; Task 8 `test_exhausted_items_are_terminal_then_reference_settles_and_a_rerun_resubmits_nothing`.
+13. **Grading through PR 4's launcher.** Live grading and counting use PR 4's flags, gate and bootstrap frame, and the launcher writes under `<run>/grading/sandbox/<grading_run_id>/`, never over the answering run's C1 evidence. Every grading `reserve` event names its job, consistent with #200's C6 rule; grading events never enter C6, which reads only the answering run's events. Tests: Task 8 `test_live_grading_passes_pr4s_authorization_gate`, `test_cli_container_launches_keep_each_grading_run_in_its_own_sandbox_dir`; Task 4 `test_a_live_batch_job_without_its_bootstrap_is_refused`, `test_every_grading_reserve_event_names_its_job`.
+14. **Terminal failures.** Exhausted retries are final and withheld when money was at stake: an errored result on the last take, or a take exhaustion that includes a paid no-result unit. The reference proceeds on them, and a rerun never resubmits them. Exhaustion by $0 submit failures alone (`rate_limited`, `rejected`) is not terminal: `submit_rejected`, gradable later. Tests: Task 4 `test_errored_items_are_retried_at_most_twice`, `test_three_free_submit_failures_are_not_terminal`, `test_a_paid_no_result_take_makes_the_third_take_terminal`; Task 8 `test_exhausted_items_are_terminal_then_reference_settles_and_a_rerun_resubmits_nothing`.
 
 ---
 
@@ -136,6 +136,7 @@ Global Constraints before Task 1.
 | Short G3 stratum | borrow within the same `(model, system)`; still short → G3 not evaluable, said in plain words | Round 3, owner-ruled fail-closed |
 | Terminal failures | exhausted retries are final and withheld, with or without a results frame | Rounds 3–4 |
 | Failed OpenAI batch | booked $0, not resubmitted within the invocation, not terminal (`batch_failed`) | Round 4: a request-builder bug, gradable after a fix |
+| Free submit failures | exhaustion by $0 outcomes only (`rate_limited`, `rejected`) is not terminal (`submit_rejected`); only an exhaustion that includes a paid no-result unit writes `item_terminal` | Round 5, owner ruling: no money spent; transient or a request-builder bug |
 
 ## Gate ownership against PR 4
 
@@ -190,7 +191,7 @@ Global Constraints before Task 1.
 | `benchmarks/agentic/worker.py` | + task dispatch |
 | `benchmarks/scoring.py` | + LLM provenance methods, idempotence, agentic refusal of `adjudicate` |
 | `benchmarks/report.py` | + dispatch to the agentic report |
-| `benchmarks/__main__.py` | + three commands |
+| `benchmarks/__main__.py` | + three commands, and the private `_container_launcher` helper both live commands share |
 
 ### Artifact layout
 
@@ -897,6 +898,8 @@ class ItemSource:
     def lose(self, unit_id: str | None, reason: str) -> None   # taken and pending items -> not_run(reason)
     def attempts(self, item_id: str) -> int    # takes so far, the one in flight included
     def exhausted(self, unit_id: str) -> list[str]   # the unit's items whose take reached max_attempts
+    def note_paid_no_result(self, unit_id: str) -> None   # the unit's items had a take booked at 2x with no result
+    def paid_no_result(self, item_id: str) -> bool
     max_attempts: int
     def not_run(self) -> list[dict[str, Any]]                  # {item_id, reason, attempts}
 WHOLE_BATCH_FAILURE_LIMIT = 2   # a job's second no-result batch unit stops that job's provider
@@ -921,7 +924,7 @@ Frame protocol (new frame types only; trajectory jobs are unchanged):
 | From worker | Host does | Reply |
 |---|---|---|
 | `{"type": "reserve", "kind": "batch"}` | If nothing is pending, no unit. Otherwise `reserve_batch` over `source.pending()` with the job's own provider and model and `job_id=job.job_id` (#200 Task 5: every `reserve` event names its job), ignoring any bound in the frame. | `no_more_items`, `deny`, or `{"type": "grant", "unit_id", "items": source.take(unit, n)}` |
-| `{"type": "settle", "unit_id", "outcome", "buckets": null}` for a batch unit (submit failed, or the poll ceiling passed) | `ledger.settle`. For each of `source.exhausted(unit)`, `on_message(job, {"type": "item_terminal", "item_id", "attempt", "reason": "retries_exhausted"})`, which writes a terminal-withheld record. `source.release(unit)`. Count a no-result unit (below) when the outcome books twice the bound. | `ack` |
+| `{"type": "settle", "unit_id", "outcome", "buckets": null}` for a batch unit (submit failed, or the poll ceiling passed) | `ledger.settle`. When the outcome books twice the bound, `source.note_paid_no_result(unit)` and count a no-result unit (below). Then for each of `source.exhausted(unit)`: when `source.paid_no_result(item)`, `on_message(job, {"type": "item_terminal", "unit_id", "item_id", "attempt", "reason": "retries_exhausted"})`, which writes a terminal-withheld record, and `give_up(unit, [item], "retries_exhausted")`; otherwise (exhausted by $0 outcomes only) `give_up(unit, [item], "submit_rejected")`, with no record and `terminal: false`. `source.release(unit)` for the rest. | `ack` |
 | `{"type": "batch_results", "unit_id", "results": [...]}`, one or more frames | Mark each result `terminal`: true when it is not `succeeded`, it is `retryable`, and this take reached `max_attempts` (`source.attempts(item) >= max_attempts`). A non-retryable result (a failed OpenAI batch) is never terminal. Accumulate a `BatchItemSettle` per result for that unit, then `on_message(job, message)` writes the records, `terminal` included. | `ack` |
 | `{"type": "settle_batch", "unit_id", "result_count": n, "batch_state": str}` | Refuse `n` ≠ the accumulated count. `ledger.settle_batch` over the accumulated results. `release` non-`succeeded`, non-terminal, `retryable` results. `give_up` terminal ones with `retries_exhausted` and non-retryable ones with `batch_failed`. `complete(unit)`. Count a no-result unit (below) when every result is `missing`. | `ack` |
 | `{"type": "next_item"}` (task `items`) | `source.take(None, 1)` | `{"type": "item", "item"}` or `no_more_items` |
@@ -931,7 +934,8 @@ Frame protocol (new frame types only; trajectory jobs are unchanged):
 - **`ItemSource` attempts.** `attempts(item)` is the number of takes so far, the one in flight included. The wire item's `attempt` is that number, 1-based. A released item goes back to the front of `pending`, in its original order. An item whose take reached `max_attempts` (3: ruling 6, at most two more attempts) is never released; it goes to `not_run` with reason `retries_exhausted`.
 - **Terminal withheld** is persisted separately from retry eligibility.
   - The record of the take that reaches `max_attempts` without a `succeeded` result is written with `terminal: true`.
-  - When the exhausting take produced no results frame at all (for example three submit 429s, or the poll ceiling), the host writes that record itself from `item_terminal`: status `missing`, withheld `missing`, `terminal: true`.
+  - When the exhausting take produced no results frame (a submit failure or the poll ceiling), the item is terminal only if at least one of its takes was a paid no-result unit (booked at 2×: `server`, `timeout`, `connection`). The host then writes the record itself from `item_terminal`: status `missing`, withheld `missing`, `terminal: true`, `provider_batch_id: null`, `unit_id` from the message, and `input_sha256` from the item's meta, as for `batch_results`.
+  - **Free submit failures** (owner ruling, round 5): when an item's takes were exhausted by $0 outcomes only (`rate_limited` or `rejected`), no money was spent and the cause is transient or a request-builder bug, like the failed OpenAI batch. The item is not terminal: `give_up` reason `submit_rejected`, and a later invocation can grade it.
   - A terminal record is final and withheld: no later invocation resubmits it (Task 8), and the reference target treats it as the item's final panel record (Task 6).
 - **A failed OpenAI batch** (input validation: a bug in our request builder) is booked at $0. Its items are not resubmitted within the invocation (`give_up` reason `batch_failed`), and their records have `terminal: false`. A later invocation, after a fix, can grade that pass.
 - **No-result units.** Count, per job, every batch unit that returned no results:
@@ -941,7 +945,7 @@ Frame protocol (new frame types only; trajectory jobs are unchanged):
   Each books twice its bound, per the rulings. At the job's `WHOLE_BATCH_FAILURE_LIMIT`-th (second) such unit, the host denies every later reserve of that job instead of retrying again. The provider then carries two bookings of twice the bound (4× in all), not three. The remaining and released items go to `not_run` with reason `whole_batch_failures`. Their records, if any, have `terminal: false`, so a later invocation can rerun them after the maintainer looks.
 - **The job frame** always carries `task` and `payload`; a worker reads `job.get("task", "trajectories")`. The host remembers whether its in-flight unit is a batch unit.
 - **A lost worker** (it dies or stalls) gets its in-flight unit settled `worker_lost` by the existing teardown. Then `source.lose(unit, "worker_lost")` moves that unit's taken items and every pending item to `not_run`. A rerun picks them up (Task 8).
-- **When a job ends**, the host sends `on_message(job, {"type": "item_not_run", "item_id", "reason", "attempts"})` for every `source.not_run()` entry. The reason is one of `retries_exhausted`, `batch_failed`, `budget_stop` (a deny), `whole_batch_failures` or `worker_lost`.
+- **When a job ends**, the host sends `on_message(job, {"type": "item_not_run", "item_id", "reason", "attempts"})` for every `source.not_run()` entry. The reason is one of `retries_exhausted`, `batch_failed`, `submit_rejected`, `budget_stop` (a deny), `whole_batch_failures` or `worker_lost`.
 - **No bootstrap, no live task.** The task dispatch sits after PR 4's bootstrap refusal in `_run_job` (#200 Task 5). A live batch or count job without its bootstrap frame is therefore refused before any client is built.
 - **Worker.** `_run_job` dispatches on `job.get("task", "trajectories")`: `batches` imports `run_batch_task` after `protect_output`; `items` is added by Task 9. `run_batch_task`:
   1. builds the client from `job["family"]` and `job["payload"]["effort"]`;
@@ -973,9 +977,13 @@ async def test_every_grading_reserve_event_names_its_job(host_with_judges) -> No
 async def test_errored_items_are_retried_at_most_twice(host_with_judges) -> None:
     # script: item "i2" errored on every attempt -> records with attempt 1, 2, 3; the first two have
     # terminal false and the third terminal true; then item_not_run retries_exhausted
-async def test_three_failed_submits_write_terminal_records_without_a_results_frame(host_with_judges) -> None:
-    # submit_errors: [429, 429, 429] -> three units booked 0, no batch_results frame, and one host-written
-    # record per item with attempt 3, status "missing", terminal true
+async def test_three_free_submit_failures_are_not_terminal(host_with_judges) -> None:
+    # submit_errors: [429, 429, 429] -> three units booked 0, no batch_results frame, no vote record, and
+    # item_not_run submit_rejected for every item (terminal: false); a later invocation plans them again
+async def test_a_paid_no_result_take_makes_the_third_take_terminal(host_with_judges) -> None:
+    # submit_errors: [429, 500, 429] -> the 500 unit is booked at 2x; at the third take each item gets one
+    # host-written record: attempt 3, status "missing", terminal true, provider_batch_id null, the unit_id
+    # of the third unit, input_sha256 from the item's meta; load_answer_votes(...).records[judge]["attempts"] == 3
 async def test_a_failed_openai_batch_is_not_resubmitted(host_with_judges) -> None:
     # batch_status failed -> every item errored, booked 0, one attempt each, records with terminal false,
     # item_not_run batch_failed
@@ -1219,7 +1227,7 @@ Rules the tests pin:
 - **Vote paths are immutable.** `vote_dir` is `votes/<target>/<judge_id>/<effort or "default">/pass<N>/<item_id>/`. Each record is a new file in it, `<grading_run_id>--a<attempt>.json`, created with exclusive mode (`"x"`); an existing name raises. Tuning efforts, passes, retries and reruns never overwrite each other.
 - **Vote record fields:** `item_id`, `target`, `judge_id`, `model_id`, `reported_model`, `effort`, `pass`, `grading_run_id`, `attempt`, `status`, `withheld`, `terminal` (Task 4: the take that reached `max_attempts` without success; final and withheld, never resubmitted), `text`, `vote` (the six fields or `null`), `parsed` (non-judge targets, else `null`), `stop_reason`, `raw_usage`, `buckets`, `unit_id`, `provider_batch_id`, `input_sha256`, `graded_at`. There is no prompt or schema hash: `input_sha256` and `inputs.json` pin them.
 - **`withheld_reason`** checks, in order: `refusal`; then `output_cap` (`stop_reason` in `OUTPUT_CAP_STOPS`); then a non-`succeeded` status; then `parse_failure` when `parse_object` gives `None`.
-- **`chosen_record`:** the records are ordered by their own `graded_at`, then `grading_run_id`, then attempt. It returns the last record for which `is_final` holds: `succeeded`, withheld for a reason in `FINAL_WITHHELD`, or `terminal`. With no final record it returns the last record. `has_final_record` says whether a final record exists. A terminal record counts as a withheld vote in `final_grade`. `records[...]["attempts"]` counts every file in the directory.
+- **`chosen_record`:** the records are ordered by their own `graded_at`, then `grading_run_id`, then attempt. It returns the last record for which `is_final` holds: `succeeded`, withheld for a reason in `FINAL_WITHHELD`, or `terminal`. With no final record it returns the last record. `has_final_record` says whether a final record exists. A terminal record counts as a withheld vote in `final_grade`. `records[...]["attempts"]` is the maximum `attempt` field over the directory's records, not a count of files: a take that produced no result leaves no file.
 - **Final grade.**
   - A suspect answer: the reference vote decides every field; method `llm_reference`.
   - Otherwise `panel_fields`. Open fields take the reference vote's value; the method is `llm_reference` when any field came from it, else `llm_panel`.
@@ -1662,9 +1670,9 @@ Rules the tests pin:
 - **Run.**
   - Open the durable ledger (default `default_ledger_dir()`), apply `acknowledge_overrun`, refuse a provider still stopped for an overrun, and build `LedgerService` over the judges' prices and `as_model_family` families.
   - With any live judge, call `live.authorize_live(text, confirm=confirm)` (#200 Task 13) before `run_jobs`. `text` gives one line per provider: the planned reservation bound, spent, cap, remaining, and the batch-rate estimate. `run_grading` takes `confirm: Callable[[str], bool] = interactive_confirm`, as `run_agentic` does. A refusal records `status: "aborted"` in `runs/<grading_run_id>.json`, and no key is read and no container starts.
-  - The launcher is the one the caller passes: `LocalLauncher` by default. For `--launcher container` the CLI builds it inline (no helper): `ContainerLauncher(Sandbox(SandboxConfig(image=..., run_id=grading_run_id, out_dir=grading_dir(config) / "sandbox" / grading_run_id, index_path=..., keys_file=..., repo_commit=...)))`. Each invocation's proxy logs, probe records and `sandbox.json` are therefore kept apart.
+  - The launcher is the one the caller passes: `LocalLauncher` by default. For `--launcher container`, both `agentic-grade` and `agentic-count-tokens` call one private helper in `benchmarks/__main__.py` (not `run.py`): `_container_launcher(args, run_id, out_dir, *, docker=None, verify=None, probe=None)`. It returns `ContainerLauncher(Sandbox(SandboxConfig(image=args.image, run_id=run_id, out_dir=out_dir, index_path=args.index, keys_file=args.keys_file, repo_commit=...), docker=docker, verify=verify or verify_image), probe=probe)`. The CLI passes `out_dir = grading_dir(config) / "sandbox" / grading_run_id`, so each invocation's proxy logs, probe records and `sandbox.json` are kept apart.
   - One `WorkerJob` per judge: `family = as_model_family(judge)`, `system = GRADING_SYSTEM`, `trajectories = ()`, `caps = GRADING_CAPS`, `task = "batches"`, `payload = {"effort", "target"}`, and `source = ItemSource(...)` holding that judge's items.
-  - `run_jobs` runs with a collector. On each `batch_results` frame it writes one record per result with `write_vote_record`, using the invocation's `grading_run_id` and the item's attempt. On each `item_terminal` message it writes the terminal-withheld record (status `missing`, `terminal: true`). For `probe-gen`, `probe-check` and `key-audit`, `vote` is `null` and `parsed` holds `parse_object(text, schema)`.
+  - `run_jobs` runs with a collector. On each `batch_results` frame it writes one record per result with `write_vote_record`, using the invocation's `grading_run_id` and the item's attempt. On each `item_terminal` message it writes the terminal-withheld record: status `missing`, `terminal: true`, `provider_batch_id: null`, the message's `unit_id`, and `input_sha256` from the item's meta. For `probe-gen`, `probe-check` and `key-audit`, `vote` is `null` and `parsed` holds `parse_object(text, schema)`.
   - This invocation's ledger events are appended to `ledger-events.jsonl`.
   - `runs/<grading_run_id>.json` records the target, pass, round, composition and efforts (the G1 binding's source), the planned bound, the spend before and after per provider, the units, the records written, the withheld counts, `not_run`, and `started_at`/`completed_at`.
   - Every JSON write goes through `assert_no_key_shaped`.
@@ -1698,22 +1706,23 @@ def test_live_grading_passes_pr4s_authorization_gate(tmp_path, monkeypatch) -> N
     # -> "refused under CI"; confirm never called; FakeDocker records no call; runs/<id>.json "aborted"
 def test_cli_launcher_flags_match_agentic_run() -> None
     # --live with --launcher local -> parser error; --launcher container without --live -> dry run
-def test_grading_never_overwrites_the_runs_c1_evidence(scripted_run, tmp_path) -> None:
-    # scripted_run holds egress/summary.json, probe/control.json and sandbox.json. The test builds the
-    # launcher by hand and passes it as launcher=:
-    #   sandbox_dir = scripted_run / "grading" / "sandbox" / run_id
-    #   launcher = LocalCommandContainerLauncher(Sandbox(SandboxConfig(..., out_dir=sandbox_dir),
-    #       docker=FakeDocker(), verify=<stub>), probe=<stub returning a passing record>)
-    # where LocalCommandContainerLauncher overrides command(job) with LocalLauncher().command(job); the
-    # verify stub (#200 Task 10 seam) lets the test run on a dirty checkout. Grade answers with scripted judges: the three run files
-    # are byte-identical afterwards, and sandbox_dir / "egress" / <job_id> holds squid.conf and
-    # collected.json for every judge job
+def test_cli_container_launches_keep_each_grading_run_in_its_own_sandbox_dir(scripted_run, monkeypatch) -> None:
+    # scripted_run holds egress/summary.json, probe/control.json and sandbox.json. The test wraps the real
+    # __main__._container_launcher so it injects docker=FakeDocker(), verify=<stub> (#200 Task 10 seam,
+    # so a dirty checkout works) and probe=<stub>, the control probe stubbed as #200's own prepare tests
+    # stub it, then sets the launcher's command to LocalLauncher().command. It runs main() for
+    # agentic-grade --target answers --launcher container --live (scripted judges, no gate) twice:
+    # --grading-run-id g1 --pass 1, then --grading-run-id g2 --pass 2.
+    # Asserts: the wrapper saw out_dir == run/grading/sandbox/g1 and run/grading/sandbox/g2; each holds
+    # egress/<job_id>/squid.conf and collected.json for every judge job; g1's files are byte-identical
+    # after g2; the run's three C1 files are byte-identical. A CLI that passes one shared directory fails it
 def test_run_targets_need_the_probes_file_and_pin_its_hash(scripted_run, tmp_path) -> None:
     # probes_path defaulted to a missing PROBES_PATH -> BenchmarkValidationError naming it; with the
     # fixture probes file, grading/inputs/inputs.json["probes"] == its sha256
 def test_a_reused_grading_run_id_is_refused_before_the_ledger_opens(scripted_run) -> None   # no .lock created
 def test_exhausted_items_are_terminal_then_reference_settles_and_a_rerun_resubmits_nothing(scripted_run) -> None:
-    # luna's script: three submit failures (429) -> host-written records with attempt 3, terminal true;
+    # luna's script: submit failures [429, 500, 429] (one paid no-result take) -> host-written records with
+    # attempt 3, terminal true, and provenance attempts == 3;
     # haiku and flash-lite split on p2 -> the reference target is allowed (every panel item has a final
     # record), settles p2 with two valid votes and luna withheld; a second answers invocation plans 0 items
     # and its scripted client records no submit
@@ -1840,7 +1849,7 @@ Rules the tests pin (design §8):
 - **Run.**
   - `run_counting` refuses a host key.
   - With `live=False` and a non-scripted family, it returns the planned number of count calls and starts nothing.
-  - With `live`, it calls `live.authorize_live` (#200 Task 13) before `run_jobs`, with a text giving the planned count calls, the free endpoint, and "no ledger unit". The key reaches the worker only through PR 4's bootstrap frame. The CLI builds the container launcher inline, as `agentic-grade` does, with `out_dir` `<run>/grading/sandbox/<count_run_id>/` and its own `count_run_id`, never `<run>`.
+  - With `live`, it calls `live.authorize_live` (#200 Task 13) before `run_jobs`, with a text giving the planned count calls, the free endpoint, and "no ledger unit". The key reaches the worker only through PR 4's bootstrap frame. The CLI builds the container launcher with the same `_container_launcher` helper, with `out_dir` `<run>/grading/sandbox/<count_run_id>/` and its own `count_run_id`, never `<run>`.
   - Otherwise it runs one `WorkerJob` (task `items`, `GRADING_SYSTEM`, the count family) whose `ItemSource` yields one `CountItem` per cell, skipping `counted` records when `only_missing`.
   - The worker sends a `heartbeat` after every count call, so a long retry wait never trips the host's silence limit. It sends one `counted` message per item, which the host writes to `tokens/<cell>/<qid>.json`.
 - **Premise check (ponytail: out of production code).** `ops/benchmarks/count_tokens_premise_check.py` is a one-off host-side script run before the pilot. It uses no second key path:
