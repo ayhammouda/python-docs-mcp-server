@@ -6,8 +6,10 @@ Every model is scripted and every worker is keyless: no test reaches a network h
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import json
+import os
 import random
 import signal
 import subprocess
@@ -1388,6 +1390,52 @@ def test_runs_share_one_durable_ledger_by_default(
     (first_before, first_after), (second_before, second_after) = spent
     assert first_before == 0 and second_before == first_after > 0
     assert (expected / "anthropic.jsonl").is_file()
+
+
+def test_cli_leak_stays_primary_when_the_artifact_volume_is_full(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from tests.benchmarks.test_agentic_host import SYNTHETIC_KEY, _fake_worker, _reserve_frame
+
+    code = f"import os; os.write(2, {SYNTHETIC_KEY.encode()!r})\n" + _fake_worker(
+        _reserve_frame(1024)
+    )
+    monkeypatch.setattr(
+        LocalLauncher, "command", lambda self, job: ([sys.executable, "-I", "-c", code], {})
+    )
+    replace = os.replace
+    write = Path.write_bytes
+    failures = []
+
+    def no_space(src: Any, dst: Any, **kwargs: Any) -> None:
+        if str(dst).endswith(".stderr.log"):
+            failures.append("stderr")
+            raise OSError(errno.ENOSPC, "artifact volume full")
+        replace(src, dst, **kwargs)
+
+    def no_export(path: Path, data: bytes) -> int:
+        if path.name == "ledger-events.jsonl":
+            failures.append("export")
+            raise OSError(errno.ENOSPC, "artifact volume full")
+        return write(path, data)
+
+    monkeypatch.setattr(os, "replace", no_space)
+    monkeypatch.setattr(Path, "write_bytes", no_export)
+    with pytest.raises(SystemExit) as error:
+        main([*_cli_args(tmp_path), "--models", "scripted-anthropic", "--systems", "no-docs"])
+    assert error.value.code == 3
+    message = capsys.readouterr().err
+    assert "key leak" in message and SYNTHETIC_KEY not in message
+    assert failures == ["stderr", "export"]
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "ledger" / "anthropic.jsonl").read_text().splitlines()
+    ]
+    reserve, settle = (e for e in events if e["event"] in ("reserve", "settle"))
+    assert settle["outcome"] == "worker_lost" and Decimal(settle["booked"]) == 2 * Decimal(
+        reserve["bound"]
+    )
+    assert not list((tmp_path / "run" / "logs").glob("*.stderr.log"))
 
 
 def _cli_args(tmp_path: Path) -> list[str]:

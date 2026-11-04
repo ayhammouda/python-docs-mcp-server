@@ -35,6 +35,7 @@ from benchmarks.agentic.airgap import (
     write_airgap_evidence,
 )
 from benchmarks.agentic.bridge import SystemSpec, systems_from_mapping
+from benchmarks.agentic.cleanup import add_cleanup_cause
 from benchmarks.agentic.egress import write_egress_summary
 from benchmarks.agentic.host import Launcher, LocalLauncher, WorkerJob, refuse_host_keys, run_jobs
 from benchmarks.agentic.ledger import (
@@ -58,6 +59,7 @@ from benchmarks.agentic.protocol import (
     KeyLeakError,
     assert_no_key_shaped,
     assert_no_key_shaped_json,
+    redact_key_shaped_text,
     scanned_json_bytes,
 )
 from benchmarks.agentic.protocol import (
@@ -705,6 +707,7 @@ def run_agentic(
         )
         _write(out / "run-summary.json", summary)
 
+    failure: BaseException | None = None
     try:  # every step after the open, the overrun check included, ends in write_outcome
         for provider in config.acknowledge_overrun:
             ledger.acknowledge_overrun(provider)
@@ -736,12 +739,29 @@ def run_agentic(
             if loaded:
                 _write(out / "ollama.json", loaded)
         asyncio.run(_until_signalled(run_arm()))
-    except BaseException as exc:  # still write what was spent and what ran
-        summary |= {"status": "aborted", "abort_reason": f"{type(exc).__name__}: {exc}"}
-        raise
+    except BaseException as exc:
+        failure = exc
+        detail = redact_key_shaped_text(str(exc))
+        summary |= {"status": "aborted", "abort_reason": f"{type(exc).__name__}: {detail}"}
     finally:
-        try:
-            write_outcome()
-        finally:
-            ledger.close()
+        # A failed evidence export must not hide a detected leak or skip releasing the ledger.
+        for finalize in (write_outcome, ledger.close):
+            try:
+                finalize()
+            except Exception as exc:  # noqa: BLE001 - keep both failures and finish cleanup
+                if failure is None:
+                    failure = exc
+                elif isinstance(exc, KeyLeakError) and not isinstance(
+                    failure, (asyncio.CancelledError, KeyLeakError)
+                ):
+                    failure = KeyLeakError(
+                        f"{redact_key_shaped_text(str(exc))}; "
+                        f"earlier failure: {redact_key_shaped_text(str(failure))}"
+                    )
+                else:
+                    add_cleanup_cause(
+                        failure, BenchmarkValidationError(redact_key_shaped_text(str(exc)))
+                    )
+    if failure is not None:
+        raise failure
     return summary
