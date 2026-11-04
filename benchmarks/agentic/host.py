@@ -493,6 +493,8 @@ async def run_jobs(
         try:
             await finish(close(), pending)
         except KeyLeakError as leak:
+            if leak is pending:
+                raise
             if isinstance(pending, Exception):
                 # The CLI prints only the final message. Keep earlier resource IDs visible.
                 earlier = redact_key_shaped_text(str(pending))

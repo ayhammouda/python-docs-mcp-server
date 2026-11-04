@@ -227,6 +227,8 @@ async def _rollback(
             add_cleanup_cause(interrupt, BenchmarkValidationError(reason))
         raise
     except BenchmarkValidationError as exc:
+        if exc is setup_error:
+            raise
         reason = redact_key_shaped_text(str(setup_error))
         raise BenchmarkValidationError(f"{reason}; rollback failed: {exc}") from None
 
