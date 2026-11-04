@@ -1678,3 +1678,189 @@ def test_cli_keeps_rollback_ids_when_an_earlier_proxy_log_leaks(
     message = capsys.readouterr().err
     assert failed_proxy in message and failed_network in message
     assert "cache.log" in message and SYNTHETIC not in message
+
+
+# Exercise real prepare, close and evidence reporting with scripted jobs and no Docker process.
+_PAIR = [_job("scripted-anthropic"), replace(_job("scripted-anthropic"), job_id="second")]
+_FIRST = _PAIR[0].job_id
+_PROXY = f"id-pdmcp-{RUN}-{_FIRST}-proxy"
+_NETWORK = f"id-pdmcp-{RUN}-{_FIRST}-net"
+_GOOGLE = "AIza" + "g" * 35
+_PRIVATE_DETAIL = "private synthetic detail"
+
+
+async def _run_collection_pair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    docker: FakeDocker,
+    *,
+    setup_first: Callable[[Path], None] | None = None,
+    interruption: asyncio.CancelledError | None = None,
+) -> None:
+    box = _sandbox(tmp_path, docker)
+    out = box.config.out_dir
+
+    async def probe(sandbox: Sandbox, egress: Egress, **kwargs: Any) -> dict[str, Any]:
+        _logs(egress.spool_dir, access=PROBE_PREFIX)
+        record = {"passed": True, "proxy_prefix": PROBE_PREFIX.splitlines()}
+        (out / "probe/control.json").write_text('{"passed":true}')
+        (out / "probe" / f"{egress.job_id}.json").write_text(json.dumps(record))
+        if setup_first is not None and egress.job_id == _FIRST:
+            setup_first(egress.spool_dir)
+        return record
+
+    monkeypatch.setattr("benchmarks.agentic.host._supervise", AsyncMock(side_effect=interruption))
+    try:
+        await run_jobs(
+            _PAIR,
+            launcher=ContainerLauncher(box, probe=probe, control=Probes().control),
+            ledger=Mock(),
+            on_message=AsyncMock(),
+            log_dir=out / "logs",
+            cwd=tmp_path,
+        )
+    finally:
+        for job in _PAIR:
+            assert not docker.squid_spool(job.job_id).parent.exists()
+        assert docker.ran("network", "rm", f"id-{box.outside}")
+        assert json.loads((out / "egress/second/collected.json").read_text())["ok"] is True
+        assert not (out / "probe/second.collection-pending").exists()
+
+
+def _check_first_collection(tmp_path: Path, *, ok: bool) -> Path:
+    out = tmp_path / "run"
+    assert (out / "probe" / f"{_FIRST}.collection-pending").exists() == (not ok)
+    assert write_egress_summary(out, _PAIR, [])["isolation_probe"] == ("pass" if ok else "fail")
+    return out / "egress" / _FIRST
+
+
+@pytest.mark.parametrize(
+    "shape,interrupted",
+    [("newline", False), ("adjacent", False), ("field-name", False), ("adjacent", True)],
+)
+async def test_run_jobs_withholds_key_shaped_collection_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shape: str, interrupted: bool
+) -> None:
+    class Docker(FakeDocker):
+        async def __call__(self, argv: Sequence[str]) -> Any:
+            result = await super().__call__(argv)
+            if argv[1] == "inspect" and argv[-1] == _PROXY:
+                state = json.loads(result.stdout)
+                field = _PRIVATE_DETAIL + "\n" + _GOOGLE
+                if shape == "field-name":
+                    state["Error"] = {field: _PRIVATE_DETAIL}
+                else:
+                    state["Error"] = field + (SYNTHETIC if shape == "adjacent" else "")
+                result.stdout = json.dumps(state).encode()
+            return result
+
+    failed_ids = {_PROXY, _NETWORK} if shape == "adjacent" else set()
+    docker = Docker(fail=lambda args: "rm" in args and args[-1] in failed_ids)
+    interrupt = asyncio.CancelledError("original test interruption") if interrupted else None
+    with pytest.raises(asyncio.CancelledError if interrupted else KeyLeakError) as caught:
+        await _run_collection_pair(tmp_path, monkeypatch, docker, interruption=interrupt)
+    if interrupted:
+        assert caught.value is interrupt and isinstance(caught.value.__cause__, KeyLeakError)
+    record = (_check_first_collection(tmp_path, ok=False) / "collected.json").read_text()
+    assert json.loads(record)["ok"] is False
+    trace = "".join(traceback.format_exception(caught.value))
+    assert "collected.json" in trace
+    for output in (trace, record):
+        assert all(private not in output for private in (_PRIVATE_DETAIL, _GOOGLE, SYNTHETIC))
+        assert all(owned in output for owned in failed_ids)
+    assert set(docker.resources) == failed_ids
+
+
+@pytest.mark.parametrize(
+    "fault", ["memory", "encoding", "publish", "publish-leak", "collector", "interrupted", "cancel"]
+)
+async def test_run_jobs_preserves_removal_ids_after_collection_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    from benchmarks.agentic import sandbox as module
+
+    docker = FakeDocker(fail=lambda args: "rm" in args and args[-1] in {_PROXY, _NETWORK})
+    interrupt = asyncio.CancelledError("original test interruption")
+    if fault in {"encoding", "memory"}:
+        dumps = json.dumps
+
+        def fail_encode(value: Any, **kwargs: Any) -> str:
+            if isinstance(value, dict) and "state_before_stop" in value and value["problems"]:
+                raise (ValueError if fault == "encoding" else MemoryError)(_PRIVATE_DETAIL)
+            return dumps(value, **kwargs)
+
+        monkeypatch.setattr(json, "dumps", fail_encode)
+    else:
+        write = module.write_new
+        fail_name = "collected.json" if fault.startswith("publish") else "cache.log"
+
+        def fail_write(dir_fd: int, name: str, data: bytes, **kwargs: Any) -> None:
+            if name == fail_name and len(docker.ran("stop")) == 1:
+                if fault == "cancel":
+                    raise interrupt
+                if fault == "publish-leak":
+                    raise KeyLeakError(_PRIVATE_DETAIL + _GOOGLE)
+                raise (OSError if fault == "publish" else RuntimeError)(_PRIVATE_DETAIL + _GOOGLE)
+            write(dir_fd, name, data, **kwargs)
+
+        monkeypatch.setattr(module, "write_new", fail_write)
+    cancelled = fault in {"interrupted", "cancel"}
+    with pytest.raises(asyncio.CancelledError if cancelled else BenchmarkValidationError) as caught:
+        await _run_collection_pair(
+            tmp_path,
+            monkeypatch,
+            docker,
+            interruption=interrupt if fault == "interrupted" else None,
+        )
+    if cancelled:
+        assert caught.value is interrupt
+    elif fault == "publish-leak":
+        assert isinstance(caught.value, KeyLeakError)
+    trace = "".join(traceback.format_exception(caught.value))
+    assert _PROXY in trace and _NETWORK in trace
+    assert _PRIVATE_DETAIL not in trace and _GOOGLE not in trace
+    assert set(docker.resources) == {_PROXY, _NETWORK}
+    _check_first_collection(tmp_path, ok=False)
+
+
+@pytest.mark.parametrize("size_case", ["sparse", "growing", "limit"])
+async def test_run_jobs_bounds_squid_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, size_case: str
+) -> None:
+    limit = 8 * 1024 * 1024
+    read_sizes: list[int] = []
+
+    def prepare_log(spool: Path) -> None:
+        path = spool / "cache.log"
+        size = {"sparse": limit + 1, "growing": 1, "limit": limit}[size_case]
+        with path.open("r+b") as stream:
+            stream.truncate(size)
+        inode = path.stat().st_ino
+        read = os.read
+
+        def instrument(fd: int, count: int) -> bytes:
+            if os.fstat(fd).st_ino == inode:
+                read_sizes.append(count)
+                if size_case == "growing" and len(read_sizes) == 1:
+                    with path.open("r+b") as writer:
+                        writer.truncate(limit + 1)
+            return read(fd, count)
+
+        monkeypatch.setattr(os, "read", instrument)
+
+    docker = FakeDocker()
+    run = _run_collection_pair(tmp_path, monkeypatch, docker, setup_first=prepare_log)
+    if size_case == "limit":
+        await run
+        directory = _check_first_collection(tmp_path, ok=True)
+        assert (directory / "cache.log").stat().st_size == limit
+    else:
+        with pytest.raises(BenchmarkValidationError, match="cache.log"):
+            await run
+        directory = _check_first_collection(tmp_path, ok=False)
+        assert not (directory / "cache.log").exists()
+        if size_case == "sparse":
+            assert not read_sizes  # refuse the descriptor before its first read
+        else:
+            assert 0 < sum(read_sizes) <= 2  # at most the original byte and one overflow byte
+    assert docker.resources == {}

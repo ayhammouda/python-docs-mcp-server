@@ -164,10 +164,17 @@ read-only config file. The probe reads the private access log and scans its reco
 publishing the exact prefix used to separate probe traffic from query traffic.
 
 At close, the runner reads only regular `access.log` and `cache.log` files without
-following symlinks. Each public log appears by atomic rename after its key scan. A key
+following symlinks. Each file has an 8 MiB limit on its logical size, including sparse
+regions. If a log exceeds the limit or changes size during the read, the runner refuses
+to publish it. Each public log appears by atomic rename after its key scan. A key
 match fails the run even if writing the scrubbed log fails. The runner removes the private
 spool on teardown. A `probe/<job>.collection-pending` marker means collection is
 incomplete or failed and C1 cannot pass, even if some public files are present.
+
+If a Docker state field or other collection diagnostic contains a key-shaped string,
+`collected.json` records a failed collection and omits the state details. The runner
+continues closing the remaining jobs and the outside network. Check the reported
+resource IDs if a removal failed, even when the runner could not publish the record.
 
 The last four access-log fields record the client status (`%>Hs`), result (`%Ss`),
 hierarchy (`%Sh`), and next-hop HTTP status (`%<Hs`). Each record must have a UTC

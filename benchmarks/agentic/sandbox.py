@@ -44,6 +44,7 @@ from benchmarks.agentic.egress import (
 from benchmarks.agentic.protocol import (
     KeyLeakError,
     assert_no_key_shaped,
+    assert_no_key_shaped_json,
     redact_key_shaped,
     redact_key_shaped_text,
 )
@@ -630,10 +631,14 @@ class Sandbox:
         to ``collected.json``, whose ``ok`` is false after any of them.
         """
         problems: list[str] = []
+        # These messages contain only the removal command and its scrubbed immutable ID.
+        # Keep them independent of state/log diagnostics that might have to be withheld.
+        removal_failures: list[str] = []
         try:
             if any(leak.startswith(f"{egress.job_id}/") for leak in self.leaks):
                 problems.append("a key-shaped string was found during the job probe")
-            before, after = await self._stop_egress(egress, problems)
+            before, after = await self._stop_egress(egress, problems, removal_failures)
+            problems.extend(removal_failures)
             for name in ("access.log", "cache.log"):
                 try:
                     data, pattern = redact_key_shaped(read_log(egress.spool_dir / name))
@@ -642,35 +647,51 @@ class Sandbox:
                         problems.append(f"a key-shaped string was found in {name}")
                     with open_log_dir(egress.log_dir) as dir_fd:
                         write_new(dir_fd, name, data)
-                except (BenchmarkValidationError, OSError, MemoryError) as exc:
+                except KeyLeakError:
+                    self.leaks.append(f"{egress.job_id}/{name}")
+                    problems.append(f"a key-shaped string was found in {name}")
+                except BenchmarkValidationError as exc:
                     problems.append(f"{name} could not be collected: {exc}")
+                except (OSError, MemoryError) as exc:
+                    problems.append(f"{name} could not be collected: {type(exc).__name__}")
         finally:
             try:
                 egress.staging.cleanup()
             except (OSError, MemoryError) as exc:
-                problems.append(f"private log cleanup failed: {redact_key_shaped_text(str(exc))}")
+                problems.append(f"private log cleanup failed: {type(exc).__name__}")
 
-        collected = {
+        collected: dict[str, Any] = {
             "ok": not problems,
             "problems": problems,
             "state_before_stop": before,
             "state_after_stop": after,
         }
-        try:
+
+        def encode_record() -> bytes:
+            assert_no_key_shaped_json(collected, where="collection diagnostics")
             data = (json.dumps(collected, indent=2, sort_keys=True) + "\n").encode()
-            data, pattern = redact_key_shaped(data)
-            if pattern:
-                self.leaks.append(f"{egress.job_id}/collected.json ({pattern} pattern)")
-                collected = json.loads(data)
-                problems[:] = [
-                    *collected["problems"],
+            if redact_key_shaped(data)[1]:
+                raise KeyLeakError("a key-shaped string was found in collection diagnostics")
+            return data
+
+        try:
+            try:
+                data = encode_record()
+            except KeyLeakError:
+                self.leaks.append(f"{egress.job_id}/collected.json")
+                problems = [
+                    *removal_failures,
                     "a key-shaped string was found in collection diagnostics",
                 ]
-                collected.update(ok=False, problems=problems)
-                data = (json.dumps(collected, indent=2, sort_keys=True) + "\n").encode()
-        except MemoryError:
-            # Diagnostics could not be scanned. Do not return their unverified text either.
-            return ["collection diagnostics could not be scanned: MemoryError"]
+                collected.update(
+                    ok=False, problems=problems, state_before_stop={}, state_after_stop={}
+                )
+                data = encode_record()
+        except Exception as exc:  # noqa: BLE001 - unscanned diagnostics cannot leave collection
+            return [
+                *removal_failures,
+                f"collection diagnostics could not be scanned: {type(exc).__name__}",
+            ]
         try:
             with open_log_dir(egress.log_dir) as dir_fd:
                 write_new(dir_fd, "collected.json", data, mode=0o644)
@@ -682,14 +703,16 @@ class Sandbox:
                             f"could not clear the collection marker: {type(exc).__name__}"
                         )
                         collected.update(ok=False, problems=problems)
-                        text = json.dumps(collected, indent=2, sort_keys=True) + "\n"
-                        write_new(dir_fd, "collected.json", text.encode(), mode=0o644)
-        except (BenchmarkValidationError, OSError, MemoryError) as exc:
+                        write_new(dir_fd, "collected.json", encode_record(), mode=0o644)
+        except KeyLeakError:
+            self.leaks.append(f"{egress.job_id}/collected.json")
+            problems.append("a key-shaped string was found during collection publication")
+        except Exception as exc:  # noqa: BLE001 - preserve removal IDs on publication failure
             problems.append(f"collection could not be completed: {type(exc).__name__}")
         return problems
 
     async def _stop_egress(
-        self, egress: Egress, problems: list[str]
+        self, egress: Egress, problems: list[str], removal_failures: list[str]
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         before = await self._state(egress.proxy_id, problems, "before")
         if before and (not before.get("Running") or before.get("OOMKilled")):
@@ -712,8 +735,10 @@ class Sandbox:
         for args in (["rm", "-f", egress.proxy_id], ["network", "rm", egress.network_id]):
             try:
                 await self.run(*args)
-            except Exception as exc:  # noqa: BLE001
-                problems.append(f"docker {' '.join(args[:2])} failed: {exc}")
+            except Exception:  # noqa: BLE001 - report the ID independently of daemon output
+                removal_failures.append(
+                    f"docker {' '.join(args[:2])} {redact_key_shaped_text(args[-1])} failed"
+                )
         return before, after
 
 
@@ -818,24 +843,55 @@ class ContainerLauncher:
 
     async def close(self) -> list[str]:
         problems: list[str] = []
+        interrupted: asyncio.CancelledError | None = None
+
+        def removal_failure(command: str, resource_id: str, exc: Exception) -> str:
+            detail = (
+                redact_key_shaped_text(str(exc))
+                if isinstance(exc, BenchmarkValidationError)
+                else type(exc).__name__
+            )
+            return f"{command} {redact_key_shaped_text(resource_id)} failed: {detail}"
+
         # Partial prepare and spawn failures can leave workers without a supervisor.
-        for job_id in list(self._worker_ids):
+        for job_id, worker_id in list(self._worker_ids.items()):
             try:
                 await self._remove_worker(job_id)
             except Exception as exc:  # noqa: BLE001 - continue releasing the other resources
-                problems.append(f"{job_id}: {exc}")
+                problems.append(removal_failure(f"{job_id}: docker rm -f", worker_id, exc))
         for egress in self._egresses:
-            problems += [f"{egress.job_id}: {p}" for p in await self.sandbox.close_egress(egress)]
-        if self.sandbox.outside_id is not None:
             try:
-                await self.sandbox.run("network", "rm", self.sandbox.outside_id)
+                issues = await self.sandbox.close_egress(egress)
+            except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001
+                # Collection may have stopped on either side of the removal commands.
+                # Report both IDs for recovery without echoing the unverified exception.
+                if isinstance(exc, asyncio.CancelledError) and interrupted is None:
+                    interrupted = exc
+                if isinstance(exc, KeyLeakError):
+                    self.sandbox.leaks.append(f"{egress.job_id}/collection")
+                issues = [
+                    f"collection failed ({type(exc).__name__}); check proxy "
+                    f"{redact_key_shaped_text(egress.proxy_id)} and network "
+                    f"{redact_key_shaped_text(egress.network_id)}"
+                ]
+            problems.extend(f"{egress.job_id}: {p}" for p in issues)
+        if (outside_id := self.sandbox.outside_id) is not None:
+            try:
+                await self.sandbox.run("network", "rm", outside_id)
                 self.sandbox.outside_id = None
             except Exception as exc:  # noqa: BLE001
-                problems.append(f"docker network rm {self.sandbox.outside} failed: {exc}")
+                problems.append(removal_failure("docker network rm", outside_id, exc))
         if self.sandbox.leaks:
-            raise KeyLeakError(
+            leak = KeyLeakError(
                 "key-shaped strings were detected during proxy collection: "
                 + ", ".join(self.sandbox.leaks)
                 + (f"; other problems: {'; '.join(problems)}" if problems else "")
             )
+            if interrupted is None:
+                raise leak
+            add_cleanup_cause(interrupted, leak)
+        elif interrupted is not None:
+            add_cleanup_cause(interrupted, BenchmarkValidationError("; ".join(problems)))
+        if interrupted is not None:
+            raise interrupted
         return problems

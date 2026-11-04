@@ -202,6 +202,7 @@ def squid_conf(allow: Sequence[tuple[str, int]]) -> str:
 # chowned to the proxy's uid, mode 0750, if Linux hosts are ever supported.
 _READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC  # a FIFO never blocks
 _NEW_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+_MAX_SQUID_LOG_BYTES = 8 * 1024 * 1024
 
 
 @contextmanager
@@ -218,11 +219,11 @@ def open_log_dir(path: Path) -> Iterator[int]:
 
 def read_log(path: Path) -> bytes:
     with open_log_dir(path.parent) as dir_fd:
-        return read_log_at(dir_fd, path.name)
+        return read_log_at(dir_fd, path.name, max_bytes=_MAX_SQUID_LOG_BYTES)
 
 
-def read_log_at(dir_fd: int, name: str) -> bytes:
-    """Read a regular file without following a link or blocking on a FIFO."""
+def read_log_at(dir_fd: int, name: str, *, max_bytes: int | None = None) -> bytes:
+    """Read a stable-length regular file without following a link or blocking on a FIFO."""
     try:
         fd = os.open(name, _READ_FLAGS, dir_fd=dir_fd)
     except FileNotFoundError:
@@ -230,12 +231,21 @@ def read_log_at(dir_fd: int, name: str) -> bytes:
     except OSError as exc:  # ELOOP: a link
         raise BenchmarkValidationError(f"{name} was refused ({exc.strerror})") from None
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
             raise BenchmarkValidationError(f"{name} is not a regular file")
-        chunks = []
-        while chunk := os.read(fd, 1 << 20):
-            chunks.append(chunk)
-        return b"".join(chunks)
+        size = info.st_size
+        if max_bytes is not None and size > max_bytes:
+            raise BenchmarkValidationError(f"{name} exceeds the {max_bytes}-byte limit")
+        data = bytearray()
+        # Probe one byte past the descriptor's initial length, even at the limit.
+        while chunk := os.read(fd, min(1 << 20, size - len(data) + 1)):
+            if len(chunk) > size - len(data):
+                raise BenchmarkValidationError(f"{name} grew during collection")
+            data.extend(chunk)
+        if len(data) != size or os.fstat(fd).st_size != size:
+            raise BenchmarkValidationError(f"{name} changed size during collection")
+        return bytes(data)
     finally:
         os.close(fd)
 
