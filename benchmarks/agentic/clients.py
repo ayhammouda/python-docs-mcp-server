@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import anthropic
 import certifi
@@ -28,6 +29,7 @@ from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 
 from benchmarks.adapters.guard import (
+    EGRESS_URL_ENV,
     PAID_KEY_ENVS,
     PROVIDER_API_KEY_ENV,
     require_live_environment,
@@ -107,45 +109,84 @@ OPENAI_BASE_URL = "https://api.openai.com/v1"
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/"
 
 
-def _client_args(transport: Any | None) -> dict[str, Any]:
+def egress_proxy(environ: Mapping[str, str]) -> str | None:
+    """The sandbox's egress proxy from ``BENCHMARK_EGRESS_URL``: ``http://<host>:<port>`` only."""
+    value = environ.get(EGRESS_URL_ENV)
+    if value is None:
+        return None
+    try:
+        parts = urlsplit(value)
+        ok = (
+            parts.scheme == "http"
+            and bool(parts.hostname)
+            and parts.port is not None
+            and "@" not in parts.netloc
+            and not (parts.path or parts.query or parts.fragment)
+        )
+    except ValueError:  # a port that is not a number
+        ok = False
+    if not ok:  # never the value: it may hold user info
+        raise BenchmarkValidationError(
+            f"{EGRESS_URL_ENV} must be http://<host>:<port>, with no user info, path, query "
+            "or fragment"
+        )
+    return value
+
+
+def _client_args(
+    transport: Any | None, proxy: str | None = None, *, http: Any = httpx2
+) -> dict[str, Any]:
     """Never follow a redirect: it would be a second request, possibly carrying the key away.
 
     trust_env=False: no HTTPS_PROXY or SSL_CERT_FILE in a worker's env steers the connection.
-    The Anthropic SDK mounts env proxies even then, so each proxy route is mounted direct.
-    Tests inject only a transport; every other client setting is the production one.
+    The Anthropic SDK mounts env proxies even then, so each route is mounted explicitly: direct,
+    or through ``proxy`` with the direct route's own pinned trust store. ``http`` is the httpx
+    module the SDK uses. Tests inject only a transport, which then carries every request; every
+    other client setting is the production one.
     """
-    # shortcut: no proxy from the env; PR 4's egress proxy must be passed explicitly (proxy=...),
-    # and PR 4's container launcher must build the worker env from an allowlist with no
-    # *_PROXY, SSL_CERT_* or REQUESTS_CA_BUNDLE (a SOCKS ALL_PROXY crashes the Anthropic SDK).
+    # No proxy from the environment. In a sandbox the egress proxy comes only from
+    # BENCHMARK_EGRESS_URL, and the container launcher passes no *_PROXY, SSL_CERT_* or
+    # REQUESTS_CA_BUNDLE (Task 10).
+    route = None
+    if proxy is not None and transport is None:
+        route = http.AsyncHTTPTransport(proxy=proxy, trust_env=False)
     return {
         "follow_redirects": False,
         "trust_env": False,
-        "mounts": {"http://": None, "https://": None, "all://": None},
+        "mounts": {"http://": route, "https://": route, "all://": route},
         **({} if transport is None else {"transport": transport}),
     }
 
 
 def anthropic_sdk(
-    api_key: str, timeout_s: float, *, transport: httpx2.AsyncBaseTransport | None = None
+    api_key: str,
+    timeout_s: float,
+    *,
+    transport: httpx2.AsyncBaseTransport | None = None,
+    proxy: str | None = None,
 ) -> anthropic.AsyncAnthropic:
     return anthropic.AsyncAnthropic(
         api_key=api_key,
         base_url=ANTHROPIC_BASE_URL,
         max_retries=0,
         timeout=timeout_s,
-        http_client=anthropic.DefaultAsyncHttpxClient(**_client_args(transport)),
+        http_client=anthropic.DefaultAsyncHttpxClient(**_client_args(transport, proxy)),
     )
 
 
 def openai_sdk(
-    api_key: str, timeout_s: float, *, transport: httpx2.AsyncBaseTransport | None = None
+    api_key: str,
+    timeout_s: float,
+    *,
+    transport: httpx2.AsyncBaseTransport | None = None,
+    proxy: str | None = None,
 ) -> openai.AsyncOpenAI:
     return openai.AsyncOpenAI(
         api_key=api_key,
         base_url=OPENAI_BASE_URL,
         max_retries=0,
         timeout=timeout_s,
-        http_client=openai.DefaultAsyncHttpxClient(**_client_args(transport)),
+        http_client=openai.DefaultAsyncHttpxClient(**_client_args(transport, proxy)),
     )
 
 
@@ -315,7 +356,11 @@ class OpenAIResponsesClient:
 
 
 def gemini_sdk(
-    api_key: str, timeout_s: float, *, transport: httpx.AsyncBaseTransport | None = None
+    api_key: str,
+    timeout_s: float,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+    proxy: str | None = None,
 ) -> genai.Client:
     # Without a context the SDK builds its own from SSL_CERT_FILE and SSL_CERT_DIR: one for
     # httpx ("verify") and one for websockets ("ssl").
@@ -327,8 +372,9 @@ def gemini_sdk(
             base_url=GEMINI_BASE_URL,
             timeout=int(timeout_s * 1000),
             retry_options=genai_types.HttpRetryOptions(attempts=1),
-            httpx_async_client=httpx.AsyncClient(**_client_args(transport)),
-            client_args={"verify": ca},
+            httpx_async_client=httpx.AsyncClient(**_client_args(transport, proxy, http=httpx)),
+            # The unused sync client reads no proxy variable either (a SOCKS one would crash it).
+            client_args={"verify": ca, "trust_env": False},
             async_client_args={"ssl": ca},
         ),
     )
@@ -583,12 +629,13 @@ def make_client(
         )
     if family.max_output_tokens is None:
         raise BenchmarkValidationError(f"model family {family.id!r} must set max_output_tokens")
+    proxy = egress_proxy(os.environ)
     key = os.environ[own_key_env]
     if provider == "anthropic":
-        sdk = anthropic_sdk(key, timeout_s, transport=transport)
+        sdk = anthropic_sdk(key, timeout_s, transport=transport, proxy=proxy)
         return AnthropicClient(sdk, family.model_id, family.max_output_tokens)
     if provider == "openai":
-        sdk = openai_sdk(key, timeout_s, transport=transport)
+        sdk = openai_sdk(key, timeout_s, transport=transport, proxy=proxy)
         return OpenAIResponsesClient(sdk, family.model_id, family.max_output_tokens)
-    sdk = gemini_sdk(key, timeout_s, transport=transport)
+    sdk = gemini_sdk(key, timeout_s, transport=transport, proxy=proxy)
     return GeminiClient(sdk, family.model_id, family.max_output_tokens)

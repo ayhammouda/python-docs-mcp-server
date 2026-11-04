@@ -31,6 +31,9 @@ from benchmarks.runner import BenchmarkCellFailure
 #: case-insensitive) for any live-provider guard to pass.
 LIVE_PROVIDERS_ENABLED_ENV = "BENCHMARK_LIVE_PROVIDERS_ENABLED"
 
+#: The sandbox's egress proxy (``http://<host>:<port>``), the only proxy a live client uses.
+EGRESS_URL_ENV = "BENCHMARK_EGRESS_URL"
+
 #: Per-provider environment variable that must also be non-empty.
 #:
 #: ``anthropic`` (issue #89) is not a competitor/model-matrix provider --

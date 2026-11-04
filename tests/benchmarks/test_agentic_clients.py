@@ -854,3 +854,79 @@ def test_a_ca_variable_cannot_swap_a_clients_trust_store(
     # No transport is injected and nothing is patched; no request is made.
     monkeypatch.setenv("SSL_CERT_FILE", "/nonexistent/ca.pem")
     build("test-key", 30)
+
+
+LIVE_HOSTS = [
+    ("claude-sonnet-5-5", "api.anthropic.com"),
+    ("gpt-6.1-sol", "api.openai.com"),
+    ("gemini-3.8-flash", "generativelanguage.googleapis.com"),
+]
+
+
+def _proxy_url(proxy: Any) -> str | None:
+    """A route's proxy as its URL string, whether given as a string or a proxy object."""
+    if proxy is None or isinstance(proxy, str):
+        return proxy
+    return str(getattr(proxy, "url", proxy))
+
+
+@pytest.mark.parametrize("family_id,host", LIVE_HOSTS)
+async def test_the_egress_proxy_carries_every_call(
+    monkeypatch: pytest.MonkeyPatch, family_id: str, host: str
+) -> None:
+    # As test_a_proxy_variable_cannot_steer_a_call, with the sandbox's explicit egress proxy
+    # set beside two hostile proxy variables: only the egress route may carry the call.
+    _clear_keys(monkeypatch)
+    family = _matrix_family(family_id)
+    monkeypatch.setenv("BENCHMARK_LIVE_PROVIDERS_ENABLED", "1")
+    monkeypatch.setenv(PROVIDER_API_KEY_ENV[family.provider], "not-a-real-key")
+    monkeypatch.setenv("BENCHMARK_EGRESS_URL", "http://egress:3128")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:3128")
+    monkeypatch.setenv("ALL_PROXY", "socks5://proxy.invalid:1080")
+    kind = httpx if family.provider == "google" else httpx2
+    recorder = _recorder(
+        family.provider, _response(family.provider, 200, OK_BODIES[family.provider])
+    )
+    routes: list[Any] = []
+
+    def transport(**kwargs: Any) -> Any:
+        def handle(request: Any) -> Any:
+            routes.append(kwargs.get("proxy"))
+            return recorder(request)
+
+        return kind.MockTransport(handle)
+
+    for module in (kind, kind._client, anthropic._base_client):
+        monkeypatch.setattr(module, "AsyncHTTPTransport", transport)
+    await make_client(family, timeout_s=30).call(_conv())
+    assert [_proxy_url(p) for p in routes] == ["http://egress:3128"]
+    assert [r.url.host for r in recorder.seen] == [host]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "socks5://egress:1080",
+        "http://u:p@egress:3128",
+        "http://egress:3128/x",
+        "egress:3128",
+        "https://egress:3128",
+    ],
+)
+def test_a_malformed_egress_url_is_refused(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    _clear_keys(monkeypatch)
+    monkeypatch.setenv("BENCHMARK_LIVE_PROVIDERS_ENABLED", "1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    monkeypatch.setenv("BENCHMARK_EGRESS_URL", value)
+    with pytest.raises(BenchmarkValidationError, match="BENCHMARK_EGRESS_URL") as caught:
+        make_client(_matrix_family("claude-sonnet-5-5"), timeout_s=30)
+    assert "u:p" not in str(caught.value)
+
+
+@pytest.mark.parametrize("build", [anthropic_sdk, openai_sdk, gemini_sdk])
+def test_a_ca_variable_cannot_swap_the_proxy_routes_trust_store(
+    monkeypatch: pytest.MonkeyPatch, build: Callable[..., Any]
+) -> None:
+    # As test_a_ca_variable_cannot_swap_a_clients_trust_store, for the proxy route.
+    monkeypatch.setenv("SSL_CERT_FILE", "/nonexistent/ca.pem")
+    build("test-key", 30, proxy="http://egress:3128")
