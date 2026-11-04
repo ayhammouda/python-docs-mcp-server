@@ -31,6 +31,7 @@ from google.genai import types as genai_types
 from benchmarks.adapters.guard import PAID_KEY_ENVS, PROVIDER_API_KEY_ENV, require_live_environment
 from benchmarks.agentic.clients import (
     _LIVE_APIS,
+    GEMINI_BASE_URL,
     _status_error,
     anthropic_sdk,
     gemini_sdk,
@@ -440,16 +441,32 @@ class GeminiBatchClient:
             "generation_config": config,
         }
 
+    async def _upload_jsonl(self, data: bytes) -> str:
+        # The SDK only rebases the resumable chunk URL when the *upload's* options
+        # specify the origin. The client-wide base URL alone pins only the start call.
+        config = genai_types.UploadFileConfig(
+            mime_type="jsonl", http_options=genai_types.HttpOptions(base_url=GEMINI_BASE_URL)
+        )
+        try:
+            upload = await self._sdk.aio.files.upload(file=io.BytesIO(data), config=config)
+        except genai_errors.APIError as exc:
+            if 300 <= exc.code < 400:
+                raise ProviderCallError(
+                    "rejected", "Gemini upload redirect", status=exc.code
+                ) from None
+            raise
+        except (KeyError, ValueError, httpx.InvalidURL):
+            raise ProviderCallError("rejected", "Invalid Gemini upload response") from None
+        if not upload.name:
+            raise ProviderCallError("rejected", "Gemini upload returned no file name")
+        return upload.name
+
     async def submit(self, requests: Sequence[BatchRequest]) -> str:
         data = "".join(
             json.dumps({"key": r.item_id, "request": self._request(r)}) + "\n" for r in requests
         ).encode()
-        upload = await _call(
-            self._sdk.aio.files.upload(
-                file=io.BytesIO(data), config=genai_types.UploadFileConfig(mime_type="jsonl")
-            )
-        )
-        job = await _call(self._sdk.aio.batches.create(model=self.model_id, src=upload.name))
+        file_name = await _call(self._upload_jsonl(data))
+        job = await _call(self._sdk.aio.batches.create(model=self.model_id, src=file_name))
         return job.name
 
     async def _state(self, batch_id: str) -> tuple[str, Any]:

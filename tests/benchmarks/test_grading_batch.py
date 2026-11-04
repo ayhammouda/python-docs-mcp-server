@@ -342,8 +342,18 @@ async def test_openai_batch_uploads_jsonl_then_creates_a_responses_batch() -> No
     }
 
 
-async def test_gemini_batch_uploads_keyed_jsonl() -> None:
-    upload_url = "https://generativelanguage.googleapis.com/upload/v1beta/files?upload_id=u1"
+@pytest.mark.parametrize(
+    "suggested_origin",
+    [
+        "https://generativelanguage.googleapis.com",
+        "https://archive.example.invalid",
+        "http://archive.example.invalid:8080",
+    ],
+)
+async def test_gemini_batch_uploads_keyed_jsonl(suggested_origin: str) -> None:
+    origin = "https://generativelanguage.googleapis.com"
+    session = "/upload/v1beta/files?upload_id=u1"
+    upload_url = suggested_origin + session
     router = Router(
         [
             (
@@ -362,7 +372,12 @@ async def test_gemini_batch_uploads_keyed_jsonl() -> None:
         ]
     )
     assert await _gemini_client(router).submit([_req("i1")]) == "batches/b1"
-    chunk = next(r for r in router.seen if "upload_id" in str(r.url))
+    start, chunk, batch = router.seen
+    assert str(start.url) == origin + "/upload/v1beta/files"
+    assert str(chunk.url) == origin + session
+    assert str(batch.url).startswith(origin + "/v1beta/")
+    assert "x-goog-api-key" in start.headers and "x-goog-api-key" in batch.headers
+    assert chunk.headers["x-goog-upload-command"] == "upload, finalize"
     line = json.loads(chunk.content.decode().strip())
     assert line["key"] == "i1"
     request = line["request"]
@@ -376,6 +391,73 @@ async def test_gemini_batch_uploads_keyed_jsonl() -> None:
     }
     create = json.loads(router.seen[-1].content)
     assert create["batch"]["inputConfig"] == {"fileName": "files/in"}
+
+
+@pytest.mark.parametrize("stage", ["start", "finalize"])
+async def test_gemini_upload_refuses_redirect(stage: str) -> None:
+    start = "https://generativelanguage.googleapis.com/upload/v1beta/files"
+    session = start + "?upload_id=u1"
+    redirect = _json(
+        httpx,
+        {"message": "private-marker"},
+        307,
+        {
+            "location": "https://archive.example.invalid/private-marker",
+            "x-goog-upload-status": "final",
+        },
+    )
+    router = Router(
+        [
+            (
+                "POST",
+                re.escape(start) + "$",
+                redirect
+                if stage == "start"
+                else _json(httpx, {}, headers={"x-goog-upload-url": session}),
+            ),
+            ("POST", re.escape(session) + "$", redirect),
+        ]
+    )
+    with pytest.raises(ProviderCallError) as raised:
+        await _gemini_client(router).submit([_req()])
+    assert [str(req.url) for req in router.seen] == (
+        [start] if stage == "start" else [start, session]
+    )
+    assert (raised.value.kind, raised.value.status) == ("rejected", 307)
+    assert "private-marker" not in str(raised.value)
+
+
+@pytest.mark.parametrize("metadata", [{}, {"x-goog-upload-url": "https://[private-marker"}])
+async def test_gemini_malformed_upload_session_is_rejected(metadata: dict[str, str]) -> None:
+    start = "https://generativelanguage.googleapis.com/upload/v1beta/files"
+    router = Router([("POST", re.escape(start) + "$", _json(httpx, {}, headers=metadata))])
+    with pytest.raises(ProviderCallError, match="Invalid Gemini upload") as raised:
+        await _gemini_client(router).submit([_req()])
+    assert raised.value.kind == "rejected"
+    assert "private-marker" not in str(raised.value)
+    assert [str(req.url) for req in router.seen] == [start]
+
+
+async def test_gemini_upload_without_a_file_name_stops_before_batch_creation() -> None:
+    start = "https://generativelanguage.googleapis.com/upload/v1beta/files"
+    session = start + "?upload_id=u1"
+    router = Router(
+        [
+            (
+                "POST",
+                re.escape(start) + "$",
+                _json(httpx, {}, headers={"x-goog-upload-url": session}),
+            ),
+            (
+                "POST",
+                re.escape(session) + "$",
+                _json(httpx, {"file": {}}, headers={"x-goog-upload-status": "final"}),
+            ),
+        ]
+    )
+    with pytest.raises(ProviderCallError, match="Gemini upload returned no file name"):
+        await _gemini_client(router).submit([_req()])
+    assert [str(req.url) for req in router.seen] == [start, session]
 
 
 @pytest.mark.parametrize(
