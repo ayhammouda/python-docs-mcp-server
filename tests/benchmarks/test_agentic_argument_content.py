@@ -186,3 +186,18 @@ async def test_argument_rejection_settles_even_when_usage_absent_or_model_cap_re
         assert (ledger.settles[0]["buckets"] is not None) is usage
     finally:
         await _close(client)
+
+
+async def test_unbalanced_prefix_cannot_hide_a_replayed_argument():
+    client, recorder = _argument_client("openai", r'x"{"query":"pre\u006frchard-suffix"}')
+    ledger = RecordingLedger()
+    bridge, dispatch = _bridge(CallToolResult(content=[TextContent(type="text", text="safe")]))
+    channel = ProtocolChannel(-1, (b"orchard",), -1, None, ())
+    try:
+        with pytest.raises(KeyLeakError):
+            await _run(client, bridge, ledger, check_content=channel.check_content)
+        assert len(recorder.seen) == len(ledger.reserves) == len(ledger.settles) == 1
+        assert ledger.settles[0]["outcome"] == "ok"
+        dispatch.assert_not_awaited()
+    finally:
+        await _close(client)
