@@ -201,6 +201,8 @@ async def _teardown(
         try:
             yield
         except BaseException as exc:  # noqa: BLE001 - propagate after all cleanup steps
+            if isinstance(exc, KeyLeakError):
+                ledger.stop_grants()
             errors.append(exc)
 
     with attempt():
@@ -215,6 +217,8 @@ async def _teardown(
             await stop_worker()
     with attempt():
         redacted, pattern = _scrubbed_snapshot(worker_log)
+        if pattern:
+            ledger.stop_grants()
         detected = f"a key-shaped string ({pattern} pattern) was found in {log_path}"
         try:
             _publish_worker_log(redacted, log_path)
@@ -238,11 +242,13 @@ async def _teardown(
             if KEY_SHAPED.search("".join(traceback.format_exception(exc, limit=0))):
                 # An outer exception may be clean while its notes or chained daemon error leak.
                 errors[i] = KeyLeakError(detail + " (key shape redacted)")
+                ledger.stop_grants()
             else:
                 exc.add_note(location)
             _diagnostic(detail)
         except Exception:  # noqa: BLE001 - an unscannable failure must not enter the traceback
             errors[i] = KeyLeakError(f"{location}: could not safely report {type(exc).__name__}")
+            ledger.stop_grants()
     if errors:
         for primary, secondary in zip(errors, errors[1:]):
             add_cleanup_cause(primary, secondary)
@@ -328,11 +334,14 @@ async def _supervise(
             # Between two frames a worker runs one model call or a trajectory's other tool
             # calls, plus a backoff of at most 120 s: silent for longer, it is lost.
             silence_s = job.caps.trajectory_s + job.caps.model_call_timeout_s
-            while (
-                message := await asyncio.wait_for(
-                    read_frame(proc.stdout, limit=max_frame_bytes, where="worker frame"), silence_s
-                )
-            ) is not None:
+            while True:
+                # Decode in this task so a credential failure latches before another task runs.
+                async with asyncio.timeout(silence_s):
+                    message = await read_frame(
+                        proc.stdout, limit=max_frame_bytes, where="worker frame"
+                    )
+                if message is None:
+                    break
                 kind = message.get("type")
                 reply: dict[str, Any] | None = None
                 if kind == "reserve":
@@ -368,6 +377,8 @@ async def _supervise(
                     reply = {"type": "ack"}
                 elif kind == "error":
                     reason = str(message.get("reason"))
+                    if reason in (WORKER_LEAK_REASON, "own key found in output"):
+                        ledger.stop_grants()
                     with suppress(TimeoutError):  # its drain writes the last lines to the log
                         await asyncio.wait_for(proc.wait(), 5)
                     if reason in (WORKER_LEAK_REASON, "own key found in output"):
@@ -393,6 +404,9 @@ async def _supervise(
                     await proc.stdin.drain()
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             pass  # the worker died or stalled; handled as a lost worker below
+    except KeyLeakError:
+        ledger.stop_grants()
+        raise
     finally:
         await finish(
             _teardown(

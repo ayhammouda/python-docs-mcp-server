@@ -33,6 +33,7 @@ from benchmarks.agentic.host import LocalLauncher, WorkerJob, refuse_host_keys, 
 from benchmarks.agentic.ledger import Ledger, LedgerService, ModelPrice, Rates, Tier
 from benchmarks.agentic.loop import HOSTED_CAPS, Caps
 from benchmarks.agentic.protocol import (
+    WORKER_LEAK_REASON,
     FrameTooLarge,
     KeyLeakError,
     assert_no_key_shaped,
@@ -2072,3 +2073,180 @@ async def test_launcher_close_problems_are_the_cause_of_cancellation(
         await task
     assert isinstance(error.value.__cause__, BenchmarkValidationError)
     assert "outside network removal failed" in str(error.value.__cause__)
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai"])
+@pytest.mark.parametrize("failure", [WORKER_LEAK_REASON, "own key found in output", "decoded"])
+async def test_credential_failure_denies_sibling_grants_during_teardown(
+    host: Host, tmp_path: Path, provider: str, failure: str
+) -> None:
+    """Real protocol workers reproduce the R15 sibling grant during removal."""
+    boundary, response = tmp_path / "removing", tmp_path / "reply.json"
+    if failure == "decoded":
+        body = json.dumps({"type": "system_info", "note": SYNTHETIC_KEY}).replace(
+            "sk-ant", r"\u0073k-ant"
+        ).encode()
+        assert SYNTHETIC_KEY.encode() not in body
+        assert_no_key_shaped(body, where="encoded synthetic frame")
+        leak_frame = len(body).to_bytes(8, "big") + body
+    else:
+        leak_frame = encode_frame({"type": "error", "reason": failure})
+    code = (
+        "import json, os, sys, time\n"
+        "from pathlib import Path\n"
+        "from benchmarks.agentic.protocol import encode_frame, read_frame_fd\n"
+        "job = read_frame_fd(0)\n"
+        "if job['job_id'] == 'leak':\n"
+        f"    os.write(1, {leak_frame!r})\n"
+        "else:\n"
+        "    deadline = time.monotonic() + 5\n"
+        f"    while not Path({str(boundary)!r}).exists():\n"
+        "        assert time.monotonic() < deadline, 'teardown never started'\n"
+        "        time.sleep(0.01)\n"
+        f"    os.write(1, {encode_frame(_reserve_frame(1024))!r})\n"
+        "    reply = read_frame_fd(0)\n"
+        f"    Path({str(response)!r}).write_text(json.dumps(reply))\n"
+    )
+
+    class Launcher(KeyedLauncher):
+        closed = False
+
+        async def stop_worker(self, job: WorkerJob) -> None:
+            if job.job_id == "leak":
+                boundary.touch()
+                async with asyncio.timeout(5):
+                    while not response.exists():
+                        await asyncio.sleep(0.01)
+
+        async def close(self) -> list[str]:
+            self.closed = True
+            return []
+
+    jobs = [_job(tmp_path, [ANSWER], job_id=name) for name in ("leak", "sibling")]
+    jobs[1] = replace(jobs[1], family=replace(jobs[1].family, provider=provider))
+    host.ledger.close()
+    host.ledger = Ledger.open(
+        tmp_path / "ledger", run_id="host-test", caps={"anthropic": D(180), "openai": D(65)}
+    )
+    service = host.service(jobs[0].family)
+    launcher = Launcher(code, key="")
+    with pytest.raises(KeyLeakError) as error:
+        await run_jobs(
+            jobs, launcher=launcher, ledger=service, on_message=host.on_message,
+            log_dir=tmp_path / "logs", cwd=REPO_ROOT,
+        )
+    assert launcher.closed
+    assert len(list((tmp_path / "logs").glob("*.stderr.log"))) == 2
+    assert SYNTHETIC_KEY not in "".join(traceback.format_exception(error.value))
+    assert json.loads(response.read_text()) == {"type": "deny"}
+    assert host.ledger.invocation_events() == []
+
+
+async def test_credential_failure_stops_grants_before_waiting_for_worker_exit(
+    host: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    waiting, release = asyncio.Event(), asyncio.Event()
+    job = _job(tmp_path, [ANSWER], job_id="leak")
+    service = host.service(job.family)
+    stdout = asyncio.StreamReader()
+    stdout.feed_data(encode_frame({"type": "error", "reason": WORKER_LEAK_REASON}))
+
+    async def wait() -> int:
+        waiting.set()
+        await release.wait()
+        return 3
+
+    proc = Mock(stdin=Mock(drain=AsyncMock()), stdout=stdout, wait=wait)
+    _fake_host_processes(monkeypatch, AsyncMock(return_value=proc))
+    task = asyncio.create_task(run_jobs(
+        [job], launcher=LocalLauncher(), ledger=service, on_message=host.on_message,
+        log_dir=tmp_path / "logs", cwd=REPO_ROOT,
+    ))
+    try:
+        await asyncio.wait_for(waiting.wait(), 2)
+        assert not task.done()
+        unit = await service.reserve(
+            provider="anthropic", model_id=job.family.model_id, input_bound=1000, output_bound=1024
+        )
+    finally:
+        release.set()
+        with pytest.raises(KeyLeakError, match=WORKER_LEAK_REASON):
+            await task
+    assert unit is None
+    assert host.ledger.invocation_events() == []
+
+
+@pytest.mark.parametrize("decoded", [False, True])
+async def test_protocol_failure_stops_grants_at_recognition_without_a_scheduling_gap(
+    host: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, decoded: bool
+) -> None:
+    job = _job(tmp_path, [ANSWER], job_id="leak")
+    service = host.service(job.family)
+    body = json.dumps({"type": "system_info", "note": SYNTHETIC_KEY})
+    if decoded:
+        body = body.replace("sk-ant", r"\u0073k-ant")
+        assert_no_key_shaped(body, where="encoded synthetic frame")
+    stdout = asyncio.StreamReader()
+    stdout.feed_data(len(body.encode()).to_bytes(8, "big") + body.encode())
+    proc = Mock(stdin=Mock(drain=AsyncMock()), stdout=stdout, wait=AsyncMock())
+    _fake_host_processes(monkeypatch, AsyncMock(return_value=proc))
+    real_read = agentic_host.read_frame
+    competing: list[asyncio.Task[str | None]] = []
+
+    async def read(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await real_read(*args, **kwargs)
+        except KeyLeakError:
+            # A sibling ready at recognition must not outrun the supervisor's stop.
+            competing.append(asyncio.create_task(service.reserve(
+                provider="anthropic", model_id=job.family.model_id,
+                input_bound=1000, output_bound=1024,
+            )))
+            raise
+
+    monkeypatch.setattr(agentic_host, "read_frame", read)
+    with pytest.raises(KeyLeakError, match="worker frame"):
+        await run_jobs(
+            [job], launcher=LocalLauncher(), ledger=service, on_message=host.on_message,
+            log_dir=tmp_path / "logs", cwd=REPO_ROOT,
+        )
+    assert len(competing) == 1
+    assert await competing[0] is None
+    assert host.ledger.invocation_events() == []
+
+
+@pytest.mark.parametrize("failure", ["log", "stop_worker", "diagnostic"])
+async def test_cleanup_credential_failure_stops_queued_grants_and_settles_open_unit(
+    host: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    service = host.service(_job(tmp_path, [ANSWER]).family)
+    unit = await service.reserve(
+        provider="anthropic", model_id="scripted-1", input_bound=1000, output_bound=1024
+    )
+    assert unit is not None
+    pending = asyncio.create_task(service.reserve(
+        provider="anthropic", model_id="scripted-1", input_bound=1000, output_bound=1024
+    ))
+    await asyncio.sleep(0)
+    assert not pending.done()
+    monkeypatch.setattr(agentic_host, "_kill_group", Mock())
+    monkeypatch.setattr(agentic_host, "_reap", AsyncMock())
+    capture = _worker_log(SYNTHETIC_KEY.encode() if failure == "log" else b"clean")
+    log = tmp_path / "worker.stderr.log"
+    stop = AsyncMock()
+    if failure == "stop_worker":
+        stop.side_effect = KeyLeakError("synthetic credential failure in cleanup")
+    elif failure == "diagnostic":
+        stop.side_effect = RuntimeError(SYNTHETIC_KEY)
+    try:
+        with pytest.raises(KeyLeakError) as error:
+            await agentic_host._teardown(None, Mock(), log, service, unit, capture, stop)
+        assert await asyncio.wait_for(pending, 1) is None
+        assert host.ledger.spent("anthropic") == 2 * D("0.002024")
+        assert [e["event"] for e in host.ledger.invocation_events()] == ["reserve", "settle"]
+        assert log.read_text() == ("[redacted]" if failure == "log" else "clean")
+        assert SYNTHETIC_KEY not in "".join(traceback.format_exception(error.value))
+        assert capture.closed
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)

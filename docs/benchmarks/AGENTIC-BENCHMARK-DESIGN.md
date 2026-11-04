@@ -279,6 +279,11 @@ came from. Container settings:
   Provider settings also pass the worker's check before free model-limit discovery.
   Private credential bootstrap frames and SDK authentication headers are outside
   this content boundary.
+- When the host recognizes a credential failure, it immediately stops fresh grants
+  across the invocation, including reservations waiting on another unit's provider
+  lock. Already granted units still settle or recover, and teardown and log
+  scrubbing finish before the original failure is reported. This stop does not
+  persist into a later invocation.
 
 ### 7.4 Air-gapped arm (**Call**)
 

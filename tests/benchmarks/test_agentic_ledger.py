@@ -542,6 +542,73 @@ async def test_service_releases_the_provider_when_a_reserve_is_refused(tmp_path:
     ledger.close()
 
 
+@pytest.mark.parametrize("provider,model_id", [("anthropic", "a"), ("ollama", "local")])
+async def test_service_stop_denies_fresh_and_queued_grants_but_settles_existing_units(
+    tmp_path: Path, provider: str, model_id: str
+) -> None:
+    ledger, service = _service(tmp_path, anthropic="10", openai="10")
+    pending = []
+    try:
+        first = await service.reserve(
+            provider=provider, model_id=model_id, input_bound=10, output_bound=10
+        )
+        other = await service.reserve(
+            provider="openai", model_id="o", input_bound=10, output_bound=10
+        )
+        assert first is not None and other is not None
+        for _ in range(2):
+            pending.append(asyncio.create_task(service.reserve(
+                provider=provider, model_id=model_id, input_bound=10, output_bound=10
+            )))
+        await asyncio.sleep(0)
+        assert all(not task.done() for task in pending)
+        before = ledger.invocation_events()
+        service.stop_grants()
+        service.stop_grants()  # irreversible and idempotent for this invocation
+        # Refuse even while these providers still hold their already granted units.
+        for p, model in ((provider, model_id), ("openai", "o")):
+            assert await asyncio.wait_for(service.reserve(
+                provider=p, model_id=model, input_bound=10, output_bound=10
+            ), 1) is None
+        await service.settle(first, outcome="ok", buckets=Buckets(10, 0, 0, 10))
+        await service.settle(other, outcome="worker_lost", buckets=None)
+        assert await asyncio.wait_for(asyncio.gather(*pending), 1) == [None, None]
+        assert all(not lock.locked() for lock in service._locks.values())
+        assert [e for e in ledger.invocation_events() if e["event"] == "reserve"] == before
+        assert ledger.spent("openai") == D("0.00004")
+        assert not [e for e in ledger.invocation_events() if e["event"] == "stop"]
+    finally:
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        ledger.close()
+
+
+async def test_service_stop_is_invocation_local_and_preserves_pending_unit_recovery(
+    tmp_path: Path,
+) -> None:
+    ledger, service = _service(tmp_path, anthropic="10")
+    try:
+        unit = await service.reserve(
+            provider="anthropic", model_id="a", input_bound=10, output_bound=10
+        )
+        assert unit is not None
+        service.stop_grants()
+    finally:
+        ledger.close()  # simulate a lost process after the stop, before settlement
+    ledger, service = _service(tmp_path, anthropic="10")
+    try:
+        assert _event(ledger, "settle", unit)["outcome"] == "unsettled_at_load"
+        assert ledger.spent("anthropic") == D("0.00004")
+        fresh = await service.reserve(
+            provider="anthropic", model_id="a", input_bound=10, output_bound=10
+        )
+        assert fresh is not None
+        await service.settle(fresh, outcome="ok", buckets=Buckets(10, 0, 0, 10))
+    finally:
+        ledger.close()
+
+
 async def test_service_prices_a_bound_above_the_tier_threshold_at_the_high_tier(
     tmp_path: Path,
 ) -> None:

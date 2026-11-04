@@ -438,6 +438,11 @@ class LedgerService:
         self._locks: dict[str, asyncio.Lock] = {}
         self._units: dict[str, tuple[str, ModelPrice, int]] = {}
         self._unmetered: dict[str, str] = {}  # unit id -> provider
+        self._grants_stopped = False
+
+    def stop_grants(self) -> None:
+        """Latch this invocation's stop without changing settlement or durable provider caps."""
+        self._grants_stopped = True
 
     async def reserve(
         self,
@@ -449,8 +454,14 @@ class LedgerService:
         kind: str = "model_call",
         job_id: str | None = None,
     ) -> str | None:
+        if self._grants_stopped:
+            return None
         if provider in UNMETERED_PROVIDERS:  # the Ledger never sees it
-            await self._locks.setdefault(provider, asyncio.Lock()).acquire()
+            lock = self._locks.setdefault(provider, asyncio.Lock())
+            await lock.acquire()
+            if self._grants_stopped:
+                lock.release()
+                return None
             unit_id = f"{provider}-{uuid.uuid4().hex}"
             self._unmetered[unit_id] = provider
             return unit_id
@@ -463,6 +474,9 @@ class LedgerService:
         bound = bound_cost(price, input_bound=input_bound, output_bound=output_bound)
         lock = self._locks.setdefault(provider, asyncio.Lock())
         await lock.acquire()  # held until this unit's settle
+        if self._grants_stopped:
+            lock.release()
+            return None
         try:
             unit_id = self._ledger.reserve(
                 provider,
