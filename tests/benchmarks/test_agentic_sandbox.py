@@ -5,6 +5,7 @@ No test runs docker or reaches a network host: every docker command goes to Fake
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
@@ -511,8 +512,14 @@ PARTIAL = PROBE_PREFIX + (
 async def _opened(tmp_path: Path, docker: FakeDocker, job_id: str = "j") -> tuple[Sandbox, Egress]:
     sandbox = _sandbox(tmp_path, docker)
     egress = await sandbox.open_egress(job_id, (("api.anthropic.com", 443),))
-    (egress.log_dir / "access.log").write_text(PARTIAL, encoding="utf-8")
+    _logs(egress.log_dir)
     return sandbox, egress
+
+
+def _logs(log_dir: Path, access: str = PARTIAL, cache: str = "squid started\n") -> None:
+    """The two files a running Squid writes into its bind-mounted log directory."""
+    (log_dir / "access.log").write_text(access, encoding="utf-8")
+    (log_dir / "cache.log").write_text(cache, encoding="utf-8")
 
 
 async def test_close_stops_each_proxy_then_removes_what_it_created(tmp_path: Path) -> None:
@@ -520,6 +527,8 @@ async def test_close_stops_each_proxy_then_removes_what_it_created(tmp_path: Pat
     launcher = ContainerLauncher(_sandbox(tmp_path, docker), probe=Probes())
     jobs = [_job("claude-sonnet-5-5", "no-docs"), _job("scripted-anthropic", "no-docs")]
     await launcher.prepare(jobs)
+    for job in jobs:
+        _logs(tmp_path / "run" / "egress" / job.job_id)
     start = len(docker.calls)
     assert await launcher.close() == []
     tail = [" ".join(c[1:3]) + " " + c[-1] for c in docker.calls[start:]]
@@ -632,3 +641,87 @@ def test_the_sandbox_module_loads_no_provider_sdk() -> None:
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "[]"
+
+
+# --- the 0777 log directory: the host never follows a link in it (security review) -----------
+
+
+def _canary(tmp_path: Path) -> Path:
+    canary = tmp_path / "canary.txt"  # a stand-in for a host file outside the log directory
+    canary.write_text(f"host secret {SYNTHETIC}\n", encoding="utf-8")
+    return canary
+
+
+async def test_a_linked_access_log_is_never_followed(tmp_path: Path) -> None:
+    canary = _canary(tmp_path)
+    sandbox, egress = await _opened(tmp_path, FakeDocker())
+    access = egress.log_dir / "access.log"
+    access.unlink()
+    access.symlink_to(canary)
+    problems = await sandbox.close_egress(egress)
+    assert canary.read_text() == f"host secret {SYNTHETIC}\n"  # unchanged
+    assert sandbox.leaks == []  # unread: its key shape was never seen
+    assert access.is_symlink() and any("access.log" in p for p in problems)
+    assert json.loads((egress.log_dir / "collected.json").read_text())["ok"] is False
+
+
+@pytest.mark.parametrize("kind", ["fifo", "directory"])
+async def test_a_cache_log_that_is_not_a_regular_file_is_refused(tmp_path: Path, kind: str) -> None:
+    sandbox, egress = await _opened(tmp_path, FakeDocker())
+    cache = egress.log_dir / "cache.log"
+    cache.unlink()
+    if kind == "fifo":
+        os.mkfifo(cache)
+    else:
+        cache.mkdir()
+    async with asyncio.timeout(10):  # a FIFO must never block the teardown
+        problems = await sandbox.close_egress(egress)
+    assert any("cache.log" in p for p in problems)
+    assert json.loads((egress.log_dir / "collected.json").read_text())["ok"] is False
+
+
+async def test_a_key_shaped_log_is_scrubbed_into_a_new_file(tmp_path: Path) -> None:
+    sandbox, egress = await _opened(tmp_path, FakeDocker())
+    cache = egress.log_dir / "cache.log"
+    cache.write_text(f"WARNING: header {SYNTHETIC}\n", encoding="utf-8")
+    original = tmp_path / "original-inode"
+    os.link(cache, original)  # a second name for the original inode
+    await sandbox.close_egress(egress)
+    assert cache.read_text() == "WARNING: header [redacted]\n"
+    assert original.read_text() == f"WARNING: header {SYNTHETIC}\n"  # never written
+    assert cache.stat().st_ino != original.stat().st_ino
+    assert sandbox.leaks and [p.name for p in egress.log_dir.glob("*.tmp")] == []
+
+
+async def test_a_linked_collected_json_is_replaced_not_followed(tmp_path: Path) -> None:
+    canary = _canary(tmp_path)
+    sandbox, egress = await _opened(tmp_path, FakeDocker())
+    collected = egress.log_dir / "collected.json"
+    collected.symlink_to(canary)
+    await sandbox.close_egress(egress)
+    assert canary.read_text() == f"host secret {SYNTHETIC}\n"
+    assert not collected.is_symlink() and json.loads(collected.read_text())["ok"] is True
+
+
+async def test_a_linked_log_dir_is_refused(tmp_path: Path) -> None:
+    # Before the proxy starts: a log directory that already exists as a link is refused.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    docker = FakeDocker()
+    sandbox = _sandbox(tmp_path, docker)
+    (tmp_path / "run" / "egress").mkdir(parents=True)
+    (tmp_path / "run" / "egress" / "j").symlink_to(elsewhere)
+    with pytest.raises(BenchmarkValidationError, match="link"):
+        await sandbox.open_egress("j", (("api.anthropic.com", 443),))
+    assert not docker.ran("run") and list(elsewhere.iterdir()) == []
+    # At teardown: a log directory swapped for a link is neither read nor written.
+    (tmp_path / "late").mkdir()
+    sandbox, egress = await _opened(tmp_path / "late", FakeDocker())
+    _logs(elsewhere, cache=f"key {SYNTHETIC}\n")
+    moved = egress.log_dir.with_name("moved")
+    egress.log_dir.rename(moved)
+    egress.log_dir.symlink_to(elsewhere)
+    problems = await sandbox.close_egress(egress)
+    assert any("link" in p for p in problems) and sandbox.leaks == []
+    assert (elsewhere / "cache.log").read_text() == f"key {SYNTHETIC}\n"
+    assert not (elsewhere / "collected.json").exists()

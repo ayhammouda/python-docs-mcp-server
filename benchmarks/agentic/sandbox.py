@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import re
+import stat
 import subprocess
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -31,7 +32,9 @@ from benchmarks.agentic.egress import (
     EGRESS_URL,
     LOG_DIR_IN_PROXY,
     allowlist,
+    read_log,
     squid_conf,
+    write_new,
 )
 from benchmarks.agentic.protocol import KeyLeakError, redact_key_shaped
 from benchmarks.model_matrix import KNOWN_APIS, ModelFamily
@@ -292,11 +295,16 @@ class Sandbox:
                 if c.get("Gateway")
             )
             log_dir = self.config.out_dir / "egress" / job_id
+            if os.path.lexists(log_dir):  # a new directory of ours, never a planted link
+                raise BenchmarkValidationError(
+                    f"log directory {log_dir} already exists (it may be a link): refused"
+                )
             log_dir.mkdir(parents=True)
-            log_dir.chmod(0o777)  # mkdir's mode is cut by the umask; Squid runs as `proxy`
+            # mkdir's mode is cut by the umask, and Squid runs as `proxy`: see egress.read_log.
+            log_dir.chmod(0o777)
             conf = log_dir / "squid.conf"
-            conf.write_text(squid_conf(allow), encoding="utf-8")
-            conf.chmod(0o644)  # readable by `proxy` under any umask (round-4 item 4)
+            # Readable by `proxy` under any umask (round-4 item 4).
+            write_new(conf, squid_conf(allow).encode("utf-8"), mode=0o644)
             await self.run(
                 "run",
                 "-d",
@@ -421,31 +429,40 @@ class Sandbox:
                 f"the proxy exited {after.get('ExitCode')} after our stop "
                 f"(OOMKilled {after.get('OOMKilled')}): its log may be partial"
             )
-        for name in ("access.log", "cache.log"):
+        # The directory is 0777 and the proxy could write into it: no link is ever followed.
+        try:
+            real_dir = stat.S_ISDIR(os.lstat(egress.log_dir).st_mode)
+        except OSError:
+            real_dir = False
+        if not real_dir:
+            problems.append("the log directory is a link or gone: neither read nor written")
+        for name in ("access.log", "cache.log") if real_dir else ():
             path = egress.log_dir / name
             try:
-                if path.exists():
-                    redacted, pattern = redact_key_shaped(path.read_bytes())
-                    if pattern:
-                        path.write_bytes(redacted)
-                        self.leaks.append(f"{egress.job_id}/{name} ({pattern} pattern)")
-                        problems.append(f"a key-shaped string in {name} was redacted")
-            except OSError as exc:
-                problems.append(f"checking {name} failed: {exc}")
+                redacted, pattern = redact_key_shaped(read_log(path))
+                if pattern:
+                    write_new(path, redacted)  # a new file renamed over the name
+                    self.leaks.append(f"{egress.job_id}/{name} ({pattern} pattern)")
+                    problems.append(f"a key-shaped string in {name} was redacted")
+            except (BenchmarkValidationError, OSError) as exc:
+                problems.append(f"{name} could not be collected: {exc}")
         for args in (["rm", "-f", egress.proxy], ["network", "rm", egress.network]):
             try:
                 await self.run(*args)
             except Exception as exc:  # noqa: BLE001
                 problems.append(f"docker {' '.join(args[:2])} failed: {exc}")
-        _write_json(
-            egress.log_dir / "collected.json",
-            {
-                "ok": not problems,
-                "problems": problems,
-                "state_before_stop": before,
-                "state_after_stop": after,
-            },
-        )
+        collected = {
+            "ok": not problems,
+            "problems": problems,
+            "state_before_stop": before,
+            "state_after_stop": after,
+        }
+        if real_dir:
+            try:
+                text = json.dumps(collected, indent=2, sort_keys=True) + "\n"
+                write_new(egress.log_dir / "collected.json", text.encode("utf-8"), mode=0o644)
+            except OSError as exc:
+                problems.append(f"collected.json could not be written: {exc}")
         return problems
 
 
