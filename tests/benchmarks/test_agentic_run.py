@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import sys
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -262,6 +263,60 @@ def test_run_summary_counts_retries_and_reruns(tmp_path: Path) -> None:
     assert len(summary["not_run"]) == 1 and summary["not_run"][0]["reason"] == "retries_exhausted"
     assert summary["not_run"][0]["cell"] == "no-docs--scripted-anthropic--r1"
     assert summary["succeeded_cells"] == 1 and fam["answer_turns"] == 1
+
+
+class _LostAfterDiscard(LocalLauncher):
+    """A worker that reports one retries_exhausted discard, then dies before its rerun."""
+
+    def command(self, job: Any) -> tuple[list[str], dict[str, str]]:
+        _, env = super().command(job)
+        timing = {f"{name}_ms": 0 for name in ("grant_wait", "failed_attempt", "retry_wait")}
+        record = {
+            "status": "discarded",
+            "started_at": "2026-11-04T00:00:00.000Z",
+            "completed_at": "2026-11-04T00:00:01.000Z",
+            "timing": timing,
+            "model_calls": [],
+        }
+        frame = {
+            "type": "discarded",
+            "record": record,
+            "corpus_id": "SYN-EX-001",
+            "repeat": 1,
+            "reason": "retries_exhausted",
+            "attempt": 1,
+        }
+        code = (
+            "import json, sys\n"
+            "inp, out = sys.stdin.buffer, sys.stdout.buffer\n"
+            "inp.read(int.from_bytes(inp.read(8), 'big'))\n"
+            f"body = json.dumps({frame!r}).encode()\n"
+            "out.write(len(body).to_bytes(8, 'big') + body)\n"
+            "out.flush()\n"
+            "inp.read(int.from_bytes(inp.read(8), 'big'))\n"
+            "sys.exit(1)\n"
+        )
+        return [sys.executable, "-c", code], env
+
+
+def test_a_rerun_that_never_ran_is_not_counted(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path,
+        models=("scripted-anthropic",),
+        systems=("no-docs",),
+        questions=("SYN-EX-001",),
+        repeats=1,
+    )
+    summary = run_agentic(config, launcher=_LostAfterDiscard())
+    assert summary["not_run"] == [
+        {
+            "cell": "no-docs--scripted-anthropic--r1",
+            "corpus_id": "SYN-EX-001",
+            "reason": "worker_lost",
+            "attempt": None,
+        }
+    ]
+    assert summary["families"]["scripted-anthropic"]["reruns"] == 0
 
 
 def test_run_summary_wall_time_includes_failed_attempts_backoff_and_grant_waits(

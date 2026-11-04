@@ -291,7 +291,8 @@ async def _run_job(channel: ProtocolChannel, reader: asyncio.StreamReader) -> in
                         }
                     )
                 continue
-            await host.request({"type": "trajectory", "record": record, **ident})
+            trajectory = {"type": "trajectory", "record": record, **ident, "attempt": attempt}
+            await host.request(trajectory)
             if bridge is not None and (record["error"] or {}).get("category") in _REOPEN_AFTER:
                 await _close(stack)
                 stack = AsyncExitStack()

@@ -38,7 +38,7 @@ from benchmarks.agentic.ledger import (
 from benchmarks.agentic.loop import AIR_GAPPED_CAPS, HOSTED_CAPS
 from benchmarks.agentic.prompt import SYSTEM_PROMPT
 from benchmarks.agentic.protocol import assert_no_key_shaped
-from benchmarks.agentic.worker import MAX_RERUNS, _client_versions
+from benchmarks.agentic.worker import _client_versions
 from benchmarks.model_matrix import (
     _HOSTED_REQUIRED_FIELDS,
     METHODOLOGY_TOKEN_LABEL,
@@ -242,13 +242,12 @@ class _Collector:
         record = message["record"]
         stats = self.families[job.family.id]
         stats.add(record)
+        stats.reruns += message["attempt"] > 1  # a rerun counts once it has run
         if kind == "discarded":
             reason, attempt = message["reason"], message["attempt"]
             self.discarded.append(
                 {"cell": cell, "corpus_id": corpus_id, "reason": reason, "attempt": attempt}
             )
-            if reason == "retries_exhausted" and attempt <= MAX_RERUNS:
-                stats.reruns += 1
             path = self.out / "discarded" / cell / f"{corpus_id}--attempt{attempt}.json"
             _write(path, {**record, **self._ident(job, cell, message), "reason": reason})
             return

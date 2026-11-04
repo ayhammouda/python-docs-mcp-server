@@ -360,6 +360,7 @@ async def test_worker_runs_its_job_over_the_channel_and_reports_done(
     assert info["tools_raw"] == [] and info["index_sha256"] is None
     assert set(info["client_versions"]) == {"anthropic", "openai", "google-genai", "mcp"}
     assert [m["corpus_id"] for m in messages[1:3]] == ["Q1", "Q2"]
+    assert [m["attempt"] for m in messages[1:3]] == [1, 1]  # a rerun counts by its attempt
     assert messages[1]["record"]["answer"] == "Scripted answer."
     assert host.ledger.spent("anthropic") == 2 * D("0.0011")  # 1000 in + 100 out at $1/1M
     assert (tmp_path / "logs" / "scripted-anthropic--no-docs.stderr.log").exists()
