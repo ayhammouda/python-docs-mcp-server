@@ -18,6 +18,7 @@ from typing import Any
 from benchmarks.runner import BenchmarkValidationError
 
 MAX_FRAME_BYTES = 64 * 1024 * 1024
+WORKER_LEAK_REASON = "worker output failed its credential check"
 # Raw diagnostics can mix Python repr, JSON and YAML. Treat up to nine token
 # characters after a backslash as a possible delimiter (U + eight hex digits
 # is the longest). Punctuation already delimits a key, including the closing

@@ -30,6 +30,7 @@ from benchmarks.agentic.loop import Caps
 from benchmarks.agentic.protocol import (
     KEY_SHAPED,
     MAX_FRAME_BYTES,
+    WORKER_LEAK_REASON,
     FrameTooLarge,
     KeyLeakError,
     encode_frame,
@@ -369,7 +370,7 @@ async def _supervise(
                     reason = str(message.get("reason"))
                     with suppress(TimeoutError):  # its drain writes the last lines to the log
                         await asyncio.wait_for(proc.wait(), 5)
-                    if reason == "own key found in output":
+                    if reason in (WORKER_LEAK_REASON, "own key found in output"):
                         raise KeyLeakError(f"worker {job.job_id}: {reason}")
                     if reason.startswith("FrameTooLarge:"):
                         raise FrameTooLarge(f"worker {job.job_id}: {reason}")

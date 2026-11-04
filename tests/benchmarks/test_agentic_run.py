@@ -1147,6 +1147,8 @@ def test_transcript_checks_escaped_tool_arguments(
     else:
         with pytest.raises(KeyLeakError) as caught:
             run_agentic(config)
+        if case == "native-url":
+            assert "worker output failed its credential check" in str(caught.value)
         assert key not in str(caught.value)
         assert not transcript.exists()
         assert all(

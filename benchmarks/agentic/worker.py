@@ -27,7 +27,13 @@ from typing import Any
 from benchmarks.adapters.guard import PAID_KEY_ENVS, PROVIDER_API_KEY_ENV
 from benchmarks.agentic.bridge import Bridge, SystemSpec, open_bridge, system_spec_from_raw
 from benchmarks.agentic.ledger import Outcome
-from benchmarks.agentic.protocol import KeyLeakError, encode_frame, read_frame, read_frame_fd
+from benchmarks.agentic.protocol import (
+    WORKER_LEAK_REASON,
+    KeyLeakError,
+    encode_frame,
+    read_frame,
+    read_frame_fd,
+)
 from benchmarks.agentic.types import Buckets, ToolSpec
 from benchmarks.model_matrix import model_family_from_raw
 from benchmarks.runner import BenchmarkValidationError
@@ -360,7 +366,7 @@ def _report(channel: ProtocolChannel, reason: str, code: int) -> int:
     try:
         channel.send({"type": "error", "reason": reason})
     except KeyLeakError:
-        channel.send({"type": "error", "reason": "own key found in output"})
+        channel.send({"type": "error", "reason": WORKER_LEAK_REASON})
         return 3
     return code
 
@@ -375,7 +381,7 @@ async def run_worker(
     try:
         return await _run_job(channel, reader, first, bootstrapped=bootstrapped)
     except KeyLeakError:
-        return _report(channel, "own key found in output", 3)
+        return _report(channel, WORKER_LEAK_REASON, 3)
     except Exception as exc:  # noqa: BLE001 - every failure is reported to the host
         return _report(channel, f"{type(exc).__name__}: {exc}", 2)
 
