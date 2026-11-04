@@ -8,7 +8,6 @@ remaining budget and estimate.
 
 from __future__ import annotations
 
-import json
 import math
 import os
 import sys
@@ -19,8 +18,10 @@ from decimal import Decimal, DecimalException
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
 
+from benchmarks.agentic.inputs import CapturedInput, read_json, read_jsonl
 from benchmarks.agentic.ledger import PROVIDER_MARGINS, UNMETERED_PROVIDERS
-from benchmarks.model_matrix import load_model_matrix
+from benchmarks.agentic.protocol import KeyLeakError, assert_no_key_shaped
+from benchmarks.model_matrix import model_matrix_from_mapping
 from benchmarks.runner import BenchmarkValidationError
 
 if TYPE_CHECKING:
@@ -61,19 +62,26 @@ def reference_rates(run_dir: Path) -> dict[str, ReferenceRate]:
     """
     try:
         return _read_reference_rates(run_dir)
+    except KeyLeakError:
+        raise
     except (OSError, ValueError, KeyError, TypeError, DecimalException, OverflowError) as exc:
-        raise BenchmarkValidationError(f"invalid reference run {run_dir}: {exc}") from exc
+        diagnostic = f"invalid reference run {run_dir}: {exc}"
+        assert_no_key_shaped(diagnostic, where="reference diagnostic")
+        raise BenchmarkValidationError(diagnostic) from exc
 
 
 def _read_reference_rates(run_dir: Path) -> dict[str, ReferenceRate]:
-    summary = json.loads((run_dir / "run-summary.json").read_text(encoding="utf-8"))
+    summary = read_json(run_dir / "run-summary.json", "reference summary")
     if summary["status"] != "completed":
         raise ValueError("the run did not complete")
     # Budget stops and worker errors can leave status "completed" with cells unscored.
     if not summary["scored_cells"] or summary["scored_cells"] != summary["planned_cells"]:
         raise ValueError("the run did not score every planned cell")
     seconds: dict[str, dict[tuple[str, str], float]] = defaultdict(lambda: defaultdict(float))
-    matrix = load_model_matrix(run_dir / "snapshots" / "model-matrix.yml")
+    matrix_input = CapturedInput.read(
+        run_dir / "snapshots" / "model-matrix.yml", "reference model-matrix.yml", "reference matrix"
+    )
+    matrix = model_matrix_from_mapping(matrix_input.mapping)
     families = {family.id: family for family in matrix.model_families}
     job_families: dict[tuple[str, str], str] = {}
     scored: set[tuple[str, str]] = set()
@@ -82,10 +90,33 @@ def _read_reference_rates(run_dir: Path) -> dict[str, ReferenceRate]:
     }
     for kind in ("transcripts", "discarded"):
         for path in sorted((run_dir / kind).glob("*/*.json")):
-            record = json.loads(path.read_text(encoding="utf-8"))
+            record = read_json(path, "reference transcript")
             family_id = record["model_family_id"]
             provider = record["provider"]
             family = families[family_id]
+            execution = record.get("execution")
+            if not isinstance(execution, dict) or any(
+                not isinstance(execution.get(field), str) or not execution[field]
+                for field in ("provider", "model_id", "api")
+            ):
+                raise ValueError(
+                    f"reference transcript lacks executed provider/model/API for {family_id}"
+                )
+            if (execution["provider"], execution["model_id"], execution["api"]) != (
+                family.provider,
+                family.model_id,
+                family.api,
+            ):
+                raise ValueError(
+                    f"executed client disagrees with the model snapshot for {family_id}"
+                )
+            if execution["api"] != "scripted" and any(
+                "scripted_step" in (call.get("raw_response") or {})
+                for call in record.get("model_calls", [])
+            ):
+                raise ValueError(
+                    f"scripted response contradicts live reference identity for {family_id}"
+                )
             if (provider, record["model_id"]) != (family.provider, family.model_id):
                 raise ValueError(f"transcript disagrees with the model snapshot for {family_id}")
             job_families[provider, f"{family_id}--{record['system_id']}"] = family_id
@@ -109,8 +140,8 @@ def _read_reference_rates(run_dir: Path) -> dict[str, ReferenceRate]:
     booked: dict[str, Decimal] = defaultdict(Decimal)  # includes charges for failed attempts
     measured: set[str] = set()
     reserved: dict[str, str] = {}
-    events = (run_dir / "ledger-events.jsonl").read_text(encoding="utf-8").splitlines()
-    for event in map(json.loads, filter(None, events)):
+    events = read_jsonl(run_dir / "ledger-events.jsonl", "reference ledger")
+    for event in events:
         provider = event["provider"]
         if event["event"] == "reserve":
             family_id = job_families[provider, event["job_id"]]

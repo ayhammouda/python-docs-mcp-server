@@ -1,0 +1,51 @@
+methodology_token_label: Claude Tokens (Normalized Payload)
+model_families:
+- api: anthropic-messages
+  arm: hosted
+  client: scripted
+  framing_allowance_tokens: 256
+  headline_eligible: false
+  headline_ineligibility_reason: Test fixture with a scripted model; never a public
+    result.
+  id: scripted-anthropic
+  latency_scope: request_dispatch_to_final_answer
+  max_input_tokens: 200000
+  max_output_tokens: 1024
+  model_id: scripted-1
+  output_cap_includes_reasoning: true
+  provider: anthropic
+  script: /private/var/folders/fg/qy05cq110zb7rzbcyt5tnkr40000gn/T/pdmcp-201.AJGNg8/r13int/tests/benchmarks/fixtures/agentic/script-anthropic.yml
+  token_count_method: claude_normalized_payload
+- api: scripted
+  arm: hosted
+  client: scripted
+  framing_allowance_tokens: 256
+  headline_eligible: false
+  headline_ineligibility_reason: Test fixture with a scripted model; never a public
+    result.
+  id: scripted-openai
+  latency_scope: request_dispatch_to_final_answer
+  max_input_tokens: 200000
+  max_output_tokens: 1024
+  model_id: scripted-2
+  output_cap_includes_reasoning: true
+  provider: openai
+  script: /private/var/folders/fg/qy05cq110zb7rzbcyt5tnkr40000gn/T/pdmcp-201.AJGNg8/r13int/tests/benchmarks/fixtures/agentic/script-openai.yml
+  token_count_method: claude_normalized_payload
+- api: scripted
+  arm: hosted
+  client: scripted
+  framing_allowance_tokens: 256
+  headline_eligible: false
+  headline_ineligibility_reason: Test fixture with a scripted model; never a public
+    result.
+  id: scripted-google
+  latency_scope: request_dispatch_to_final_answer
+  max_input_tokens: 200000
+  max_output_tokens: 1024
+  model_id: scripted-3
+  output_cap_includes_reasoning: true
+  provider: google
+  script: /private/var/folders/fg/qy05cq110zb7rzbcyt5tnkr40000gn/T/pdmcp-201.AJGNg8/r13int/tests/benchmarks/fixtures/agentic/script-google.yml
+  token_count_method: claude_normalized_payload
+schema_version: 1

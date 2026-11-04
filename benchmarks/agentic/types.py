@@ -103,6 +103,7 @@ class ProviderCallError(Exception):
 class ModelClient(Protocol):
     provider: str
     model_id: str
+    api: str
 
     def request_params(self) -> dict[str, Any]:
         """Every setting sent except system, tools and messages."""

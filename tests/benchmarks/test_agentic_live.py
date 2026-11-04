@@ -74,6 +74,7 @@ def _write_record(
     wait_ms: float,
     *,
     model_id: str | None = None,
+    api: str = "openai-responses",
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     cell, corpus = path.parent.name, path.name.split("--")[0].removesuffix(".json")
@@ -84,6 +85,8 @@ def _write_record(
         "model_family_id": family_id,
         "model_id": model_id or family_id,
         "provider": provider,
+        "execution": {"provider": provider, "model_id": model_id or family_id, "api": api},
+        "model_calls": [{"raw_response": {"id": "response-1"}}],
         "timing": {"wall_ms": wall_ms, "grant_wait_ms": wait_ms},
     }
     path.write_text(json.dumps(record), encoding="utf-8")
@@ -182,7 +185,7 @@ def _single_cell_reference(
     _write_snapshot(run, family.raw | {"model_id": model_id, "api": api})
     record = run / "transcripts" / f"no-docs--{family.id}--r1" / "Q1.json"
     _write_record(
-        record, family.id, family.provider, 200, 100, model_id=transcript_model or model_id
+        record, family.id, family.provider, 200, 100, model_id=transcript_model or model_id, api=api
     )
     _pilot_summary(run, "completed", 1, 1, "0.10")
     events = _settled_unit("u1", family.id, "0.10", "ok", model_id=reserved_model or model_id)

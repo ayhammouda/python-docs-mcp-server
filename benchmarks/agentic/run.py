@@ -23,8 +23,6 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import platformdirs
-import yaml
-from yaml.tokens import ScalarToken
 
 import benchmarks
 from benchmarks.adapters.claude_tokens import ANTHROPIC_API_VERSION, DEFAULT_COUNT_MODEL
@@ -38,6 +36,7 @@ from benchmarks.agentic.bridge import SystemSpec, systems_from_mapping
 from benchmarks.agentic.cleanup import add_cleanup_cause
 from benchmarks.agentic.egress import write_egress_summary
 from benchmarks.agentic.host import Launcher, LocalLauncher, WorkerJob, refuse_host_keys, run_jobs
+from benchmarks.agentic.inputs import CapturedInput
 from benchmarks.agentic.ledger import (
     PROVIDER_CAPS,
     Ledger,
@@ -57,7 +56,6 @@ from benchmarks.agentic.loop import AIR_GAPPED_CAPS, HOSTED_CAPS
 from benchmarks.agentic.prompt import SYSTEM_PROMPT
 from benchmarks.agentic.protocol import (
     KeyLeakError,
-    assert_no_key_shaped,
     assert_no_key_shaped_json,
     redact_key_shaped_text,
     scanned_json_bytes,
@@ -81,7 +79,6 @@ from benchmarks.runner import (
     _default_run_id,
     _environment_metadata,
     _load_questions,
-    _require_yaml_mapping,
     _scoring_record,
     _utc_now,
 )
@@ -426,51 +423,6 @@ class _Collector:
         self.cells.add(cell)
 
 
-@dataclass(frozen=True)
-class _RunInput:
-    name: str
-    content: bytes
-    mapping: dict[str, Any]
-
-    @classmethod
-    def read(cls, path: Path, name: str, label: str) -> _RunInput:
-        try:
-            content = path.read_bytes()
-        except FileNotFoundError:
-            raise BenchmarkValidationError(f"{label} file does not exist: {path}") from None
-        except OSError as exc:
-            raise BenchmarkValidationError(
-                f"cannot read {label} file {path}: {exc.strerror}"
-            ) from None
-
-        where = f"input {name}"
-        assert_no_key_shaped(content, where=where)  # includes comments
-        try:
-            text = content.decode("utf-8")  # same encoding as the path-based loaders
-            for token in yaml.scan(text, Loader=yaml.SafeLoader):
-                if isinstance(token, ScalarToken):
-                    # Construction can discard a value under a merge or a duplicate key.
-                    assert_no_key_shaped(token.value, where=where)
-            data = yaml.safe_load(text)
-        except KeyLeakError:
-            raise
-        except (
-            yaml.YAMLError,
-            ValueError,
-            TypeError,
-            LookupError,
-            AttributeError,
-            OverflowError,
-            RecursionError,
-        ) as exc:
-            # PyYAML messages can quote source, even for constructor errors without a mark.
-            mark = getattr(exc, "problem_mark", None)
-            location = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
-            raise BenchmarkValidationError(f"{label} file is not valid YAML{location}") from None
-        assert_no_key_shaped_json(data, where=where)  # e.g. bytes constructed by !!binary
-        return cls(name, content, _require_yaml_mapping(data, label))
-
-
 def _finalization_failure(primary: BaseException | None, later: BaseException) -> BaseException:
     if primary is None:
         return later
@@ -509,10 +461,10 @@ def run_agentic(
         assert_no_key_shaped_json(
             str(value) if isinstance(value, Path) else value, where="run options"
         )
-    corpus_input = _RunInput.read(config.corpus_path, "corpus.yml", "corpus")
-    matrix_input = _RunInput.read(config.matrix_path, "model-matrix.yml", "model matrix")
-    manifest_input = _RunInput.read(config.manifest_path, "competitor-manifest.yml", "manifest")
-    prices_input = _RunInput.read(config.prices_path, "price-snapshot.yml", "price snapshot")
+    corpus_input = CapturedInput.read(config.corpus_path, "corpus.yml", "corpus")
+    matrix_input = CapturedInput.read(config.matrix_path, "model-matrix.yml", "model matrix")
+    manifest_input = CapturedInput.read(config.manifest_path, "competitor-manifest.yml", "manifest")
+    prices_input = CapturedInput.read(config.prices_path, "price-snapshot.yml", "price snapshot")
     launcher = launcher or LocalLauncher()
     out = config.out_dir
     if out.exists() and any(out.iterdir()):
@@ -592,6 +544,7 @@ def run_agentic(
         seed=seed,
         matrix_dir=config.matrix_path.parent,
     )
+    rates = reference_rates(config.reference_run) if config.reference_run else None
     out.mkdir(parents=True, exist_ok=True)
     snapshots = out / "snapshots"
     snapshots.mkdir()
@@ -743,7 +696,6 @@ def run_agentic(
             )
         if any(f.api != "scripted" for f in families):
             # Before any key is read (bootstrap_frame) or any container starts (prepare).
-            rates = reference_rates(config.reference_run) if config.reference_run else None
             plans = provider_plans(jobs, spent_before, caps, rates)
             problems = full_run_gate(plans, jobs, rates)
             if problems:

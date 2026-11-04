@@ -295,6 +295,7 @@ async def _run_job(
     if family.api != "scripted" and not bootstrapped:
         raise BenchmarkValidationError("a live job needs its key bootstrap frame first")
     client = make_client(family, timeout_s=caps.model_call_timeout_s)
+    execution = {"provider": client.provider, "model_id": client.model_id, "api": client.api}
     # One free models GET per live worker, outside the ledger (round-2 ruling D10).
     limits = None if family.api == "scripted" else await fetch_model_limits(client)
     host = _HostLedger(channel, reader)
@@ -321,7 +322,7 @@ async def _run_job(
                 await host.request(
                     {
                         "type": "discarded",
-                        "record": discarded.record,
+                        "record": {**discarded.record, "execution": execution},
                         **ident,
                         "reason": discarded.reason,
                         "attempt": attempt,
@@ -350,6 +351,7 @@ async def _run_job(
                         }
                     )
                 continue
+            record["execution"] = execution
             trajectory = {"type": "trajectory", "record": record, **ident, "attempt": attempt}
             await host.request(trajectory)
             if bridge is not None and (record["error"] or {}).get("category") in _REOPEN_AFTER:

@@ -147,6 +147,20 @@ cell included) by 1.25. It refuses a provider whose estimate is over its remaini
 a model whose time is over 24 hours. When it refuses, choose fewer repeats or fewer
 questions before you run, and disclose that choice with the results.
 
+Each scored or discarded transcript records `execution.provider`, `execution.model_id`
+and `execution.api` from the client instantiated by the worker. A reference must prove
+all three agree with its saved model matrix and the requested family. Scripted responses
+cannot supply live rates. Older pilots without executed identity are rejected; rerun the
+pilot to obtain auditable evidence rather than adding an API label to old transcripts.
+Local Ollama timing references need the same identity evidence, even though they are
+unmetered. Grant waits remain excluded, and discarded attempts count toward cost and time.
+
+Reference summaries, matrices, scored and discarded transcripts, and ledger JSONL are
+scanned as raw bytes and decoded values before validation can quote them. YAML values
+hidden by aliases or merge overrides and overwritten JSON values are included. Both dry
+and live runs validate an explicit `--reference-run`; a key-shaped value stops the CLI
+with exit 3 before confirmation or any provider call, with no key in the diagnostic.
+
 ## 9. Artifacts
 
 - `egress/summary.json`: the C1 evidence, read by PR 5.

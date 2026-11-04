@@ -214,6 +214,7 @@ class AnthropicClient:
     """Anthropic Messages: no sampling parameters, no ``cache_control``."""
 
     provider = "anthropic"
+    api = "anthropic-messages"
 
     def __init__(self, sdk: anthropic.AsyncAnthropic, model_id: str, max_output_tokens: int):
         self._sdk = sdk
@@ -294,6 +295,7 @@ class OpenAIResponsesClient:
     """OpenAI Responses: ``store=False``, encrypted reasoning replayed, no prompt-cache option."""
 
     provider = "openai"
+    api = "openai-responses"
 
     def __init__(self, sdk: openai.AsyncOpenAI, model_id: str, max_output_tokens: int):
         self._sdk = sdk
@@ -400,6 +402,7 @@ class OllamaChatClient:
     """
 
     provider = "ollama"
+    api = "openai-chat-completions"
 
     def __init__(self, sdk: openai.AsyncOpenAI, model_id: str):
         self._sdk = sdk
@@ -511,6 +514,7 @@ class GeminiClient:
     """Gemini ``generate_content``: AUTO mode, no automatic calling, no continuation."""
 
     provider = "google"
+    api = "gemini-generate-content"
 
     def __init__(self, sdk: genai.Client, model_id: str, max_output_tokens: int):
         self._sdk = sdk
@@ -651,6 +655,8 @@ class ScriptedClient:
     ``{error: {kind, status, retry_after_s}}``; any step may set ``delay_s`` and
     ``prompt_contains``. A tools step applies only when every tool it names was given.
     """
+
+    api = "scripted"
 
     def __init__(self, provider: str, model_id: str, steps: list[dict[str, Any]]):
         self.provider = provider
