@@ -1394,6 +1394,37 @@ def test_runs_share_one_durable_ledger_by_default(
     assert (expected / "anthropic.jsonl").is_file()
 
 
+@pytest.mark.parametrize("stage", ["opening_balance", "collector"])
+def test_initialization_interrupt_does_not_leave_an_open_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    interrupt = KeyboardInterrupt("stop during setup")
+    config = _config(tmp_path, models=("scripted-anthropic",), systems=("no-docs",))
+    with monkeypatch.context() as setup:
+        if stage == "opening_balance":
+            original = Ledger.spent
+            interrupted = False
+
+            def spent(ledger: Ledger, provider: str) -> Decimal:
+                nonlocal interrupted
+                if not interrupted:
+                    interrupted = True
+                    raise interrupt
+                return original(ledger, provider)
+
+            setup.setattr(Ledger, "spent", spent)
+        else:
+
+            def interrupted_collector(*args: Any, **kwargs: Any) -> None:
+                raise interrupt
+
+            setup.setattr("benchmarks.agentic.run._Collector", interrupted_collector)
+        with pytest.raises(KeyboardInterrupt) as error:
+            run_agentic(config)
+        assert error.value is interrupt
+    Ledger.open(config.ledger_dir, run_id="next-invocation").close()
+
+
 @pytest.mark.parametrize("stage", ["export", "run", "export_after_failure"])
 def test_keyboard_interrupt_survives_finalization_and_releases_the_ledger(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str

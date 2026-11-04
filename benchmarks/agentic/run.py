@@ -590,8 +590,7 @@ def run_agentic(
     if config.dry_run:  # never opens the ledger
         return summary
 
-    ledger = Ledger.open(config.ledger_dir, run_id=run_id, caps=caps)
-    spent_before = {provider: ledger.spent(provider) for provider in caps}  # after any recovery
+    spent_before: dict[str, Decimal] = {}
     collector = _Collector(out, {q.id: q for q in questions}, families)
     # The air-gapped arm runs alone (checked above), so either every family is in it or none.
     watch = AirGapWatch(out, offline_checks) if families[0].arm == "air-gapped" else None
@@ -617,7 +616,7 @@ def run_agentic(
         if watch is not None:
             await watch.check("after_last")
 
-    def write_outcome() -> None:
+    def write_outcome(ledger: Ledger) -> None:
         """ledger-events.jsonl and run-summary.json, for a completed or an aborted run."""
         run_events = ledger.invocation_events()
         events = b"".join(
@@ -660,7 +659,9 @@ def run_agentic(
                 "families": {fid: stats.summary() for fid, stats in collector.families.items()},
                 "ledger": {
                     provider: {
-                        "spent_before": str(spent_before[provider]),
+                        "spent_before": str(spent_before[provider])
+                        if provider in spent_before
+                        else None,
                         "spent_after": str(ledger.spent(provider)),
                         "cap": str(caps[provider]),
                         "stopped": ledger.stopped(provider),
@@ -679,7 +680,11 @@ def run_agentic(
         _write(out / "run-summary.json", summary)
 
     failure: BaseException | None = None
-    try:  # every step after the open, the overrun check included, ends in write_outcome
+    ledger: Ledger | None = None
+    try:
+        ledger = Ledger.open(config.ledger_dir, run_id=run_id, caps=caps)
+        for provider in caps:
+            spent_before[provider] = ledger.spent(provider)  # after recovery
         for provider in config.acknowledge_overrun:
             ledger.acknowledge_overrun(provider)
         overrun = sorted({f.provider for f in families if ledger.stopped(f.provider) == "overrun"})
@@ -714,15 +719,16 @@ def run_agentic(
         detail = redact_key_shaped_text(str(exc))
         summary |= {"status": "aborted", "abort_reason": f"{type(exc).__name__}: {detail}"}
     finally:
-        try:
-            write_outcome()
-        except BaseException as exc:  # retain the interrupt or leak while closing the ledger
-            failure = _finalization_failure(failure, exc)
-        finally:
+        if ledger is not None:
             try:
-                ledger.close()
-            except BaseException as exc:
+                write_outcome(ledger)
+            except BaseException as exc:  # retain the interrupt or leak while closing the ledger
                 failure = _finalization_failure(failure, exc)
+            finally:
+                try:
+                    ledger.close()
+                except BaseException as exc:
+                    failure = _finalization_failure(failure, exc)
     if failure is not None:
         raise failure
     return summary

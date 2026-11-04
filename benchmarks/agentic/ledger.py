@@ -256,28 +256,28 @@ class Ledger:
         ledger_dir.mkdir(parents=True, exist_ok=True)
         lock_path = ledger_dir / ".lock"
         fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-        os.fchmod(fd, 0o600)  # also an existing lock file, whatever mode it was left with
         try:
-            # shortcut: fcntl is POSIX only; the harness runs on macOS and Linux, add msvcrt.locking if Windows runs are ever needed  # noqa: E501
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            os.close(fd)
-            raise BenchmarkValidationError(
-                f"spend ledger {lock_path} is locked by another process; one run at a time"
-            ) from exc
-        ledger = cls(ledger_dir, run_id, dict(caps), fd)
-        try:
+            os.fchmod(fd, 0o600)  # an existing lock file must also be private
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raise BenchmarkValidationError(
+                    f"spend ledger {lock_path} is locked by another process; one run at a time"
+                ) from exc
+            ledger = cls(ledger_dir, run_id, dict(caps), fd)
             ledger._load()
+            return ledger
         except BaseException:
-            ledger.close()
+            os.close(fd)  # closing also releases any lock acquired before the interruption
             raise
-        return ledger
 
     def close(self) -> None:
-        if self._lock_fd is not None:
-            fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
-            os.close(self._lock_fd)
-            self._lock_fd = None
+        fd, self._lock_fd = self._lock_fd, None
+        if fd is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
 
     def _load(self) -> None:
         pending: dict[str, None] = {}  # ordered set of reserves without a settle

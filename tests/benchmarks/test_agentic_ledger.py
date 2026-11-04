@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
+import os
 import subprocess
 import sys
 from datetime import date
@@ -401,6 +403,43 @@ def test_a_second_open_on_the_same_directory_is_refused(tmp_path: Path) -> None:
         _open(tmp_path, anthropic="10")
     ledger.close()
     _open(tmp_path, anthropic="10").close()  # released by close()
+
+
+def test_ledger_open_closes_its_descriptor_when_setup_is_interrupted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened = []
+
+    def interrupt(fd: int, mode: int) -> None:
+        opened.append(fd)
+        raise KeyboardInterrupt("chmod interrupted")
+
+    with monkeypatch.context() as setup:
+        setup.setattr(os, "fchmod", interrupt)
+        with pytest.raises(KeyboardInterrupt, match="chmod interrupted"):
+            Ledger.open(tmp_path, run_id=RUN_ID)
+    (fd,) = opened
+    with pytest.raises(OSError):
+        os.fstat(fd)
+    Ledger.open(tmp_path, run_id=RUN_ID).close()
+
+
+def test_ledger_close_closes_its_descriptor_if_unlock_is_interrupted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger = Ledger.open(tmp_path, run_id=RUN_ID)
+    with monkeypatch.context() as setup:
+
+        def interrupt(*args: Any) -> None:
+            raise KeyboardInterrupt("unlock interrupted")
+
+        setup.setattr(fcntl, "flock", interrupt)
+        with pytest.raises(KeyboardInterrupt, match="unlock interrupted"):
+            ledger.close()
+    try:
+        Ledger.open(tmp_path, run_id="following").close()
+    finally:
+        ledger.close()
 
 
 def test_the_lock_file_is_private_to_its_owner(tmp_path: Path) -> None:
