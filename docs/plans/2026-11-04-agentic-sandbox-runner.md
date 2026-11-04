@@ -772,7 +772,7 @@ Expected: `10001`, `/usr/bin/cat`, `/usr/local/bin/mcp-server-fetch`, `no-env-fi
 - Produces:
   - `EGRESS_ALIAS = "egress"`, `EGRESS_PORT = 3128`, `EGRESS_URL = "http://egress:3128"`, `LOG_DIR_IN_PROXY = "/var/log/squid-bench"`.
   - `PROVIDER_HOSTS = {"anthropic": (("api.anthropic.com", 443),), "openai": (("api.openai.com", 443),), "google": (("generativelanguage.googleapis.com", 443),), "ollama": (("host.docker.internal", 11434),)}` and `SYSTEM_HOSTS = {"docs-fetch": (("docs.python.org", 443),)}`. These are the pinned base URLs in `clients.py` (Anthropic, OpenAI, Gemini) and design §7.4.
-  - `allowlist(family: ModelFamily, system_id: str | None) -> tuple[tuple[str, int], ...]`: the provider's hosts unless `family.api == "scripted"`, plus `SYSTEM_HOSTS.get(system_id, ())`, in that order.
+  - `allowlist(family: ModelFamily, system_id: str | None) -> tuple[tuple[str, int], ...]`: the provider's hosts unless `family.api == "scripted"`, plus `SYSTEM_HOSTS.get(system_id, ())` for hosted jobs only, in that order. The air-gapped arm permits only local Ollama and the `python-docs` and `no-docs` systems.
   - `@dataclass(frozen=True) class ProxyEvent: at: str; client: str; method: str; host: str; port: int; status: int; result: str`, with property `allowed: bool` (`not result.startswith("TCP_DENIED")`) and property `target: str` (`f"{host}:{port}"`).
   - `parse_proxy_log(text: str) -> list[ProxyEvent]`. It needs every line to end with `\n`. It raises `BenchmarkValidationError` naming the line number on a malformed or unterminated line.
   - `FORBIDDEN_ENV = re.compile(r"(?i)^(?:\w*_proxy|ssl_cert_\w*|requests_ca_bundle)$")` and `forbidden_env_names(environ: Mapping[str, str]) -> list[str]` (sorted names, never values).

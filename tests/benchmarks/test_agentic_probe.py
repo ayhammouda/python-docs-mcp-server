@@ -373,7 +373,9 @@ async def test_probe_waits_for_its_log_before_freezing_query_prefix(
     out = tmp_path / "run"
     with log.open("a") as file:
         file.write(PYPI_LINE + "\n")
-    (egress.log_dir / "collected.json").write_text('{"ok":true}')
+    (egress.log_dir / "cache.log").write_text("squid started\n")
+    problems = await sandbox.close_egress(egress)
+    assert problems == []
     (out / "probe/control.json").write_text('{"passed":true}')
     summary = write_egress_summary(out, [replace(job, job_id="j")], [])
     assert summary["isolation_probe"] == "pass"

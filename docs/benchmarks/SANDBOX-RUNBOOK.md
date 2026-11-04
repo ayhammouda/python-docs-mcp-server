@@ -26,10 +26,10 @@ add `--live`.
 
 ## 2. Where keys live
 
-- A key exists only in the host process's memory, while `bootstrap_frame` builds the
-  frame, and in the environment of the one worker process that uses it.
+- A key exists only in the host process's memory during validation and bootstrap, and in the environment of the one worker process that uses it.
 - The host reads the one key a worker needs from the keys file after the authorization
-  gate and after every isolation probe passed. It writes the key as a bootstrap frame on
+  gate and after every isolation probe passed. It checks every planned key before starting
+  any worker, then rereads the matching key for each launch. It writes the key as a bootstrap frame on
   that worker's stdin, before the job frame. The worker puts it in its own environment, in
   memory, before it protects its output or imports any SDK.
 - A key is never in a container's environment or config (`docker inspect`), never in the

@@ -642,6 +642,9 @@ class ContainerLauncher:
     async def prepare(self, jobs: Sequence[WorkerJob]) -> None:
         """Verify, run the control probe once, then open and probe every job's egress."""
         await self.sandbox.verify(self.sandbox)
+        index = self.sandbox.config.index_path
+        if any(job.system.id == "python-docs" for job in jobs) and not index.is_file():
+            raise BenchmarkValidationError(f"python-docs requires a local index file at {index}")
         await self._control(self.sandbox)  # writes probe/control.json
         for job in jobs:
             allow = allowlist(job.family, job.system.id)
@@ -650,6 +653,10 @@ class ContainerLauncher:
             await self._probe(
                 self.sandbox, egress, job_id=job.job_id, family=job.family, system_id=job.system.id
             )
+
+        # Validate all required keys after isolation and before any worker can spend.
+        for job in jobs:
+            self.bootstrap_frame(job)
 
     async def stop_worker(self, job: WorkerJob) -> None:
         """Remove a surviving worker only if this invocation created it."""

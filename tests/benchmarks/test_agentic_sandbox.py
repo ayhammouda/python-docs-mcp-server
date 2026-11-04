@@ -321,6 +321,7 @@ async def test_no_key_in_argv_cli_env_or_container_config(
     sandbox = _sandbox(tmp_path, docker, keys_file=keys)
     launcher = ContainerLauncher(sandbox, probe=(probes := Probes()), control=probes.control)
     job = _job("claude-sonnet-5-5", "python-docs")
+    sandbox.config.index_path.touch()
     await launcher.prepare([job])
     argv, env = launcher.command(job)
     recorded = json.dumps({"calls": docker.calls, "argv": argv, "env": env, "cli": sandbox.env})
@@ -520,7 +521,10 @@ async def test_prepare_builds_one_network_and_proxy_per_job_with_a_file_log(
 ) -> None:
     docker = FakeDocker()
     probes = Probes()
-    launcher = ContainerLauncher(_sandbox(tmp_path, docker), probe=probes, control=probes.control)
+    keys = _keys(tmp_path, "ANTHROPIC_API_KEY=dummy")
+    launcher = ContainerLauncher(
+        _sandbox(tmp_path, docker, keys_file=keys), probe=probes, control=probes.control
+    )
     jobs = [_job("claude-sonnet-5-5", "docs-fetch"), _job("scripted-anthropic", "no-docs")]
     await launcher.prepare(jobs)
     outside = f"pdmcp-{RUN}-out"
@@ -692,8 +696,11 @@ def _logs(log_dir: Path, access: str = PARTIAL, cache: str = "squid started\n") 
 
 async def test_close_stops_each_proxy_then_removes_what_it_created(tmp_path: Path) -> None:
     docker = FakeDocker()
+    keys = _keys(tmp_path, "ANTHROPIC_API_KEY=dummy")
     launcher = ContainerLauncher(
-        _sandbox(tmp_path, docker), probe=(probes := Probes()), control=probes.control
+        _sandbox(tmp_path, docker, keys_file=keys),
+        probe=(probes := Probes()),
+        control=probes.control,
     )
     jobs = [_job("claude-sonnet-5-5", "no-docs"), _job("scripted-anthropic", "no-docs")]
     await launcher.prepare(jobs)
@@ -702,7 +709,7 @@ async def test_close_stops_each_proxy_then_removes_what_it_created(tmp_path: Pat
     start = len(docker.calls)
     problems = await launcher.close()
     assert problems == []
-    tail =[" ".join(c[1:3]) + " " + c[-1] for c in docker.calls[start:]]
+    tail = [" ".join(c[1:3]) + " " + c[-1] for c in docker.calls[start:]]
     expected = []
     for job in jobs:
         proxy, net = f"pdmcp-{RUN}-{job.job_id}-proxy", f"pdmcp-{RUN}-{job.job_id}-net"
@@ -915,3 +922,28 @@ async def test_a_linked_log_dir_is_refused(tmp_path: Path) -> None:
     egress.log_dir.unlink()
     elsewhere.rename(egress.log_dir)
     assert write_egress_summary(out, [job], [])["isolation_probe"] == "fail"
+
+
+async def test_missing_docs_index_stops_preparation_before_probes(tmp_path: Path) -> None:
+    probes = Probes()
+    launcher = ContainerLauncher(
+        _sandbox(tmp_path, FakeDocker()), probe=probes, control=probes.control
+    )
+    with pytest.raises(BenchmarkValidationError, match="index"):
+        await launcher.prepare([_job("scripted-anthropic", "python-docs")])
+    assert probes.jobs == []
+
+
+async def test_missing_second_key_refuses_preparation_after_all_probes(tmp_path: Path) -> None:
+    keys = _keys(tmp_path, "ANTHROPIC_API_KEY=dummy-one")
+    probes = Probes()
+    launcher = ContainerLauncher(
+        _sandbox(tmp_path, FakeDocker(), keys_file=keys), probe=probes, control=probes.control
+    )
+    jobs = [_job("claude-sonnet-5-5"), _job("gpt-6.1-sol")]
+    try:
+        with pytest.raises(BenchmarkValidationError, match="OPENAI_API_KEY"):
+            await launcher.prepare(jobs)
+        assert probes.jobs == ["control", *(job.job_id for job in jobs)]
+    finally:
+        await launcher.close()
