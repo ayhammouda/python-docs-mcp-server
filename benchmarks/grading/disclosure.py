@@ -278,9 +278,7 @@ def retained_claims(
                 scores[coord] = captured.scores.get(key)
                 # Counts must bind to this same captured retained trajectory.
                 if cid == "C2":
-                    token = run.tokens.get(key, {})
-                    tokens[coord] = (token["client_wrapped_tokens"]
-                                     if run.count_capture.matches(transcript, token) else None)
+                    tokens[coord] = run.counts.get(key)
                 final = captured.finals.get(key)
                 for judge, own in by_judge.items():
                     own[coord] = (

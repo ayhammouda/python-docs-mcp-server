@@ -26,7 +26,10 @@ from benchmarks.grading.aggregate import (
     vote_from_record,
 )
 from benchmarks.grading.calibration import _same, g1_entries, replay_g1
-from benchmarks.grading.calibration_storage import calibration_bytes as artifact_bytes
+from benchmarks.grading.calibration_storage import MAX_CALIBRATION_BYTES
+from benchmarks.grading.calibration_storage import (
+    calibration_bytes as artifact_bytes,
+)
 from benchmarks.grading.diagnostics import diagnostic_tables, missing_records
 from benchmarks.grading.gates import (
     ClaimResult,
@@ -45,6 +48,7 @@ from benchmarks.grading.probes import probe_file_from_inputs
 from benchmarks.grading.serialization import jsonable
 from benchmarks.grading.stats import GATE_RESAMPLES
 from benchmarks.grading.vote_capture import MissingIssuedVote
+from benchmarks.report_files import bounded_artifact_bytes
 from benchmarks.report_measurements import comparison_plan, evidence_cell, grading_receipt_matches
 from benchmarks.runner import BenchmarkValidationError
 
@@ -177,9 +181,16 @@ def _calibration_archives(run: PublicationRun) -> tuple[dict[str, list[Any]] | N
                     or copy["path"] != f"disclosure/g1/{digest}.json"):
                 raise ValueError("invalid calibration archive identity")
             identities[digest] = copy["path"]
+        total = 0
         for digest, path in sorted(identities.items()):
             root = run.bundle.run_dir
-            body = artifact_bytes(root, root / "grading" / path)
+            # Like scoring imports, charge exact original bytes once per digest.
+            # Refuse at the opened file's size check before allocating its body
+            # or parsing entries that cannot fit alongside the captured originals.
+            body = bounded_artifact_bytes(
+                root, root / "grading" / path, max_bytes=MAX_CALIBRATION_BYTES - total,
+            )
+            total += len(body)
             if hashlib.sha256(body).hexdigest() != digest:
                 raise ValueError("calibration archive digest differs")
             for key, entry in g1_entries(body).items():
@@ -386,6 +397,7 @@ def reconcile_disclosures(run: PublicationRun) -> None:
 
 def reconcile_gates(run: PublicationRun) -> dict[str, GateResult]:
     """Derive gate eligibility from this export; never write or rescore its artifacts."""
+    run.replayed_claims = {}
     summary = run.summary
     saved_gates = summary.get("gates") or {}
     if not isinstance(saved_gates, dict):
@@ -420,6 +432,13 @@ def reconcile_gates(run: PublicationRun) -> dict[str, GateResult]:
     except (KeyError, TypeError, ValueError):
         # These identities and frozen inputs are shared by every gate.
         return gates
+
+    # Unsafe count sources must abort publication, outside the optional-gate
+    # fallback below. All later comparisons reuse this same bounded capture.
+    run.counts = run.count_capture.admitted_counts(
+        run.transcripts, run.tokens,
+        scripted_models=[fid for fid, f in run.families.items() if f.get("api") == "scripted"],
+    )
 
     reference = GateResult("reference_probe_check", None, {})
     try:
@@ -509,10 +528,8 @@ def reconcile_gates(run: PublicationRun) -> dict[str, GateResult]:
             panel_scores[coord] = score
             for scores in judge_scores.values():
                 scores[coord] = score
-            count = run.tokens.get(key, {}).get("client_wrapped_tokens")
+            count = run.counts.get(key)
             if count is not None:
-                if type(count) is not int:
-                    raise ValueError("invalid normalized token count")
                 tokens[coord] = count
 
         for key, av in captured.answers.items():
@@ -570,14 +587,20 @@ def reconcile_gates(run: PublicationRun) -> dict[str, GateResult]:
             for j, scores in judge_scores.items()
         }
         def admitted(raw: Any) -> Any:
-            # An identity-ineligible comparison supplies no G4 verdict. Its old
+            # An identity/count-ineligible comparison supplies no G4 verdict. Its old
             # cached result cannot veto an independently matched comparison.
             # Keep all other keys and values, including unexpected claims.
             if not isinstance(raw, dict):
                 return raw
             return {
                 cid: {m: c for m, c in by.items()
-                      if m not in planned.get(cid, {}) or planned[cid][m] is not None}
+                      if m not in planned.get(cid, {}) or (
+                          planned[cid][m] is not None and (
+                              cid != "C2" or all(
+                                  tokens.get(k) is not None for k in planned[cid][m] or ()
+                              )
+                          )
+                      )}
                 if isinstance(by, dict) else by
                 for cid, by in raw.items()
             }
@@ -590,6 +613,7 @@ def reconcile_gates(run: PublicationRun) -> dict[str, GateResult]:
             == {j: admitted(cs) for j, cs in saved_single.items()}
         )
         run.summary["claims"] = jsonable(panel_claims)
+        run.replayed_claims = run.summary["claims"]
         run.summary["claims_by_judge"] = jsonable(by_judge)
         verdicts = {
             j: {f"{cid}/{m}": c["passed"] for cid, by in cs.items() for m, c in by.items()}

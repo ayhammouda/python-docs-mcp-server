@@ -191,6 +191,16 @@ class CalibrationSource:
         return proof
 
     @classmethod
+    def restore_optional(cls, proof: Any) -> tuple[CalibrationSource, dict[str, bytes]] | None:
+        """Legacy markers carry no proof; nonempty source objects require strict replay."""
+        if isinstance(proof, dict) and proof:
+            return cls.restore(proof)
+        # Use the export guard's definition of inspectable historical notes.
+        # In particular, opaque serialized text must never become missing proof.
+        scan_calibration_source(proof)
+        return None
+
+    @classmethod
     def restore(cls, proof: Any) -> tuple[CalibrationSource, dict[str, bytes]]:
         if (
             not isinstance(proof, dict)

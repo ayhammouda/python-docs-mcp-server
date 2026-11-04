@@ -990,6 +990,8 @@ def test_retest(
             item: {"pass1": pass1[item].get(judge), "pass2": pass2[item].get(judge)}
             for item in pass1
             if item in pass2
+            and pass1[item].get(judge) is not None
+            and pass2[item].get(judge) is not None
         }
         alpha = bootstrap_alpha(
             _clusters(both, question_of), seed=f"{seed}/retest/{judge}", resamples=resamples

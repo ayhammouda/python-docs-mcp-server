@@ -943,6 +943,15 @@ def test_cached_pass_cannot_overrule_required_gate_evidence(
         entry = entries[summary["composition"]]
         if change == "G1_disclosure":
             path.unlink()
+            # The projection is optional while the original archive remains.
+            assert "Grading outcome: Validated" in _render(run)
+            assert "fewer normalized tokens" in _readme(run)
+            copies = summary["disclosure"]["g1_files"]
+            assert copies
+            for original in copies:
+                archive = run / "grading" / original["path"]
+                assert hashlib.sha256(archive.read_bytes()).hexdigest() == original["sha256"]
+                archive.unlink()
         else:
             if change == "G1_binding":
                 entry["binding"]["inputs"]["probes"] = "0" * 64
@@ -1075,9 +1084,14 @@ def test_incomplete_scripted_panel_withholds_grades_and_renders(live_like_bundle
     _refresh_manifest(run)
 
     metadata = _RunMetadata(_load_run_bundle(run))
-    assert metadata.grading == "scripted" and not metadata.grade_capture.reconciled
-    for text in (_readme(run), _render(run)):
+    assert metadata.grading == "unknown" and not metadata.grade_capture.reconciled
+    assert metadata.grade_capture.graded_answers is None
+    report = _render(run)
+    assert "The run was graded by the composition" not in report
+    for text in (_readme(run), report):
         assert "demonstration" in text.lower()
+        assert "panel declares a scripted grader" in text
+        assert "grading provenance unknown" in text
         assert "fewer normalized tokens" not in text
 
 
@@ -1872,12 +1886,15 @@ def test_saved_claim_needs_matching_evidence(validated_bundle: Path, change: str
     readme = _readme(run)
     assert f"- {FAMILIES[0]}: python-docs-mcp-server uses" not in readme
     assert "answers the corpus better" not in readme
-    if change in {"scripted_count", "legacy_count"}:
+    if change in {"count", "scripted_count", "legacy_count", "copied_claim"}:
         # Only this family's counter provenance changed; the other claim is still supported.
         assert f"- {FAMILIES[1]}: python-docs-mcp-server uses" in readme
+        text = _render(run)
+        assert "ungraded or uncounted cells" in text
+        assert f"| {FAMILIES[0]} | n/a |" in text
     else:
         assert "fewer normalized tokens" not in readme
-    if change in {"count", "scripted_count", "legacy_count", "copied_claim", "offline"}:
+    if change == "offline":
         assert r"not evaluable\: missing or inconsistent execution evidence" in _render(run)
     if change in {"missing_execution", "missing_calls", "wrong_model"}:
         assert "unknown for answering" in readme and "scripted answering" not in readme

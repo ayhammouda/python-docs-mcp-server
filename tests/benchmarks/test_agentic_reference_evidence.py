@@ -725,18 +725,20 @@ def test_cli_refuses_invalid_reference_before_output_ledger_or_prompt(
 def test_reference_validates_each_scanned_source_buffer_without_reopening(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from benchmarks.agentic import inputs
+
     _single_cell_reference(tmp_path, "gpt-6.1-sol", "openai-responses")
-    read = Path.read_bytes
+    read = inputs.read_input_bytes
     counts: dict[Path, int] = {}
 
-    def replace_after_capture(path):
+    def replace_after_capture(path, *args, **kwargs):
         counts[path] = counts.get(path, 0) + 1
-        data = read(path)
+        data = read(path, *args, **kwargs)
         # A second open sees a different identity and an unsafe value.
         path.write_text(json.dumps({"unit_id": "foreign", "credential": KEY}))
         return data
 
-    monkeypatch.setattr(Path, "read_bytes", replace_after_capture)
+    monkeypatch.setattr(inputs, "read_input_bytes", replace_after_capture)
     rate = reference_rates(tmp_path)["gpt-6.1-sol"]
     assert rate.usd_per_cell == Decimal("0.10") and rate.api == "openai-responses"
     assert len(counts) == 4 and set(counts.values()) == {1}

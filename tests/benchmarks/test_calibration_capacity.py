@@ -324,3 +324,13 @@ def test_projection_keeps_unsafe_artifact_reads_fatal(tmp_path, unsafe):
     run = SimpleNamespace(bundle=SimpleNamespace(run_dir=tmp_path), summary={})
     with pytest.raises(BenchmarkValidationError):
         _calibration_replays(run)
+
+
+@pytest.mark.parametrize("body", ["{}", "{ \n }", "[]", " [ \t ] ", "plain historical note"])
+def test_legacy_annotation_file_keeps_safe_placeholders(body):
+    from benchmarks.grading.calibration_history import CalibrationSource
+
+    proof = {"version": 1, "inputs": {}, "files": {"votes/old/readme.txt": body}}
+    source, _ = CalibrationSource.restore(proof)
+    assert source.read(source.root, source.root / "votes/old/readme.txt") == body.encode()
+    assert not source.json_paths(source.root / "votes/old")

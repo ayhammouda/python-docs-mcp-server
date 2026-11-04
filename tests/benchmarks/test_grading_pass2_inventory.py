@@ -120,6 +120,16 @@ def test_rescored_missing_repeat_keeps_report_and_readme_comparisons(validated_b
     archives = sorted((run / "grading/disclosure/g1").glob("*.json"))
     intact = score_run_dir(run, schema_path=runs.SCHEMA, g1_paths=archives)
     assert intact["tier"] == "Validated"
+    repeated_judge = read(repeat)["judge_id"]
+    expected = {judge: int(judge == repeated_judge) for judge in intact["efforts"]}
+    reported = _RunMetadata(_load_run_bundle(run)).summary
+    for output in (intact, reported):
+        repeats = output["diagnostics"]["test_retest"]
+        assert {judge: row["items"] for judge, row in repeats.items()} == expected
+    text = _render(run)
+    for judge, n in expected.items():
+        line = next(s for s in text.splitlines() if f"test–retest alpha, {judge}:" in s)
+        assert f"({n} paired)" in line
     before_readme = _readme(run)
     assert "fewer normalized tokens" in before_readme
     repeat.unlink()
@@ -164,3 +174,12 @@ def test_missing_primary_issued_vote_still_rejects_before_writes(tmp_path, targe
     assert caught.value.code == 2
     assert "missing execution-issued vote" in capsys.readouterr().err
     assert {p.relative_to(run): p.read_bytes() for p in run.rglob("*") if p.is_file()} == before
+
+
+def test_retest_counts_only_observed_pairs_for_each_judge():
+    from benchmarks.grading.gates import test_retest
+
+    first = {"a": {"one": 0.0, "two": 1.0}, "b": {"one": None, "two": 0.5}}
+    second = {"a": {"one": 0.5, "two": None}, "b": {"one": 1.0}}
+    result = test_retest(first, second, {"a": "q", "b": "q"}, seed="7", resamples=10)
+    assert {judge: row["items"] for judge, row in result.items()} == {"one": 1, "two": 0}

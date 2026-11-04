@@ -26,11 +26,13 @@ class PublicationRun(Protocol):
     sample_allocation: dict[str, object]
     bundle: RunBundle
     summary: dict[str, object]
+    replayed_claims: dict[str, object]
     inputs: dict[str, str | None]
     frozen: dict[str, bytes]
     judges: dict[str, dict[str, object]]
     grade_capture: GradeCapture
     count_capture: CountCapture
+    counts: dict[tuple[str, str], int | None]
     transcripts: dict[tuple[str, str], dict[str, object]]
     tokens: dict[tuple[str, str], dict[str, object]]
     reference_sample: dict[str, object]

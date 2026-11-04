@@ -8,7 +8,8 @@ history unknown without erasing independently verified held-out scores or the
 reference check. Contradictory primary scores still withhold eligibility, and
 credential validation remains fatal before publication. Missing projections can
 be recovered from verified originals. A symlink or oversized projection stops the
-report. Plain notes can describe unavailable historical fields. Opaque serialized
+report. Plain notes and empty JSON container placeholders can describe unavailable
+historical fields. Opaque serialized
 contents in an unknown field stop export before any destination is changed.
 
 `agentic-score --workspace DIR --step g1` exports `g1.json`. Each composition's
@@ -50,8 +51,9 @@ cannot partially replace a previous scoring result.
 
 Before scoring or copying a supplied archive, credential inspection covers every
 composition's source and tuning source, including unselected fallback history.
-It inspects the declared JSON vote/receipt and frozen JSON/YAML input layers;
-ordinary historical summaries remain text. A refused archive leaves existing
+It inspects declared JSON vote and receipt replies, including strings retained
+inside a structured provider text block, and frozen JSON/YAML inputs.
+Ordinary historical summaries remain text. A refused archive leaves existing
 grading outputs and immutable archive copies unchanged. The same inspection
 applies when publication reads an original archive. Inspection does not expand
 YAML alias or merge graphs.

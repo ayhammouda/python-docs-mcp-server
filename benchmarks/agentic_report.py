@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import statistics
 from collections import Counter, defaultdict
@@ -69,6 +70,7 @@ from benchmarks.report_files import artifact_bytes, artifact_paths, checked_path
 from benchmarks.report_measurements import (
     CountCapture,
     comparison_identities_match,
+    comparison_plan,
     grading_receipt_matches,
     live_count_matches,
 )
@@ -159,6 +161,31 @@ def _interval(interval: Mapping[str, Any] | None) -> str:
 
 def _verdict(passed: Any) -> str:
     return {True: "pass", False: "fail"}.get(passed, "not evaluable")
+
+
+def _finite_claim(claim: Any, claim_id: str, model: str) -> bool:
+    """Admit finite descriptive values without certifying a recorded verdict."""
+    if not isinstance(claim, dict) or (
+        claim.get("id") != claim_id or claim.get("model") != model
+        or type(claim.get("passed")) is not bool or claim.get("reason") is not None
+    ):
+        return False
+    interval = claim.get("interval")
+    if not isinstance(interval, dict) or interval.keys() != {"point", "low", "high"}:
+        return False
+    try:
+        if not all(type(v) in (int, float) and math.isfinite(v) for v in interval.values()):
+            return False
+    except OverflowError:
+        return False
+    if interval["low"] > interval["high"]:
+        return False
+    if claim_id == "C2":
+        return min(interval.values()) >= 0 and claim["passed"] is (interval["high"] < 1)
+    return (
+        all(-1 <= v <= 1 for v in interval.values())
+        and claim["passed"] is (interval["low"] > 0)
+    )
 
 
 def _median(values: Sequence[float]) -> str:
@@ -654,6 +681,10 @@ class _RunMetadata:
         run = bundle.run_dir
         self.root = run
         self.summary: dict[str, Any] = optional_json(run, run / "grading" / "summary.json") or {}
+        # Reconciliation replaces cached claims. Historical display data never
+        # goes back into the claims used by G4 or the README.
+        self.recorded_claims = self.summary.get("claims") or {}
+        self.replayed_claims: dict[str, Any] = {}
         snapshot = _read_yaml(run, run / "snapshots" / "model-matrix.yml") or {}
         self.families: dict[str, dict[str, Any]] = {
             str(f["id"]): f for f in snapshot.get("model_families") or [] if "id" in f
@@ -702,14 +733,13 @@ class _RunMetadata:
         active = [self.judges.get(j, {}).get("api") for j in efforts]
         references = [j.get("api") for j in self.judges.values() if j.get("role") == "reference"]
         panel_complete = len(active) == 3 and len(references) == 1
-        if not panel_complete:
-            active.append(None)  # an incomplete panel cannot establish live grading
         declared_grading = _execution_kind([*active, *references], grading=True)
         self.scripted_panel = declared_grading == "scripted"
-        self.grading = declared_grading
+        self.grading = declared_grading if panel_complete else "unknown"
         self.scoring = bundle.scoring
         self.tokens = bundle.tokens
         self.count_capture = CountCapture(run)
+        self.counts: dict[tuple[str, str], int | None] = {}
         self.grade_capture = _GradeCapture()
         self.reference_sample = optional_json(run, run / "grading/reference-sample.json") or {}
         checked_versions: dict[Path, str | None] = {}
@@ -825,6 +855,35 @@ class _RunMetadata:
             # Malformed settlements cannot establish a cost; retain the unavailable marker.
             pass
 
+    def claim_data_available(self, claim: str, model: str) -> bool:
+        """Admit only comparable coordinates, stored scores and independently supported counts."""
+        systems = TOKEN_SYSTEMS if claim == "C2" else ("python-docs", "no-docs")
+        cohort = comparison_plan(
+            self.plan.get("cells"), self.transcripts, model=model, systems=systems,
+        )
+        if not cohort or {c[0] for c in cohort} != set(systems):
+            return False
+        paired = [{(q, r) for s, _, q, r in cohort if s == system} for system in systems]
+        if paired[0] != paired[1]:
+            return False
+        if claim == "C3" and (
+            self.families.get(model, {}).get("arm") != "air-gapped"
+            or self.offline_ok() is not True
+        ):
+            return False
+        for key, transcript in self.transcripts.items():
+            if (transcript.get("model_family_id") != model
+                    or transcript.get("system_id") not in systems):
+                continue
+            record = self.scoring.get(key, {})
+            score = record.get("score")
+            if ((record.get("competitor_id"), record.get("corpus_id")) != key
+                    or type(score) not in (int, float) or score not in (0, 0.5, 1)):
+                return False
+            if claim == "C2" and self.counts.get(key) is None:
+                return False
+        return True
+
     def claim_evidence(self, claim: str, model: str) -> bool:
         systems = TOKEN_SYSTEMS if claim == "C2" else ("python-docs", "no-docs")
         records = {
@@ -863,10 +922,10 @@ class _RunMetadata:
                 return False
             scores[coord] = score
             if claim == "C2":
-                token = self.tokens.get(key, {})
-                if not self.count_capture.matches(transcript, token):
+                count = self.counts.get(key)
+                if count is None or self.families.get(model, {}).get("api") == "scripted":
                     return False
-                counts[coord] = token["client_wrapped_tokens"]
+                counts[coord] = count
 
         # A copied verdict or interval cannot certify a different set of paired observations.
         if self.summary.get("resamples") != GATE_RESAMPLES:
@@ -995,22 +1054,35 @@ def _claim_rows(
 ) -> list[list[str]]:
     rows = []
     for model, claim in sorted(claims.items()):
+        data_available = run.claim_data_available(claim_id, model)
+        recorded = False
+        if data_available and not _finite_claim(claim, claim_id, model):
+            by_model = (
+                run.recorded_claims.get(claim_id) if isinstance(run.recorded_claims, dict) else {}
+            )
+            saved = by_model.get(model) if isinstance(by_model, dict) else None
+            if _finite_claim(saved, claim_id, model):
+                claim, recorded = saved, True
+        if not isinstance(claim, dict):
+            claim = {}
         passed = claim.get("passed")
-        offline_blocked = (
-            claim_id == "C3" and passed is True and run.current_offline.verdict.ok is not True
-        )
-        if offline_blocked:
-            passed = run.current_offline.verdict.ok
         verdict = (
             _verdict(passed) if passed is not None else str(claim.get("reason") or "not evaluable")
         )
-        interval = None if offline_blocked else claim.get("interval")
-        if offline_blocked:
-            if passed is None:
-                verdict = "not evaluable: missing or inconsistent execution evidence"
-        elif run.grading == "unknown" and (passed is True or not run.grade_capture.reconciled):
+        interval = (
+            claim.get("interval")
+            if data_available and _finite_claim(claim, claim_id, model) else None
+        )
+        if not data_available:
+            passed = None
+            verdict = "not evaluable: missing or inconsistent execution evidence"
+            if isinstance(reason := claim.get("reason"), str) and reason:
+                verdict += f" ({reason.removeprefix('not evaluable: ')})"
+        elif run.grading == "unknown" and (passed is True or not recorded):
             verdict = "not evaluable: missing or inconsistent grading evidence"
-        elif passed is True and not run.claim_blocker and not run.claim_evidence(claim_id, model):
+        elif passed is True and (
+            recorded or not run.claim_blocker and not run.claim_evidence(claim_id, model)
+        ):
             verdict = "not evaluable: missing or inconsistent execution evidence"
         if passed is True and run.tier != "Validated":
             verdict = (
@@ -1019,7 +1091,13 @@ def _claim_rows(
                 else "not evaluable: grading gates do not support publication"
             )
         flag = "judge-sensitive" if f"{claim_id}/{model}" in sensitive else ""
-        rows.append([model, _interval(interval), verdict, flag])
+        evidence = "unavailable"
+        if interval:
+            evidence = "recorded diagnostic (unverified)" if recorded else (
+                "replayed from captured grades and recorded counts" if claim_id == "C2"
+                else "replayed from captured grades"
+            )
+        rows.append([model, _interval(interval), verdict, flag, evidence])
     return rows
 
 
@@ -1140,10 +1218,22 @@ def _c1(run: _Run) -> list[str]:
 def _claims(run: _Run) -> list[str]:
     graded = bool(run.summary)
     sensitive = run.summary.get("judge_sensitive") or []
-    claims = run.summary.get("claims") or {}
+    # Historical rows are display-only. README and G4 use reconciled claims.
+    claims = {}
+    for cid in ("C2", "C3"):
+        saved = run.recorded_claims.get(cid) if isinstance(run.recorded_claims, dict) else {}
+        claims[cid] = {
+            **dict.fromkeys(saved if isinstance(saved, dict) else {}),
+            **(run.replayed_claims.get(cid) or {}),
+        }
     ungraded = "not evaluable: the run has not been graded (no grading/summary.json)."
     lines = [
         "## Claims",
+        "",
+        "Recorded diagnostic (unverified) intervals and verdicts reproduce saved history. "
+        "They are not fresh measurements and cannot establish a positive or negative public "
+        "comparison. Replayed intervals use captured grades; publication also requires "
+        "current execution evidence and all grading gates.",
         "",
         *_c1(run),
         "",
@@ -1156,7 +1246,7 @@ def _claims(run: _Run) -> list[str]:
         lines.append(f"C2 is {ungraded}")
     else:
         lines += _table(
-            ["Model", "Ratio python-docs ÷ docs-fetch", "Verdict", "G4"],
+            ["Model", "Ratio python-docs ÷ docs-fetch", "Verdict", "G4", "Evidence"],
             _claim_rows(run, claims.get("C2") or {}, sensitive, "C2"),
         )
     lines += ["", "### C3: offline, with docs better than without", ""]
@@ -1166,7 +1256,7 @@ def _claims(run: _Run) -> list[str]:
         lines.append("No C3 comparison is available for this run.")
     else:
         lines += _table(
-            ["Model", "Score difference with docs minus without", "Verdict", "G4"],
+            ["Model", "Score difference with docs minus without", "Verdict", "G4", "Evidence"],
             _claim_rows(run, claims["C3"], sensitive, "C3"),
         )
     offline = run.current_offline
@@ -1262,7 +1352,12 @@ def _disclosure(run: _Run) -> list[str]:
             ]
     lines += [
         "",
-        f"The run was graded by the composition {_esc(summary.get('composition'))}.",
+        (
+            f"The run was graded by the composition {_esc(summary.get('composition'))}."
+            if run.grading != "unknown" and run.grade_capture.reconciled else
+            f"The recorded panel composition is {_esc(summary.get('composition'))}. "
+            "Its grading execution is unverified."
+        ),
         "",
         "### Judges and evaluated models",
         "",
@@ -1476,7 +1571,8 @@ def _diagnostics(run: _Run) -> list[str]:
     else:
         retest = diag.get("test_retest") or {}
         lines += [
-            f"- Real-answer test–retest alpha, {_esc(j)}: {_esc(r.get('alpha'))}"
+            f"- Real-answer test–retest alpha, {_esc(j)}: {_esc(r.get('alpha'))} "
+            f"({_esc(r.get('items', 'unknown'))} paired)"
             for j, r in sorted(retest.items())
         ] or ["- Real-answer test–retest: no paired scores reported"]
     for key, interval in sorted((diag.get("self_preference") or {}).items()):

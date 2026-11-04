@@ -7,9 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from benchmarks.agentic.inputs import CapturedInput
 from benchmarks.grading.inputs import GRADING_DOCS
 from benchmarks.model_matrix import KNOWN_APIS, ModelFamily, model_family_from_raw
-from benchmarks.runner import BenchmarkValidationError, _load_yaml_mapping
+from benchmarks.runner import BenchmarkValidationError
 
 PANEL_PATH = GRADING_DOCS / "panel.yml"
 PROVIDERS = ("anthropic", "openai", "google")
@@ -100,7 +101,7 @@ def _one_per_provider(judges: dict[str, JudgeSpec], role: str) -> tuple[str, str
 
 
 def load_panel(path: Path) -> Panel:
-    return panel_from_mapping(_load_yaml_mapping(path, "grading panel"), path)
+    return panel_from_mapping(CapturedInput.read(path, "panel", "grading panel").mapping, path)
 
 
 def panel_from_mapping(data: dict[str, Any], path: Path) -> Panel:

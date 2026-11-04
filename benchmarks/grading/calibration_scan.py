@@ -67,8 +67,8 @@ def _structured_input(body: bytes) -> None:
 def _reply(value: Any) -> None:
     """A vote/normalized receipt's structured reply has one additional JSON layer.
 
-    Non-JSON replies are legitimate withheld history. Retain duplicate members
-    during this scan, just as the normal vote producer does.
+    Withheld replies can wrap JSON in fences or prose. Retain duplicate members
+    and inspect recoverable strings even when the complete reply is not JSON.
     """
     if not isinstance(value, str):
         return
@@ -77,47 +77,85 @@ def _reply(value: Any) -> None:
     except RecursionError:
         raise BenchmarkValidationError("calibration reply exceeds the inspection limit") from None
     except ValueError:
-        if value.lstrip().startswith(("{", "[", '"')):
+        if value.lstrip().startswith('"') or "{" in value or "[" in value:
             check_json_text(value, where="calibration reply")
+        else:
+            # Prose gaps can contain literal Windows paths or escape examples.
+            # Decode only quoted reply strings; an ambiguous string tail still
+            # crosses the existing fail-closed recovery checker.
+            decoder = json.JSONDecoder(strict=False)
+            position = 0
+            while (start := value.find('"', position)) != -1:
+                try:
+                    decoded, position = decoder.raw_decode(value, start)
+                except ValueError:
+                    check_json_text(value[start:], where="calibration reply")
+                    break
+                assert_no_key_shaped_json(decoded, where="calibration reply")
         return
     assert_no_key_shaped_json(decoded, where="calibration reply")
 
 
 def _source_json(body: bytes, *, replies: bool) -> None:
-    def pairs(values: list[tuple[str, Any]]) -> dict[str, Any]:
-        # Inspect before construction drops a shadowed reply or metadata field.
-        assert_no_key_shaped_json(values, where="calibration source")
-        if replies:
-            for name, value in values:
-                # Votes, normalized receipts and original provider response
-                # blocks store structured replies in these declared text slots.
-                if name in ("text", "output_text"):
-                    _reply(value)
-        return dict(values)
-
     assert_no_key_shaped(body, where="calibration source")
     try:
-        value = json.loads(body, object_pairs_hook=pairs)
+        # Tuples distinguish objects from JSON arrays and retain every duplicate
+        # member, including shadowed non-string replies, until inspection ends.
+        value = json.loads(body, object_pairs_hook=tuple)
     except KeyLeakError:
         raise
     except (ValueError, RecursionError):
         raise BenchmarkValidationError("invalid JSON calibration source") from None
     assert_no_key_shaped_json(value, where="calibration source")
-    if not isinstance(value, dict):
+    if not isinstance(value, tuple):
         raise BenchmarkValidationError("invalid JSON calibration source")
+    if replies:
+        pending: list[tuple[Any, bool]] = [(value, True)]
+        while pending:
+            node, normalized = pending.pop()
+            if isinstance(node, tuple):
+                for name, child in node:
+                    if name in ("text", "output_text"):
+                        if isinstance(child, str):
+                            _reply(child)
+                        elif normalized:
+                            _unknown_history(child)
+                        else:
+                            # Raw text.format may be structured. Its strings, including
+                            # object names, still cross the same reply boundary.
+                            assert_no_key_shaped_json(
+                                child, where="calibration reply",
+                                check_content=lambda body: _reply(body.decode("utf-8")),
+                            )
+                        continue
+                    pending.append((child, normalized and name == "result"))
+            elif isinstance(node, list):
+                pending.extend((child, False) for child in node)
 
 
 def _unknown_history(value: Any) -> None:
     """Allow absent legacy sections and plain notes; refuse opaque serialized data."""
     if value is None or isinstance(value, (bool, int, float)):
         return
-    if isinstance(value, (dict, list)) and not value:
+    if isinstance(value, (dict, list, tuple)) and not value:
         return
-    if isinstance(value, str) and len(value) <= MAX_FRAME_BYTES and re.fullmatch(
-        r"[\w .,():/-]+", value
-    ):
+    if isinstance(value, str) and len(value) <= MAX_FRAME_BYTES:
         assert_no_key_shaped(value, where="calibration history note")
-        return
+        if re.fullmatch(r"\s*(?:\{\s*\}|\[\s*\])\s*", value):
+            return
+        # Punctuation, Unicode and literal escape examples are ordinary prose.
+        # Serialized objects, binary YAML and escaped quoted strings are opaque
+        # outside a declared serialization slot; do not invent a decoder here.
+        if not re.search(r"[{}\[\]`]|!!binary|!<|%(?:TAG|YAML)", value):
+            position = 0
+            while (start := value.find('"', position)) != -1:
+                end = value.find('"', start + 1)
+                end = len(value) if end == -1 else end
+                if value.find("\\", start + 1, end) != -1:
+                    break
+                position = end + 1
+            else:
+                return
     raise KeyLeakError("uninspectable calibration history section")
 
 
@@ -129,6 +167,13 @@ def scan_calibration_source(proof: Any, budget: list[int] | None = None) -> None
     if not isinstance(proof, dict):
         _unknown_history(proof)
         return
+    # Every retained member crosses the boundary, including legacy extensions.
+    # Only the declared input/file/reply layers have serialization semantics;
+    # unknown members may contain plain historic notes, never opaque payloads.
+    for name, value in proof.items():
+        assert_no_key_shaped(name, where="calibration source member")
+        if name not in ("inputs", "files", "blobs"):
+            _unknown_history(value)
     for section in ("inputs", "files"):
         contents = proof.get(section)
         if section == "files" and (
@@ -139,10 +184,12 @@ def scan_calibration_source(proof: Any, budget: list[int] | None = None) -> None
             _unknown_history(contents)
             continue
         for name, text in contents.items():
+            assert_no_key_shaped(name, where="calibration source member")
             if not isinstance(text, str):
                 _unknown_history(text)
                 continue
             body = text.encode("utf-8")
+            assert_no_key_shaped(body, where="calibration source")
             budget[0] += len(body)
             budget[1] += 1
             if budget[0] > MAX_SOURCE_BYTES or budget[1] > MAX_SOURCE_FILES:

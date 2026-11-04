@@ -19,8 +19,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from benchmarks.agentic.egress import read_log_at, write_new
 from benchmarks.agentic.inputs import (
     CapturedInput,
@@ -121,7 +119,7 @@ from benchmarks.report_files import (
     artifact_paths,
     check_output_paths,
 )
-from benchmarks.report_measurements import comparison_plan
+from benchmarks.report_measurements import CountCapture, comparison_plan
 from benchmarks.runner import BenchmarkValidationError
 from benchmarks.scoring import apply_llm_grades, score_run
 
@@ -395,6 +393,11 @@ def score_run_dir(
     }
     efforts = {judge: spec.get("effort") for judge, spec in binding.composition.items()}
     transcripts = _cells(run_dir / "transcripts")
+    families = _model_families(run_dir)
+    counts = CountCapture(run_dir).admitted_counts(
+        transcripts, _cells(run_dir / "tokens"),
+        scripted_models=[fid for fid, f in families.items() if f.get("api") == "scripted"],
+    )
     requests = answer_requests(
         questions, transcripts, prompt=frozen["judge_prompt"], schema=frozen["judge_schema"]
     )
@@ -499,11 +502,7 @@ def score_run_dir(
         k: (t["system_id"], t["model_family_id"], t["corpus_id"], int(t["repeat"]))
         for k, t in transcripts.items()
     }
-    tokens: dict[CellKey, int | None] = {}
-    for k, record in _cells(run_dir / "tokens").items():
-        if k in key_of:
-            counted = record.get("status") == "counted"
-            tokens[key_of[k]] = record.get("client_wrapped_tokens") if counted else None
+    tokens = {key_of[k]: count for k, count in counts.items()}
     panel_scores: dict[CellKey, float | None] = {
         key_of[k]: r.get("score") for k, r in scoring.items() if k in key_of
     }
@@ -516,7 +515,6 @@ def score_run_dir(
                 scores[key_of[k]] = judge_grade(av, judge, questions[av.corpus_id], final)
         judge_scores[judge] = scores
 
-    families = _model_families(run_dir)
     airgap = {fid for fid, f in families.items() if f.get("arm") == "air-gapped"}
     systems_of: dict[str, set[str]] = defaultdict(set)
     for row in [*(plan_cells if isinstance(plan_cells, list) else []), *transcripts.values()]:
@@ -676,7 +674,11 @@ def score_run_dir(
 
 def _model_families(run_dir: Path) -> dict[str, dict[str, Any]]:
     path = run_dir / "snapshots" / "model-matrix.yml"
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    try:
+        body = artifact_bytes(run_dir, path)
+    except FileNotFoundError:
+        return {}
+    data = CapturedInput.from_bytes(body, "model matrix", "model matrix").mapping
     return {str(f["id"]): f for f in (data or {}).get("model_families") or []}
 
 

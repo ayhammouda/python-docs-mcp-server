@@ -12,15 +12,87 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from yaml.nodes import MappingNode, Node, SequenceNode
 from yaml.tokens import ScalarToken
 
 from benchmarks.agentic.protocol import (
+    MAX_FRAME_BYTES,
     KeyLeakError,
     assert_no_key_shaped,
     assert_no_key_shaped_json,
     check_json_text,
 )
 from benchmarks.runner import BenchmarkValidationError, _require_yaml_mapping
+
+# Frozen settings/probe documents need bounded graphs as well as bounded bytes.
+# Count alias references too; merge copies are additional to the lexical graph.
+_MAX_YAML_NODES = 100_000
+_MAX_YAML_DEPTH = 64
+_MAX_YAML_MERGE_PAIRS = 10_000
+
+
+class _CapturedLoader(yaml.SafeLoader):
+    def __init__(self, stream: str):
+        super().__init__(stream)
+        self._nodes = 0
+        self._depth = 0
+        self._merge_pairs = 0
+        self._mapping_sizes: dict[Node, tuple[int, int]] = {}
+
+    def compose_node(self, parent: Node | None, index: Any) -> Node | None:
+        self._nodes += 1
+        self._depth += 1
+        try:
+            if self._nodes > _MAX_YAML_NODES or self._depth > _MAX_YAML_DEPTH:
+                raise BenchmarkValidationError("YAML complexity limit exceeded")
+            return super().compose_node(parent, index)
+        finally:
+            self._depth -= 1
+
+    def _mapping_size(self, node: MappingNode, active: set[Node]) -> tuple[int, int]:
+        if node in active or len(active) >= _MAX_YAML_DEPTH:
+            raise BenchmarkValidationError("YAML complexity limit exceeded")
+        if node in self._mapping_sizes:
+            return self._mapping_sizes[node]
+        active.add(node)
+        size = 0
+        depth = 1
+        for key, value in node.value:
+            if key.tag != "tag:yaml.org,2002:merge":
+                size += 1
+                continue
+            sources = value.value if isinstance(value, SequenceNode) else [value]
+            for source in sources:
+                if not isinstance(source, MappingNode):
+                    raise yaml.YAMLError("invalid YAML merge")
+                copied, source_depth = self._mapping_size(source, active)
+                depth = max(depth, source_depth + 1)
+                self._merge_pairs += copied
+                if self._merge_pairs > _MAX_YAML_MERGE_PAIRS or depth > _MAX_YAML_DEPTH:
+                    raise BenchmarkValidationError("YAML complexity limit exceeded")
+                size += copied
+        active.remove(node)
+        self._mapping_sizes[node] = size, depth
+        return size, depth
+
+    def construct_document(self, node: Node) -> Any:
+        # Preflight the shared node graph before SafeConstructor flattens even
+        # one merge. Memoized sizes count repeated merge edges without expanding
+        # them, including copies of pairs later discarded by an override.
+        pending = [node]
+        visited: set[Node] = set()
+        while pending:
+            current = pending.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            if isinstance(current, MappingNode):
+                self._mapping_size(current, set())
+                for key, value in current.value:
+                    pending.extend((key, value))
+            elif isinstance(current, SequenceNode):
+                pending.extend(current.value)
+        return super().construct_document(node)
 
 
 def read_input_bytes(
@@ -52,12 +124,14 @@ class CapturedInput:
 
     @classmethod
     def read(cls, path: Path, name: str, label: str) -> CapturedInput:
-        content = read_input_bytes(path, name, label)
+        content = read_input_bytes(path, name, label, max_bytes=MAX_FRAME_BYTES)
         return cls.from_bytes(content, name, label)
 
     @classmethod
     def from_bytes(cls, content: bytes, name: str, label: str) -> CapturedInput:
         where = f"input {name}"
+        if len(content) > MAX_FRAME_BYTES:
+            raise BenchmarkValidationError(f"{label} exceeds the artifact size limit")
         assert_no_key_shaped(content, where=where)
         try:
             text = content.decode("utf-8")  # same encoding as the path-based loaders
@@ -65,8 +139,8 @@ class CapturedInput:
                 if isinstance(token, ScalarToken):
                     # Construction can discard a value under a merge or a duplicate key.
                     assert_no_key_shaped(token.value, where=where)
-            data = yaml.safe_load(text)
-        except KeyLeakError:
+            data = yaml.load(text, Loader=_CapturedLoader)
+        except (KeyLeakError, BenchmarkValidationError):
             raise
         except (
             yaml.YAMLError,

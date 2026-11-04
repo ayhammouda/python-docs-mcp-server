@@ -35,6 +35,8 @@ This check shares one bounded capture of invocations, votes and receipts with
 grade replay. A missing issued answer pass-2 record makes real-answer test–retest
 evidence unknown in `agentic-score` and the report while preserving supported
 pass-1 grades, gates, ledger costs and eligible report/README comparisons.
+Each judge's repeat count includes only answers with a score from that judge
+on both passes. A repeat by one judge does not increase another judge's count.
 The scorer still validates the remaining captured replies, never reconstructs
 the missing vote from its receipt, and distinguishes the omission from a repeat
 that was never issued. Malformed grading, unsafe paths and key-shaped data still
@@ -49,6 +51,20 @@ Execution history is stored under
 `execution_results`. Older exports without these receipts retain their technical
 scores and descriptive comparisons, with grading provenance labelled unknown.
 Adding a live API label to an older artifact does not supply the missing history.
+
+The raw report keeps saved C2/C3 intervals separate from replayed claims. When
+current final-grade evidence cannot reproduce a comparison, a finite saved
+interval may remain as a **recorded diagnostic (unverified)**, including a
+recorded failed comparison. It is historical display data, not a fresh
+measurement or evidence for a positive or negative public comparison. It may
+differ from current persisted scores; neither the saved interval nor its verdict
+repairs missing votes, supplies G4, establishes a paid-answer denominator, or
+enters the README. Replayed quantities take precedence when independently
+available. Both displays require matching compared coordinates and a complete,
+valid scalar inventory; C2 needs counts and C3 still needs verified local offline
+evidence. Invalid booleans, non-finite intervals and invalid scores/counts cannot
+supply a diagnostic comparison. The recorded verdict must also agree with its
+interval under the existing pass rule. Reporting does not rewrite the saved summary.
 
 Technical rescoring also checks withholding against the saved response. A
 successful, schema-valid judge reply with an ordinary stop cannot be withheld
@@ -66,6 +82,9 @@ raw output cannot resolve an ambiguous mixed refusal.
 The technical report uses the same bound scripted result for pass-1 diagnostics
 and real-answer test–retest, reading each vote and receipt once per capture.
 It normalizes the captured rule without compiling or executing its selector.
+A frozen scripted adapter marks a demonstration even if the registered panel
+is incomplete. Without three seats and one reference judge, the report and README
+label grading execution unknown and withhold comparisons.
 Unambiguous historical scripted replies remain useful without receipts. Scripted
 grading, including a mixed hosted/scripted panel or reference, keeps hosted
 disclosures and per-graded-answer cost denominators unavailable.
@@ -184,6 +203,14 @@ was not selected. A failed trial does not establish the selected effort; a
 matching successful trial is still required. Held-out pass-1/pass-2 scores and coverage come
 from the selected attempts on identical frozen requests. A copied observation
 or two agreeing scalar summaries cannot establish a repeat measurement.
+
+Frozen YAML readers allow ordinary aliases and merges within finite construction
+limits: 64 MiB per document, 100,000 nodes including alias references, 64 levels
+of nesting or merge dependencies, and 10,000 inherited mapping pairs across all
+merges. Merge sizes are checked on the shared node graph before any mapping is
+flattened, including pairs later discarded by an override. Inputs exceeding
+these limits fail with a content-free validation error during production or
+replay; a bounded credential scan alone does not establish safe construction.
 
 Reports also check the disclosure projection against the original digest-named
 exports in `grading/disclosure/g1/`. A missing, invalid, hash-mismatched or

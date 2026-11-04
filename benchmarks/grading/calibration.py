@@ -136,10 +136,13 @@ def verified_tuning(
     if not isinstance(evidence, list) or not evidence:
         return [], {"tuning": "original tuning attempts and inputs unavailable"}
     for record in evidence:
-        if not isinstance(record, dict) or "source" not in record:
+        restored = CalibrationSource.restore_optional(record.get("source")) if isinstance(
+            record, dict
+        ) else None
+        if restored is None:
             unknown["tuning"] = "original tuning attempts and inputs unavailable (historic summary)"
             continue
-        source, bodies = CalibrationSource.restore(record["source"])
+        source, bodies = restored
         try:
             for name, frozen in (("probes", probes), ("criteria", criteria)):
                 if bodies[name] != frozen.content:
@@ -309,8 +312,12 @@ def replay_g1(
             }
             for j in judges
         }
-        if "source" in entry and "held_out_test_retest" not in history_problems:
-            source, bodies = CalibrationSource.restore(entry["source"])
+        restored = (
+            CalibrationSource.restore_optional(entry.get("source"))
+            if "held_out_test_retest" not in history_problems else None
+        )
+        if restored is not None:
+            source, bodies = restored
             try:
                 for name in BINDING_INPUTS:
                     if hashlib.sha256(bodies[name]).hexdigest() != binding.inputs.get(name):

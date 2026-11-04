@@ -19,7 +19,7 @@ from typing import Any, Literal
 from benchmarks.agentic.inputs import CapturedInput, CapturedJSON, json_mapping, read_input_bytes
 from benchmarks.agentic.protocol import scanned_json_bytes
 from benchmarks.corpus import validate_corpus
-from benchmarks.runner import BenchmarkValidationError, _load_yaml_mapping
+from benchmarks.runner import BenchmarkValidationError
 from benchmarks.urls import _GFM_TRAILING, _URL_RE, DOCS_PATH_RE, _trim
 
 Weight = Literal["core", "nuance"]
@@ -159,7 +159,7 @@ def load_criteria(
 ) -> dict[str, GradingQuestion]:
     """Join the criteria file to the corpus it was derived from, in corpus order."""
     return criteria_from_mapping(
-        _load_yaml_mapping(path, "grading criteria"),
+        CapturedInput.read(path, "criteria", "grading criteria").mapping,
         path,
         corpus_path=corpus_path,
         schema_path=schema_path,

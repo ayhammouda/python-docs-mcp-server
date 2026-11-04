@@ -17,6 +17,7 @@ from benchmarks.grading.inputs import SNAPSHOT_FILES
 from benchmarks.grading.probes import Probe, reference_subset
 from benchmarks.grading.publication import reconcile_gates
 from benchmarks.grading.score import score_run_dir
+from benchmarks.report_measurements import CountCapture
 from benchmarks.runner import BenchmarkValidationError
 from tests.benchmarks import test_grading_score as runs
 
@@ -63,6 +64,7 @@ def test_publication_replays_authentic_calibration_and_refuses_summary_only(
         transcripts={},
         scoring={},
         tokens={},
+        count_capture=CountCapture(root),
         plan={"cells": []},
         families={},
         seed="1234",

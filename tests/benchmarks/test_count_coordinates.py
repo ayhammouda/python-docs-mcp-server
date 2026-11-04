@@ -20,7 +20,7 @@ from benchmarks.agentic.count import (
 )
 from benchmarks.agentic.count_evidence import is_count_coordinate
 from benchmarks.agentic.schemas import schemas_sha256
-from benchmarks.report_measurements import _identifier, live_count_matches
+from benchmarks.report_measurements import CountCapture, _identifier, live_count_matches
 from benchmarks.runner import BenchmarkValidationError
 from tests.benchmarks.accepted_report_fixture import write
 
@@ -217,6 +217,69 @@ async def recorded_bundle(
 async def test_real_family_counts_join_receipts(tmp_path: Path, family: str, provider: str) -> None:
     transcript, token = await recorded_bundle(tmp_path, family, provider)
     assert live_count_matches(tmp_path, transcript, token)
+
+
+@pytest.mark.parametrize("family,provider", REAL_FAMILIES)
+async def test_c2_admission_requires_hosted_receipts_even_for_a_technical_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, family: str, provider: str,
+) -> None:
+    import benchmarks.report_measurements as measurements
+
+    transcript, token = await recorded_bundle(tmp_path, family, provider, system="docs-fetch")
+    key = transcript["competitor_id"], transcript["corpus_id"]
+    reads: dict[Path, int] = {}
+    reader = measurements.artifact_bytes
+
+    def counted_reader(root: Path, path: Path) -> bytes:
+        reads[path] = reads.get(path, 0) + 1
+        return reader(root, path)
+
+    monkeypatch.setattr(measurements, "artifact_bytes", counted_reader)
+    capture = CountCapture(tmp_path)
+    for _ in range(3):
+        assert capture.admitted_counts({key: transcript}, {key: token}) == {
+            key: token["client_wrapped_tokens"],
+        }
+    assert reads and max(reads.values()) == 1
+    assert capture.admitted_counts(
+        {key: transcript}, {key: {**token, "client_wrapped_tokens": 1}},
+    ) == {key: None}
+    assert max(reads.values()) == 1  # Conflicting projections cannot reopen proof.
+    (tmp_path / "grading/count-runs/count-local.json").unlink()
+    # A fresh operation must recapture changed files. A scripted answering
+    # model cannot legalize a hosted counter's missing proof.
+    assert CountCapture(tmp_path).admitted_counts(
+        {key: transcript}, {key: token}, scripted_models=[family],
+    ) == {key: None}
+
+
+@pytest.mark.parametrize("method", ["legacy", "scripted"])
+def test_explicitly_scripted_models_retain_technical_count_compatibility(
+    tmp_path: Path, method: str,
+):
+    transcript = {
+        "competitor_id": "docs-fetch--legacy--r1", "corpus_id": "Q.1",
+        "model_family_id": "legacy", "system_id": "docs-fetch", "tool_model_key": "docs:x",
+    }
+    token = {k: transcript[k] for k in ("competitor_id", "corpus_id", "tool_model_key")}
+    token.update(status="counted", client_wrapped_tokens=123)
+    if method == "scripted":
+        token["execution"] = {"provider": "scripted", "api": "scripted", "model_id": "bytes/4"}
+    key = transcript["competitor_id"], transcript["corpus_id"]
+    assert CountCapture(tmp_path).admitted_counts(
+        {key: transcript}, {key: token}, scripted_models=["legacy"],
+    ) == {key: 123}
+    assert CountCapture(tmp_path).admitted_counts({key: transcript}, {key: token}) == {key: None}
+    assert CountCapture(tmp_path).admitted_counts(
+        {key: {**transcript, "execution": {"api": "openai-responses"}}}, {key: token},
+        scripted_models=["legacy"],
+    ) == {key: None}  # A contradictory scripted declaration cannot legalize hosted counts.
+    for field, bad in (("competitor_id", "foreign"), ("corpus_id", "Q.2"),
+                       ("tool_model_key", "other"), ("client_wrapped_tokens", True),
+                       ("client_wrapped_tokens", -1), ("status", "failed")):
+        assert CountCapture(tmp_path).admitted_counts(
+            {key: transcript}, {key: {**token, field: bad}}, scripted_models=["legacy"],
+        ) == {key: None}
 
 
 async def test_dotted_system_coordinate_joins_receipts(tmp_path: Path) -> None:

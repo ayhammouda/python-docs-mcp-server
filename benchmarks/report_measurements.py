@@ -96,7 +96,7 @@ def grading_receipt_matches(
 
 
 class CountCapture:
-    """Capture count evidence once for one report/render, never across renders.
+    """Capture count evidence once per scoring/publication operation.
 
     Every first read uses the confined, bounded, sensitive-data-scanning reader.
     Validating a shared invocation is linear in its items even when every item
@@ -265,6 +265,52 @@ class CountCapture:
             raise  # Unsafe artifact reads are errors, not missing measurements.
         except (FileNotFoundError, ValueError, KeyError, TypeError, AttributeError, IndexError):
             return False
+
+    def admitted_counts(
+        self,
+        transcripts: Mapping[tuple[str, str], dict[str, Any]],
+        tokens: Mapping[tuple[str, str], dict[str, Any]],
+        *,
+        scripted_models: Sequence[str] = (),
+    ) -> dict[tuple[str, str], int | None]:
+        """Capture C2 counts before scoring or publication can write anything.
+
+        Hosted totals require the actual invocation and current input/byte joins.
+        Explicitly scripted models may retain historical technical estimates;
+        a claimed hosted counter still needs its receipt. C3 needs no counts.
+        """
+        models = {
+            t["model_family_id"] for t in transcripts.values()
+            if t.get("system_id") == "docs-fetch" and isinstance(t.get("model_family_id"), str)
+        }
+        admitted = {}
+        for key, transcript in transcripts.items():
+            model = transcript.get("model_family_id")
+            if (not isinstance(model, str) or model not in models
+                    or transcript.get("system_id") not in ("python-docs", "docs-fetch")):
+                continue
+            token = tokens.get(key, {})
+            total = token.get("client_wrapped_tokens")
+            execution = token.get("execution")
+            answering = transcript.get("execution")
+            technical = model in scripted_models and (
+                "execution" not in transcript
+                or isinstance(answering, dict) and answering.get("api") == "scripted"
+            ) and (
+                "execution" not in token
+                or isinstance(execution, dict) and execution.get("api") == "scripted"
+            )
+            valid = token.get("status") == "counted" and type(total) is int and total >= 0
+            if technical:
+                valid = valid and all(
+                    token.get(field) == transcript.get(field)
+                    for field in ("competitor_id", "corpus_id", "tool_model_key")
+                )
+            else:
+                # Even an invalid projection cannot hide unsafe retained source bytes.
+                valid = self.matches(transcript, token) and valid
+            admitted[key] = total if valid else None
+        return admitted
 
 
 def live_count_matches(root: Path, transcript: dict[str, Any], token: dict[str, Any]) -> bool:

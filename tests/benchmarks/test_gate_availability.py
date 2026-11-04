@@ -50,7 +50,12 @@ def test_missing_projection_recovers_captured_originals(tmp_path):
     original = published.tokens[first]
     published.tokens[first] = {"client_wrapped_tokens": "invalid"}
     gates = reconcile_gates(published)
-    assert [gates[g].passed for g in ("G1", "G2", "G3", "G4")] == [True, True, True, None]
+    assert [gates[g].passed for g in ("G1", "G2", "G3", "G4")] == [True, True, True, True]
+    affected = published.transcripts[first]["model_family_id"]
+    for claims in (published.summary["claims"], *published.summary["claims_by_judge"].values()):
+        for model, claim in claims["C2"].items():
+            assert claim["passed"] is (None if model == affected else True)
+            assert (claim["interval"] is None) is (model == affected)
     published.tokens[first] = original
     published.summary = copy.deepcopy(summary)
     published.reference_sample = {}
