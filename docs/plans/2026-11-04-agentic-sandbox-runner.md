@@ -96,7 +96,7 @@ Executors read the design §7, the sandbox note and
 - **Egress (design §7.3):**
   - One Squid per job, on that job's internal network (`--internal --ipv6=false -o com.docker.network.bridge.gateway_mode_ipv4=isolated`) under the alias `egress`, and on one shared outside network per run.
   - Allowlist: the job's provider API host on 443 (none for scripted), plus `docs.python.org:443` for `docs-fetch`. The air-gapped arm allows only `host.docker.internal:11434`. Every allowlist ACL is `dstdomain -n`. No TLS interception.
-  - Squid writes its access log to a bind-mounted file with no rotation: one line per connection attempt (time, client, method, host, port, status, Squid result).
+  - Squid writes its access log to a bind-mounted file with no rotation: one line per connection attempt (time, client, method, host, port, client status, Squid result, hierarchy, peer status).
 - **Evidence for PR 5** (#199, owner question 9):
   - `<run>/egress/summary.json` is `{"jobs": {job_id: {"hosts_allowed": [...], "hosts_denied": [...], "lookup_package_docs_attempts": n}}, "isolation_probe": "pass"|"fail"}`.
   - `<run>/airgap/checks.json` is `{"all_passed": bool, "checks": n, "internet_hosts": [...]}`.

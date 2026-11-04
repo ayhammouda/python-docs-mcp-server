@@ -130,8 +130,10 @@ https://www.squid-cache.org/Versions/v6/cfgman/).
   (`buffered_logs` applies only to the daemon, tcp and udp modules).
 - `logformat` codes: `%tg` GMT time with a strftime argument, `%tu`
   sub-second milliseconds, `%>a` client IP, `%rm` method, `%>rd` request
-  domain, `%>rP` request port, `%>Hs` status sent, `%Ss` Squid result
-  (`TCP_DENIED`, `TCP_TUNNEL`, ...; https://wiki.squid-cache.org/SquidFaq/SquidLogs).
+  domain, `%>rP` request port, `%>Hs` status sent to the client, `%Ss` Squid result
+  (such as `TCP_DENIED` or `TCP_TUNNEL`), `%Sh` hierarchy code and `%<Hs` HTTP
+  status received from the peer. The last two distinguish a response from the origin
+  from a proxy-generated error. [Squid logformat](https://www.squid-cache.org/Doc/config/logformat/).
 - `pid_filename none` disables the pid file; `cache deny all` disables
   caching; `shutdown_lifetime` (default 30 s) is how long Squid waits for
   open clients after SIGTERM; `cache_effective_user` applies only when
