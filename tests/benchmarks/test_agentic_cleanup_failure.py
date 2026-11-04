@@ -33,7 +33,7 @@ from tests.benchmarks.test_agentic_host import (
 from tests.benchmarks.test_agentic_run import _cli_args
 
 
-def _worker_code(*, leak: bool = True) -> str:
+def _worker_code(*, leak: bool = True, reason: str = WORKER_LEAK_REASON) -> str:
     # A separate isolated interpreter writes raw wire frames, bypassing output guards.
     return (
         "import json, os, sys\n"
@@ -47,8 +47,8 @@ def _worker_code(*, leak: bool = True) -> str:
         f"send({_reserve_frame(1024)!r})\n"
         "assert read()['type'] == 'grant'\n"
         "os.write(2, b'clean worker stderr\\n')\n"
-        + (f"send({{'type': 'error', 'reason': {WORKER_LEAK_REASON!r}}})\n" if leak else "")
-        + f"sys.exit({3 if leak else 2})\n"
+        + (f"send({{'type': 'error', 'reason': {reason!r}}})\n" if leak else "")
+        + f"sys.exit({3 if leak and reason == WORKER_LEAK_REASON else 2})\n"
     )
 
 
@@ -182,14 +182,19 @@ async def test_recognized_frame_survives_async_cleanup_and_settles(
     try:
         with pytest.raises(KeyLeakError) as caught:
             await run_jobs(
-                [job], launcher=launcher, ledger=service, on_message=h.on_message,
-                log_dir=tmp_path / "logs", cwd=REPO_ROOT,
+                [job],
+                launcher=launcher,
+                ledger=service,
+                on_message=h.on_message,
+                log_dir=tmp_path / "logs",
+                cwd=REPO_ROOT,
             )
         assert caught.value is observed[0]
         trace = _assert_safe_chain(caught.value, failure)
         assert WORKER_LEAK_REASON in str(caught.value)
-        assert ("outside network removal failed" if boundary == "problems"
-                else "artifact volume full") in trace
+        assert (
+            "outside network removal failed" if boundary == "problems" else "artifact volume full"
+        ) in trace
         assert launcher.stopped and launcher.closed
         assert captures and all(log.closed for log in captures)
         assert processes and all(proc.returncode is not None for proc in processes)
@@ -201,14 +206,22 @@ async def test_recognized_frame_survives_async_cleanup_and_settles(
         assert events[1]["outcome"] == "worker_lost"
         assert D(events[1]["booked"]) == 2 * D(events[0]["bound"])
         before = h.ledger.spent("anthropic")
-        assert await original_reserve(
-            provider="anthropic", model_id=job.family.model_id, input_bound=1000, output_bound=1024
-        ) is None
+        assert (
+            await original_reserve(
+                provider="anthropic",
+                model_id=job.family.model_id,
+                input_bound=1000,
+                output_bound=1024,
+            )
+            is None
+        )
         assert h.ledger.spent("anthropic") == before
         assert h.ledger.invocation_events() == events
         log_path = tmp_path / "logs" / f"{job.job_id}.stderr.log"
-        assert not log_path.exists() if boundary == "publish" else (
-            log_path.read_bytes() == b"clean worker stderr\n"
+        assert (
+            not log_path.exists()
+            if boundary == "publish"
+            else (log_path.read_bytes() == b"clean worker stderr\n")
         )
     finally:
         for task in pending:
@@ -265,8 +278,11 @@ async def test_finish_waits_through_repeated_cancellation_before_cleanup_failure
     pending_leak: bool,
 ) -> None:
     stopping, release = asyncio.Event(), asyncio.Event()
-    pending = (KeyLeakError("recognized credential failure") if pending_leak
-               else asyncio.CancelledError("first signal"))
+    pending = (
+        KeyLeakError("recognized credential failure")
+        if pending_leak
+        else asyncio.CancelledError("first signal")
+    )
     failure = _storage_error()
 
     async def remove() -> None:
@@ -322,9 +338,11 @@ def test_cli_recognized_frame_and_clean_stderr_publication_failure(
 ) -> None:
     for name in PROVIDER_API_KEY_ENV.values():
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(LocalLauncher, "command", lambda self, job: (
-        [sys.executable, "-I", "-c", _worker_code(leak=leak)], {}
-    ))
+    monkeypatch.setattr(
+        LocalLauncher,
+        "command",
+        lambda self, job: ([sys.executable, "-I", "-c", _worker_code(leak=leak)], {}),
+    )
     replace = os.replace
 
     def no_space(src: Any, dst: Any, **kwargs: Any) -> None:
@@ -348,9 +366,10 @@ def test_cli_recognized_frame_and_clean_stderr_publication_failure(
     summary = json.loads((tmp_path / "run" / "run-summary.json").read_text())
     assert summary["status"] == "aborted"
     assert summary["abort_reason"].startswith("KeyLeakError:" if leak else "OSError:")
-    events = [json.loads(line) for line in (
-        tmp_path / "ledger" / "anthropic.jsonl"
-    ).read_text().splitlines()]
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "ledger" / "anthropic.jsonl").read_text().splitlines()
+    ]
     reserve, settle = (event for event in events if event["event"] in ("reserve", "settle"))
     assert settle["outcome"] == "worker_lost"
     assert D(settle["booked"]) == 2 * D(reserve["bound"])

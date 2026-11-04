@@ -303,7 +303,7 @@ came from. Container settings:
   Credential failures take precedence over frame-limit errors. Ordinary MCP
   protocol errors keep their documented trajectory behavior.
 - On protocol EOF the host waits for the owned worker's terminal status, up to
-  five seconds or the remaining silence timeout, whichever is shorter. Status
+  five seconds or the configured silence timeout, whichever is shorter. Status
   3 reports a credential failure. A worker that cannot send its frame-limit
   error exits with status 4 so the host can still identify the structural
   failure. Other worker deaths and timeouts retain their usual loss accounting.

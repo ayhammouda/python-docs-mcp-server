@@ -36,14 +36,24 @@ def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     h.ledger.close()
 
 
-@pytest.mark.parametrize("secret", ["", SYNTHETIC_KEY], ids=["clean", "redacted-chain"])
-@pytest.mark.parametrize("interrupted", [False, True])
+@pytest.mark.parametrize(
+    "secret, interrupted, error_type, reason",
+    [
+        ("", False, KeyLeakError, WORKER_LEAK_REASON),
+        (SYNTHETIC_KEY, False, KeyLeakError, WORKER_LEAK_REASON),
+        ("", True, KeyLeakError, WORKER_LEAK_REASON),
+        (SYNTHETIC_KEY, True, KeyLeakError, WORKER_LEAK_REASON),
+        ("", False, FrameTooLarge, "FrameTooLarge: test limit"),
+    ],
+)
 async def test_sibling_storage_failure_cannot_displace_recognition(
     harness: Host,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     secret: str,
     interrupted: bool,
+    error_type: type[Exception],
+    reason: str,
 ) -> None:
     jobs = [_job(tmp_path, [ANSWER], job_id=name) for name in ("recognized", "storage")]
     service = harness.service(jobs[0].family)
@@ -74,7 +84,10 @@ async def test_sibling_storage_failure_cannot_displace_recognition(
         def command(self, job: WorkerJob) -> tuple[list[str], dict[str, str]]:
             if job.job_id == "recognized":
                 # Keep its supervisor in proc.wait after recognition, until the sibling fails.
-                code = _worker_code().replace("sys.exit(3)", "import time; time.sleep(30)")
+                code = _worker_code(reason=reason).replace(
+                    f"sys.exit({3 if error_type is KeyLeakError else 2})",
+                    "import time; time.sleep(30)",
+                )
             else:
                 code = (
                     "import os, json, sys\n"
@@ -125,14 +138,14 @@ async def test_sibling_storage_failure_cannot_displace_recognition(
                 task.cancel("later interrupt")
                 await asyncio.sleep(0)
             release.set()
-            with pytest.raises(asyncio.CancelledError if interrupted else KeyLeakError) as caught:
+            with pytest.raises(asyncio.CancelledError if interrupted else error_type) as caught:
                 await task
         trace = _assert_safe_chain(caught.value, failure)
         assert "artifact volume full" in trace
         if interrupted:
             assert str(caught.value) == "operator interrupt"
         else:
-            assert WORKER_LEAK_REASON in str(caught.value)
+            assert reason in str(caught.value)
         assert stopped == {"recognized", "storage"} and launcher.closed
         events = harness.ledger.invocation_events()
         assert [event["event"] for event in events] == ["reserve", "settle"]
