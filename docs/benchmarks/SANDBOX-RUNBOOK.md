@@ -154,7 +154,8 @@ questions before you run, and disclose that choice with the results.
 - `ollama.json`: the Ollama version, the model's digest and details, and its context.
 
 The last four access-log fields record the client status (`%>Hs`), result (`%Ss`),
-hierarchy (`%Sh`), and next-hop HTTP status (`%<Hs`).
+hierarchy (`%Sh`), and next-hop HTTP status (`%<Hs`). Each record must have a UTC
+timestamp with millisecond precision and a valid client IP address.
 The pinned Squid 6.14 image produced these records against a loopback origin in a
 keyless container with networking disabled. [Squid log format](https://www.squid-cache.org/Doc/config/logformat/)
 
@@ -162,6 +163,7 @@ keyless container with networking disabled. [Squid log format](https://www.squid
 | --- | --- |
 | `500 TCP_MISS HIER_DIRECT 500` | The origin returned 500. Include the target in `hosts_allowed`. |
 | `500 TCP_MISS_ABORTED HIER_DIRECT 500` | The origin responded before the transfer broke. Include the target. |
+| `200 TCP_MISS_ABORTED HIER_DIRECT 200` | The origin returned 200 and the body ended early. The nine-field log proves contact. The seven-field equivalent leaves contact unconfirmed. |
 | `0 TCP_MISS_ABORTED HIER_DIRECT -` | The client closed before Squid logged a reply. Reachability is unconfirmed. |
 | `503 TCP_MISS_ABORTED HIER_DIRECT -` | A refused connection produced a Squid 503. Reachability is unconfirmed. |
 | `200 TCP_TUNNEL HIER_DIRECT -` | Squid established the CONNECT tunnel. This can corroborate a billed provider call. |
