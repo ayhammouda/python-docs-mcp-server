@@ -27,6 +27,7 @@ import platformdirs
 
 import benchmarks
 from benchmarks.adapters.claude_tokens import ANTHROPIC_API_VERSION, DEFAULT_COUNT_MODEL
+from benchmarks.agentic.airgap import AirGapWatch, host_offline_checks, ollama_preflight
 from benchmarks.agentic.bridge import SystemSpec, load_systems
 from benchmarks.agentic.egress import write_egress_summary
 from benchmarks.agentic.host import Launcher, LocalLauncher, WorkerJob, refuse_host_keys, run_jobs
@@ -421,6 +422,8 @@ def run_agentic(
     caps: Mapping[str, Decimal] = PROVIDER_CAPS,
     today: date | None = None,
     confirm: Callable[[str], bool] = interactive_confirm,
+    offline_checks: Callable[[], list[dict[str, Any]]] = host_offline_checks,
+    preflight: Callable[[str], dict[str, Any]] = ollama_preflight,
 ) -> dict[str, Any]:
     """Validate everything, then run every planned trajectory; return the run summary.
 
@@ -546,6 +549,29 @@ def run_agentic(
     ledger = Ledger.open(config.ledger_dir, run_id=run_id, caps=caps)
     spent_before = {provider: ledger.spent(provider) for provider in caps}  # after any recovery
     collector = _Collector(out, {q.id: q for q in questions}, families)
+    # The air-gapped arm runs alone (checked above), so either every family is in it or none.
+    watch = AirGapWatch(out, offline_checks) if families[0].arm == "air-gapped" else None
+
+    async def on_message(job: WorkerJob, message: dict[str, Any]) -> None:
+        await collector.on_message(job, message)
+        if watch is not None and message["type"] in ("trajectory", "discarded"):
+            # Before the host acknowledges it, so before the worker starts its next trajectory.
+            cell = cell_id(job.system.id, job.family.id, message["repeat"])
+            await watch.check(f"after {cell}/{message['corpus_id']}")
+
+    async def run_arm() -> None:
+        if watch is not None:
+            await watch.check("before_first")
+        await run_jobs(
+            jobs,
+            launcher=launcher,
+            ledger=service,
+            on_message=on_message,
+            log_dir=out / "logs",
+            cwd=_REPO_ROOT,
+        )
+        if watch is not None:
+            await watch.check("after_last")
 
     def write_outcome() -> None:
         """ledger-events.jsonl and run-summary.json, for a completed or an aborted run."""
@@ -563,6 +589,8 @@ def run_agentic(
             write_egress_summary(out, jobs, run_events)
         scored = collector.succeeded + collector.failed
         summary.setdefault("status", "completed")
+        if watch is not None:  # design §7.4: how many rounds ran, and whether the arm stopped
+            summary["airgap"] = {"checks": watch.rounds, "broken": watch.broken}
         summary.update(
             {
                 "completed_at": _utc_now(),
@@ -623,18 +651,11 @@ def run_agentic(
             authorize_live(text, confirm=confirm)
         prices = {f.model_id: snapshot.models[f.model_id] for f in families if f.provider in caps}
         service = LedgerService(ledger, prices, {f.model_id: f for f in families})
-        asyncio.run(
-            _until_signalled(
-                run_jobs(
-                    jobs,
-                    launcher=launcher,
-                    ledger=service,
-                    on_message=collector.on_message,
-                    log_dir=out / "logs",
-                    cwd=_REPO_ROOT,
-                )
-            )
-        )
+        if watch is not None:  # local Ollama only, never through a proxy variable
+            loaded = {f.id: preflight(f.model_id) for f in families if f.api != "scripted"}
+            if loaded:
+                _write(out / "ollama.json", loaded)
+        asyncio.run(_until_signalled(run_arm()))
     except BaseException as exc:  # still write what was spent and what ran
         summary |= {"status": "aborted", "abort_reason": f"{type(exc).__name__}: {exc}"}
         raise
