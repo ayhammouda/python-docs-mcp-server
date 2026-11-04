@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -682,10 +683,82 @@ async def test_a_teardown_cancelled_by_a_second_abort_still_scrubs_and_settles(
     ]
 
 
+# A worker's descendant that holds its log (fd 2) and writes a key once the log is published.
+# "stay" remains in the worker's process group; "escape" leaves it with setsid. Bounded waits.
+_LATE_WRITER = (
+    "import os, sys, time\n"
+    "from pathlib import Path\n"
+    "mode, signals = sys.argv[1], Path(sys.argv[2])\n"
+    "if mode == 'escape':\n"
+    "    os.setsid()\n"
+    "    (signals / 'escaped').touch()\n"
+    "deadline = time.monotonic() + 10\n"
+    "while not (signals / 'published').exists():\n"
+    "    if time.monotonic() > deadline:\n"
+    "        sys.exit(mode + ': the log was never published')\n"
+    "    time.sleep(0.01)\n"
+    "os.write(2, b'late: sk-ant-api03-' + b'z' * 90 + b'\\n')\n"
+    "(signals / (mode + '-wrote')).touch()\n"
+)
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    stat = Path(f"/proc/{pid}/stat")  # Linux: a zombie is dead, whoever has yet to reap it
+    return not (stat.exists() and stat.read_text().rsplit(")", 1)[1].split()[0] == "Z")
+
+
+async def test_no_descendant_can_write_a_key_into_the_published_log(
+    host: Host, tmp_path: Path
+) -> None:
+    # The worker skips protect_output, starts both late writers, then exits: a lost worker.
+    signals = tmp_path / "signals"
+    signals.mkdir()
+    code = (
+        "import subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        "sys.stdin.buffer.read(int.from_bytes(sys.stdin.buffer.read(8), 'big'))\n"
+        "sys.stderr.write('worker: started\\n')\n"
+        "sys.stderr.flush()\n"
+        f"signals = Path({str(signals)!r})\n"
+        "quiet = {'stdin': subprocess.DEVNULL, 'stdout': subprocess.DEVNULL}  # fd 2 only\n"
+        f"argv = [sys.executable, '-c', {_LATE_WRITER!r}]\n"
+        "stay = subprocess.Popen([*argv, 'stay', str(signals)], **quiet)\n"
+        "(signals / 'stay.pid').write_text(str(stay.pid))\n"
+        "subprocess.Popen([*argv, 'escape', str(signals)], **quiet)\n"
+        "deadline = time.monotonic() + 10\n"
+        "while not (signals / 'escaped').exists():\n"
+        "    if time.monotonic() > deadline:\n"
+        "        sys.exit('worker: the escape never left the group')\n"
+        "    time.sleep(0.01)\n"
+        "sys.exit(1)\n"
+    )
+    await host.run([_job(tmp_path, [ANSWER])], launcher=KeyedLauncher(code, key=""))
+    stay = int((signals / "stay.pid").read_text())
+    async with asyncio.timeout(5):  # (a) the group kill took the descendant in the group
+        while _alive(stay):
+            await asyncio.sleep(0.01)
+    (signals / "published").touch()
+    async with asyncio.timeout(10):  # (b) the escaped one writes into the unlinked old log
+        while not (signals / "escape-wrote").exists():
+            await asyncio.sleep(0.01)
+    (log,) = (tmp_path / "logs").iterdir()
+    assert log.read_text() == "worker: started\n"
+
+
 class _Unending:
-    """A worker process that survives its kill: wait() never returns."""
+    """A worker whose wait() never returns, as if it survived its kill.
+
+    Its pid leads a real process group of its own, so the group kill hits only that group.
+    """
 
     returncode = None
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
 
     def kill(self) -> None:
         pass
@@ -698,7 +771,10 @@ class _Unending:
 async def test_a_worker_that_never_exits_cannot_hang_its_teardown(
     host: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(agentic_host, "_EXIT_WAIT_S", 0.1, raising=False)
+    monkeypatch.setattr(agentic_host, "_EXIT_WAIT_S", 0.1)
+    group = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True
+    )
     family = _job(tmp_path, [ANSWER]).family
     service = host.service(family)
     unit = await service.reserve(
@@ -707,7 +783,8 @@ async def test_a_worker_that_never_exits_cannot_hang_its_teardown(
     log = tmp_path / "never-exits.stderr.log"
     log.write_text("debug: sk-ant-api03-" + "z" * 90 + "\n", encoding="utf-8")
     async with asyncio.timeout(5):  # the bound under test is 0.1 s
-        pattern = await agentic_host._teardown(_Unending(), log, service, unit)  # type: ignore[arg-type]
+        pattern = await agentic_host._teardown(_Unending(group.pid), log, service, unit)  # type: ignore[arg-type]
+    assert group.wait(timeout=5) == -signal.SIGKILL
     assert pattern is not None and log.read_text() == "debug: [redacted]\n"
     settles = [e for e in host.ledger.events("host-test") if e["event"] == "settle"]
     assert [(s["outcome"], D(s["booked"])) for s in settles] == [

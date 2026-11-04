@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import signal
 import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
@@ -86,14 +87,19 @@ async def _teardown(
     proc: asyncio.subprocess.Process, log_path: Path, ledger: LedgerService, in_flight: str | None
 ) -> str | None:
     """Kill the worker, scrub its log and book its open unit; the log's key pattern, if any."""
-    if proc.returncode is None:
-        proc.kill()
+    # The whole group, even after the worker exited: no descendant outlives it to write later.
+    # shortcut: reaches only this host's process tree; PR 4's container launcher must give the
+    # same guarantee, which removing the container does.
+    with suppress(ProcessLookupError):
+        os.killpg(proc.pid, signal.SIGKILL)
     with suppress(TimeoutError):  # a worker that never exits cannot hang the run
         await asyncio.wait_for(proc.wait(), _EXIT_WAIT_S)
-    # On every exit, a raise or a cancel included: the leaked bytes never stay on disk.
+    # On every exit, a raise or a cancel included: the leaked bytes never stay on disk. The
+    # scrubbed copy replaces the log, so a writer still holding it writes into an unlinked file.
     redacted, pattern = redact_key_shaped(log_path.read_bytes())
-    if pattern:
-        log_path.write_bytes(redacted)
+    scrubbed = log_path.with_name(log_path.name + ".tmp")
+    scrubbed.write_bytes(redacted)
+    os.replace(scrubbed, log_path)
     if in_flight is not None:  # may have been billed: booked at twice its bound
         await ledger.settle(in_flight, outcome="worker_lost", buckets=None)
     return pattern
@@ -119,6 +125,7 @@ async def _supervise(
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=log,
+            start_new_session=True,  # its own process group, which teardown kills whole
         )
     assert proc.stdin is not None and proc.stdout is not None
     in_flight: str | None = None
