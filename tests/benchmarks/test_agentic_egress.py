@@ -277,22 +277,29 @@ def test_failed_provider_connect_is_not_evidence_of_a_billed_connection(
         ("CONNECT docs.python.org 443 503 NONE_NONE", False),
         ("POST host.docker.internal 11434 503 TCP_MISS", True),
         ("POST host.docker.internal 11434 0 TCP_MISS_ABORTED", True),
+        ("POST host.docker.internal 11434 200 TCP_MISS_ABORTED", True),
+        ("POST host.docker.internal 11434 302 TCP_MISS_TIMEDOUT_ABORTED", True),
+        ("POST external.invalid 11434 200 TCP_MISS_ABORTED", False),
     ],
 )
+@pytest.mark.parametrize("successful_retry", [False, True])
 def test_legacy_failed_attempts_only_preserve_isolation_for_the_permitted_target(
-    tmp_path: Path, attempt: str, isolated: bool
+    tmp_path: Path, attempt: str, isolated: bool, successful_retry: bool
 ) -> None:
     from tests.benchmarks.test_agentic_sandbox import _job
 
     job = _job("gemma4-12b", "python-docs")
     ollama = "2026-11-04T10:00:04.001Z 172.30.0.3 POST host.docker.internal 11434 200 TCP_MISS"
     failed = f"2026-11-04T10:00:05.000Z 172.30.0.3 {attempt}"
-    _evidence(tmp_path, job.job_id, log=_lines(*PROBE_LINES, ollama, failed))
+    retry = [ollama] if successful_retry else []
+    _evidence(tmp_path, job.job_id, log=_lines(*PROBE_LINES, failed, *retry))
     summary = write_egress_summary(tmp_path, [job], [])
     checks = write_airgap_evidence(tmp_path, rounds=1, broken=False, job_ids=[job.job_id])
     assert checks == {"all_passed": isolated, "checks": 1, "internet_hosts": []}
     assert summary["isolation_probe"] == ("pass" if isolated else "fail")
-    assert summary["jobs"][job.job_id]["hosts_allowed"] == ["host.docker.internal:11434"]
+    assert summary["jobs"][job.job_id]["hosts_allowed"] == (
+        ["host.docker.internal:11434"] if successful_retry else []
+    )
     assert summary["jobs"][job.job_id]["hosts_denied"] == []
 
 

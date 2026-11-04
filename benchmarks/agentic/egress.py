@@ -86,8 +86,11 @@ class ProxyEvent:
         expected = "TCP_TUNNEL" if connect else "TCP_MISS"
         if self.hierarchy is None:  # older logs cannot attribute a non-2xx to the origin
             success = self.status == 200 if connect else 200 <= self.status < 300
-            if self.result == expected and success:
-                return "reached"
+            if tag == expected:
+                if self.result == tag and success:
+                    return "reached"
+                if not connect or self.result != tag:
+                    return "unconfirmed"  # legacy transfers may break after response headers
         if self.hierarchy == "HIER_DIRECT" and tag == expected:
             if connect and self.status == 200 and self.peer_status is None:
                 return "reached"  # Squid established the tunnel, then answered CONNECT itself
