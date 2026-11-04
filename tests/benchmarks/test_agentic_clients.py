@@ -836,3 +836,13 @@ async def test_a_proxy_variable_cannot_steer_a_call(
     await make_client(family, timeout_s=30).call(_conv())
     assert routes == [None]  # the direct route, never a proxy
     assert [r.url.host for r in recorder.seen] == [host]
+
+
+@pytest.mark.parametrize("build", [anthropic_sdk, openai_sdk, gemini_sdk])
+def test_a_ca_variable_cannot_swap_a_clients_trust_store(
+    monkeypatch: pytest.MonkeyPatch, build: Callable[..., Any]
+) -> None:
+    # Construction is the assertion: a client that reads SSL_CERT_FILE fails to load it.
+    # No transport is injected and nothing is patched; no request is made.
+    monkeypatch.setenv("SSL_CERT_FILE", "/nonexistent/ca.pem")
+    build("test-key", 30)

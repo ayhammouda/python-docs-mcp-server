@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import ssl
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import anthropic
+import certifi
 import httpx
 import httpx2
 import openai
@@ -313,6 +315,9 @@ class OpenAIResponsesClient:
 def gemini_sdk(
     api_key: str, timeout_s: float, *, transport: httpx.AsyncBaseTransport | None = None
 ) -> genai.Client:
+    # Without a context the SDK builds its own from SSL_CERT_FILE and SSL_CERT_DIR: one for
+    # httpx ("verify") and one for websockets ("ssl").
+    ca = ssl.create_default_context(cafile=certifi.where())
     return genai.Client(
         api_key=api_key,
         vertexai=False,
@@ -321,6 +326,8 @@ def gemini_sdk(
             timeout=int(timeout_s * 1000),
             retry_options=genai_types.HttpRetryOptions(attempts=1),
             httpx_async_client=httpx.AsyncClient(**_client_args(transport)),
+            client_args={"verify": ca},
+            async_client_args={"verify": ca, "ssl": ca},
         ),
     )
 
