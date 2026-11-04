@@ -464,21 +464,29 @@ async def test_host_settles_a_lost_workers_unit_at_twice_its_bound_and_frees_the
     assert [m["type"] for m in host.messages("normal")][-1] == "done"
 
 
-async def test_a_discarded_cell_is_not_listed_again_when_its_worker_is_lost(
-    host: Host, tmp_path: Path
+@pytest.mark.parametrize(
+    "reason,q1_lost",
+    [
+        ("retries_exhausted", True),  # its rerun is still owed
+        ("budget_stop", False),  # final: never listed twice
+    ],
+)
+async def test_only_a_final_discard_keeps_a_cell_off_the_worker_lost_list(
+    host: Host, tmp_path: Path, reason: str, q1_lost: bool
 ) -> None:
     discarded = {
         "type": "discarded",
         "record": {"status": "discarded"},
         "corpus_id": "Q1",
         "repeat": 1,
-        "reason": "retries_exhausted",
+        "reason": reason,
         "attempt": 1,
     }
     lost = _job(tmp_path, [ANSWER], job_id="lost")
     await host.run([lost], launcher=LostLauncher(_fake_worker(discarded)))
     assert [(m["type"], m["corpus_id"], m["reason"]) for m in host.messages()] == [
-        ("discarded", "Q1", "retries_exhausted"),
+        ("discarded", "Q1", reason),
+        *([("not_run", "Q1", "worker_lost")] if q1_lost else []),
         ("not_run", "Q2", "worker_lost"),
     ]
 
