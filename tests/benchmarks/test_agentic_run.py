@@ -32,6 +32,7 @@ from benchmarks.agentic.protocol import KEY_SHAPED, KeyLeakError
 from benchmarks.agentic.run import (
     OUTPUT_CAP_STOPS,
     AgenticConfig,
+    _Collector,
     _until_signalled,
     cell_id,
     limits_mismatch,
@@ -212,6 +213,55 @@ def test_cell_and_tool_model_keys() -> None:
     assert cell_id("no-docs", "gpt-6.1-sol", 3) == "no-docs--gpt-6.1-sol--r3"
     assert tool_model_key("no-docs", "openai", "gpt-6.1-sol") == "no-docs:openai/gpt-6.1-sol"
     assert OUTPUT_CAP_STOPS == {"max_tokens", "max_output_tokens", "MAX_TOKENS", "CONTINUATION"}
+
+
+@pytest.mark.parametrize("kind", ["discarded", "trajectory"])
+async def test_forged_report_cannot_write_outside_run(tmp_path: Path, kind: str) -> None:
+    question = _load_questions(_load_yaml_mapping(SAMPLE_CORPUS, "corpus"))[0]
+    family = load_model_matrix(FIX / "model-matrix.yml").model_families[0]
+    system = load_systems(COMMITTED_MANIFEST)[0]
+    (job,) = plan_jobs([question], [family], [system], repeats=1, seed=7, matrix_dir=FIX)
+    collector = _Collector(tmp_path / "run", {question.id: question}, [family])
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    canary = outside / ("proof--attempt1.json" if kind == "discarded" else f"{question.id}.json")
+    canary.write_text("untouched")
+    record = {
+        "status": "discarded" if kind == "discarded" else "succeeded",
+        "error": None,
+        "answer": "ok",
+        "model_calls": [],
+        "started_at": "2026-11-04T00:00:00Z",
+        "completed_at": "2026-11-04T00:00:01Z",
+        "timing": {
+            f"{k}_ms": 0 for k in ("grant_wait", "failed_attempt", "retry_wait", "used", "overhead")
+        },
+    }
+    report = {
+        "type": kind,
+        "reason": "budget_stop",
+        "record": record,
+        "attempt": 1,
+        "corpus_id": str(outside / "proof") if kind == "discarded" else question.id,
+        "repeat": 1 if kind == "discarded" else "/../../../outside",
+    }
+    try:
+        with pytest.raises(BenchmarkValidationError):
+            await collector.on_message(job, report)
+    finally:
+        assert canary.read_text() == "untouched"
+    assert collector.families[family.id].first_started_at is None
+    assert not collector.out.exists()
+
+    await collector.on_message(job, {**report, "corpus_id": question.id, "repeat": 1, "attempt": 3})
+    cell = cell_id(system.id, family.id, 1)
+    path = (
+        collector.out / "discarded" / cell / f"{question.id}--attempt3.json"
+        if kind == "discarded"
+        else collector.out / "transcripts" / cell / f"{question.id}.json"
+    )
+    stored = json.loads(path.read_text())
+    assert (stored["corpus_id"], stored["repeat"]) == (question.id, 1)
 
 
 def test_agentic_run_budget_stop_discards_and_lists_cells_not_run(

@@ -308,8 +308,8 @@ class _Collector:
             return
         if kind not in ("trajectory", "discarded", "not_run"):
             return
-        cell = cell_id(job.system.id, job.family.id, message["repeat"])
-        corpus_id = message["corpus_id"]
+        corpus_id, repeat = job.report_coordinates(message)
+        cell = cell_id(job.system.id, job.family.id, repeat)
         if kind == "not_run":
             self.not_run.append(
                 {
@@ -324,40 +324,32 @@ class _Collector:
         stats = self.families[job.family.id]
         stats.add(record)
         stats.reruns += message["attempt"] > 1  # a rerun counts once it has run
+        ident = self._ident(job, cell, corpus_id, repeat)
         if kind == "discarded":
             reason, attempt = message["reason"], message["attempt"]
             self.discarded.append(
                 {"cell": cell, "corpus_id": corpus_id, "reason": reason, "attempt": attempt}
             )
             path = self.out / "discarded" / cell / f"{corpus_id}--attempt{attempt}.json"
-            _write(path, {**record, **self._ident(job, cell, message), "reason": reason})
+            _write(path, {**record, **ident, "attempt": attempt, "reason": reason})
             return
-        self._write_cell(job, cell, message, record, stats)
+        self._write_cell(ident, record)
 
-    def _ident(self, job: WorkerJob, cell: str, message: dict[str, Any]) -> dict[str, Any]:
+    def _ident(self, job: WorkerJob, cell: str, corpus_id: str, repeat: int) -> dict[str, Any]:
         family, system = job.family, job.system
         return {
             "competitor_id": cell,
-            "corpus_id": message["corpus_id"],
+            "corpus_id": corpus_id,
             "system_id": system.id,
             "model_family_id": family.id,
             "provider": family.provider,
             "model_id": family.model_id,
-            "repeat": message["repeat"],
-            "attempt": message.get("attempt"),
+            "repeat": repeat,
             "tool_model_key": tool_model_key(system.id, family.provider, family.model_id),
         }
 
-    def _write_cell(
-        self,
-        job: WorkerJob,
-        cell: str,
-        message: dict[str, Any],
-        record: dict[str, Any],
-        stats: _FamilyStats,
-    ) -> None:
-        ident = self._ident(job, cell, message)
-        ident.pop("attempt")
+    def _write_cell(self, ident: dict[str, Any], record: dict[str, Any]) -> None:
+        cell = ident["competitor_id"]
         corpus_id, key = ident["corpus_id"], ident["tool_model_key"]
         status, error = record["status"], record["error"]
         question = self.questions[corpus_id]

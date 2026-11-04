@@ -35,6 +35,7 @@ from benchmarks.agentic.protocol import (
     redact_key_shaped,
 )
 from benchmarks.agentic.types import Buckets
+from benchmarks.agentic.worker import MAX_RERUNS
 from benchmarks.model_matrix import ModelFamily
 from benchmarks.runner import BenchmarkValidationError
 
@@ -51,6 +52,21 @@ class WorkerJob:
     system: SystemSpec
     trajectories: tuple[dict[str, Any], ...]  # {"corpus_id", "prompt", "repeat"}, in run order
     caps: Caps
+
+    def report_coordinates(self, message: dict[str, Any]) -> tuple[str, int]:
+        """Validate a cell report and return its host-planned output coordinates."""
+        if message["type"] != "not_run" or "attempt" in message:
+            attempt = message.get("attempt")
+            if type(attempt) is not int or not 1 <= attempt <= 1 + MAX_RERUNS:
+                raise BenchmarkValidationError(f"worker {self.job_id} reported an invalid attempt")
+
+        corpus_id, repeat = message.get("corpus_id"), message.get("repeat")
+        # JSON booleans and floats can compare equal to an integer repeat.
+        if isinstance(corpus_id, str) and type(repeat) is int:
+            for item in self.trajectories:
+                if (item["corpus_id"], item["repeat"]) == (corpus_id, repeat):
+                    return item["corpus_id"], item["repeat"]
+        raise BenchmarkValidationError(f"worker {self.job_id} reported an unassigned trajectory")
 
 
 class Launcher(Protocol):
@@ -313,13 +329,12 @@ async def _supervise(
                     await on_message(job, {"type": "worker_error", "reason": reason})
                     break
                 else:
+                    if kind in ("trajectory", "discarded", "not_run"):
+                        coordinates = job.report_coordinates(message)
+                        # A retries_exhausted discard still owes its rerun or a final not_run.
+                        if kind != "discarded" or message["reason"] == "budget_stop":
+                            reported.add(coordinates)
                     await on_message(job, message)
-                    # Only a final report: a retries_exhausted discard still owes its rerun,
-                    # and its last attempt sends its own not_run.
-                    if kind in ("trajectory", "not_run") or (
-                        kind == "discarded" and message["reason"] == "budget_stop"
-                    ):
-                        reported.add((message["corpus_id"], message["repeat"]))
                     done = done or kind == "done"
                     if kind in ("trajectory", "discarded"):
                         reply = {"type": "ack"}

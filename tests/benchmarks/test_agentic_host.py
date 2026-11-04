@@ -17,6 +17,7 @@ from dataclasses import asdict, replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import yaml
@@ -476,6 +477,71 @@ class LostLauncher(LocalLauncher):
     def command(self, job: WorkerJob) -> tuple[list[str], dict[str, str]]:
         argv, env = super().command(job)
         return ([sys.executable, "-c", self.code] if job.job_id == "lost" else argv), env
+
+
+@pytest.fixture
+async def worker_stream(monkeypatch: pytest.MonkeyPatch) -> asyncio.StreamReader:
+    """Feed wire frames through supervision without creating or signalling any processes."""
+    reader = asyncio.StreamReader()
+    proc = Mock(stdout=reader, wait=AsyncMock())
+    proc.stdin.drain = AsyncMock()
+    monkeypatch.setattr(agentic_host, "_kill_group", Mock())
+    monkeypatch.setattr(agentic_host, "_start_anchor", Mock())
+    monkeypatch.setattr(agentic_host, "_reap", AsyncMock())
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=proc))
+    return reader
+
+
+@pytest.mark.parametrize(
+    "kind,fields",
+    [
+        ("discarded", {"corpus_id": "../other", "repeat": 1, "attempt": 1}),
+        ("trajectory", {"corpus_id": "Q1", "repeat": 2, "attempt": 1}),
+        ("trajectory", {"corpus_id": "Q1", "repeat": True, "attempt": 1}),
+        ("not_run", {"corpus_id": "Q1", "repeat": 1.0}),
+        ("trajectory", {"corpus_id": "Q1", "repeat": 1}),
+        ("discarded", {"corpus_id": "Q1", "repeat": 1, "attempt": 0}),
+        ("trajectory", {"corpus_id": "Q1", "repeat": 1, "attempt": 4}),
+        ("discarded", {"corpus_id": "Q1", "repeat": 1, "attempt": True}),
+        ("trajectory", {"corpus_id": "Q1", "repeat": 1, "attempt": 1.0}),
+        ("not_run", {"corpus_id": "Q1", "repeat": 1, "attempt": None}),
+    ],
+)
+async def test_unassigned_or_invalid_report_never_reaches_callback(
+    host: Host,
+    tmp_path: Path,
+    worker_stream: asyncio.StreamReader,
+    kind: str,
+    fields: dict[str, Any],
+) -> None:
+    worker_stream.feed_data(encode_frame({"type": kind, "reason": "budget_stop", **fields}))
+    worker_stream.feed_eof()
+    with pytest.raises(BenchmarkValidationError):
+        await host.run([_job(tmp_path, [], count=1)])
+    assert host.received == []
+
+
+async def test_assigned_reports_reach_callback(
+    host: Host, tmp_path: Path, worker_stream: asyncio.StreamReader
+) -> None:
+    job = _job(tmp_path, [], count=3)
+    frames = [
+        {"type": "trajectory", "corpus_id": "Q1", "repeat": 1, "attempt": 1},
+        {
+            "type": "discarded",
+            "corpus_id": "Q2",
+            "repeat": 1,
+            "attempt": 1,
+            "reason": "budget_stop",
+        },
+        {"type": "not_run", "corpus_id": "Q3", "repeat": 1, "reason": "budget_stop"},
+        {"type": "done"},
+    ]
+    for frame in frames:
+        worker_stream.feed_data(encode_frame(frame))
+    worker_stream.feed_eof()
+    await host.run([job])
+    assert host.messages() == frames
 
 
 async def test_host_settles_a_lost_workers_unit_at_twice_its_bound_and_frees_the_provider(
