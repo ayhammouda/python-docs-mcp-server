@@ -23,6 +23,7 @@ import pytest
 
 from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
 from benchmarks.agentic.egress import parse_proxy_log
+from benchmarks.agentic.host import WorkerJob
 from benchmarks.agentic.probe import IsolationProbeFailed, isolation_probe
 from benchmarks.agentic.run import run_agentic
 from benchmarks.agentic.sandbox import (
@@ -141,7 +142,23 @@ def test_a_scripted_run_completes_inside_containers(tmp_path: Path, image: str) 
         repeats=1,
         run_id=RUN_ID,
     )
-    launcher = ContainerLauncher(Sandbox(_sandbox_config(tmp_path, index)))
+
+    class CacheCheckingLauncher(ContainerLauncher):
+        def command(self, job: WorkerJob) -> tuple[list[str], dict[str, str]]:
+            argv, env = super().command(job)
+            if job.system.id == "python-docs":
+                worker = argv.index(self.sandbox.config.image) + 1
+                argv[worker:] = [
+                    "sh",
+                    "-c",
+                    '"$@" && test -s /cache/mcp-python-docs/retrieved-docs-cache.sqlite3 '
+                    "&& echo cache-file-present >&2",
+                    "sh",
+                    *argv[worker:],
+                ]
+            return argv, env
+
+    launcher = CacheCheckingLauncher(Sandbox(_sandbox_config(tmp_path, index)))
     summary = run_agentic(config, launcher=launcher)
     run = tmp_path / "run"
     assert summary["status"] == "completed" and summary["succeeded_cells"] == 2
@@ -164,7 +181,9 @@ def test_a_scripted_run_completes_inside_containers(tmp_path: Path, image: str) 
         assert entry["hosts_allowed"] == [] and entry["hosts_denied"] == []
     transcript = run / "transcripts" / "python-docs--scripted-anthropic--r1" / "SYN-EX-001.json"
     calls = json.loads(transcript.read_text())["tool_calls"]
-    assert calls and not calls[0]["is_error"]  # the server ran on the tmpfs cache with the index
+    assert calls and not calls[0]["is_error"]
+    worker_log = run / "logs" / "scripted-anthropic--python-docs.stderr.log"
+    assert "cache-file-present" in worker_log.read_text().splitlines()
 
 
 def test_a_trajectory_frame_over_100000_bytes_round_trips_through_a_container(
