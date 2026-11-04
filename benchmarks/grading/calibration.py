@@ -9,10 +9,12 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.agentic.inputs import CapturedInput
-from benchmarks.agentic.protocol import assert_no_key_shaped_json
+from benchmarks.agentic.protocol import MAX_FRAME_BYTES, KeyLeakError, assert_no_key_shaped_json
 from benchmarks.grading.calibration_history import (
     CalibrationSource,
+    MissingCalibrationInput,
     held_out_scores,
+    repeat_problems,
     tuning_summary,
 )
 from benchmarks.grading.calibration_history import (
@@ -20,6 +22,12 @@ from benchmarks.grading.calibration_history import (
 )
 from benchmarks.grading.calibration_history import (
     probe_retest as probe_retest,
+)
+from benchmarks.grading.calibration_scan import scan_calibration_sources
+from benchmarks.grading.calibration_storage import (
+    MAX_CALIBRATION_BYTES,
+    check_calibration_metadata,
+    check_transport_structure,
 )
 from benchmarks.grading.gates import (
     BINDING_INPUTS,
@@ -31,11 +39,16 @@ from benchmarks.grading.gates import (
 )
 from benchmarks.grading.panel import composition_key, panel_from_mapping
 from benchmarks.grading.probes import Probe, probe_file_from_inputs, reference_subset
+from benchmarks.grading.vote_capture import VoteInventoryUnavailable
 from benchmarks.runner import BenchmarkValidationError
 
 
-def g1_entries(body: bytes) -> dict[str, Any]:
+def g1_entries(body: bytes, *, projection: bool = False) -> dict[str, Any]:
     """Parse original export bytes identically at import and report replay."""
+
+    if len(body) > MAX_CALIBRATION_BYTES:
+        raise BenchmarkValidationError("G1 evidence exceeds the artifact size limit")
+    check_transport_structure(body)
 
     def pairs(values: list[tuple[str, Any]]) -> dict[str, Any]:
         assert_no_key_shaped_json(values, where="G1 evidence")
@@ -46,10 +59,17 @@ def g1_entries(body: bytes) -> dict[str, Any]:
 
     try:
         data = json.loads(body.decode("utf-8"), object_pairs_hook=pairs)
+    except KeyLeakError:
+        raise
     except (ValueError, RecursionError) as exc:
         raise BenchmarkValidationError("could not read G1 evidence as UTF-8 JSON") from exc
+    if projection:
+        data = {"entries": data}
     if not isinstance(data, dict) or not isinstance(data.get("entries"), dict):
         raise BenchmarkValidationError("G1 evidence needs an entries object")
+    if len(body) > MAX_FRAME_BYTES:
+        check_calibration_metadata(data["entries"])
+    scan_calibration_sources(data)
     return data["entries"]
 
 
@@ -61,7 +81,7 @@ def _probe_scores(value: Any, probes: Sequence[Probe], where: str) -> dict[str, 
         )
     if any(
         s is not None
-        and (isinstance(s, bool) or not isinstance(s, (int, float)) or not 0 <= s <= 1)
+        and (isinstance(s, bool) or not isinstance(s, (int, float)) or s not in (0, 0.5, 1))
         for s in value.values()
     ):
         raise BenchmarkValidationError(f"{where} evidence contains an invalid probe score")
@@ -149,26 +169,33 @@ def verified_tuning(
             pins = judge_settings(before, list(actual), before_effort_freeze=True)
             if not _same(record.get("judges"), actual) or record.get("judge_settings") != pins:
                 raise BenchmarkValidationError("tuning trials differ from original attempts")
-            expected = judge_settings(panel, judges, before_effort_freeze=True)
+            trial_judges = [j for j, row in actual.items() if row["tried"]]
+            expected = judge_settings(panel, trial_judges, before_effort_freeze=True)
             disclosed = {}
-            for judge in judges:
-                row = actual.get(judge)
-                if row is None or row["chosen"] is None:
-                    continue
-                if (
-                    pins.get(judge) != expected[judge]
-                    or row["chosen"] != selected.judges[judge].effort
+            for judge in trial_judges:
+                row = actual[judge]
+                if pins.get(judge) != expected[judge]:
+                    raise BenchmarkValidationError("tuning trial differs from registered judge")
+                if (judge in judges and row["chosen"] is not None
+                    and row["chosen"] != selected.judges[judge].effort
                 ):
                     raise BenchmarkValidationError(
                         "tuning chosen effort differs from frozen settings"
                     )
                 disclosed[judge] = row
             verified.append({"judges": disclosed})
+        except MissingCalibrationInput:
+            # This tuning run cannot prove its trials. Its absent request has no
+            # bearing on independently captured held-out or reference requests.
+            unknown["tuning"] = "original tuning request document unavailable"
+        except VoteInventoryUnavailable as exc:
+            unknown["tuning"] = str(exc)
         except BenchmarkValidationError:
             raise
         except (KeyError, TypeError, ValueError) as exc:
             raise BenchmarkValidationError("incomplete tuning source proof") from exc
-    covered = {j for record in verified for j in record["judges"]}
+    covered = {j for record in verified for j, row in record["judges"].items()
+               if j in judges and row["chosen"] == selected.judges[j].effort}
     if covered != set(judges):
         unknown["tuning"] = "original selected tuning attempts unavailable for " + ", ".join(
             sorted(set(judges) - covered)
@@ -231,7 +258,12 @@ def replay_g1(
     expected_settings = judge_settings(
         panel, judges, reference=references[0] if check is not None else None
     )
-    if "judge_settings" in bound and bound["judge_settings"] != expected_settings:
+    if "judge_settings" not in bound:
+        # Historical arrays still require valid scores, but cannot bind auxiliary trials
+        # to the current runtime. Both headline verdicts stay unknown below.
+        reason = "legacy G1 lacks frozen judge settings evidence"
+        history_problems = {**history_problems, "tuning": reason, "held_out_test_retest": reason}
+    elif bound["judge_settings"] != expected_settings:
         raise BenchmarkValidationError("G1 judge settings differ from the frozen run panel")
     # The caller's binding is also checked against the exact bytes being replayed.
     for name, captured in (("probes", probes), ("criteria", criteria)):
@@ -309,6 +341,7 @@ def replay_g1(
                     bodies,
                     seed=suite.header["corpus_sha256"],
                 )
+                unknown.update(repeat_problems(repeats))
                 if not _same(scores, actual_scores):
                     raise BenchmarkValidationError(
                         "calibration scores differ from original attempts"
@@ -319,6 +352,8 @@ def replay_g1(
                 if not isinstance(saved_repeats, dict):
                     raise BenchmarkValidationError("invalid held-out repeat evidence")
                 for judge, saved in saved_repeats.items():
+                    if judge in repeats and repeats[judge].get("reason"):
+                        continue  # Missing issued detail supplies no observation to compare.
                     if (
                         judge not in repeats
                         or not isinstance(saved, dict)
@@ -365,7 +400,7 @@ def replay_g1(
             {**reference.details, "reason": "reference lacks underlying score evidence"},
         )
     if "judge_settings" not in bound:
-        reason = "legacy G1 lacks frozen judge settings evidence"
+        reason = history_problems["held_out_test_retest"]
         selected = GateResult("G1", None, {**selected.details, "reason": reason})
         reference = GateResult(
             "reference_probe_check", None, {**reference.details, "reason": reason}

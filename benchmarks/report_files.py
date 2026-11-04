@@ -15,14 +15,14 @@ from benchmarks.agentic.protocol import MAX_FRAME_BYTES, KeyLeakError, assert_no
 from benchmarks.runner import BenchmarkValidationError
 
 
-def _read_artifact_at(parent: int, parts: tuple[str, ...]) -> bytes:
+def _read_artifact_at(parent: int, parts: tuple[str, ...], max_bytes: int) -> bytes:
     """Own each open directory until the shared bounded reader has finished."""
     from benchmarks.agentic.egress import open_log_dir, read_log_at
 
     if len(parts) == 1:
-        return read_log_at(parent, parts[0], max_bytes=MAX_FRAME_BYTES)
+        return read_log_at(parent, parts[0], max_bytes=max_bytes)
     with open_log_dir(Path(parts[0]), dir_fd=parent) as directory:
-        return _read_artifact_at(directory, parts[1:])
+        return _read_artifact_at(directory, parts[1:], max_bytes)
 
 
 def checked_path(root: Path, path: Path) -> Path:
@@ -117,6 +117,11 @@ def artifact_paths(root: Path, base: Path, pattern: str) -> list[Path]:
 
 def artifact_bytes(root: Path, path: Path) -> bytes:
     """Read a bounded regular file, checking the opened file before reading it."""
+    return bounded_artifact_bytes(root, path, max_bytes=MAX_FRAME_BYTES)
+
+
+def bounded_artifact_bytes(root: Path, path: Path, *, max_bytes: int) -> bytes:
+    """Shared confined reader; callers own their format-specific aggregate bound."""
     checked_path(root, path)
     try:
         info = path.lstat()
@@ -128,13 +133,13 @@ def artifact_bytes(root: Path, path: Path) -> bytes:
             # Anchor each lookup to its open parent. The shared reader rejects links,
             # non-regular files, oversize artifacts and changes of length during a read.
             with open_log_dir(root) as parent:
-                body = _read_artifact_at(parent, path.relative_to(root).parts)
+                body = _read_artifact_at(parent, path.relative_to(root).parts, max_bytes)
 
         else:
             # Fixed-flow reporting also supports platforms without directory descriptors.
             with path.open("rb") as file:
                 opened = os.fstat(file.fileno())
-                if not os.path.samestat(info, opened) or opened.st_size > MAX_FRAME_BYTES:
+                if not os.path.samestat(info, opened) or opened.st_size > max_bytes:
                     raise BenchmarkValidationError(
                         f"artifact changed or exceeds the size limit: {path}"
                     )

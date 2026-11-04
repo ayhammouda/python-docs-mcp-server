@@ -19,13 +19,29 @@ from benchmarks.grading.publication import reconcile_gates
 from benchmarks.grading.score import score_run_dir
 from benchmarks.runner import BenchmarkValidationError
 from tests.benchmarks import test_grading_score as runs
-from tests.benchmarks.test_grading_probes import index_db as index_db
+
+
+def _source_score(value, target, judge, item, score):
+    files = value["source"]["files"]
+    candidates = [name for name in files
+                  if name.startswith(f"votes/{target}/{judge}/") and f"/{item}/" in name]
+    assert len(candidates) == 1
+    assert "execution_results" not in json.loads(files["runs/run-1.json"])
+    name = candidates[0]
+    if score is None:
+        del files[name]
+    else:
+        assert score == 0.0
+        record = json.loads(files[name])
+        record["vote"]["attempted"] = False
+        record["text"] = json.dumps(record["vote"])
+        files[name] = json.dumps(record)
 
 
 def test_publication_replays_authentic_calibration_and_refuses_summary_only(
-    tmp_path, index_db, monkeypatch
+    tmp_path, full_calibration, monkeypatch
 ):
-    root, _, entry, _ = runs._full_calibration(tmp_path, index_db, False)
+    root, _, entry, _ = full_calibration
     summary = json.loads((root / "grading/summary.json").read_bytes())
     # Focus reconciliation on G1. Other gates remain unevaluable in this small
     # answer run; no saved tier is used to manufacture a passing publication.
@@ -184,31 +200,51 @@ def test_publication_replays_authentic_calibration_and_refuses_summary_only(
     gate, check = replay_g1(json.loads(disclosure.read_bytes()), binding, **captured)
     assert gate.passed is True and check.passed is None
 
-    # Genuine passing arrays can contain unresolved scores within thresholds.
+    # Historical score-only exports can contain unresolved observations within thresholds.
     probes = [Probe(**p) for p in captured["probes"].mapping["probes"] if p["set"] == "held_out"]
     imperfect = copy.deepcopy(entry)
     missing = next(p for p in probes if p.type == "KEY")
     imperfect["scores"]["panel"][missing.id] = None
     imperfect["scores"]["judges"]["haiku"][missing.id] = None
+    imperfect["scores"]["judges"]["luna"][missing.id] = None
     actual = g1(probes, imperfect["scores"]["panel"], imperfect["scores"]["judges"])
     assert actual.passed is True
     imperfect["gate"] = {"passed": True, "details": actual.details}
+    with pytest.raises(BenchmarkValidationError, match="scores differ from original attempts"):
+        replay_g1({key: imperfect}, binding, **captured)
+    historic = {k: v for k, v in entry.items() if k != "source"}
+    held_source = imperfect.pop("source")
     gate, check = replay_g1({key: imperfect}, binding, **captured)
     assert gate.passed is True and check.passed is True
-    # Reference misses and unresolved scores retain their genuine verdicts.
+    assert gate.details["held_out_test_retest"]["haiku"]["pass2_records"] == "unknown"
+    imperfect["source"] = held_source
+    for judge in ("haiku", "luna"):
+        _source_score(imperfect, "probes", judge, missing.id, None)
+    gate, check = replay_g1({key: imperfect}, binding, **captured)
+    assert gate.passed is True and check.passed is True
+
+    # Historical misses and misses backed by the original votes retain their verdicts.
     subset = reference_subset(probes, seed=captured["probes"].mapping["header"]["corpus_sha256"])
     for score, expected in ((None, None), (0.0, True)):
-        imperfect = copy.deepcopy(entry)
+        imperfect = copy.deepcopy(historic)
         scores = imperfect["reference_check"]["details"]["scores"]
-        scores[next(p.id for p in subset if p.type == "KEY")] = score
+        item = next(p.id for p in subset if p.type == "KEY")
+        scores[item] = score
         actual = reference_probe_check(subset, scores)
         imperfect["reference_check"] = {"passed": actual.passed, "details": actual.details}
+        with pytest.raises(BenchmarkValidationError, match="reference scores differ"):
+            replay_g1({key: {**imperfect, "source": entry["source"]}}, binding, **captured)
+        gate, check = replay_g1({key: imperfect}, binding, **captured)
+        assert gate.passed is True and check.passed is expected
+        imperfect["source"] = copy.deepcopy(entry["source"])
+        _source_score(imperfect, "reference-probes", "reference", item, score)
         gate, check = replay_g1({key: imperfect}, binding, **captured)
         assert gate.passed is True and check.passed is expected
     failing_reference = copy.deepcopy(entry)
     scores = failing_reference["reference_check"]["details"]["scores"]
     for p in [p for p in subset if p.type == "KEY"][:18]:
         scores[p.id] = 0.0
+        _source_score(failing_reference, "reference-probes", "reference", p.id, 0.0)
     actual = reference_probe_check(subset, scores)
     assert actual.passed is False
     failing_reference["reference_check"] = {"passed": False, "details": actual.details}

@@ -536,7 +536,6 @@ def _graded_execution(
                 capture.scores[key] = 0.0
             elif request is not None:
                 pending = True
-                item = safe_id(*key)
                 if not item_matches.get(key):
                     return "unknown"
                 # G2 uses eligible pass-1 pairs even before a final exists. Only
@@ -702,9 +701,11 @@ class _RunMetadata:
         efforts = self.summary.get("efforts") or {}
         active = [self.judges.get(j, {}).get("api") for j in efforts]
         references = [j.get("api") for j in self.judges.values() if j.get("role") == "reference"]
-        if len(active) != 3 or len(references) != 1:
+        panel_complete = len(active) == 3 and len(references) == 1
+        if not panel_complete:
             active.append(None)  # an incomplete panel cannot establish live grading
         declared_grading = _execution_kind([*active, *references], grading=True)
+        self.scripted_panel = declared_grading == "scripted"
         self.grading = declared_grading
         self.scoring = bundle.scoring
         self.tokens = bundle.tokens
@@ -712,7 +713,7 @@ class _RunMetadata:
         self.grade_capture = _GradeCapture()
         self.reference_sample = optional_json(run, run / "grading/reference-sample.json") or {}
         checked_versions: dict[Path, str | None] = {}
-        if self.grading in {"live", "scripted"}:
+        if panel_complete and self.grading in {"live", "scripted"}:
             reference = next(
                 j for j, spec in self.judges.items() if spec.get("role") == "reference"
             )
@@ -765,9 +766,6 @@ class _RunMetadata:
                     FileNotFoundError,
                 ):
                     self.grading = "unknown"
-        # A bound scripted adapter makes the run a demonstration even if its votes are incomplete.
-        if declared_grading == "scripted":
-            self.grading = declared_grading
         if self.grade_capture.inventory is not None:
             checked_versions.update(self.grade_capture.inventory.versions)
         self.vote_versions = checked_versions
@@ -907,6 +905,8 @@ class _RunMetadata:
         messages = []
         if scripted:
             messages.append(f"Demonstration results include scripted {scripted}.")
+        if self.summary and self.scripted_panel and self.grading == "unknown":
+            messages.append("The panel declares a scripted grader. This is a demonstration.")
         if unknown:
             messages.append(f"Execution provenance is unknown for {unknown}.")
         return " ".join(messages)
@@ -1008,7 +1008,7 @@ def _claim_rows(
         if offline_blocked:
             if passed is None:
                 verdict = "not evaluable: missing or inconsistent execution evidence"
-        elif run.grading == "unknown" and passed is True:
+        elif run.grading == "unknown" and (passed is True or not run.grade_capture.reconciled):
             verdict = "not evaluable: missing or inconsistent grading evidence"
         elif passed is True and not run.claim_blocker and not run.claim_evidence(claim_id, model):
             verdict = "not evaluable: missing or inconsistent execution evidence"
@@ -1300,11 +1300,14 @@ def _disclosure(run: _Run) -> list[str]:
     lines += _probe_disclosure(run)
     gates = summary.get("gates") or {}
     breakdowns = summary.get("breakdowns") or {}
+    draws: str | int = "not recorded"
+    if "resamples" in summary:
+        draws = GATE_RESAMPLES if summary["resamples"] == GATE_RESAMPLES else "unverified"
     lines += [
         "",
         "### Reliability (G2, G3) and robustness (G4)",
         "",
-        f"Gate and claim bootstrap resamples: {GATE_RESAMPLES}.",
+        f"Gate and claim bootstrap resamples: {draws}.",
         "",
         _alpha_line("G2 panel reliability", gates.get("G2") or {}),
         _alpha_line("G3 reference agreement", gates.get("G3") or {}),
@@ -1470,11 +1473,12 @@ def _diagnostics(run: _Run) -> list[str]:
         lines += ["Diagnostic quantities: unknown (current grading evidence is unavailable).", ""]
     if run.retest_unknown:
         lines += ["Real-answer test–retest: unknown (unverified pass-2 evidence).", ""]
-    retest = diag.get("test_retest") or {}
-    lines += [
-        f"- Real-answer test–retest alpha, {_esc(j)}: {_esc(r.get('alpha'))}"
-        for j, r in sorted(retest.items())
-    ] or ["- Real-answer test–retest: no paired scores reported"]
+    else:
+        retest = diag.get("test_retest") or {}
+        lines += [
+            f"- Real-answer test–retest alpha, {_esc(j)}: {_esc(r.get('alpha'))}"
+            for j, r in sorted(retest.items())
+        ] or ["- Real-answer test–retest: no paired scores reported"]
     for key, interval in sorted((diag.get("self_preference") or {}).items()):
         if interval is None:
             value = "not estimable"

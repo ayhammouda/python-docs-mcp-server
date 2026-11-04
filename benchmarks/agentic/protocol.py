@@ -31,11 +31,18 @@ _START = rf"(?:(?<![A-Za-z0-9_-])|(?<=%[0-9A-Fa-f]{{2}})|{_ESCAPED_START})"
 _END = r"(?![A-Za-z0-9_-])"
 #: Real key shapes, by provider. The Anthropic literal is specific enough to need no start
 #: boundary, so a key glued to a digit (``7sk-ant-api03-...``) is still caught.
-KEY_PATTERNS = {
-    "anthropic": r"sk-ant-api\d\d-[A-Za-z0-9_-]{80,}" + _END,
-    "openai": r"(?=sk-)" + _START + r"sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{40,}" + _END,
-    "google": r"(?=AIza)" + _START + r"AIza[0-9A-Za-z_-]{35}" + _END,
+_KEY_SHAPES = {
+    "anthropic": ("sk-", r"ant-api\d\d-[A-Za-z0-9_-]{80,}"),
+    "openai": ("sk-", r"(?:proj-|svcacct-)?[A-Za-z0-9_-]{40,}"),
+    "google": ("AIza", r"[0-9A-Za-z_-]{35}"),
 }
+KEY_PATTERNS = {
+    name: (rf"(?={re.escape(prefix)}){_START}" if name != "anthropic" else "")
+    + re.escape(prefix) + suffix + _END
+    for name, (prefix, suffix) in _KEY_SHAPES.items()
+}
+_KEY_PREFIXES = tuple(dict.fromkeys(prefix for prefix, _ in _KEY_SHAPES.values()))
+_KEY_BYTE_PREFIXES = tuple(prefix.encode("ascii") for prefix in _KEY_PREFIXES)
 KEY_SHAPED = re.compile("|".join(f"(?P<{name}>{p})" for name, p in KEY_PATTERNS.items()))
 _KEY_SHAPED_BYTES = re.compile(KEY_SHAPED.pattern.encode())
 
@@ -154,7 +161,16 @@ def redact_key_shaped_text(text: str) -> str:
 
 
 def assert_no_key_shaped(text: str | bytes, *, where: str) -> None:
-    match = _KEY_SHAPED_BYTES.search(text) if isinstance(text, bytes) else KEY_SHAPED.search(text)
+    # Every provider pattern consumes its literal prefix. Most large calibration
+    # records have none, so skip the boundary regex on those records.
+    if isinstance(text, bytes):
+        if len(text) >= 1024 and not any(prefix in text for prefix in _KEY_BYTE_PREFIXES):
+            return
+        match = _KEY_SHAPED_BYTES.search(text)
+    else:
+        if len(text) >= 1024 and not any(prefix in text for prefix in _KEY_PREFIXES):
+            return
+        match = KEY_SHAPED.search(text)
     if match:
         # Names the place and the pattern, never the match.
         raise KeyLeakError(f"a key-shaped string ({match.lastgroup} pattern) was found in {where}")

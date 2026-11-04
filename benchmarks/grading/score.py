@@ -52,7 +52,14 @@ from benchmarks.grading.calibration import judge_settings as _judge_settings
 from benchmarks.grading.calibration_history import (
     CalibrationSource,
     held_out_scores,
+    repeat_problems,
     tuning_summary,
+)
+from benchmarks.grading.calibration_scan import scan_calibration_sources
+from benchmarks.grading.calibration_storage import (
+    MAX_CALIBRATION_BYTES,
+    calibration_bytes,
+    check_calibration_metadata,
 )
 from benchmarks.grading.diagnostics import diagnostic_tables, missing_records
 from benchmarks.grading.disclosure import ledger_spend, verified_key_audit
@@ -107,13 +114,14 @@ from benchmarks.grading.probes import (
 )
 from benchmarks.grading.serialization import jsonable as _jsonable
 from benchmarks.grading.stats import GATE_RESAMPLES
-from benchmarks.grading.vote_capture import VoteCapture
+from benchmarks.grading.vote_capture import MissingIssuedVote, VoteCapture
 from benchmarks.report_files import (
     artifact_bytes,
     artifact_output_dirs,
     artifact_paths,
     check_output_paths,
 )
+from benchmarks.report_measurements import comparison_plan
 from benchmarks.runner import BenchmarkValidationError
 from benchmarks.scoring import apply_llm_grades, score_run
 
@@ -133,17 +141,31 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _write(root: Path, path: Path, data: Any) -> Any:
+def _evidence_bytes(path: Path, data: Any, *, calibration: bool = False) -> bytes:
+    if calibration:
+        if isinstance(data, list):
+            entries = {"tuning": {"tuning": data}}
+        elif path.name == "g1-entries.json":
+            entries = data
+        else:
+            entries = data.get("entries", {"tuning": data})
+        check_calibration_metadata(entries)
+        scan_calibration_sources({"entries": entries})
     body = scanned_json_bytes(_jsonable(data), where="grading evidence", indent=2, sort_keys=True)
-    if len(body) + 1 > MAX_FRAME_BYTES:
+    if len(body) + 1 > (MAX_CALIBRATION_BYTES if calibration else MAX_FRAME_BYTES):
         raise BenchmarkValidationError("grading evidence exceeds the artifact size limit")
+    return body
+
+
+def _write(root: Path, path: Path, data: Any, *, calibration: bool = False) -> Any:
+    body = _evidence_bytes(path, data, calibration=calibration)
     with artifact_output_dirs(root, [path]) as directories:
         write_new(directories[path.parent], path.name, body + b"\n", mode=0o644)
     return json.loads(body)
 
 
 def _read_g1(path: Path) -> tuple[bytes, dict[str, Any]]:
-    body = read_input_bytes(path, "G1 evidence", "G1 evidence")
+    body = calibration_bytes(path.parent, path)
     return body, g1_entries(body)
 
 
@@ -164,6 +186,8 @@ def _g1_inputs(
                 raise BenchmarkValidationError(f"conflicting G1 evidence for composition {key}")
             entries[key] = entry
         sha = hashlib.sha256(body).hexdigest()
+        if sha not in bodies and sum(map(len, bodies.values())) + len(body) > MAX_CALIBRATION_BYTES:
+            raise BenchmarkValidationError("combined G1 evidence exceeds the artifact size limit")
         bodies[sha] = body
         copies.append({"source": str(path), "path": f"disclosure/g1/{sha}.json", "sha256": sha})
     return entries, bodies, copies
@@ -173,7 +197,7 @@ def _new_g1_archives(root: Path, raw_dir: Path, bodies: Mapping[str, bytes]) -> 
     missing = {}
     for sha, body in bodies.items():
         try:
-            archived = artifact_bytes(root, raw_dir / f"{sha}.json")
+            archived = calibration_bytes(root, raw_dir / f"{sha}.json")
         except FileNotFoundError:
             missing[sha] = body
         else:
@@ -360,16 +384,30 @@ def score_run_dir(
         ],
     )
     missing_archives = _new_g1_archives(run_dir, raw_g1, bodies)
+    # Validate and serialize the combined projection before any scoring mutation.
+    # Individually bounded imports can still exceed the combined export budget.
+    calibration_outputs = {
+        path: _evidence_bytes(path, value, calibration=True) if value else None
+        for path, value in (
+            (disclosure / "g1-entries.json", entries),
+            (disclosure / "tuning.json", entry.get("tuning")),
+        )
+    }
     efforts = {judge: spec.get("effort") for judge, spec in binding.composition.items()}
     transcripts = _cells(run_dir / "transcripts")
     requests = answer_requests(
         questions, transcripts, prompt=frozen["judge_prompt"], schema=frozen["judge_schema"]
     )
-    for target, number in (("answers", 1), ("reference", 1), ("answers", 2)):
+    for target, number in (("answers", 1), ("reference", 1)):
         vote_capture.check(target, number)
     answer_votes = load_answer_votes(
         grading, panel=panel, judges=efforts, requests=requests, capture=vote_capture,
     )
+    retest_unavailable = None
+    try:
+        vote_capture.check("answers", 2)
+    except MissingIssuedVote as error:
+        retest_unavailable = str(error)
     pass2 = load_answer_votes(
         grading,
         panel=panel,
@@ -378,7 +416,12 @@ def score_run_dir(
         requests=requests,
         include_reference=False,
         capture=vote_capture,
+        allow_missing_repeats=True,
     )
+    if retest_unavailable is not None:
+        # Validate the remaining selected replies from the same capture, but do
+        # not present incomplete issued repeats as a smaller observed sample.
+        pass2 = {}
 
     sample_path = grading / "reference-sample.json"
     try:
@@ -451,10 +494,7 @@ def score_run_dir(
         )
     # 6. Claims under the panel and under each single judge, then G4.
     plan = _run_json(run_dir, "planned-cells.json") or {}
-    plan_cells = plan.get("cells") or []
-    planned: set[CellKey] = {
-        (c["system_id"], c["model_family_id"], c["corpus_id"], int(c["repeat"])) for c in plan_cells
-    }
+    plan_cells = plan.get("cells")
     key_of: dict[tuple[str, str], CellKey] = {
         k: (t["system_id"], t["model_family_id"], t["corpus_id"], int(t["repeat"]))
         for k, t in transcripts.items()
@@ -479,8 +519,11 @@ def score_run_dir(
     families = _model_families(run_dir)
     airgap = {fid for fid, f in families.items() if f.get("arm") == "air-gapped"}
     systems_of: dict[str, set[str]] = defaultdict(set)
-    for system, model, _q, _r in planned.union(key_of.values()):
-        systems_of[model].add(system)
+    for row in [*(plan_cells if isinstance(plan_cells, list) else []), *transcripts.values()]:
+        if isinstance(row, dict):
+            model, system = row.get("model_family_id"), row.get("system_id")
+            if isinstance(model, str) and isinstance(system, str):
+                systems_of[model].add(system)
     c2_models = sorted(m for m, s in systems_of.items() if {"python-docs", "docs-fetch"} <= s)
     c3_models = sorted(
         m for m, s in systems_of.items() if {"python-docs", "no-docs"} <= s and m in airgap
@@ -492,22 +535,41 @@ def score_run_dir(
         offline_ok = current_offline.verdict.ok
         offline = current_offline.summary()
 
-    def claims_for(
-        scores: Mapping[CellKey, float | None], cells: set[CellKey]
-    ) -> dict[str, dict[str, ClaimResult]]:
+    def admitted_plans(excluded: Sequence[str] = ()) -> dict[str, dict[str, set[CellKey] | None]]:
         return {
-            "C2": {
-                m: c2(tokens, scores, cells, model=m, seed=seed, resamples=resamples)
-                for m in c2_models
-            },
-            "C3": {
-                m: c3(scores, cells, model=m, seed=seed, offline_ok=offline_ok, resamples=resamples)
-                for m in c3_models
-            },
+            cid: {m: comparison_plan(
+                plan_cells, transcripts, model=m, systems=("python-docs", peer), excluded=excluded,
+            ) for m in models}
+            for cid, peer, models in (("C2", "docs-fetch", c2_models), ("C3", "no-docs", c3_models))
         }
 
+    def claims_for(
+        scores: Mapping[CellKey, float | None],
+        cells: Mapping[str, Mapping[str, set[CellKey] | None]],
+    ) -> dict[str, dict[str, ClaimResult]]:
+        def claim(cid: str, model: str) -> ClaimResult:
+            planned = cells[cid][model]
+            if planned is None:
+                return ClaimResult(cid, model, None, None,
+                                   "planned comparison differs from captured trajectories")
+            return (
+                c2(tokens, scores, planned, model=model, seed=seed, resamples=resamples)
+                if cid == "C2" else
+                c3(scores, planned, model=model, seed=seed,
+                   offline_ok=offline_ok, resamples=resamples)
+            )
+
+        return {
+            "C2": {m: claim("C2", m) for m in c2_models},
+            "C3": {m: claim("C3", m) for m in c3_models},
+        }
+
+    planned = admitted_plans()
     panel_claims = claims_for(panel_scores, planned)
-    judge_claims = {j: claims_for(s, planned) for j, s in judge_scores.items()}
+    judge_claims = {
+        j: panel_claims if s == panel_scores else claims_for(s, planned)
+        for j, s in judge_scores.items()
+    }
 
     def verdicts_of(claims: Mapping[str, Mapping[str, ClaimResult]]) -> dict[str, bool | None]:
         return {f"{cid}/{m}": r.passed for cid, by in claims.items() for m, r in by.items()}
@@ -538,9 +600,8 @@ def score_run_dir(
     flagged = audit["flagged"] or []
     without_flagged = None
     if flagged:
-        kept = {cell for cell in planned if cell[2] not in flagged}
         kept_scores = {k: v for k, v in panel_scores.items() if k[2] not in flagged}
-        without_flagged = claims_for(kept_scores, kept)
+        without_flagged = claims_for(kept_scores, admitted_plans(flagged))
 
     # 8. The tier and the diagnostics.
     tier = outcome_tier(g1_result, g2_result, g3_result, g4_result)
@@ -566,14 +627,13 @@ def score_run_dir(
         missing_records(list(vote_capture.runs.values()), binding.composition, by_item),
         seed=seed,
         resamples=resamples,
+        retest_unavailable=retest_unavailable,
     )
     _write(run_dir, disclosure / "breakdowns.json", breakdowns)
-    for path, value in (
-        (disclosure / "g1-entries.json", entries),
-        (disclosure / "tuning.json", entry.get("tuning")),
-    ):
-        if value:
-            _write(run_dir, path, value)
+    for path, body in calibration_outputs.items():
+        if body is not None:
+            with artifact_output_dirs(run_dir, [path]) as directories:
+                write_new(directories[path.parent], path.name, body + b"\n", mode=0o644)
         elif path.exists():
             with artifact_output_dirs(run_dir, [path]) as directories:
                 os.unlink(path.name, dir_fd=directories[path.parent])
@@ -872,7 +932,8 @@ def _handoff_inputs(
     for name in sorted(handoff.keys() - {"probes.yml"}):
         if meta["kind"] != "held-out" or not re.fullmatch(r"tuning-[1-9][0-9]*\.json", name):
             raise BenchmarkValidationError("invalid workspace handoff entry")
-        record = CapturedJSON.read(directory / name, "tuning handoff")
+        body = calibration_bytes(workspace, directory / name)
+        record = CapturedJSON(body, json_mapping(body, "tuning handoff"))
         if hashlib.sha256(record.content).hexdigest() != handoff[name]:
             raise BenchmarkValidationError("workspace tuning handoff differs")
         evidence.append(record.mapping)
@@ -914,6 +975,7 @@ def write_tuning(
             "judges": judges,
             "source": source.export(bodies),
         },
+        calibration=True,
     )
     return path
 
@@ -994,7 +1056,7 @@ def write_g1(
     if "judges" in inputs.meta and inputs.meta["judges"] != list(composition):
         raise BenchmarkValidationError("held-out workspace composition differs")
     _check_tuning_evidence(inputs, evidence, list(composition))
-    verified_tuning(
+    _verified, tuning_unknown = verified_tuning(
         evidence, panel=inputs.settings["panel"], probes=inputs.settings["probes"],
         criteria=inputs.settings["criteria"], judges=list(composition),
         inputs=inputs.meta["inputs"],
@@ -1017,6 +1079,8 @@ def write_g1(
     if not evidence and (gate.passed is not None or (check and check["passed"] is not None)):
         raise BenchmarkValidationError("evaluable calibration requires a tuning handoff")
     gate.details["held_out_test_retest"] = repeats
+    if problems := {**tuning_unknown, **repeat_problems(repeats)}:
+        gate.details["calibration_unknown"] = problems
     entry = {
         "binding": {
             "composition": composition,
@@ -1035,5 +1099,7 @@ def write_g1(
         "source": source.export(bodies),
     }
     path = workspace / "g1.json"
-    _write(workspace, path, {"entries": {composition_key(list(composition)): entry}})
+    _write(
+        workspace, path, {"entries": {composition_key(list(composition)): entry}}, calibration=True
+    )
     return path

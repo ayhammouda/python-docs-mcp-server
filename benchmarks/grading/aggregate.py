@@ -531,11 +531,14 @@ def load_answer_votes(
     requests: Mapping[tuple[str, str], JudgeInput] | None = None,
     include_reference: bool = True,
     capture: VoteCapture | None = None,
+    allow_missing_repeats: bool = False,
 ) -> dict[tuple[str, str], AnswerVotes]:
     """Every answer item under ``items/answers/``, with each judge's chosen record.
 
     ``judges`` maps the panel judge ids that graded (fallback included) to their effort.
     The reference vote is its pass-1 ``reference`` record.
+    ``allow_missing_repeats`` admits remaining captured answer/pass-2 records for
+    validation only; callers must disclose an incomplete issued repeat inventory.
     """
     reference = panel.judges[panel.reference]
     loaded: dict[tuple[str, str], AnswerVotes] = {}
@@ -573,7 +576,11 @@ def load_answer_votes(
                 "pass_number": pass_number,
                 "item_id": item_id,
             }
-            candidates = _records(root, **where) if capture is None else capture.records(**where)
+            candidates = (
+                _records(root, **where) if capture is None else capture.records(
+                    **where, allow_missing_repeats=allow_missing_repeats,
+                )
+            )
             chosen = select_vote_file(candidates)
             votes[judge_id] = (
                 None if chosen is None else vote_from_record(

@@ -860,6 +860,11 @@ def test_g1_exports_only_observed_held_out_retest_pairs(tmp_path: Path) -> None:
     added = set(second_source["files"]) - set(first_source["files"])
     assert added == {
         f"votes/probes/haiku/low/pass2/{key}/run-1--a1.json" for key in keys
+    } | {
+        # Inventory reconciliation retains other allocated coordinates too;
+        # they still do not enter this frozen held-out comparison.
+        "votes/probes/luna/high/pass2/KEY--SYN-EX-001/run-1--a1.json",
+        "votes/probes/haiku/low/pass2/KEY--TUNE-001/run-1--a1.json",
     }
     haiku = observed["haiku"]
     assert (haiku["alpha"], haiku["items"], haiku["expected"], haiku["pass2_records"]) == (

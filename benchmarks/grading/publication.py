@@ -25,9 +25,11 @@ from benchmarks.grading.aggregate import (
     select_vote_file,
     vote_from_record,
 )
-from benchmarks.grading.calibration import g1_entries, replay_g1
+from benchmarks.grading.calibration import _same, g1_entries, replay_g1
+from benchmarks.grading.calibration_storage import calibration_bytes as artifact_bytes
 from benchmarks.grading.diagnostics import diagnostic_tables, missing_records
 from benchmarks.grading.gates import (
+    ClaimResult,
     G1Binding,
     GateResult,
     c2,
@@ -42,8 +44,8 @@ from benchmarks.grading.mapping import grade
 from benchmarks.grading.probes import probe_file_from_inputs
 from benchmarks.grading.serialization import jsonable
 from benchmarks.grading.stats import GATE_RESAMPLES
-from benchmarks.report_files import artifact_bytes, optional_json
-from benchmarks.report_measurements import evidence_cell, grading_receipt_matches
+from benchmarks.grading.vote_capture import MissingIssuedVote
+from benchmarks.report_measurements import comparison_plan, evidence_cell, grading_receipt_matches
 from benchmarks.runner import BenchmarkValidationError
 
 if TYPE_CHECKING:
@@ -153,67 +155,90 @@ def _second_pass(
     return second
 
 
-def _calibration_archives(run: PublicationRun) -> tuple[dict[str, Any], str | None]:
+def _calibration_archives(run: PublicationRun) -> tuple[dict[str, list[Any]] | None, str | None]:
     """Capture each named immutable export once; paths are derived from digests."""
-    archives: dict[str, Any] = {}
+    archives: dict[str, list[Any]] = {}
     try:
         disclosure = run.summary.get("disclosure")
+        if "disclosure" not in run.summary or (
+            isinstance(disclosure, dict) and "g1_files" not in disclosure
+        ):
+            return None, None  # Historical exports did not declare original copies.
         copies = disclosure.get("g1_files") if isinstance(disclosure, dict) else None
-        if not isinstance(copies, list) or not copies:
-            return {}, "original calibration archive unavailable"
-        seen = set()
+        if not isinstance(copies, list):
+            raise ValueError("invalid calibration archive declaration")
+        identities = {}
         for copy in copies:
+            if not isinstance(copy, dict):
+                raise ValueError("invalid calibration archive declaration")
             digest = copy["sha256"]
             if (not isinstance(digest, str) or len(digest) != 64
                     or any(c not in "0123456789abcdef" for c in digest)
                     or copy["path"] != f"disclosure/g1/{digest}.json"):
                 raise ValueError("invalid calibration archive identity")
-            if digest in seen:
-                continue
-            seen.add(digest)
-            body = artifact_bytes(run.root, run.root / "grading" / copy["path"])
+            identities[digest] = copy["path"]
+        for digest, path in sorted(identities.items()):
+            root = run.bundle.run_dir
+            body = artifact_bytes(root, root / "grading" / path)
             if hashlib.sha256(body).hexdigest() != digest:
                 raise ValueError("calibration archive digest differs")
             for key, entry in g1_entries(body).items():
-                if not isinstance(entry, dict):
-                    raise ValueError("invalid calibration archive entry")
-                if key in archives and archives[key] != entry:
-                    raise ValueError("conflicting original calibration archives")
-                archives[key] = entry
+                archives.setdefault(key, []).append(entry)
         return archives, None
     except KeyLeakError:
         raise
     except (BenchmarkValidationError, FileNotFoundError, KeyError, TypeError, ValueError):
-        return {}, "original calibration archive missing, invalid or contradictory"
+        return {}, "original calibration archive missing or invalid"
 
 
-def reconcile_disclosures(run: PublicationRun) -> None:
-    """Replace diagnostic caches using the same capture as the headline gate replay."""
-    source = optional_json(run.root, run.root / "grading/disclosure/g1-entries.json") or {}
+def _calibration_replays(
+    run: PublicationRun,
+) -> tuple[dict[str, Any], dict[str, tuple[GateResult, GateResult]]]:
+    """Capture originals once; a missing optional projection cannot hide them."""
+    root = run.bundle.run_dir
+    try:
+        body = artifact_bytes(root, root / "grading/disclosure/g1-entries.json")
+    except FileNotFoundError:
+        source = {}
+    else:
+        try:
+            source = g1_entries(body, projection=True)
+        except KeyLeakError:
+            raise
+        except BenchmarkValidationError:
+            source = {}
     archives, archive_problem = _calibration_archives(run)
-    run.g1_entries = {}
-    for key, entry in source.items():
+    entries, replays = {}, {}
+    for key in source.keys() | (archives.keys() if archives is not None else set()):
+        originals = archives.get(key, []) if archives is not None else []
+        entry = source.get(key, originals[0] if originals else None)
         try:
             if not isinstance(key, str) or not isinstance(entry, dict):
                 raise ValueError("invalid calibration projection entry")
-            original = archives.get(key)
-            problems = (
-                {name: archive_problem for name in ("tuning", "held_out_test_retest")}
-                if archive_problem else {}
+            binding = G1Binding(
+                {j: entry["binding"]["composition"][j] for j in key.split("+")}, run.inputs,
             )
-            if original is None:
-                problems = problems or {
-                    name: "composition absent from original calibration archives"
-                    for name in ("tuning", "held_out_test_retest")
-                }
-            elif any(entry.get(f) != original.get(f) for f in ("binding", "scores")) or (
-                _gate(entry.get("reference_check"), "reference_probe_check").details.get("scores")
-                != _gate(original.get("reference_check"), "reference_probe_check").details.get(
-                    "scores"
-                )
-            ):
-                raise ValueError("calibration projection differs from original score evidence")
-            else:
+            panel, probes, criteria = (
+                CapturedInput.from_bytes(run.frozen[name], name, name)
+                for name in ("panel", "probes", "criteria")
+            )
+            if archive_problem or archives is not None and key not in archives:
+                raise ValueError("declared calibration original unavailable")
+            problems = {}
+            originals = archives[key] if archives is not None else []
+            for original in originals:
+                if not isinstance(original, dict) or (
+                    any(not _same(entry.get(f), original.get(f)) for f in ("binding", "scores"))
+                    or not _same(
+                        _gate(entry.get("reference_check"), "reference_probe_check").details.get(
+                            "scores"
+                        ),
+                        _gate(original.get("reference_check"), "reference_probe_check").details.get(
+                            "scores"
+                        ),
+                    )
+                ):
+                    raise ValueError("calibration projection differs from original score evidence")
                 if entry.get("tuning") != original.get("tuning"):
                     problems["tuning"] = "tuning disclosure differs from original archive"
                 if entry.get("source") != original.get("source") or (
@@ -224,16 +249,17 @@ def reconcile_disclosures(run: PublicationRun) -> None:
                         "held-out disclosure differs from original archive"
                     )
             selected, reference = replay_g1(
-                source,
-                G1Binding(
-                    {j: entry["binding"]["composition"][j] for j in key.split("+")},
-                    run.inputs,
-                ),
-                panel=CapturedInput.from_bytes(run.frozen["panel"], "panel", "panel"),
-                probes=CapturedInput.from_bytes(run.frozen["probes"], "probes", "probes"),
-                criteria=CapturedInput.from_bytes(run.frozen["criteria"], "criteria", "criteria"),
+                {key: entry}, binding, panel=panel, probes=probes, criteria=criteria,
                 history_problems=problems,
             )
+            for original in originals:
+                if not _same(original, entry):
+                    # Projection mismatches can suppress auxiliary history, but
+                    # never primary-source verification. Equal copies were just
+                    # replayed above. All source proof is portable captured bytes.
+                    replay_g1(
+                        {key: original}, binding, panel=panel, probes=probes, criteria=criteria,
+                    )
         except KeyLeakError:
             raise
         except (BenchmarkValidationError, KeyError, TypeError, ValueError):
@@ -245,12 +271,18 @@ def reconcile_disclosures(run: PublicationRun) -> None:
                 },
             })
             reference = GateResult("reference_probe_check", None, {})
-        run.g1_replays[key] = selected, reference
-        run.g1_entries[key] = (
+        replays[key] = selected, reference
+        entries[key] = (
             {**entry, "gate": {"passed": selected.passed, "details": selected.details}}
             if isinstance(entry, dict)
             else {"gate": {"passed": None, "details": {}}}
         )
+    return entries, replays
+
+
+def reconcile_disclosures(run: PublicationRun) -> None:
+    """Replace diagnostic caches using the same capture as the headline gate replay."""
+    run.g1_entries, run.g1_replays = _calibration_replays(run)
     try:
         suite = probe_file_from_inputs(
             CapturedInput.from_bytes(run.frozen["probes"], "probes", "probes"),
@@ -289,10 +321,15 @@ def reconcile_disclosures(run: PublicationRun) -> None:
             run.sample_allocation = {**info, "ids": sample_ids}
         except (BenchmarkValidationError, KeyError, ValueError, TypeError):
             pass  # Incomplete panels cannot establish the registered sample.
+        retest_unavailable = None
         try:
             pass2 = _second_pass(run, efforts)
         except KeyLeakError:
             raise
+        except MissingIssuedVote as error:
+            pass2 = {}
+            run.retest_unknown = True
+            retest_unavailable = str(error)
         except (
             BenchmarkValidationError,
             FileNotFoundError,
@@ -305,6 +342,7 @@ def reconcile_disclosures(run: PublicationRun) -> None:
         ):
             pass2 = {}
             run.retest_unknown = True
+            retest_unavailable = "unverified pass-2 evidence"
         # Grounding and labels are recomputed too: scoring records are projections.
         scoring = {}
         for k, transcript in run.transcripts.items():
@@ -337,6 +375,7 @@ def reconcile_disclosures(run: PublicationRun) -> None:
                 {av.item_id: av for av in captured.answers.values()},
             ),
             seed=run.seed,
+            retest_unavailable=retest_unavailable,
         )
     run.summary = (
         {**run.summary, "diagnostics": jsonable(diagnostics), "breakdowns": jsonable(breakdowns)}
@@ -378,8 +417,14 @@ def reconcile_gates(run: PublicationRun) -> dict[str, GateResult]:
                     or (effort is not None and not isinstance(effort, str))):
                 raise ValueError("invalid judging panel identity")
             composition[judge] = {"model_id": model_id, "effort": effort}
-        binding = G1Binding(composition, run.inputs)
+    except (KeyError, TypeError, ValueError):
+        # These identities and frozen inputs are shared by every gate.
+        return gates
+
+    reference = GateResult("reference_probe_check", None, {})
+    try:
         if hasattr(run, "g1_replays"):
+            entries = run.g1_entries
             selected, check = run.g1_replays.get(
                 str(summary.get("composition")),
                 (
@@ -388,21 +433,16 @@ def reconcile_gates(run: PublicationRun) -> dict[str, GateResult]:
                 ),
             )
         else:
-            # Standalone callers still get a single bounded capture per invocation.
-            root = run.bundle.run_dir
-            entries = optional_json(root, root / "grading/disclosure/g1-entries.json") or {}
-            selected, check = replay_g1(
-                entries,
-                binding,
-                panel=CapturedInput.from_bytes(run.frozen["panel"], "panel", "panel"),
-                probes=CapturedInput.from_bytes(run.frozen["probes"], "probes", "probes"),
-                criteria=CapturedInput.from_bytes(run.frozen["criteria"], "criteria", "criteria"),
+            # Standalone callers use the same archive rules, captured once here.
+            entries, replays = _calibration_replays(run)
+            selected, check = replays.get(
+                composition_name,
+                (GateResult("G1", None, {}), GateResult("reference_probe_check", None, {})),
             )
-        if hasattr(run, "g1_entries"):
-            entry = run.g1_entries.get(str(summary.get("composition")), {})
-            proof = entry.get("binding")
-            if not isinstance(proof, dict) or proof.get("composition") != composition:
-                raise ValueError("G1 binding differs from current composition")
+        entry = entries.get(composition_name, {})
+        proof = entry.get("binding")
+        if not isinstance(proof, dict) or proof.get("composition") != composition:
+            raise ValueError("G1 binding differs from current composition")
         if selected.details.get("composition", summary.get("composition")) != summary.get(
             "composition"
         ):
@@ -411,9 +451,55 @@ def reconcile_gates(run: PublicationRun) -> dict[str, GateResult]:
         reference = _consistent(
             _gate(summary.get("reference_check"), "reference_probe_check"), check
         )
+    except KeyLeakError:
+        raise
+    except (KeyError, TypeError, ValueError, BenchmarkValidationError):
+        gates["G1"] = GateResult("G1", None, {"reason": "missing or inconsistent G1 evidence"})
 
-        captured = run.grade_capture
-        own, question_of, pairs = {}, {}, {}
+    captured = run.grade_capture
+    question_of = {av.item_id: key[1] for key, av in captured.answers.items()}
+    try:
+        own = {}
+        for key, av in captured.answers.items():
+            question = captured.questions[key[1]]
+            scores = {j: own_grade(av, j, question.weights) for j in efforts}
+            if not av.suspect and sum(s is not None for s in scores.values()) >= 2:
+                own[av.item_id] = scores
+        gates["G2"] = _consistent(saved["G2"], g2(own, question_of, seed=run.seed))
+    except KeyLeakError:
+        raise
+    except (KeyError, TypeError, ValueError, ZeroDivisionError, BenchmarkValidationError):
+        gates["G2"] = GateResult("G2", None, {"reason": "missing or inconsistent G2 evidence"})
+
+    try:
+        pairs = {}
+        for key, av in captured.answers.items():
+            final = captured.finals.get(key)
+            if (final is not None and final["method"] == LLM_PANEL
+                    and not av.suspect and av.reference is not None):
+                pairs[av.item_id] = final["score"], grade(
+                    av.reference.fields(), captured.questions[key[1]].weights
+                )[0]
+        gates["G3"] = _consistent(
+            saved["G3"],
+            registered_g3(
+                run.reference_sample,
+                pairs,
+                question_of,
+                answers=captured.answers,
+                transcripts=run.transcripts,
+                questions=captured.questions,
+                judges=list(efforts),
+                seed=run.seed,
+                reference_check=reference,
+            ),
+        )
+    except KeyLeakError:
+        raise
+    except (KeyError, TypeError, ValueError, ZeroDivisionError, BenchmarkValidationError):
+        gates["G3"] = GateResult("G3", None, {"reason": "missing or inconsistent G3 evidence"})
+
+    try:
         panel_scores = {}
         judge_scores = {j: {} for j in efforts}
         tokens = {}
@@ -430,44 +516,20 @@ def reconcile_gates(run: PublicationRun) -> dict[str, GateResult]:
                 tokens[coord] = count
 
         for key, av in captured.answers.items():
-            item = av.item_id
-            question_of[item] = key[1]
             question = captured.questions[key[1]]
-            scores = {j: own_grade(av, j, question.weights) for j in efforts}
-            if not av.suspect and sum(s is not None for s in scores.values()) >= 2:
-                own[item] = scores
             final = captured.finals.get(key)
             if final is not None:
                 transcript = run.transcripts[key]
                 coord = evidence_cell(transcript, key[1])
                 for j in efforts:
                     judge_scores[j][coord] = judge_grade(av, j, question, final)
-                if final["method"] == LLM_PANEL and not av.suspect and av.reference is not None:
-                    pairs[item] = final["score"], grade(av.reference.fields(), question.weights)[0]
-
-        gates["G2"] = _consistent(saved["G2"], g2(own, question_of, seed=run.seed))
-        sample = run.reference_sample
-        gates["G3"] = _consistent(
-            saved["G3"],
-            registered_g3(
-                sample,
-                pairs,
-                question_of,
-                answers=captured.answers,
-                transcripts=run.transcripts,
-                questions=captured.questions,
-                judges=list(efforts),
-                seed=run.seed,
-                reference_check=reference,
-            ),
-        )
-        cells = run.plan["cells"]
-        if not isinstance(cells, list) or not all(isinstance(c, dict) for c in cells):
-            raise BenchmarkValidationError("invalid comparison plan cells")
-        planned = {evidence_cell(c) for c in cells}
+        cells = run.plan.get("cells")
         systems_of: dict[str, set[str]] = defaultdict(set)
-        for system, model, _question, _repeat in planned:
-            systems_of[model].add(system)
+        for row in [*(cells if isinstance(cells, list) else []), *run.transcripts.values()]:
+            if isinstance(row, dict):
+                model, system = row.get("model_family_id"), row.get("system_id")
+                if isinstance(model, str) and isinstance(system, str):
+                    systems_of[model].add(system)
         c2_models = {
             m for m, systems in systems_of.items() if {"python-docs", "docs-fetch"} <= systems
         }
@@ -478,17 +540,28 @@ def reconcile_gates(run: PublicationRun) -> dict[str, GateResult]:
             and run.families.get(m, {}).get("arm") == "air-gapped"
         }
         offline = run.offline_ok()
+        planned = {
+            cid: {m: comparison_plan(cells, run.transcripts, model=m, systems=("python-docs", peer))
+                  for m in models}
+            for cid, peer, models in (("C2", "docs-fetch", c2_models), ("C3", "no-docs", c3_models))
+        }
 
         def claims(scores: dict[Any, Any]) -> dict[str, dict[str, Any]]:
+            def claim(cid: str, model: str) -> dict[str, Any]:
+                cohort = planned[cid][model]
+                if cohort is None:
+                    return asdict(ClaimResult(
+                        cid, model, None, None,
+                        "planned comparison differs from captured trajectories",
+                    ))
+                return asdict(
+                    c2(tokens, scores, cohort, model=model, seed=run.seed) if cid == "C2" else
+                    c3(scores, cohort, model=model, seed=run.seed, offline_ok=offline)
+                )
+
             return {
-                "C2": {
-                    m: asdict(c2(tokens, scores, planned, model=m, seed=run.seed))
-                    for m in c2_models
-                },
-                "C3": {
-                    m: asdict(c3(scores, planned, model=m, seed=run.seed, offline_ok=offline))
-                    for m in c3_models
-                },
+                "C2": {m: claim("C2", m) for m in c2_models},
+                "C3": {m: claim("C3", m) for m in c3_models},
             }
 
         panel_claims = claims(panel_scores)
@@ -496,9 +569,27 @@ def reconcile_gates(run: PublicationRun) -> dict[str, GateResult]:
             j: panel_claims if scores == panel_scores else claims(scores)
             for j, scores in judge_scores.items()
         }
-        matched_claims = jsonable(panel_claims) == summary.get("claims") and jsonable(
-            by_judge
-        ) == summary.get("claims_by_judge")
+        def admitted(raw: Any) -> Any:
+            # An identity-ineligible comparison supplies no G4 verdict. Its old
+            # cached result cannot veto an independently matched comparison.
+            # Keep all other keys and values, including unexpected claims.
+            if not isinstance(raw, dict):
+                return raw
+            return {
+                cid: {m: c for m, c in by.items()
+                      if m not in planned.get(cid, {}) or planned[cid][m] is not None}
+                if isinstance(by, dict) else by
+                for cid, by in raw.items()
+            }
+
+        saved_single = summary.get("claims_by_judge")
+        matched_claims = (
+            jsonable(admitted(panel_claims)) == admitted(summary.get("claims"))
+            and isinstance(saved_single, dict)
+            and jsonable({j: admitted(cs) for j, cs in by_judge.items()})
+            == {j: admitted(cs) for j, cs in saved_single.items()}
+        )
+        run.summary["claims"] = jsonable(panel_claims)
         run.summary["claims_by_judge"] = jsonable(by_judge)
         verdicts = {
             j: {f"{cid}/{m}": c["passed"] for cid, by in cs.items() for m, c in by.items()}
@@ -529,11 +620,8 @@ def reconcile_gates(run: PublicationRun) -> dict[str, GateResult]:
         ZeroDivisionError,
         BenchmarkValidationError,
     ):
-        # Preserve measured statistics for disclosure while withholding eligibility.
-        gates = {
-            name: GateResult(
-                name, None, {**g.details, "reason": "missing or inconsistent gate evidence"}
-            )
-            for name, g in gates.items()
-        }
+        gates["G4"] = GateResult(
+            "G4", None,
+            {**gates["G4"].details, "reason": "missing or inconsistent G4 evidence"},
+        )
     return gates

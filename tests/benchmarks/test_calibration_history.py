@@ -194,6 +194,27 @@ def test_capture_does_not_reopen_mutable_vote_or_invocation(history, monkeypatch
     assert replay(held, entry).details["held_out_test_retest"]["haiku"]["items"] == 1
 
 
+def test_capture_parses_each_invocation_once_instead_of_once_per_result(history, monkeypatch):
+    from benchmarks.grading import aggregate, calibration_history
+
+    held, _ = history
+    parsed = []
+
+    def counting(original):
+        def read(body, label):
+            if label in ("calibration invocation", "grading invocation"):
+                parsed.append(label)
+            return original(body, label)
+        return read
+
+    monkeypatch.setattr(aggregate, "json_mapping", counting(aggregate.json_mapping))
+    monkeypatch.setattr(
+        calibration_history, "json_mapping", counting(calibration_history.json_mapping)
+    )
+    write_g1(held)
+    assert parsed == ["calibration invocation"]
+
+
 def test_normal_producer_scorer_and_renderer_retain_genuine_repeat_coverage(
     history, tmp_path, monkeypatch
 ):
@@ -280,7 +301,7 @@ def test_oversize_capture_leaves_existing_export_untouched(history, monkeypatch)
 
     held, _ = history
     before = (held / "g1.json").read_bytes()
-    monkeypatch.setattr(score, "MAX_FRAME_BYTES", 100)
+    monkeypatch.setattr(score, "MAX_CALIBRATION_BYTES", 100)
     with pytest.raises(BenchmarkValidationError, match="size limit"):
         write_g1(held)
     assert (held / "g1.json").read_bytes() == before
@@ -313,3 +334,25 @@ def test_unselected_judge_effort_does_not_override_selected_frozen_settings(hist
     gate = replay(held, entry)
     assert gate.details["held_out_test_retest"]["haiku"]["items"] == 1
     assert gate.details["tuning"][0]["judges"]["flash-lite"]["chosen"] == "low"
+
+
+def test_writer_refuses_nested_marker_in_unselected_take(history):
+    from benchmarks.agentic.protocol import KeyLeakError
+
+    held, entry = history
+    before = (held / "g1.json").read_bytes()
+    name, body = next((n, b) for n, b in entry["source"]["files"].items()
+                      if "votes/probes/haiku/low/pass2/" in n)
+    marker = "AIza" + "q" * 35
+    reply = json.dumps({"note": marker}).replace(marker, "".join(
+        f"\\u{ord(character):04x}" for character in marker
+    ))
+    candidate = json.loads(body)
+    candidate.update(grading_run_id="older", attempt=2, graded_at="2001-01-01T00:00:00Z",
+                     status="missing", terminal=False, vote=None, text=reply, withheld="missing")
+    (held / name).with_name("older--a2.json").write_text(json.dumps(candidate))
+
+    with pytest.raises(KeyLeakError) as error:
+        write_g1(held)
+    assert marker not in str(error.value)
+    assert (held / "g1.json").read_bytes() == before

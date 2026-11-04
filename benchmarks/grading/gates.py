@@ -741,13 +741,35 @@ def run_offline_evidence(
     attempts included), and once after the arm. Discard ownership comes from its
     planned cell directory, as in the collector, not optional transcript metadata.
     """
-    local = {fid for fid, spec in families.items() if spec.get("arm") == "air-gapped"}
+    local = {fid for fid, spec in families.items()
+             if isinstance(spec, Mapping) and spec.get("arm") == "air-gapped"}
+    hosted = {fid for fid, spec in families.items()
+              if isinstance(spec, Mapping) and spec.get("arm") == "hosted"}
+
+    def cell_family(name: Any) -> str | None:
+        parts = name.rsplit("--", 2) if isinstance(name, str) else []
+        return parts[1] if len(parts) == 3 else None
+
     cells = (read_evidence_json(run_dir, "planned-cells.json") or {}).get("cells")
     owners: dict[str, str] = {}
     coordinates: set[tuple[str, str]] = set()
     jobs: set[str] = set()
     valid = isinstance(cells, list) and bool(cells)
     for cell in cells if isinstance(cells, list) else []:
+        declared = cell.get("model_family_id") if isinstance(cell, dict) else None
+        named = cell_family(cell.get("cell")) if isinstance(cell, dict) else None
+        if (
+            isinstance(cell, dict) and named not in local
+            and not (isinstance(declared, str) and declared in local)
+            and (named in hosted or isinstance(declared, str) and declared in hosted)
+        ):
+            # Hosted identity conflicts belong to their own comparisons, not
+            # the air-gapped inventory. Ownership follows the cell directory,
+            # not a competitor alias pointing at an unrelated local family.
+            name, family = cell.get("cell"), cell.get("model_family_id")
+            if isinstance(name, str) and isinstance(family, str):
+                owners[name] = family
+            continue
         if not isinstance(cell, dict) or any(
             not isinstance(cell.get(field), str) or not cell[field].strip()
             for field in ("cell", "model_family_id", "system_id", "corpus_id")
@@ -775,7 +797,11 @@ def run_offline_evidence(
         for path in artifact_paths(run_dir, run_dir / kind, "*/*.json"):
             owner = owners.get(path.parent.name)
             if owner is None:
-                valid = False
+                record = optional_json(run_dir, path)
+                declared = (record or {}).get("model_family_id")
+                if (cell_family(path.parent.name) in local or not isinstance(declared, str)
+                        or declared in local or declared not in families):
+                    valid = False
             if owner not in local:
                 continue
             attempts += 1

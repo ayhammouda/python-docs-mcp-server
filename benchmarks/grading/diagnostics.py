@@ -101,6 +101,7 @@ def diagnostic_tables(
     *,
     seed: str,
     resamples: int = GATE_RESAMPLES,
+    retest_unavailable: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Canonical descriptive statistics over the admitted, captured scoring cohort."""
     by_item = {av.item_id: av for av in answer_votes.values()}
@@ -219,6 +220,9 @@ def diagnostic_tables(
         # graded again (Task 8 refuses `reference` while any panel item lacks a final record).
         "no_final_record": no_final_record,
     }
+    if retest_unavailable is not None:
+        diagnostics["test_retest"] = None
+        diagnostics["test_retest_unavailable"] = retest_unavailable
 
     def breakdown(grades: Mapping[str, Any], of: Mapping[str, str]) -> dict[str, Any]:
         groups = alpha_by_group(

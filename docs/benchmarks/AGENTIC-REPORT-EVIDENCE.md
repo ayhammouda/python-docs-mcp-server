@@ -25,15 +25,20 @@ Every receipt declared by a covered invocation must retain its exact vote file,
 and each present vote in an invocation with a receipt manifest must be declared
 there. Receipt IDs, file paths, digests, targets, passes and attempts must agree,
 including earlier attempts superseded by a later batch or invocation. Omission
-of an execution-issued vote makes the answer denominator and affected grading
+of an execution-issued pass-1 vote makes the answer denominator and affected grading
 evidence unavailable; it never turns issued work into a pending answer or a
 smaller sample. Confirmed ledger bookings remain visible without a per-answer
 rate. Unsubmitted work with no declared receipt can still be pending. Older
 receiptless records retain their technical compatibility rules.
 
 This check shares one bounded capture of invocations, votes and receipts with
-grade replay. A missing pass-2 record makes test–retest evidence unknown while
-preserving supported pass-1 grades. Probes and key audits do not contribute to
+grade replay. A missing issued answer pass-2 record makes real-answer test–retest
+evidence unknown in `agentic-score` and the report while preserving supported
+pass-1 grades, gates, ledger costs and eligible report/README comparisons.
+The scorer still validates the remaining captured replies, never reconstructs
+the missing vote from its receipt, and distinguishes the omission from a repeat
+that was never issued. Malformed grading, unsafe paths and key-shaped data still
+stop scoring before writes. Probes and key audits do not contribute to
 the completed-answer denominator. Missing reference inventory withholds final
 and reference-sample evidence while retaining verified independent panel
 observations for G2.
@@ -113,6 +118,12 @@ comparisons check the declared `cell` and `competitor_id`, canonical
 `system--family--rN` spelling (positive integer repeat), system, family and
 corpus ID against each captured transcript's directory and filename. These
 checks use the already captured records; a second read cannot replace them.
+The scorer and report admit each comparison before computing panel and
+single-judge C2/C3 statistics or G4. An ineligible comparison supplies no G4
+verdict; with no evaluable comparison G4 is unavailable and the outcome cannot
+be Validated. A hosted plan conflict does not invalidate a separately matched
+local comparison's air-gap evidence. Local cell ownership, attempts, check
+coverage and egress must still reconcile.
 Comparisons use actual adjudicated grades (including reference
 settlements and frozen core/nuance weights), verified retained counts and current
 offline evidence. The same scorer C2/C3 and single-judge sensitivity primitives
@@ -167,16 +178,29 @@ invocations and any selected execution receipts. The producer and portable
 reader use the same final-attempt selection, reply parsing, core/nuance mapping
 and registered primary/fallback composition rules. Tuning trials are recomputed
 from those attempts in configured effort order; each chosen effort must match
-the run's frozen judge settings. Held-out pass-1/pass-2 scores and coverage come
+the run's frozen judge settings. Disclosure retains every verified tuning run,
+including unsuccessful effort trials and trials of a registered fallback that
+was not selected. A failed trial does not establish the selected effort; a
+matching successful trial is still required. Held-out pass-1/pass-2 scores and coverage come
 from the selected attempts on identical frozen requests. A copied observation
 or two agreeing scalar summaries cannot establish a repeat measurement.
 
 Reports also check the disclosure projection against the original digest-named
-exports in `grading/disclosure/g1/`. Contradictory copies are disclosed as
-unknown; the reader does not silently select one. Missing historical attempt
-proof leaves tuning or repeats explicitly unknown while independently supported
+exports in `grading/disclosure/g1/`. A missing, invalid, hash-mismatched or
+contradictory declared original withholds G1 and reference eligibility for the
+affected composition; cached disclosure scores cannot replace it. Other
+independently supported compositions remain available. Exports predating archive
+declarations can still establish results from sufficient frozen score evidence.
+An unreadable archive cannot identify its affected compositions, so it withholds
+eligibility across the declared set. Missing historical attempt proof leaves
+tuning or repeats explicitly unknown while independently supported
 G1 accuracy, reference checks and coverage remain available. Missing repeat
 history is distinct from a complete capture proving zero pass-2 records.
+Calibration joins each declared receipt to its invocation and vote coordinates,
+digest, registered model, effort and frozen request. Removing an issued repeat
+vote or receipt makes that judge's repeat coverage unknown, preserving supported
+pass-1 G1 and reference results and other judges' independently known coverage.
+Unallocated efforts, probes and rounds do not count as missing issued work.
 Replay uses the captured corpus, prompt, schema and tuning questions without
 an index or provider access. Neither source captures nor their hashes
 authenticate provider contact.

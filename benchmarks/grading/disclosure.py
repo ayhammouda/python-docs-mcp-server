@@ -29,12 +29,12 @@ from benchmarks.grading.aggregate import (
 )
 from benchmarks.grading.batch import BatchItemResult
 from benchmarks.grading.execution_evidence import ledger_units
-from benchmarks.grading.gates import c2, c3, g4
+from benchmarks.grading.gates import CellKey, c2, c3, g4
 from benchmarks.grading.inputs import GradingQuestion, JudgeInput, key_audit_schema, safe_id
 from benchmarks.grading.mapping import parse_object
 from benchmarks.report_files import optional_json
 from benchmarks.report_measurements import (
-    comparison_identities_match,
+    comparison_plan,
     evidence_cell,
     grading_receipt_matches,
 )
@@ -258,23 +258,23 @@ def retained_claims(
                 cid == "C3" and run.families.get(model, {}).get("arm") != "air-gapped"
             ):
                 continue
-            if not comparison_identities_match(
+            kept = comparison_plan(
                 plan, run.transcripts, model=model, systems=arms, excluded=flagged,
-            ):
+            )
+            if kept is None:
                 claim = {"id": cid, "model": model, "passed": None, "interval": None,
                          "reason": "comparison plan differs from captured trajectories"}
                 actual[cid][model] = claim
                 for own in single.values():
                     own[cid][model] = claim
                 continue
-            kept, scores, tokens = set(), {}, {}
+            scores, tokens = {}, {}
             by_judge: dict[str, dict[Any, Any]] = {j: {} for j in efforts}
             for key, transcript in run.transcripts.items():
                 if (transcript["model_family_id"] != model or transcript["system_id"] not in arms
                         or key[1] in flagged):
                     continue
                 coord = evidence_cell(transcript)
-                kept.add(coord)
                 scores[coord] = captured.scores.get(key)
                 # Counts must bind to this same captured retained trajectory.
                 if cid == "C2":
@@ -288,16 +288,16 @@ def retained_claims(
                         if final is not None else scores[coord]
                     )
 
-            def claim_for(grades: dict[Any, Any]) -> dict[str, Any]:
+            def claim_for(grades: dict[Any, Any], cells: set[CellKey]) -> dict[str, Any]:
                 return asdict(
-                    c2(tokens, grades, kept, model=model, seed=run.seed) if cid == "C2" else
-                    c3(grades, kept, model=model, seed=run.seed, offline_ok=run.offline_ok())
+                    c2(tokens, grades, cells, model=model, seed=run.seed) if cid == "C2" else
+                    c3(grades, cells, model=model, seed=run.seed, offline_ok=run.offline_ok())
                 )
 
-            actual[cid][model] = claim_for(scores)
+            actual[cid][model] = claim_for(scores, kept)
             for judge, own in by_judge.items():
                 single[judge][cid][model] = (
-                    actual[cid][model] if own == scores else claim_for(own)
+                    actual[cid][model] if own == scores else claim_for(own, kept)
                 )
     robustness = g4({
         judge: {f"{cid}/{m}": c["passed"] for cid, by in cs.items() for m, c in by.items()}

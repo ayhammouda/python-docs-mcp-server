@@ -187,6 +187,8 @@ def test_report_discloses_gate_draws_separately_from_descriptive_intervals(tmp_p
     del old_summary["resamples"]
     runs._json(path, old_summary)
     assert "Gate and claim bootstrap resamples: not recorded" in reports._render(run)
+    runs._json(path, {**old_summary, "resamples": 5})
+    assert "Gate and claim bootstrap resamples: unverified" in reports._render(run)
 
 
 @pytest.mark.parametrize("fault", ["extra judge", "missing probes", "missing binding"])
@@ -425,6 +427,7 @@ def test_chosen_vote_is_scored_and_hashed_from_one_capture(
     import hashlib
 
     from benchmarks.grading import aggregate
+    from benchmarks.grading.vote_capture import VoteCapture
 
     run = scripted_graded_run
     g1 = runs._g1_file(run, tmp_path / "g1.json")
@@ -444,6 +447,9 @@ def test_chosen_vote_is_scored_and_hashed_from_one_capture(
             runs._json(path, {**json.loads(body), "input_sha256": "d" * 64})
         return body
 
+    monkeypatch.setattr(
+        "benchmarks.grading.score.VoteCapture", lambda root: VoteCapture(root, reader=swap)
+    )
     monkeypatch.setattr(aggregate, "artifact_bytes", swap)
     assert _score(run, g1) == 0
     record = runs._record(run, "docs-fetch", qid)

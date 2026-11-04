@@ -84,6 +84,10 @@ def _question(**overrides: Any) -> GradingQuestion:
 
 @pytest.fixture
 def index_db(tmp_path: Path) -> Path:
+    return _build_index_db(tmp_path)
+
+
+def _build_index_db(tmp_path: Path) -> Path:
     path = tmp_path / "index.db"
     conn = get_readwrite_connection(path)
     bootstrap_schema(conn)

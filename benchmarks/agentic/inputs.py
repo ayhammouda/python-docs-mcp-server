@@ -23,15 +23,23 @@ from benchmarks.agentic.protocol import (
 from benchmarks.runner import BenchmarkValidationError, _require_yaml_mapping
 
 
-def read_input_bytes(path: Path, name: str, label: str) -> bytes:
+def read_input_bytes(
+    path: Path, name: str, label: str, *, max_bytes: int | None = None
+) -> bytes:
     where = f"input {name}"
     assert_no_key_shaped(str(path), where="input path")
     try:
-        content = path.read_bytes()
+        if max_bytes is None:
+            content = path.read_bytes()
+        else:
+            with path.open("rb") as stream:
+                content = stream.read(max_bytes + 1)
     except FileNotFoundError:
         raise BenchmarkValidationError(f"{label} file does not exist: {path}") from None
     except OSError as exc:
         raise BenchmarkValidationError(f"cannot read {label} file {path}: {exc.strerror}") from None
+    if max_bytes is not None and len(content) > max_bytes:
+        raise BenchmarkValidationError(f"{label} exceeds the artifact size limit")
     assert_no_key_shaped(content, where=where)  # includes comments and discarded values
     return content
 

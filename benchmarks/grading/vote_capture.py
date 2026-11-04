@@ -13,12 +13,24 @@ from pathlib import Path
 from typing import Any, cast
 
 from benchmarks.agentic.inputs import json_mapping
-from benchmarks.agentic.protocol import KeyLeakError
+from benchmarks.agentic.protocol import KeyLeakError, assert_no_key_shaped
 from benchmarks.report_files import artifact_bytes, artifact_paths
 from benchmarks.runner import BenchmarkValidationError
 
 FINAL_WITHHELD = frozenset({"parse_failure", "refusal", "output_cap"})  # never retried (ruling 6)
 VoteFile = tuple[Path, dict[str, Any], str]
+
+
+class VoteInventoryUnavailable(BenchmarkValidationError):
+    """An invocation declares evidence that is no longer available."""
+
+    def __init__(self, message: str, missing: set[tuple[str, str | None, str]] | None = None):
+        super().__init__(message)
+        self.missing = missing or set()
+
+
+class MissingIssuedVote(VoteInventoryUnavailable):
+    """An otherwise reconciled inventory has lost an execution-issued vote."""
 
 
 def vote_dir(
@@ -75,18 +87,22 @@ class VoteCapture:
 
     def __init__(
         self, root: Path, *, reader: Callable[[Path, Path], bytes] = artifact_bytes,
+        paths: Callable[[Path, Path, str], list[Path]] = artifact_paths,
+        runs: Mapping[str, dict[str, Any]] | None = None,
     ) -> None:
-        self.root, self.reader = root, reader
-        self.runs = {
+        self.root, self.reader, self.paths = root, reader, paths
+        self.runs = runs if runs is not None else {
             path.stem: json_mapping(reader(root, path), "grading invocation")
-            for path in artifact_paths(root, root / "runs", "*.json")
+            for path in paths(root, root / "runs", "*.json")
         }
         self.versions: dict[Path, str | None] = {}
         self._groups: dict[tuple[str, str, str, int, str], list[VoteFile]] = defaultdict(list)
         self._histories: dict[tuple[str, str], dict[str, Any]] = {}
         self._receipts: dict[str, dict[str, dict[str, Any]]] = {}
+        self._missing_receipts: dict[str, set[str]] = defaultdict(set)
         self._receipt_errors: dict[str, BenchmarkValidationError] = {}
         self._checked: set[tuple[str, int]] = set()
+        self._unavailable: dict[tuple[str, int], VoteInventoryUnavailable] = {}
         self._items: dict[Path, dict[str, Any]] = {}
 
     def item(self, path: Path) -> dict[str, Any]:
@@ -129,22 +145,41 @@ class VoteCapture:
             if (len(parts) != 2 or any(p.startswith(".") for p in parts)
                     or Path(relative).as_posix() != relative or Path(relative).is_absolute()):
                 raise BenchmarkValidationError("invalid vote inventory receipt path")
+            item, separator, attempt = parts[1].removesuffix(".json").rpartition("--a")
+            if (not item or not separator or not attempt.isascii() or not attempt.isdigit()
+                or attempt.startswith("0") or parts[1] != f"{item}--a{attempt}.json"
+            ):
+                raise BenchmarkValidationError("invalid vote inventory receipt coordinate")
             try:
                 body = self.reader(self.root, self.root / "executions" / run / relative)
             except FileNotFoundError:
-                raise BenchmarkValidationError("missing vote inventory receipt") from None
+                self._missing_receipts[run].add(relative)
+                continue
             if hashlib.sha256(body).hexdigest() != digest:
                 raise BenchmarkValidationError("vote inventory receipt digest differs")
             histories[relative] = json_mapping(body, "grading execution")
         self._receipts[run] = histories
         return histories
 
-    def check(self, target: str, pass_number: int) -> None:
+    def check(
+        self, target: str, pass_number: int, *, allow_missing_repeats: bool = False,
+    ) -> None:
         scope = target, pass_number
+        optional = allow_missing_repeats and scope == ("answers", 2)
+        if scope in self._unavailable:
+            error = self._unavailable[scope]
+            if not optional or not isinstance(error, MissingIssuedVote):
+                raise error
+            return
         if scope in self._checked:
             return
         files = {}
-        for path in artifact_paths(
+        coordinates = set()
+        by_receipt = {}
+        missing: set[tuple[str, str | None, str]] = set()
+        missing_paths: set[Path] = set()
+        missing_reasons: set[str] = set()
+        for path in self.paths(
             self.root, self.root / "votes" / target, f"*/*/pass{pass_number}/*/*.json",
         ):
             self.versions[path] = None
@@ -158,9 +193,14 @@ class VoteCapture:
             expected = {"target": target, "pass": pass_number, "judge_id": judge,
                         "item_id": item, "effort": None if effort == "default" else effort}
             if any(type(row.get(k)) is not type(v) or row[k] != v for k, v in expected.items()):
-                raise BenchmarkValidationError("vote inventory path differs from record")
+                assert_no_key_shaped(item, where="grading inventory item")
+                raise BenchmarkValidationError(
+                    f"vote inventory path differs from record for {item}"
+                )
             entry = path, row, hashlib.sha256(body).hexdigest()
             files[path] = entry
+            coordinates.add((row.get("grading_run_id"), judge, item, row.get("attempt")))
+            by_receipt[row["grading_run_id"], f"{judge}/{item}--a{row['attempt']}.json"] = entry
             self._groups[target, judge, effort, pass_number, item].append(entry)
 
         covered = set()
@@ -183,6 +223,21 @@ class VoteCapture:
                 if scoped and invocation["pass"] != pass_number:
                     continue  # Keep a failed pass-2 capture out of pass-1 quantities.
                 raise
+            for relative in self._missing_receipts[run]:
+                entry = by_receipt.get((run, relative))
+                if entry is not None:
+                    path, row, _digest = entry
+                    missing.add((row["judge_id"], row["effort"], row["item_id"]))
+                    missing_paths.add(path)
+                elif not scoped or invocation["pass"] == pass_number:
+                    # Without the receipt, its effort is known only if a vote
+                    # survives. Restrict uncertainty to the declared judge.
+                    judge, name = relative.split("/")
+                    item = name.removesuffix(".json").rpartition("--a")[0]
+                    missing.add((judge, None, item))
+                else:
+                    continue
+                missing_reasons.add("missing vote inventory receipt")
             for relative, history in histories.items():
                 if (history.get("target"), history.get("pass")) != scope:
                     if scoped and invocation["pass"] == pass_number:
@@ -210,7 +265,11 @@ class VoteCapture:
                     pass_number=pass_number, item_id=cast(str, item),
                 ) / f"{run}--a{attempt}.json"
                 if path not in files:
-                    raise BenchmarkValidationError("missing execution-issued vote in inventory")
+                    if (run, judge, item, attempt) in coordinates:
+                        raise BenchmarkValidationError("vote inventory receipt identity differs")
+                    missing.add((cast(str, judge), effort, cast(str, item)))
+                    missing_reasons.add("missing execution-issued vote in inventory")
+                    continue
                 _, row, vote_digest = files[path]
                 fields = (
                     "grading_run_id", "unit_id", "item_id", "judge_id", "target", "pass",
@@ -231,6 +290,8 @@ class VoteCapture:
         }
         for path, row, _ in files.values():
             invocation = self.runs.get(row["grading_run_id"], {})
+            if path in missing_paths:
+                continue  # The missing receipt is already an availability failure.
             # An unscoped empty legacy manifest issued nothing. Only an
             # unselected historical take may lack its receipt; current inventories
             # and every selected take still require the bidirectional join.
@@ -240,10 +301,25 @@ class VoteCapture:
                 continue
             if invocation.get("execution_results") is not None and path not in covered:
                 raise BenchmarkValidationError("present vote is absent from its inventory")
+        if missing:
+            missing_vote = missing_reasons == {"missing execution-issued vote in inventory"}
+            kind = MissingIssuedVote if missing_vote else VoteInventoryUnavailable
+            error = kind("; ".join(sorted(missing_reasons)), missing)
+            self._unavailable[scope] = error
+            if not optional or not missing_vote:
+                raise error
         self._checked.add(scope)
 
-    def records(self, **where: Any) -> list[VoteFile]:
-        self.check(where["target"], where["pass_number"])
+    def records(
+        self, *, allow_unavailable: bool = False, allow_missing_repeats: bool = False, **where: Any,
+    ) -> list[VoteFile]:
+        try:
+            self.check(
+                where["target"], where["pass_number"], allow_missing_repeats=allow_missing_repeats,
+            )
+        except VoteInventoryUnavailable:
+            if not allow_unavailable:
+                raise
         return self._groups.get((
             where["target"], where["judge_id"], where["effort"] or "default",
             where["pass_number"], where["item_id"],

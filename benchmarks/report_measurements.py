@@ -287,7 +287,7 @@ class GradeCapture:
     finals: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
     scores: dict[tuple[str, str], float] = field(default_factory=dict)
     graded_answers: int | None = None
-    runs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    runs: Mapping[str, dict[str, Any]] = field(default_factory=dict)
     inventory: VoteCapture | None = None
     reconciled: bool = False  # the whole join succeeded, including any genuinely pending cells
 
@@ -345,3 +345,24 @@ def comparison_identities_match(
                 and set(want) == set(have))
     except (BenchmarkValidationError, KeyError, TypeError, ValueError):
         return False
+
+
+def comparison_plan(
+    plan: Any,
+    transcripts: Mapping[tuple[str, str], Mapping[str, Any]],
+    *,
+    model: str,
+    systems: Sequence[str],
+    excluded: Sequence[str] = (),
+) -> set[tuple[str, str, str, int]] | None:
+    """Admit identities before reducing a comparison to statistical coordinates."""
+    if (not isinstance(plan, list) or not all(isinstance(row, dict) for row in plan)
+            or not comparison_identities_match(
+                plan, transcripts, model=model, systems=systems, excluded=excluded,
+            )):
+        return None
+    return {
+        evidence_cell(row) for row in plan
+        if row.get("model_family_id") == model and row.get("system_id") in systems
+        and row.get("corpus_id") not in excluded
+    }

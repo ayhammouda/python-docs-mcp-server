@@ -1059,6 +1059,28 @@ def test_one_active_scripted_adapter_blocks_public_claim(
         assert (REQUIRED_WORDING in text) == (scripted == "answer")
 
 
+@pytest.mark.parametrize("reference_count", [0, 2])
+def test_incomplete_scripted_panel_withholds_grades_and_renders(live_like_bundle, reference_count):
+    from benchmarks.agentic_report import _RunMetadata
+
+    run = live_like_bundle
+    path = run / "grading/inputs/panel.yml"
+    panel = yaml.safe_load(path.read_bytes())
+    panel["judges"]["luna"] = yaml.safe_load((GFIX / "panel.yml").read_bytes())["judges"]["luna"]
+    if reference_count == 0:
+        del panel["judges"]["reference"]
+    else:
+        panel["judges"]["extra-reference"] = dict(panel["judges"]["reference"])
+    path.write_text(yaml.safe_dump(panel))
+    _refresh_manifest(run)
+
+    metadata = _RunMetadata(_load_run_bundle(run))
+    assert metadata.grading == "scripted" and not metadata.grade_capture.reconciled
+    for text in (_readme(run), _render(run)):
+        assert "demonstration" in text.lower()
+        assert "fewer normalized tokens" not in text
+
+
 @pytest.mark.parametrize("missing", ["snapshots/model-matrix.yml", "grading/inputs/panel.yml"])
 def test_missing_snapshot_withholds_public_claim_without_calling_it_scripted(
     validated_bundle: Path, missing: str

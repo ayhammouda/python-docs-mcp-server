@@ -279,8 +279,11 @@ denials. A recognized older failed MISS or aborted request can preserve isolatio
 When replaying a graded run, `agentic-score` renders the answer again with the frozen
 question, criteria, system prompt and schema. It masks links and escapes answer delimiters
 as the judge saw them. Each selected answer or reference vote must match that request's
-`input_sha256` and its item, target, judge, model, effort and pass. A missing vote can
-leave a grade pending. A present vote with missing or contradictory input evidence
+`input_sha256` and its item, target, judge, model, effort and pass. An unsubmitted
+pass-1 vote can leave a grade pending; a missing execution-issued pass-1 vote stops
+scoring before writes. A missing issued answer pass-2 vote withholds test–retest
+detail while preserving supported primary grades, gates, costs and comparisons.
+A present vote with missing or contradictory input evidence
 stops scoring before it updates the run. To replay an incomplete export, restore the
 original item and vote files from the grading run.
 

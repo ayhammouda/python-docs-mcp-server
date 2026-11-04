@@ -177,6 +177,8 @@ def test_scripted_pass1_flags_without_proof_cannot_supply_diagnostics(tmp_path, 
         _receipt(run / "grading", path, result, panel=reports.PANEL)
     metadata = _RunMetadata(_load_run_bundle(run))
     assert metadata.grading == "unknown"
+    assert "declares a scripted grader" in metadata.claim_blocker
+    assert "unknown for grading" in metadata.claim_blocker
     assert not metadata.grade_capture.reconciled
     assert not metadata.summary["diagnostics"]
     assert r'haiku: 3 records; withheld {"refusal"\: 1}' not in reports._render(run)

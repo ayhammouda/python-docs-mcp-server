@@ -31,9 +31,9 @@ def test_full_g1_replay_requires_scores_and_consistent_aggregates(tmp_path, inde
         runs._json(path, {"entries": {key: value}})
         return score_run_dir(run, schema_path=runs.SCHEMA, g1_paths=[path])
 
-    def refused(value):
+    def refused(value, reason=None):
         before = _files(run)
-        with pytest.raises(BenchmarkValidationError):
+        with pytest.raises(BenchmarkValidationError, match=reason):
             replay(value)
         assert _files(run) == before
 
@@ -114,6 +114,9 @@ def test_full_g1_replay_requires_scores_and_consistent_aggregates(tmp_path, inde
         )
         assert result.passed is False
         failing["gate"] = {"passed": False, "details": result.details}
+        refused(failing, "calibration scores differ from original attempts")
+        # Historical score arrays without original votes retain the measured failing verdict.
+        del failing["source"]
         assert replay(failing)["gates"]["G1"]["passed"] is False
 
     # Incomplete older exports stay readable, but cannot establish a passing gate.
@@ -145,6 +148,8 @@ def test_full_g1_replay_requires_scores_and_consistent_aggregates(tmp_path, inde
         unverified = replay(unpinned)
         assert unverified["gates"]["G1"]["passed"] is None
         assert unverified["reference_check"]["passed"] is None
+        unknown = unverified["gates"]["G1"]["details"]["calibration_unknown"]
+        assert all("judge settings" in unknown[key] for key in ("tuning", "held_out_test_retest"))
     panel_path.write_bytes(original_panel)
     manifest_path.write_bytes(original_manifest)
 
