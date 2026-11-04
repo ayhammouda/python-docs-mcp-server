@@ -5,6 +5,7 @@ Workers are real subprocesses; models are scripted, so nothing reaches a network
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
@@ -596,15 +597,44 @@ async def test_every_worker_log_is_scrubbed_when_a_frame_leak_aborts_the_run(
         assert log.read_text() == "debug: [redacted]\n"
 
 
+# Holds A's pipes, so A's teardown waits on it. Marks when A is killed, which happens only in
+# A's teardown, then exits once the test releases it. Each wait is bounded and fails loudly.
+_GRANDCHILD = (
+    "import os, sys, time\n"
+    "from pathlib import Path\n"
+    "parent, entered, release = int(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])\n"
+    "deadline = time.monotonic() + 10\n"
+    "while os.getppid() == parent:\n"
+    "    if time.monotonic() > deadline:\n"
+    "        sys.exit('grandchild: A was never killed')\n"
+    "    time.sleep(0.01)\n"
+    "entered.touch()\n"
+    "while not release.exists():\n"
+    "    if time.monotonic() > deadline + 10:\n"
+    "        sys.exit('grandchild: never released')\n"
+    "    time.sleep(0.01)\n"
+)
+
+
+def _supervisor(job_id: str) -> asyncio.Task[Any] | None:
+    """The running supervisor task of ``job_id``, found by its coroutine's frame."""
+    for task in asyncio.all_tasks():
+        frame = getattr(task.get_coro(), "cr_frame", None)
+        if frame is not None and frame.f_code.co_name == "_supervise":
+            if frame.f_locals["job"].job_id == job_id:
+                return task
+    return None
+
+
 async def test_a_teardown_cancelled_by_a_second_abort_still_scrubs_and_settles(
     host: Host, tmp_path: Path
 ) -> None:
-    # A holds a unit, then leaks a key. A grandchild keeps A's pipes open, so A's teardown
-    # waits for it. B leaks next, and its abort cancels A mid-teardown.
+    # A holds a unit, then leaks a key; its teardown waits on a grandchild holding its pipes.
+    # Only then does B leak, and B's abort cancels A mid-teardown.
     leaked = "sk-ant-api03-" + "z" * 90
-    marker = str(tmp_path / "a-leaks")
+    entered, release = tmp_path / "a-in-teardown", tmp_path / "release"
     code = (
-        "import json, subprocess, sys, time\n"
+        "import json, os, subprocess, sys, time\n"
         "from pathlib import Path\n"
         "inp, out = sys.stdin.buffer, sys.stdout.buffer\n"
         "def read():\n"
@@ -619,18 +649,30 @@ async def test_a_teardown_cancelled_by_a_second_abort_still_scrubs_and_settles(
         "if job['job_id'] == 'a':\n"
         f"    send({_reserve_frame(1024)!r})\n"
         "    read()\n"
-        "    subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(3)'])\n"
-        f"    Path({marker!r}).touch()\n"
+        f"    signals = [str(os.getpid()), {str(entered)!r}, {str(release)!r}]\n"
+        f"    subprocess.Popen([sys.executable, '-c', {_GRANDCHILD!r}, *signals])\n"
         "else:\n"
-        f"    while not Path({marker!r}).exists():\n"
-        "        time.sleep(0.05)\n"
-        "    time.sleep(0.3)\n"
+        "    deadline = time.monotonic() + 10\n"
+        f"    while not Path({str(entered)!r}).exists():\n"
+        "        if time.monotonic() > deadline:\n"
+        "            sys.exit('B: A never entered its teardown')\n"
+        "        time.sleep(0.01)\n"
         f"send({{'type': 'system_info', 'note': '{leaked}'}})\n"
         "time.sleep(30)\n"
     )
     jobs = [_job(tmp_path, [ANSWER], job_id=job_id) for job_id in ("a", "b")]
+    run = asyncio.create_task(host.run(jobs, launcher=KeyedLauncher(code, key="")))
+    try:
+        async with asyncio.timeout(10):  # bounded: a missed signal fails loudly
+            while (a := _supervisor("a")) is None:
+                await asyncio.sleep(0.01)
+            while not (a.done() or a.cancelling()):  # B's abort has reached A
+                await asyncio.sleep(0.01)
+    finally:
+        release.touch()
+        await asyncio.wait([run], timeout=20)
     with pytest.raises(KeyLeakError):
-        await host.run(jobs, launcher=KeyedLauncher(code, key=""))
+        run.result()
     logs = sorted((tmp_path / "logs").iterdir())
     assert [log.read_text() for log in logs] == ["debug: [redacted]\n"] * 2
     settles = [e for e in host.ledger.events("host-test") if e["event"] == "settle"]
