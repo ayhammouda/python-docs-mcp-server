@@ -628,9 +628,10 @@ def test_a_loop_without_signal_support_runs_without_handlers(
 def test_an_ignored_sighup_is_left_out_of_the_skipped_handlers_line(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    previous = signal.getsignal(signal.SIGHUP)
-    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    previous = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
     try:
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
         async def scenario() -> None:
             loop = asyncio.get_running_loop()
@@ -647,7 +648,8 @@ def test_an_ignored_sighup_is_left_out_of_the_skipped_handlers_line(
 
         asyncio.run(scenario())
     finally:
-        signal.signal(signal.SIGHUP, previous)
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
     line = next(line for line in capsys.readouterr().err.splitlines() if "handler" in line)
     assert "SIGTERM" in line and "SIGHUP" not in line
 

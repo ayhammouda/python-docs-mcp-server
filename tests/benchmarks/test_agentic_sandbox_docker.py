@@ -42,6 +42,7 @@ pytestmark = pytest.mark.skipif(
     reason="opt-in: set BENCHMARK_DOCKER_TESTS=1 and BENCHMARK_SANDBOX_IMAGE=<image id>",
 )
 REPO_ROOT = Path(__file__).resolve().parents[2]
+RUN_ID = f"docker-test-{os.getpid()}"
 BIG = 150_000  # a trajectory frame well over 100,000 bytes
 
 
@@ -57,10 +58,10 @@ def image() -> str:
     return IMAGE
 
 
-def _sandbox_config(tmp_path: Path, run_id: str, index: Path | None = None) -> SandboxConfig:
+def _sandbox_config(tmp_path: Path, index: Path | None = None) -> SandboxConfig:
     return SandboxConfig(
         image=IMAGE,
-        run_id=run_id,
+        run_id=RUN_ID,
         out_dir=tmp_path / "run",
         index_path=index or tmp_path / "no-index.db",
         keys_file=None,
@@ -76,7 +77,7 @@ def _docker(*args: str) -> subprocess.CompletedProcess[str]:
 def sandbox(tmp_path: Path) -> Iterator[Sandbox]:
     """A sandbox for single steps; every egress it opened is closed afterwards."""
     (tmp_path / "run").mkdir()
-    box = Sandbox(_sandbox_config(tmp_path, f"t{os.getpid()}-{tmp_path.name[-12:]}"))
+    box = Sandbox(_sandbox_config(tmp_path))
     opened: list[Any] = []
     real_open = box.open_egress
 
@@ -138,9 +139,9 @@ def test_a_scripted_run_completes_inside_containers(tmp_path: Path, image: str) 
         systems=("python-docs", "no-docs"),
         questions=("SYN-EX-001",),
         repeats=1,
-        run_id="dockerscripted",
+        run_id=RUN_ID,
     )
-    launcher = ContainerLauncher(Sandbox(_sandbox_config(tmp_path, "dockerscripted", index)))
+    launcher = ContainerLauncher(Sandbox(_sandbox_config(tmp_path, index)))
     summary = run_agentic(config, launcher=launcher)
     run = tmp_path / "run"
     assert summary["status"] == "completed" and summary["succeeded_cells"] == 2
@@ -178,9 +179,9 @@ def test_a_trajectory_frame_over_100000_bytes_round_trips_through_a_container(
         systems=("no-docs",),
         questions=("SYN-EX-001",),
         repeats=1,
-        run_id="dockerbig",
+        run_id=RUN_ID,
     )
-    launcher = ContainerLauncher(Sandbox(_sandbox_config(tmp_path, "dockerbig")))
+    launcher = ContainerLauncher(Sandbox(_sandbox_config(tmp_path)))
     summary = run_agentic(config, launcher=launcher)
     assert summary["status"] == "completed", summary.get("abort_reason")
     transcript = tmp_path / "run" / "transcripts" / "no-docs--scripted-anthropic--r1"
@@ -248,7 +249,7 @@ async def test_a_docker_config_with_proxies_fails_the_isolation_probe(
     monkeypatch.setenv("DOCKER_CONFIG", str(config_dir))
     monkeypatch.setenv("DOCKER_HOST", host)  # the same local daemon, without the context store
     (tmp_path / "run").mkdir()
-    box = Sandbox(_sandbox_config(tmp_path, f"tcfg{os.getpid()}"))
+    box = Sandbox(_sandbox_config(tmp_path))
     egress = await box.open_egress("cfg", (("api.anthropic.com", 443),))
     family = _job("scripted-anthropic").family
     try:
@@ -260,6 +261,12 @@ async def test_a_docker_config_with_proxies_fails_the_isolation_probe(
 
 
 def test_no_container_or_network_with_the_run_label_remains(image: str) -> None:
-    containers = _docker("ps", "-a", "--filter", f"label={RUN_LABEL}", "--format", "{{.Names}}")
-    networks = _docker("network", "ls", "--filter", f"label={RUN_LABEL}", "--format", "{{.Name}}")
+    containers = _docker(
+        "ps", "-a", "--filter", f"label={RUN_LABEL}={RUN_ID}", "--format", "{{.Names}}"
+    )
+    networks = _docker(
+        "network", "ls", "--filter", f"label={RUN_LABEL}={RUN_ID}", "--format", "{{.Name}}"
+    )
+    containers.check_returncode()
+    networks.check_returncode()
     assert containers.stdout.strip() == "" and networks.stdout.strip() == ""
