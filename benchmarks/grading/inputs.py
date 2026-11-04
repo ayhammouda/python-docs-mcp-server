@@ -42,6 +42,15 @@ _DOCS_PATH_RE = re.compile(
     r"(?<![\w/])(?:\d\.\d+/)?(?:library|reference|tutorial|howto|whatsnew|using|c-api|faq"
     r"|glossary|extending|installing|deprecations)/[\w./-]+(?:#[\w.:-]+)?"
 )
+MAPPING_TABLE = (
+    "Score mapping (design §9.1), checked in order:\n"
+    "1. not attempted -> 0.0 NOT_ATTEMPTED\n"
+    "2. contradicts_key or wrong_version -> 0.0 INCORRECT\n"
+    "3. a core criterion not met -> 0.0 INCORRECT\n"
+    "4. both criteria met -> 1.0 CORRECT\n"
+    "5. otherwise -> 0.5 PARTIAL\n"
+)
+
 MASK_RULES = (
     "Masking rules (design §9.1): each match below becomes [link], URLs first.\n"
     f"url: {_URL_RE.pattern} (trailing characters trimmed as "
@@ -287,8 +296,6 @@ def inputs_manifest(
     *, criteria_path: Path, panel_path: Path, probes_path: Path | None
 ) -> dict[str, str]:
     """sha256 of every frozen input: file bytes, and the mapping and masking as content."""
-    from benchmarks.grading.mapping import MAPPING_TABLE  # mapping imports this module
-
     manifest = {
         name: _sha256(path.read_bytes())
         for name, path in _manifest_files(criteria_path, panel_path, probes_path).items()
@@ -302,8 +309,6 @@ def snapshot_inputs(
     dest: Path, *, criteria_path: Path, panel_path: Path, probes_path: Path | None
 ) -> dict[str, str]:
     """Write ``grading/inputs/`` once (exclusive creates) and return the manifest."""
-    from benchmarks.grading.mapping import MAPPING_TABLE
-
     manifest = inputs_manifest(
         criteria_path=criteria_path, panel_path=panel_path, probes_path=probes_path
     )

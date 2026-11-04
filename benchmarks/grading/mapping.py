@@ -7,18 +7,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from benchmarks.grading.inputs import MAPPING_TABLE as MAPPING_TABLE
 from benchmarks.grading.inputs import VOTE_FIELDS, Weight, judge_schema
 
 Label = Literal["CORRECT", "PARTIAL", "INCORRECT", "NOT_ATTEMPTED"]
-
-MAPPING_TABLE = (
-    "Score mapping (design §9.1), checked in order:\n"
-    "1. not attempted -> 0.0 NOT_ATTEMPTED\n"
-    "2. contradicts_key or wrong_version -> 0.0 INCORRECT\n"
-    "3. a core criterion not met -> 0.0 INCORRECT\n"
-    "4. both criteria met -> 1.0 CORRECT\n"
-    "5. otherwise -> 0.5 PARTIAL\n"
-)
 
 _JSON_TYPES: dict[str, type | tuple[type, ...]] = {
     "string": str,

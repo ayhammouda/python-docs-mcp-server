@@ -25,7 +25,6 @@ from benchmarks.agentic_report import (
 )
 from benchmarks.grading.aggregate import write_vote_record
 from benchmarks.grading.batch import BatchItemResult
-from benchmarks.grading.inputs import MASK_RULES, judge_schema, safe_id, snapshot_inputs
 from benchmarks.grading.mapping import MAPPING_TABLE
 from benchmarks.grading.panel import load_panel
 from benchmarks.grading.score import score_run_dir
@@ -108,7 +107,7 @@ def _vote(
         unit_id="u1",
         provider_batch_id="b1",
         input_sha256="d" * 64,
-        schema=judge_schema(),
+        schema=grading_inputs.judge_schema(),
     )
 
 
@@ -189,7 +188,7 @@ def _build(tmp_path: Path) -> Path:
         },
     )
     grading = run / "grading"
-    snapshot_inputs(
+    grading_inputs.snapshot_inputs(
         grading / "inputs",
         criteria_path=GFIX / "criteria.sample.yml",
         panel_path=GFIX / "panel.yml",
@@ -239,7 +238,7 @@ def _build(tmp_path: Path) -> Path:
                         "timing": {"model_ms": 900.0, "tool_ms": 12.0, "overhead_ms": 30.0},
                     },
                 )
-                item = safe_id(cell, qid)
+                item = grading_inputs.safe_id(cell, qid)
                 suspect = (family, system, qid) == ("scripted-openai", "python-docs", "SYN-EX-002")
                 _json(
                     grading / "items" / "answers" / f"{item}.json",
@@ -456,7 +455,7 @@ def test_report_renders_the_disclosure_from_the_exported_bundle_alone(
     inputs = json.loads((export / "grading" / "inputs" / "inputs.json").read_text())
     assert inputs["judge_prompt"] in disclosure and inputs["criteria"] in disclosure
     assert MAPPING_TABLE.strip().splitlines()[1] in disclosure
-    assert MASK_RULES.strip().splitlines()[1] in disclosure
+    assert grading_inputs.MASK_RULES.strip().splitlines()[1] in disclosure
     assert "grading/inputs/judge-prompt.md" in disclosure
     assert "grading/disclosure/" in disclosure
     assert "per evaluated family" in disclosure and "per system" in disclosure
