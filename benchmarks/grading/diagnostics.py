@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
+from datetime import datetime
 from typing import Any
 
 from benchmarks.grading.aggregate import LLM_PANEL, AnswerVotes, own_grade
@@ -21,28 +22,68 @@ from benchmarks.grading.stats import GATE_RESAMPLES
 
 def missing_records(
     runs: Sequence[Mapping[str, Any]],
-    efforts: Mapping[str, str | None],
+    composition: Mapping[str, Mapping[str, str | None]],
     items: Mapping[str, AnswerVotes],
 ) -> dict[str, dict[str, list[str]]]:
-    """Group missing final records using the already captured invocation history."""
-    # Invocation timestamps are written in UTC. Their one-second precision allows ties.
-    history: dict[tuple[str, str], dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+    """Order only failures for the intended answer/pass-1 panel and item.
+
+    Legacy invocations may omit their envelope coordinates or model identity;
+    their explicit event coordinates remain usable diagnostic history. Present
+    envelope/entry metadata must agree, including the entire panel composition.
+    Never join separate invocations by id to fill in missing metadata or time.
+    """
+    history: dict[tuple[str, str], dict[datetime | None, set[str]]] = defaultdict(
+        lambda: defaultdict(set)
+    )
     for run in runs:
-        when = run.get("completed_at") or run.get("started_at") or ""
+        if (
+            ("target" in run and run["target"] != "answers")
+            or ("pass" in run and (type(run["pass"]) is not int or run["pass"] != 1))
+            or ("composition" in run and run["composition"] != composition)
+        ):
+            continue
         for entry in run.get("not_run") or []:
-            if entry.get("target") == "answers" and entry.get("pass") == 1:
-                history[entry["judge_id"], entry["item_id"]][when].add(entry["reason"])
+            judge, item = entry.get("judge_id"), entry.get("item_id")
+            spec = composition.get(judge)
+            if (
+                spec is None
+                or item not in items
+                or entry.get("target") != "answers"
+                or type(entry.get("pass")) is not int
+                or entry["pass"] != 1
+                or "effort" not in entry
+                or entry["effort"] != spec.get("effort")
+                or ("model_id" in entry and entry["model_id"] != spec.get("model_id"))
+            ):
+                continue
+            when = _recorded_time(run)
+            history[judge, item][when].add(entry["reason"])
     result: dict[str, dict[str, list[str]]] = {}
-    for judge_id in efforts:
+    for judge_id in composition:
         for item in sorted(items):
             if not items[item].records.get(judge_id, {}).get("final"):
                 reasons = history.get((judge_id, item), {})
-                latest = reasons.get(max(reasons, default=""), set()) | reasons.get("", set())
+                known = [when for when in reasons if when is not None]
+                latest = reasons.get(max(known, default=None), set()) | reasons.get(None, set())
                 reason = next(iter(latest), "no_record")
                 if len(latest) > 1:
                     reason = f"chronology unknown ({', '.join(sorted(latest))})"
                 result.setdefault(judge_id, {}).setdefault(reason, []).append(item)
     return result
+
+
+def _recorded_time(run: Mapping[str, Any]) -> datetime | None:
+    """Absent/invalid clocks stay unknown; elapsed duration cannot date an event."""
+    value = run.get("completed_at") or run.get("started_at")
+    if isinstance(value, str):
+        try:
+            when = datetime.fromisoformat(value)
+        except ValueError:
+            pass
+        else:
+            if when.utcoffset() is not None:
+                return when
+    return None
 
 
 def diagnostic_tables(

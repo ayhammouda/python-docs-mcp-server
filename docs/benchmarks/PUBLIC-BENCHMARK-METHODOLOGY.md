@@ -298,6 +298,12 @@ that design.
   and disclosure projections cannot certify those quantities. Missing or
   inconsistent observations are reported as unknown; pending answers retain
   eligible independent G2 votes without acquiring a final grade.
+  Missing-final failure reasons use only matching answer/pass-1 judge, model,
+  effort and item coordinates, with a matching invocation composition when
+  recorded. Legacy records without that envelope remain diagnostic history;
+  explicit contradictions are excluded. Recorded completion (or start) times
+  order eligible failures. Tied or undated conflicting reasons retain unknown
+  chronology; durations and saved summaries cannot supply missing timestamps.
 - **Denominators:**
   - A hit on a §6 model-call, tool-call or time cap is a failure scored 0.0.
     The §6 result cap is not a failure.

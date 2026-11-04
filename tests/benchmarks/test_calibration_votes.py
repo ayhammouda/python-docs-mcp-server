@@ -19,9 +19,30 @@ def _entry(held: Path):
 
 
 def test_complete_calibration_checks_raw_votes_before_export(tmp_path, index_db):
-    _, held, entry, _ = runs._full_calibration(tmp_path, index_db, False)
+    run, held, entry, _ = runs._full_calibration(tmp_path, index_db, False)
     assert entry["gate"]["details"]["by_judge"]["haiku"]["hits"] == 700
     assert entry["reference_check"]["details"]["overall"]["hits"] == 350
+    # The report's portable reader replays this genuine fallback composition
+    # without reading the calibration workspace or a local docs index.
+    from benchmarks.agentic.inputs import CapturedInput
+    from benchmarks.grading.calibration import replay_g1
+    from benchmarks.grading.gates import G1Binding
+
+    frozen = run / "grading/inputs"
+    gate, reference = replay_g1(
+        {"haiku+luna+flash": entry},
+        G1Binding(
+            {j: entry["binding"]["composition"][j] for j in ("haiku", "luna", "flash")},
+            entry["binding"]["inputs"],
+        ),
+        panel=CapturedInput.read(frozen / "panel.yml", "panel", "panel"),
+        probes=CapturedInput.read(frozen / "probes.yml", "probes", "probes"),
+        criteria=CapturedInput.read(frozen / "grading-criteria.yml", "criteria", "criteria"),
+    )
+    assert gate.passed is True and reference.passed is True
+    assert gate.details["tuning"][0]["judges"]["flash"]["chosen"] == "low"
+    assert "flash-lite" not in gate.details["tuning"][0]["judges"]
+    assert gate.details["held_out_test_retest"]["haiku"]["pass2_records"] == 0
     export = (held / "g1.json").read_bytes()
     paths = list((held / "votes/probes/haiku/low/pass1").glob("*/*.json"))
     assert len(paths) == 700
@@ -179,7 +200,16 @@ def test_calibration_replays_frozen_prompt_schema_and_selection(tmp_path, monkey
         unit_id="local-unit", provider_batch_id="local-batch",
         input_sha256=request.sha256(), schema=schema,
     )
-    assert write_g1(held).read_bytes() == first  # A newer unfinished take cannot replace a final.
+    newer = json.loads(write_g1(held).read_bytes())
+    (old_entry,) = json.loads(first)["entries"].values()
+    (new_entry,) = newer["entries"].values()
+    # The unfinished attempt is retained as selection evidence; the final stays selected.
+    assert {k: v for k, v in new_entry.items() if k != "source"} == {
+        k: v for k, v in old_entry.items() if k != "source"
+    }
+    name = str(path.relative_to(held))
+    assert json.loads(new_entry["source"]["files"][name])["status"] == "missing"
+    assert name not in old_entry["source"]["files"]
     path.unlink()
     path = write_vote_record(
         held, target="probes", judge=runs.PANEL.judges["haiku"], effort="low",

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,12 +39,24 @@ from benchmarks.grading.inputs import (
 )
 from benchmarks.grading.mapping import Vote, grade, panel_fields, parse_object, parse_vote
 from benchmarks.grading.panel import JudgeSpec, Panel
+from benchmarks.grading.vote_capture import (
+    FINAL_WITHHELD as FINAL_WITHHELD,
+)
+from benchmarks.grading.vote_capture import (
+    VoteCapture,
+    VoteFile,
+    is_final,
+    select_vote_file,
+    vote_dir,
+)
+from benchmarks.grading.vote_capture import (
+    record_order as record_order,
+)
 from benchmarks.report_files import artifact_bytes, artifact_paths
 from benchmarks.runner import BenchmarkValidationError
 
 Withheld = Literal["parse_failure", "refusal", "output_cap", "errored", "expired", "canceled",
                    "missing"]  # fmt: skip
-FINAL_WITHHELD = frozenset({"parse_failure", "refusal", "output_cap"})  # never retried (ruling 6)
 #: Targets whose records carry a judge vote; the others carry ``parsed``.
 JUDGE_TARGETS = frozenset({"tuning", "probes", "reference-probes", "answers", "reference"})
 LLM_PANEL, LLM_REFERENCE = "llm_panel", "llm_reference"
@@ -60,14 +72,6 @@ def withheld_reason(result: BatchItemResult, schema: Mapping[str, Any]) -> Withh
     if parse_object(result.text, schema) is None:
         return "parse_failure"
     return None
-
-
-def vote_dir(
-    root: Path, *, target: str, judge_id: str, effort: str | None, pass_number: int, item_id: str
-) -> Path:
-    return (
-        root / "votes" / target / judge_id / (effort or "default") / f"pass{pass_number}" / item_id
-    )
 
 
 def _now() -> str:
@@ -146,20 +150,8 @@ def write_vote_record(
     return path
 
 
-def is_final(record: Mapping[str, Any]) -> bool:
-    """A vote, a withheld vote that is never retried, or a terminal record."""
-    return (
-        record.get("status") == "succeeded"
-        or record.get("withheld") in FINAL_WITHHELD
-        or bool(record.get("terminal"))
-    )
-
-
 def read_vote_record(path: Path) -> dict[str, Any]:
     return read_json(path, "grading vote")
-
-
-VoteFile = tuple[Path, dict[str, Any], str]
 
 
 def _records(root: Path, **where: Any) -> list[VoteFile]:
@@ -170,26 +162,8 @@ def _records(root: Path, **where: Any) -> list[VoteFile]:
     return found
 
 
-def record_order(path: Path, record: Mapping[str, Any]) -> tuple[bool, str, str, int]:
-    when, run, attempt = (
-        record.get("graded_at"),
-        record.get("grading_run_id"),
-        record.get("attempt"),
-    )
-    if (
-        not isinstance(when, str)
-        or not isinstance(run, str)
-        or type(attempt) is not int
-        or attempt < 1
-    ):
-        raise BenchmarkValidationError("grading vote lacks its selection coordinates")
-    if path.name != f"{run}--a{attempt}.json":
-        raise BenchmarkValidationError("grading vote differs from its run or attempt coordinate")
-    return is_final(record), when, run, attempt
-
-
-def _chosen(records: list[VoteFile]) -> VoteFile | None:
-    return max(records, key=lambda pr: record_order(pr[0], pr[1]), default=None)
+# Existing audit consumers share the same selector through this compatibility name.
+_chosen = select_vote_file
 
 
 def chosen_vote_file(
@@ -204,7 +178,7 @@ def chosen_vote_file(
         pass_number=pass_number,
         item_id=item_id,
     )
-    return _chosen(records)
+    return select_vote_file(records)
 
 
 def chosen_record(
@@ -255,13 +229,18 @@ def _attempts(
     effort: str | None,
     pass_number: int,
     item_id: str,
+    runs: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> int:
     highest: dict[str, int] = {}
     for _, record, _ in records:
         run = record["grading_run_id"]
         highest[run] = max(highest.get(run, 0), int(record["attempt"]))
-    for path in artifact_paths(root, root / "runs", "*.json"):
-        run_file = json_mapping(artifact_bytes(root, path), "grading invocation")
+    if runs is None:
+        runs = {
+            path.stem: json_mapping(artifact_bytes(root, path), "grading invocation")
+            for path in artifact_paths(root, root / "runs", "*.json")
+        }
+    for run_id, run_file in runs.items():
         for entry in run_file.get("not_run") or []:
             if (
                 entry.get("item_id") == item_id
@@ -270,7 +249,7 @@ def _attempts(
                 and (entry.get("effort") or "default") == (effort or "default")
                 and entry.get("pass") == pass_number
             ):
-                run = run_file.get("grading_run_id", path.stem)
+                run = run_file.get("grading_run_id", run_id)
                 highest[run] = max(highest.get(run, 0), int(entry.get("attempt") or 0))
     return sum(highest.values())
 
@@ -296,6 +275,7 @@ def _summary(
     *,
     judge: JudgeSpec,
     request: JudgeInput | None,
+    runs: Mapping[str, Mapping[str, Any]] | None = None,
     **where: Any,
 ) -> dict[str, Any]:
     expected = {
@@ -324,7 +304,7 @@ def _summary(
         "withheld": record["withheld"],
         "terminal": record["terminal"],
         "input_sha256": record["input_sha256"],
-        "attempts": _attempts(root, candidates, **where),
+        "attempts": _attempts(root, candidates, runs=runs, **where),
     }
 
 
@@ -344,6 +324,8 @@ def _result_matches_record(
 def recorded_result(
     root: Path, record: Mapping[str, Any], judge: JudgeSpec | Mapping[str, Any], *,
     vote_sha256: str | None = None, invocation: Mapping[str, Any] | None = None,
+    read: Callable[[Path, Path], bytes] | None = None,
+    history: Mapping[str, Any] | None = None,
 ) -> BatchItemResult | None:
     """Normalize this selected record's receipt, if recorded, without a run cache.
 
@@ -352,7 +334,10 @@ def recorded_result(
     evidence in ``vote_from_record``. Selection callers pass the
     captured vote digest so receipt binding never reopens their selected file.
     Report readers can also supply their already captured invocation and judge.
+    A supplied history must already have passed its invocation manifest hash check.
     """
+    if read is None:
+        read = artifact_bytes
     spec = vars(judge) if isinstance(judge, JudgeSpec) else judge
     judge_id = spec["id"]
     run, item, attempt = record.get("grading_run_id"), record.get("item_id"), record.get("attempt")
@@ -363,7 +348,7 @@ def recorded_result(
         raise BenchmarkValidationError("invalid judge receipt coordinates")
     if invocation is None:
         try:
-            invocation = json_mapping(artifact_bytes(root, root / "runs" / f"{run}.json"),
+            invocation = json_mapping(read(root, root / "runs" / f"{run}.json"),
                                       "grading invocation")
         except FileNotFoundError:
             return None
@@ -373,20 +358,21 @@ def recorded_result(
     relative = f"{judge_id}/{item}--a{attempt}.json"
     if not isinstance(manifest, dict) or relative not in manifest:
         raise BenchmarkValidationError("selected judge receipt is not in its invocation")
-    try:
-        body = artifact_bytes(root, root / "executions" / str(run) / relative)
-    except FileNotFoundError:
-        raise BenchmarkValidationError("missing selected judge receipt") from None
-    if hashlib.sha256(body).hexdigest() != manifest[relative]:
-        raise BenchmarkValidationError("selected judge receipt digest differs")
-    history = json_mapping(body, "grading execution")
+    if history is None:
+        try:
+            body = read(root, root / "executions" / str(run) / relative)
+        except FileNotFoundError:
+            raise BenchmarkValidationError("missing selected judge receipt") from None
+        if hashlib.sha256(body).hexdigest() != manifest[relative]:
+            raise BenchmarkValidationError("selected judge receipt digest differs")
+        history = json_mapping(body, "grading execution")
     # Find the selected file from its coordinates, never a recorded external path.
     path = vote_dir(
         root, target=record["target"], judge_id=judge_id, effort=record["effort"],
         pass_number=record["pass"], item_id=str(item),
     ) / f"{run}--a{attempt}.json"
     if vote_sha256 is None:
-        vote_sha256 = hashlib.sha256(artifact_bytes(root, path)).hexdigest()
+        vote_sha256 = hashlib.sha256(read(root, path)).hexdigest()
     return receipt_result(record, vote_sha256, spec, history)
 
 
@@ -544,6 +530,7 @@ def load_answer_votes(
     pass_number: int = 1,
     requests: Mapping[tuple[str, str], JudgeInput] | None = None,
     include_reference: bool = True,
+    capture: VoteCapture | None = None,
 ) -> dict[tuple[str, str], AnswerVotes]:
     """Every answer item under ``items/answers/``, with each judge's chosen record.
 
@@ -553,7 +540,10 @@ def load_answer_votes(
     reference = panel.judges[panel.reference]
     loaded: dict[tuple[str, str], AnswerVotes] = {}
     for item_path in artifact_paths(root, root / "items/answers", "*.json"):
-        evidence = json_mapping(artifact_bytes(root, item_path), "answer item")
+        evidence = (
+            json_mapping(artifact_bytes(root, item_path), "answer item")
+            if capture is None else capture.item(item_path)
+        )
         meta = evidence.get("meta")
         if not isinstance(meta, dict):
             raise BenchmarkValidationError("missing answer item metadata")
@@ -583,13 +573,17 @@ def load_answer_votes(
                 "pass_number": pass_number,
                 "item_id": item_id,
             }
-            candidates = _records(root, **where)
-            chosen = _chosen(candidates)
+            candidates = _records(root, **where) if capture is None else capture.records(**where)
+            chosen = select_vote_file(candidates)
             votes[judge_id] = (
                 None if chosen is None else vote_from_record(
                     chosen[1], request=request,
                     result=recorded_result(
-                        root, chosen[1], panel.judges[judge_id], vote_sha256=chosen[2]
+                        root, chosen[1], panel.judges[judge_id], vote_sha256=chosen[2],
+                        invocation=None if capture is None else capture.runs.get(
+                            chosen[1]["grading_run_id"], {}
+                        ),
+                        history=None if capture is None else capture.history(chosen[1]),
                     ),
                 )
             )
@@ -600,6 +594,7 @@ def load_answer_votes(
                     candidates,
                     judge=panel.judges[judge_id],
                     request=request,
+                    runs=None if capture is None else capture.runs,
                     **where,
                 )
         where = {
@@ -609,13 +604,17 @@ def load_answer_votes(
             "pass_number": 1,
             "item_id": item_id,
         }
-        candidates = _records(root, **where) if include_reference else []
-        chosen = _chosen(candidates)
+        candidates = (
+            (_records(root, **where) if capture is None else capture.records(**where))
+            if include_reference else []
+        )
+        chosen = select_vote_file(candidates)
         if chosen is not None and request is not None:
             reference_path = root / "items/reference" / item_path.name
             try:
-                reference_item = json_mapping(
-                    artifact_bytes(root, reference_path), "reference item"
+                reference_item = (
+                    json_mapping(artifact_bytes(root, reference_path), "reference item")
+                    if capture is None else capture.item(reference_path)
                 )
             except FileNotFoundError:
                 raise BenchmarkValidationError(f"{item_id} missing reference input") from None
@@ -630,11 +629,20 @@ def load_answer_votes(
             suspect=bool(meta.get("suspect")),
             reference=None if chosen is None else vote_from_record(
                 chosen[1], request=request,
-                result=recorded_result(root, chosen[1], reference, vote_sha256=chosen[2]),
+                result=recorded_result(
+                    root, chosen[1], reference, vote_sha256=chosen[2],
+                    invocation=None if capture is None else capture.runs.get(
+                        chosen[1]["grading_run_id"], {}
+                    ),
+                    history=None if capture is None else capture.history(chosen[1]),
+                ),
             ),
             reference_record=None
             if chosen is None
-            else _summary(root, *chosen, candidates, judge=reference, request=request, **where),
+            else _summary(
+                root, *chosen, candidates, judge=reference, request=request,
+                runs=None if capture is None else capture.runs, **where,
+            ),
         )
     return loaded
 

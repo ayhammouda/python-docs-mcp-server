@@ -33,7 +33,11 @@ from benchmarks.grading.gates import c2, c3, g4
 from benchmarks.grading.inputs import GradingQuestion, JudgeInput, key_audit_schema, safe_id
 from benchmarks.grading.mapping import parse_object
 from benchmarks.report_files import optional_json
-from benchmarks.report_measurements import evidence_cell, grading_receipt_matches
+from benchmarks.report_measurements import (
+    comparison_identities_match,
+    evidence_cell,
+    grading_receipt_matches,
+)
 from benchmarks.runner import BenchmarkValidationError
 
 if TYPE_CHECKING:
@@ -159,7 +163,7 @@ def audit_request(
 def verified_key_audit(
     root: Path, *, questions: Mapping[str, GradingQuestion], reference: str,
     judge: dict[str, Any], inputs: Mapping[str, str], prompt: bytes,
-    events: list[dict[str, Any]],
+    events: list[dict[str, Any]], runs: Mapping[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Require every frozen key's selected final reply and current execution receipt.
 
@@ -170,6 +174,7 @@ def verified_key_audit(
         raise BenchmarkValidationError("unbound key-audit inputs")
     grading = root / "grading"
     audited = {}
+    captured_runs = dict(runs or {})
     for qid, question in questions.items():
         item = safe_id(qid)
         evidence = optional_json(root, grading / "items/key-audit" / f"{item}.json") or {}
@@ -204,9 +209,10 @@ def verified_key_audit(
             or type((record.get("parsed") or {}).get("key_supported")) is not bool
         ):
             raise BenchmarkValidationError("key-audit reply differs from captured request")
-        invocation = optional_json(
-            root, grading / "runs" / f"{record['grading_run_id']}.json"
-        ) or {}
+        run_id = record["grading_run_id"]
+        if runs is None and run_id not in captured_runs:
+            captured_runs[run_id] = optional_json(root, grading / "runs" / f"{run_id}.json") or {}
+        invocation = captured_runs.get(run_id, {})
         if (
             invocation.get("target") != "key-audit"
             or invocation.get("composition") != {
@@ -234,65 +240,65 @@ def retained_claims(
     plan = run.plan["cells"]
     if not isinstance(plan, list) or not all(isinstance(c, dict) for c in plan):
         raise BenchmarkValidationError("invalid comparison plan cells")
-    plan_coords = [evidence_cell(cell) for cell in plan]
-    planned = set(plan_coords)
-    observed_coords = [evidence_cell(t, key[1]) for key, t in run.transcripts.items()]
-    kept = {k for k in planned if k[2] not in flagged}
-    scores, tokens = {}, {}
     efforts = run.summary["efforts"]
     if not isinstance(efforts, dict):
         raise BenchmarkValidationError("invalid judging panel")
-    by_judge: dict[str, dict[Any, Any]] = {j: {} for j in efforts}
-    for key, transcript in run.transcripts.items():
-        coord = evidence_cell(transcript, key[1])
-        if coord[2] in flagged:
-            continue
-        scores[coord] = captured.scores.get(key)
-        # Only counts actually bound to the same retained trajectory can enter C2.
-        token = run.tokens.get(key, {})
-        tokens[coord] = (
-            token["client_wrapped_tokens"]
-            if run.count_capture.matches(transcript, token) else None
-        )
-        final = captured.finals.get(key)
-        for judge, own in by_judge.items():
-            own[coord] = (
-                judge_grade(captured.answers[key], judge, captured.questions[key[1]], final)
-                if final is not None else scores[coord]
-            )
     systems: dict[str, set[str]] = defaultdict(set)
-    for system, model, _qid, _repeat in planned:
-        systems[model].add(system)
+    for cell in plan:
+        model, system = cell.get("model_family_id"), cell.get("system_id")
+        if isinstance(model, str) and isinstance(system, str):
+            systems[model].add(system)
 
-    def claims(grades: dict[Any, Any]) -> dict[str, dict[str, Any]]:
-        results = {
-            "C2": {
-                m: asdict(c2(tokens, grades, kept, model=m, seed=run.seed))
-                for m, arms in systems.items() if {"python-docs", "docs-fetch"} <= arms
-            },
-            "C3": {
-                m: asdict(c3(grades, kept, model=m, seed=run.seed, offline_ok=run.offline_ok()))
-                for m, arms in systems.items() if {"python-docs", "no-docs"} <= arms
-                and run.families.get(m, {}).get("arm") == "air-gapped"
-            },
-        }
-        for cid, by_model in results.items():
-            arms = {"python-docs", "docs-fetch" if cid == "C2" else "no-docs"}
-            for model, claim in by_model.items():
-                def needed(c: tuple[str, str, str, int]) -> bool:
-                    return c[0] in arms and c[1] == model and c[2] not in flagged
+    actual: dict[str, dict[str, Any]] = {"C2": {}, "C3": {}}
+    single: dict[str, dict[str, dict[str, Any]]] = {j: {"C2": {}, "C3": {}} for j in efforts}
+    for cid, peer in (("C2", "docs-fetch"), ("C3", "no-docs")):
+        arms = ("python-docs", peer)
+        for model, available in systems.items():
+            if not set(arms) <= available or (
+                cid == "C3" and run.families.get(model, {}).get("arm") != "air-gapped"
+            ):
+                continue
+            if not comparison_identities_match(
+                plan, run.transcripts, model=model, systems=arms, excluded=flagged,
+            ):
+                claim = {"id": cid, "model": model, "passed": None, "interval": None,
+                         "reason": "comparison plan differs from captured trajectories"}
+                actual[cid][model] = claim
+                for own in single.values():
+                    own[cid][model] = claim
+                continue
+            kept, scores, tokens = set(), {}, {}
+            by_judge: dict[str, dict[Any, Any]] = {j: {} for j in efforts}
+            for key, transcript in run.transcripts.items():
+                if (transcript["model_family_id"] != model or transcript["system_id"] not in arms
+                        or key[1] in flagged):
+                    continue
+                coord = evidence_cell(transcript)
+                kept.add(coord)
+                scores[coord] = captured.scores.get(key)
+                # Counts must bind to this same captured retained trajectory.
+                if cid == "C2":
+                    token = run.tokens.get(key, {})
+                    tokens[coord] = (token["client_wrapped_tokens"]
+                                     if run.count_capture.matches(transcript, token) else None)
+                final = captured.finals.get(key)
+                for judge, own in by_judge.items():
+                    own[coord] = (
+                        judge_grade(captured.answers[key], judge, captured.questions[key[1]], final)
+                        if final is not None else scores[coord]
+                    )
 
-                want = [c for c in plan_coords if needed(c)]
-                have = [c for c in observed_coords if needed(c)]
-                if len(want) != len(set(want)) or len(have) != len(set(have)) or (
-                    set(want) != set(have)
-                ):
-                    claim.update(passed=None, interval=None,
-                                 reason="comparison plan differs from captured trajectories")
-        return results
+            def claim_for(grades: dict[Any, Any]) -> dict[str, Any]:
+                return asdict(
+                    c2(tokens, grades, kept, model=model, seed=run.seed) if cid == "C2" else
+                    c3(grades, kept, model=model, seed=run.seed, offline_ok=run.offline_ok())
+                )
 
-    actual = claims(scores)
-    single = {j: actual if own == scores else claims(own) for j, own in by_judge.items()}
+            actual[cid][model] = claim_for(scores)
+            for judge, own in by_judge.items():
+                single[judge][cid][model] = (
+                    actual[cid][model] if own == scores else claim_for(own)
+                )
     robustness = g4({
         judge: {f"{cid}/{m}": c["passed"] for cid, by in cs.items() for m, c in by.items()}
         for judge, cs in {"panel": actual, **single}.items()

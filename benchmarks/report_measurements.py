@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from benchmarks.adapters.claude_tokens import DEFAULT_COUNT_MODEL
 from benchmarks.agentic.count import (
@@ -25,6 +25,9 @@ from benchmarks.grading.execution_evidence import grading_execution_matches
 from benchmarks.grading.inputs import GradingQuestion, JudgeInput
 from benchmarks.report_files import artifact_bytes
 from benchmarks.runner import BenchmarkValidationError
+
+if TYPE_CHECKING:
+    from benchmarks.grading.vote_capture import VoteCapture
 
 
 def _identifier(value: Any) -> str:
@@ -55,8 +58,13 @@ def grading_receipt_matches(
     invocation: dict[str, Any],
     events: list[dict[str, Any]],
     results: dict[str, BatchItemResult] | None = None,
+    history: dict[str, Any] | None = None,
 ) -> bool:
-    """Join the captured receipt; retain its normalized result only on admission."""
+    """Join a receipt; a supplied history has already passed its manifest hash check.
+
+    Retain its normalized result only on admission. Standalone callers capture
+    and check their own receipt bytes here.
+    """
     run = _identifier(vote["grading_run_id"])
     judge_id, item = _identifier(vote["judge_id"]), _identifier(vote["item_id"])
     attempt = vote["attempt"]
@@ -64,16 +72,19 @@ def grading_receipt_matches(
         return False
     relative = f"{judge_id}/{item}--a{attempt}.json"
     path = root / "grading/executions" / run / relative
-    body = artifact_bytes(root, path)
-    try:
-        history = json_mapping(body, "grading execution history")
-    except KeyLeakError:
-        raise
-    except BenchmarkValidationError:
-        return False
     receipts = invocation["execution_results"]
+    if history is None:
+        body = artifact_bytes(root, path)
+        if receipts.get(relative) != _digest(body):
+            return False
+        try:
+            history = json_mapping(body, "grading execution history")
+        except KeyLeakError:
+            raise
+        except BenchmarkValidationError:
+            return False
     if (
-        receipts.get(relative) != _digest(body)
+        relative not in receipts
         or type(invocation["records_written"]) is not int
         or len(receipts) != invocation["records_written"]
     ):
@@ -277,6 +288,7 @@ class GradeCapture:
     scores: dict[tuple[str, str], float] = field(default_factory=dict)
     graded_answers: int | None = None
     runs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    inventory: VoteCapture | None = None
     reconciled: bool = False  # the whole join succeeded, including any genuinely pending cells
 
 
@@ -290,3 +302,46 @@ def evidence_cell(
             or not isinstance(corpus, str) or type(repeat) is not int):
         raise BenchmarkValidationError("invalid answering cell coordinate")
     return system, model, corpus, repeat
+
+
+def comparison_identities_match(
+    plan: Sequence[Mapping[str, Any]],
+    transcripts: Mapping[tuple[str, str], Mapping[str, Any]],
+    *,
+    model: str,
+    systems: Sequence[str],
+    excluded: Sequence[str] = (),
+) -> bool:
+    """Match only a comparison's retained arms, before projecting away identity.
+
+    Transcript keys come from the captured directory and filename. A declared
+    cell must use the runner's canonical system/family/repeat spelling and the
+    existing safe coordinate grammar. No filesystem reads or inventory-wide
+    admission: unrelated arms and excluded questions cannot veto this join.
+    """
+    def needed(row: Mapping[str, Any], question: str | None = None) -> bool:
+        return (row.get("model_family_id") == model and row.get("system_id") in systems
+                and row.get("corpus_id") not in excluded and question not in excluded)
+
+    def identity(row: Mapping[str, Any], *, planned: bool) -> tuple[str, str]:
+        system, family, question, repeat = evidence_cell(row)
+        for value in (system, family, question):
+            _coordinate(value)
+        cell = _coordinate(row["competitor_id"])
+        if (repeat < 1 or cell != f"{system}--{family}--r{repeat}"
+                or (planned or "cell" in row) and row.get("cell") != cell):
+            raise ValueError("comparison cell identity differs")
+        return cell, question
+
+    try:
+        want = [identity(row, planned=True) for row in plan if needed(row)]
+        have = []
+        for key, row in transcripts.items():
+            if needed(row, key[1]):
+                if identity(row, planned=False) != key:
+                    return False
+                have.append(key)
+        return (len(want) == len(set(want)) and len(have) == len(set(have))
+                and set(want) == set(have))
+    except (BenchmarkValidationError, KeyError, TypeError, ValueError):
+        return False

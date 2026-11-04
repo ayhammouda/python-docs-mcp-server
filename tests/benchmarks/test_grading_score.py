@@ -853,7 +853,14 @@ def test_g1_exports_only_observed_held_out_retest_pairs(tmp_path: Path) -> None:
     before = first["gate"]["details"].pop(metric)
     assert before["haiku"]["items"] == 0 and before["haiku"]["alpha"] is None
     observed = second["gate"]["details"].pop(metric)
+    first_source, second_source = first.pop("source"), second.pop("source")
     assert first == second
+    assert first_source["inputs"] == second_source["inputs"]
+    assert all(second_source["files"][k] == v for k, v in first_source["files"].items())
+    added = set(second_source["files"]) - set(first_source["files"])
+    assert added == {
+        f"votes/probes/haiku/low/pass2/{key}/run-1--a1.json" for key in keys
+    }
     haiku = observed["haiku"]
     assert (haiku["alpha"], haiku["items"], haiku["expected"], haiku["pass2_records"]) == (
         -0.5,

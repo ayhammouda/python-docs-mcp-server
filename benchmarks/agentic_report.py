@@ -29,10 +29,12 @@ from benchmarks.agentic.types import Buckets
 from benchmarks.grading import disclosure, publication
 from benchmarks.grading.aggregate import (
     AnswerVotes,
+    VoteFile,
     final_grade,
     is_final,
     record_order,
     recorded_result,
+    select_vote_file,
     vote_from_record,
 )
 from benchmarks.grading.batch import BatchItemResult
@@ -60,11 +62,13 @@ from benchmarks.grading.inputs import (
     safe_id,
 )
 from benchmarks.grading.stats import GATE_RESAMPLES, paired_bootstrap
+from benchmarks.grading.vote_capture import VoteCapture
 from benchmarks.model_matrix import KNOWN_APIS, ModelMatrix, model_family_from_raw
 from benchmarks.report_common import RunBundle, _cell, _percentile, _relative_link, _table
 from benchmarks.report_files import artifact_bytes, artifact_paths, checked_path, optional_json
 from benchmarks.report_measurements import (
     CountCapture,
+    comparison_identities_match,
     grading_receipt_matches,
     live_count_matches,
 )
@@ -281,11 +285,18 @@ def _graded_execution(
     demonstration = any(judges[j].get("api") == "scripted" for j in (*efforts, reference))
     # Join chosen votes by their digest and coordinates. Recorded path strings
     # may name the original machine or be relative to a different working directory.
-    runs = {
-        p.stem: optional_json(root, p) or {}
-        for p in artifact_paths(root, root / "grading/runs", "*.json")
-    }
+    inventory = VoteCapture(root / "grading", reader=lambda _root, path: artifact_bytes(root, path))
+    capture.inventory = inventory
+    runs = inventory.runs
     capture.runs = runs
+    inventory.check("answers", 1)
+    reference_intact = True
+    try:
+        inventory.check("reference", 1)
+    except KeyLeakError:
+        raise
+    except BenchmarkValidationError:
+        reference_intact = False
     seats = {
         j if j in efforts else spec.get("fallback")
         for j, spec in judges.items()
@@ -303,7 +314,11 @@ def _graded_execution(
         "answers": efforts,
         "reference": {reference: judges[reference].get("effort")},
     }
+    candidates: dict[tuple[str, str, str], list[VoteFile]] = defaultdict(list)
+    unexpected_scripted = False
     for target, members in members_by_target.items():
+        if target == "reference" and not reference_intact:
+            continue
         for judge, effort in members.items():
             parts = (judge, effort or "default")
             if not all(
@@ -312,98 +327,115 @@ def _graded_execution(
             ):
                 return "unknown"
             base = root.joinpath("grading/votes", target, *parts, "pass1")
-            for path in artifact_paths(root, base, "*/*.json"):
-                body = artifact_bytes(root, path)
+            for path, vote, record_sha in inventory.files(target, 1):
+                if path.parent.parent != base:
+                    continue
                 reported_versions[path] = None
-                vote = json_mapping(body, "grading vote")
                 reported_versions[path] = vote.get("reported_model")
-                record_sha = hashlib.sha256(body).hexdigest()
                 try:
-                    order = record_order(path, vote)
+                    record_order(path, vote)
                 except BenchmarkValidationError:
                     return "unknown"
-                coordinate = judge, path.parent.name
                 attempt_key = target, judge, path.parent.name, vote["grading_run_id"]
                 attempts[attempt_key] = max(attempts.get(attempt_key, 0), vote["attempt"])
-                if coordinate not in latest or order > latest[coordinate][0]:
-                    latest[coordinate] = order, record_sha
+                candidates[target, judge, path.parent.name].append((path, vote, record_sha))
+                # Keep execution-kind evidence from the entire history, even
+                # though only the chosen reply can supply current statistics.
+                unexpected_scripted |= judges[judge].get("api") != "scripted" and (
+                    str(vote.get("provider_batch_id")).startswith("scripted-batch-")
+                    or reservations.get(vote.get("unit_id"), {}).get("api") == "scripted"
+                )
 
-                if (str(vote.get("provider_batch_id")).startswith("scripted-batch-")
-                    and judges[judge].get("api") != "scripted"):
-                    return "scripted"
-                run_id = vote.get("grading_run_id")
-                if not isinstance(run_id, str):
-                    continue
-                model_id = judges[judge].get("model_id")
-                if judges[judge].get("api") == "scripted":
-                    identity = {"model_id": model_id, "effort": effort, "judge_id": judge,
-                                "target": target, "pass": 1, "item_id": path.parent.name}
-                    if all(type(vote.get(k)) is type(v) and vote[k] == v
-                           for k, v in identity.items()):
-                        # Local demonstration replies establish local statistics only.
-                        # They never acquire hosted provenance or public eligibility.
-                        result = recorded_result(
-                            root / "grading", vote, {**judges[judge], "id": judge},
-                            vote_sha256=record_sha, invocation=runs.get(run_id, {}),
-                        )
-                        if result is not None:
-                            results[record_sha] = result
-                        votes[judge, path.parent.name, record_sha] = vote
-                    continue
-                invocation = runs.get(run_id, {})
-                model_id = judges[judge].get("model_id")
-                spec = {"model_id": model_id, "effort": effort}
-                if (
-                    invocation.get("grading_run_id") != vote.get("grading_run_id")
-                    or invocation.get("target") != target
-                    or invocation.get("pass") != 1
-                    or invocation.get("dry_run")
-                    or (
-                        invocation.get("composition")
-                        != (composition if target == "answers" else {judge: spec})
-                    )
-                ):
-                    continue
-                unit = vote.get("unit_id")
-                if not isinstance(unit, str) or not unit:
-                    continue
-                reserve = reservations.get(unit)
-                if reserve and reserve.get("api") == "scripted":
-                    return "scripted"
-                if not reserve or (
-                    reserve.get("provider") != judges[judge].get("provider")
-                    or reserve.get("model_id") != model_id
-                    or reserve.get("api", judges[judge]["api"]) != judges[judge]["api"]
-                    or reserve.get("job_id") != f"{judge}--grading"
-                ):
-                    continue
-                identity = {
-                    "model_id": model_id,
-                    "effort": effort,
-                    "judge_id": judge,
-                    "target": target,
-                    "pass": 1,
-                    "item_id": path.parent.name,
-                }
-                if vote.get("provider_batch_id") and all(
-                    k in vote and type(vote[k]) is type(v) and vote[k] == v
-                    for k, v in identity.items()
-                ):
-                    try:
-                        matched = grading_receipt_matches(
-                            root, vote, record_sha, judges[judge], invocation, events, results
-                        )
-                    except KeyLeakError:
-                        raise
-                    except BenchmarkValidationError:
-                        raise  # Preserve artifact-reader confinement failures.
-                    except (
-                        FileNotFoundError, ValueError, KeyError, TypeError, AttributeError,
-                        IndexError, DecimalException, OverflowError,
-                    ):
-                        matched = False
-                    if matched:
-                        votes[judge, path.parent.name, record_sha] = vote
+    if unexpected_scripted:
+        return "scripted"
+
+    # Select from the complete capture before replaying reply receipts. Nonselected
+    # retries still contribute versions and attempts, but cannot replace the
+    # chosen final's reply evidence with a failure from a different take.
+    for (target, judge, item), files in candidates.items():
+        selected = select_vote_file(files)
+        assert selected is not None  # Every captured group contains a vote.
+        path, vote, record_sha = selected
+        latest[judge, item] = record_order(path, vote), record_sha
+        effort = members_by_target[target][judge]
+        if (str(vote.get("provider_batch_id")).startswith("scripted-batch-")
+            and judges[judge].get("api") != "scripted"):
+            return "scripted"
+        run_id = vote.get("grading_run_id")
+        if not isinstance(run_id, str):
+            continue
+        model_id = judges[judge].get("model_id")
+        if judges[judge].get("api") == "scripted":
+            identity = {"model_id": model_id, "effort": effort, "judge_id": judge,
+                        "target": target, "pass": 1, "item_id": path.parent.name}
+            if all(type(vote.get(k)) is type(v) and vote[k] == v
+                   for k, v in identity.items()):
+                # Local demonstration replies establish local statistics only.
+                # They never acquire hosted provenance or public eligibility.
+                result = recorded_result(
+                    root / "grading", vote, {**judges[judge], "id": judge},
+                    vote_sha256=record_sha, invocation=runs.get(run_id, {}),
+                    history=inventory.history(vote),
+                )
+                if result is not None:
+                    results[record_sha] = result
+                votes[judge, path.parent.name, record_sha] = vote
+            continue
+        invocation = runs.get(run_id, {})
+        model_id = judges[judge].get("model_id")
+        spec = {"model_id": model_id, "effort": effort}
+        if (
+            invocation.get("grading_run_id") != vote.get("grading_run_id")
+            or invocation.get("target") != target
+            or invocation.get("pass") != 1
+            or invocation.get("dry_run")
+            or (
+                invocation.get("composition")
+                != (composition if target == "answers" else {judge: spec})
+            )
+        ):
+            continue
+        unit = vote.get("unit_id")
+        if not isinstance(unit, str) or not unit:
+            continue
+        reserve = reservations.get(unit)
+        if reserve and reserve.get("api") == "scripted":
+            return "scripted"
+        if not reserve or (
+            reserve.get("provider") != judges[judge].get("provider")
+            or reserve.get("model_id") != model_id
+            or reserve.get("api", judges[judge]["api"]) != judges[judge]["api"]
+            or reserve.get("job_id") != f"{judge}--grading"
+        ):
+            continue
+        identity = {
+            "model_id": model_id,
+            "effort": effort,
+            "judge_id": judge,
+            "target": target,
+            "pass": 1,
+            "item_id": path.parent.name,
+        }
+        if vote.get("provider_batch_id") and all(
+            k in vote and type(vote[k]) is type(v) and vote[k] == v
+            for k, v in identity.items()
+        ):
+            try:
+                matched = grading_receipt_matches(
+                    root, vote, record_sha, judges[judge], invocation, events, results,
+                    inventory.history(vote),
+                )
+            except KeyLeakError:
+                raise
+            except BenchmarkValidationError:
+                raise  # Preserve artifact-reader confinement failures.
+            except (
+                FileNotFoundError, ValueError, KeyError, TypeError, AttributeError,
+                IndexError, DecimalException, OverflowError,
+            ):
+                matched = False
+            if matched:
+                votes[judge, path.parent.name, record_sha] = vote
 
     # Attempt totals use the same captured votes and invocations as selection.
     for run_id, invocation in runs.items():
@@ -439,6 +471,31 @@ def _graded_execution(
             reference_matches[key] = request.matches_answer_item(
                 key, optional_json(root, root / "grading/items/reference" / f"{item}.json")
             )
+
+    def panel_answer(key: tuple[str, str], request: JudgeInput) -> AnswerVotes:
+        item = safe_id(*key)
+        parsed, records = {}, {}
+        for judge in efforts:
+            sha = latest.get((judge, item), (None, None))[1]
+            raw = votes.get((judge, item, sha))
+            parsed[judge] = None
+            if raw is not None and raw.get("input_sha256") == request.sha256():
+                try:
+                    vote = vote_from_record(raw, request=request, result=results.get(sha))
+                    parsed[judge] = vote if is_final(raw) else None
+                    records[judge] = {**raw, "final": is_final(raw)}
+                except BenchmarkValidationError:
+                    pass  # Unverified replies cannot contribute independent agreement.
+        return AnswerVotes(item, *key, parsed, records, request.suspect, None, None)
+
+    if not reference_intact:
+        # Reference corruption compromises final/sample evidence, but cannot
+        # erase independent, request-bound panel observations supporting G2.
+        capture.answers = {
+            key: panel_answer(key, request) for key, request in requests.items()
+            if item_matches.get(key)
+        }
+        return "unknown"
     # This disclosure denominator requires hosted admission, even when local
     # replies can support technical statistics below.
     if not demonstration and all(item_matches.values()) and all(reference_matches.values()):
@@ -484,25 +541,7 @@ def _graded_execution(
                     return "unknown"
                 # G2 uses eligible pass-1 pairs even before a final exists. Only
                 # the same receipt-verified latest records can supply those pairs.
-                parsed = {}
-                records = {}
-                for judge in efforts:
-                    sha = latest.get((judge, item), (None, None))[1]
-                    raw = votes.get((judge, item, sha))
-                    parsed[judge] = None
-                    if (
-                        raw is not None
-                        and raw.get("input_sha256") == request.sha256()
-                    ):
-                        try:
-                            vote = vote_from_record(raw, request=request, result=results.get(sha))
-                            parsed[judge] = vote if is_final(raw) else None
-                            records[judge] = {**raw, "final": is_final(raw)}
-                        except BenchmarkValidationError:
-                            pass  # An invalid or unverified vote cannot contribute to G2.
-                capture.answers[key] = AnswerVotes(
-                    item, key[0], key[1], parsed, records, request.suspect, None, None
-                )
+                capture.answers[key] = panel_answer(key, request)
             continue
         try:
             item = safe_id(record["competitor_id"], record["corpus_id"])
@@ -665,7 +704,8 @@ class _RunMetadata:
         references = [j.get("api") for j in self.judges.values() if j.get("role") == "reference"]
         if len(active) != 3 or len(references) != 1:
             active.append(None)  # an incomplete panel cannot establish live grading
-        self.grading = _execution_kind([*active, *references], grading=True)
+        declared_grading = _execution_kind([*active, *references], grading=True)
+        self.grading = declared_grading
         self.scoring = bundle.scoring
         self.tokens = bundle.tokens
         self.count_capture = CountCapture(run)
@@ -725,6 +765,11 @@ class _RunMetadata:
                     FileNotFoundError,
                 ):
                     self.grading = "unknown"
+        # A bound scripted adapter makes the run a demonstration even if its votes are incomplete.
+        if declared_grading == "scripted":
+            self.grading = declared_grading
+        if self.grade_capture.inventory is not None:
+            checked_versions.update(self.grade_capture.inventory.versions)
         self.vote_versions = checked_versions
         self.g1_entries: dict[str, Any] = {}
         self.g1_replays: dict[str, Any] = {}
@@ -762,6 +807,7 @@ class _RunMetadata:
                 run, questions=self.grade_capture.questions, reference=reference,
                 judge=self.judges[reference], inputs=self.inputs,
                 prompt=self.frozen["key_audit_prompt"], events=self.grading_events,
+                runs=self.grade_capture.runs if self.grade_capture.inventory is not None else None,
             )
             if self.audit["flagged"]:
                 self.retained = disclosure.retained_claims(self, self.audit["flagged"])
@@ -790,6 +836,8 @@ class _RunMetadata:
         }
         cells = self.plan.get("cells")
         if not isinstance(cells, list) or not all(isinstance(p, dict) for p in cells):
+            return False
+        if not comparison_identities_match(cells, self.transcripts, model=model, systems=systems):
             return False
         planned = {
             (p.get("competitor_id"), p.get("corpus_id")): (
@@ -1123,18 +1171,7 @@ def _claims(run: _Run) -> list[str]:
         )
     offline = run.current_offline
     if claims.get("C3") or offline.airgap_jobs or offline.host_checks is not None:
-        lines += ["", _offline_status(run)]
-        denied = offline.verdict.denied_attempts
-        if denied:
-            lines += [
-                "",
-                "Denied egress attempts, each refused by the proxy, so nothing left the sandbox:",
-            ]
-            lines += [
-                f"- {_esc(d.get('job_id'))}: {_esc(d.get('host'))} "
-                "(refused; nothing left the sandbox)"
-                for d in denied
-            ]
+        lines += ["", *_offline_disclosure(run)]
     lines += [
         "",
         "### S1: correctness per system",
@@ -1274,8 +1311,11 @@ def _disclosure(run: _Run) -> list[str]:
         "",
     ]
     if not run.grade_capture.reconciled:
-        lines += ["G2/G3 subgroup tables and G3 confusion: unknown (current grading evidence "
-                  "is unavailable).", ""]
+        lines += [
+            "G2/G3 subgroup tables and G3 confusion: unknown "
+            + "(current grading evidence is unavailable).",
+            "",
+        ]
     for gate in ("G2", "G3"):
         by = breakdowns.get(gate) or {}
         lines += _alpha_table(f"{gate} per evaluated family", by.get("by_family") or {})
@@ -1346,8 +1386,6 @@ def _disclosure(run: _Run) -> list[str]:
 
 def _probe_disclosure(run: _Run) -> list[str]:
     entries = run.g1_entries
-    composition = str(run.summary.get("composition"))
-    entry = entries.get(composition) or {}
     gate = run.summary.get("gates", {}).get("G1") or {}
     details = gate.get("details") or {}
     lines = [
@@ -1410,8 +1448,11 @@ def _probe_disclosure(run: _Run) -> list[str]:
             f"{_esc(result.get('pass2_records'))} pass-2 records"
         )
     if not repeat:
-        lines.append("- Held-out probe test–retest: no coverage reported")
-    for evidence in entry.get("tuning") or []:
+        lines.append("- Held-out probe test–retest: unknown (no verified attempt evidence)")
+    for name, reason in sorted((details.get("calibration_unknown") or {}).items()):
+        label = {"held_out_test_retest": "held-out repeats"}.get(name, name)
+        lines.append(f"- Calibration {_esc(label)}: unknown ({_esc(reason)}).")
+    for evidence in details.get("tuning") or []:
         for judge, t in sorted((evidence.get("judges") or {}).items()):
             tried = ", ".join(_esc(e) for e in t.get("tried") or []) or "none"
             lines.append(
@@ -1468,8 +1509,11 @@ def _diagnostics(run: _Run) -> list[str]:
         ),
         "",
     ]
-    lines += ["Grader failures:", "Counts cover current recorded replies for scripted graders; "
-              "hosted graders require matching receipts."]
+    lines += [
+        "Grader failures:",
+        "Counts cover current recorded replies for scripted graders; "
+        + "hosted graders require matching receipts.",
+    ]
     for judge, stats in sorted((diag.get("per_judge") or {}).items()):
         withheld = stats.get("withheld") or {}
         withheld_text = json.dumps(withheld, sort_keys=True) if withheld else "none"
@@ -1964,11 +2008,22 @@ def _reproducibility(run: _Run) -> list[str]:
     return lines
 
 
-def _offline_status(run: _RunMetadata) -> str:
+def _offline_disclosure(run: _RunMetadata) -> list[str]:
     offline = run.current_offline
     status = "unknown" if offline.verdict.ok is None else _verdict(offline.verdict.ok)
     expected = offline.expected_checks if offline.expected_checks is not None else "unknown"
-    return f"Offline evidence: {status} ({expected} check rounds expected)."
+    lines = [f"Offline evidence: {status} ({expected} check rounds expected)."]
+    if offline.verdict.denied_attempts:
+        lines += [
+            "",
+            "Denied egress attempts, each refused by the proxy, so nothing left the sandbox:",
+        ]
+        lines.extend(
+            f"- {_esc(attempt.get('job_id'))}: {_esc(attempt.get('host'))} "
+            "(refused; nothing left the sandbox)"
+            for attempt in offline.verdict.denied_attempts
+        )
+    return lines
 
 
 def _airgap(run: _Run) -> list[str]:
@@ -1979,7 +2034,7 @@ def _airgap(run: _Run) -> list[str]:
         if not offline.airgap_jobs and offline.host_checks is None:
             return [*lines, "No air-gapped model ran in this run."]
         lines.append("No completed air-gapped trajectory is available.")
-    lines += [_offline_status(run), f"Isolation probe: {_esc(offline.isolation_probe)}."]
+    lines += [*_offline_disclosure(run), "", f"Isolation probe: {_esc(offline.isolation_probe)}."]
     evidence = offline.host_checks
     if evidence is None:
         lines.append("Host checks: unknown (missing or malformed airgap/checks.json).")

@@ -72,7 +72,7 @@ def _capture_reads(monkeypatch):
             seen[path] += 1
         return reader(root, path)
 
-    for module in (agentic_report, report_files, report_measurements, aggregate, publication):
+    for module in (agentic_report, report_files, report_measurements, aggregate):
         monkeypatch.setattr(module, "artifact_bytes", read)
 
     def no_dispatch(*args, **kwargs):

@@ -97,6 +97,8 @@ def test_report_import_graph_is_acyclic_including_typing_edges() -> None:
         "benchmarks.report", "benchmarks.agentic_report", "benchmarks.grading.publication",
         "benchmarks.grading.disclosure", "benchmarks.report_common",
         "benchmarks.report_measurements", "benchmarks.report_contracts", "benchmarks.report_files",
+        "benchmarks.grading.aggregate", "benchmarks.grading.vote_capture",
+        "benchmarks.grading.calibration", "benchmarks.grading.calibration_history",
     ):
         visited.clear()
         visit(name, [], name)

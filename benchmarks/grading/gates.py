@@ -210,22 +210,34 @@ def reference_probe_check(
 
 
 def pass1_composition(
-    root: Path, target: str, panel: Panel | None = None
+    root: Path, target: str, panel: Panel | None = None,
+    *, runs: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, dict[str, str | None]]:
     """The composition (judge -> model id and effort) of every pass-1 run of ``target`` under
     ``root/runs``; runs that disagree are refused."""
     compositions = []
-    for path in artifact_paths(root, root / "runs", "*.json"):
-        run = json_mapping(artifact_bytes(root, path), "grading invocation")
+    if runs is None:
+        runs = {
+            path.stem: json_mapping(artifact_bytes(root, path), "grading invocation")
+            for path in artifact_paths(root, root / "runs", "*.json")
+        }
+    for run in runs.values():
         if run.get("target") == target and run.get("pass") == 1:
             if not isinstance(run.get("composition"), dict) or not run["composition"]:
                 raise BenchmarkValidationError(f"{root}: pass-1 {target} run has no composition")
             compositions.append(run["composition"])
+    return checked_composition(compositions, panel, where=f"{root}: pass-1 {target}")
+
+
+def checked_composition(
+    compositions: Sequence[dict[str, Any]], panel: Panel | None, *, where: str
+) -> dict[str, dict[str, str | None]]:
+    """Validate captured invocations with the producer's registered seat rules."""
     if not compositions:
-        raise BenchmarkValidationError(f"{root} has no pass-1 {target} grading run")
+        raise BenchmarkValidationError(f"{where} has no grading run")
     if any(c != compositions[0] for c in compositions):
         raise BenchmarkValidationError(
-            f"{root}: pass-1 {target} runs disagree on the panel composition or its efforts"
+            f"{where} runs disagree on the panel composition or its efforts"
         )
     composition = compositions[0]
     if panel is None:
@@ -234,7 +246,7 @@ def pass1_composition(
     # and the registered alternative in each seat.
     judges = [j if j in composition else panel.fallback.get(j) for j in panel.panel]
     if set(composition) != set(judges):
-        raise BenchmarkValidationError(f"{root}: unregistered pass-1 {target} composition")
+        raise BenchmarkValidationError(f"{where}: unregistered pass-1 composition")
     for judge, spec in composition.items():
         if not isinstance(spec, dict):
             raise BenchmarkValidationError(f"invalid composition.{judge}")
@@ -246,14 +258,15 @@ def pass1_composition(
 
 
 def run_binding(
-    run_dir: Path, panel: Panel | None = None, *, inputs: Mapping[str, str] | None = None
+    run_dir: Path, panel: Panel | None = None, *, inputs: Mapping[str, str] | None = None,
+    runs: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> G1Binding:
     """The run's frozen inputs and the composition (with efforts) that graded pass 1."""
     grading = run_dir / "grading"
     if inputs is None:
         inputs = read_json(grading / "inputs" / "inputs.json", "grading input manifest")
     return G1Binding(
-        composition=pass1_composition(grading, "answers", panel),
+        composition=pass1_composition(grading, "answers", panel, runs=runs),
         inputs={name: inputs.get(name) for name in BINDING_INPUTS},
     )
 

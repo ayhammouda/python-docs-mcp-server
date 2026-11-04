@@ -716,9 +716,8 @@ def test_report_renders_the_disclosure_from_the_exported_bundle_alone(
     assert "grading/inputs/judge-prompt.md" in disclosure
     assert "grading/disclosure/" in disclosure
     assert "Held-out probe test–retest" in disclosure
-    assert "Held-out probe test–retest, haiku: alpha 1.000, 24/28 paired, 26 pass-2 records" in (
-        disclosure
-    )
+    assert "Held-out probe test–retest, haiku: alpha unknown, unknown/28 paired" in disclosure
+    assert "original held-out pass-1/pass-2 attempts and inputs unavailable" in disclosure
     assert "Real-answer test–retest" in disclosure
     assert "per evaluated family" in disclosure and "per system" in disclosure
     assert "scripted-openai/python-docs" in disclosure  # suspects per (model, system)
@@ -1526,7 +1525,8 @@ def test_airgap_section_reports_an_attempt_with_only_a_discard(current_offline_e
     assert "mean score" not in arm
     assert "No air-gapped model ran" not in report
     denial = r"- gemma4-12b--python-docs: pypi\.org\:443 (refused; nothing left the sandbox)"
-    assert denial in report.splitlines()
+    assert denial in arm.splitlines()
+    assert denial in _section(report, "## Claims").splitlines()
 
 
 @pytest.mark.parametrize("ungraded", [True, False])

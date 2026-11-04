@@ -5,7 +5,8 @@ open a local inference ledger, or query a Git database to establish execution.
 The methodology document and model matrix can also be supplied from the export.
 
 The Air-gapped arm section reports the observed host checks even when every
-local trajectory was discarded. Only completed trajectories contribute scores.
+local trajectory was discarded. Both the claims and air-gapped sections list the
+destinations the proxy refused. Only completed trajectories contribute scores.
 
 Public comparisons require evidence for every contributing panel vote and any
 selected reference vote. Each captured vote must match its frozen judge identity,
@@ -18,6 +19,24 @@ terminal error can still leave two judges in agreement. The withheld result
 must have a matching settlement, including a zero booking for a documented
 unbilled error. An unverifiable compact error, a duplicate settlement or a
 receipt from a different run leaves the grade unverified.
+
+The scorer and report also reconcile the vote inventory in both directions.
+Every receipt declared by a covered invocation must retain its exact vote file,
+and each present vote in an invocation with a receipt manifest must be declared
+there. Receipt IDs, file paths, digests, targets, passes and attempts must agree,
+including earlier attempts superseded by a later batch or invocation. Omission
+of an execution-issued vote makes the answer denominator and affected grading
+evidence unavailable; it never turns issued work into a pending answer or a
+smaller sample. Confirmed ledger bookings remain visible without a per-answer
+rate. Unsubmitted work with no declared receipt can still be pending. Older
+receiptless records retain their technical compatibility rules.
+
+This check shares one bounded capture of invocations, votes and receipts with
+grade replay. A missing pass-2 record makes test–retest evidence unknown while
+preserving supported pass-1 grades. Probes and key audits do not contribute to
+the completed-answer denominator. Missing reference inventory withholds final
+and reference-sample evidence while retaining verified independent panel
+observations for G2.
 
 Execution history is stored under
 `grading/executions/<grading_run_id>/<judge>/<item>--a<attempt>.json`.
@@ -89,6 +108,11 @@ With a complete audit, each retained comparison reconciles its own models and
 necessary systems after removing flagged questions. An unrun repeat on a flagged
 question or an unrelated system cannot withdraw a supported comparison. Missing,
 extra or duplicate cells on the unflagged compared arms remain ineligible.
+Before reducing rows to statistical coordinates, both primary and retained
+comparisons check the declared `cell` and `competitor_id`, canonical
+`system--family--rN` spelling (positive integer repeat), system, family and
+corpus ID against each captured transcript's directory and filename. These
+checks use the already captured records; a second read cannot replace them.
 Comparisons use actual adjudicated grades (including reference
 settlements and frozen core/nuance weights), verified retained counts and current
 offline evidence. The same scorer C2/C3 and single-judge sensitivity primitives
@@ -108,7 +132,15 @@ Per-graded-answer divides these totals by completed LLM finals replayed from the
 same captured requests, selected votes and execution receipts, using the scorer's
 final-grade rules. Clearing or removing a saved scoring projection cannot reduce
 this denominator. Automatic zeroes are excluded; a completed LLM grade of zero
-still counts. Genuinely pending cells are excluded and zero completed finals have
+still counts. Scoring, the ordinary report and the README share the same
+final-first selector over captured bytes and digests, grouped by target, judge,
+effort, pass and item. All takes retain their version and attempt history;
+only the selected take supplies reply statistics. An unselected historical retry
+with an unscoped empty receipt manifest can remain technical history. Declared
+receipt inventories still require every issued vote and digest to match, and a
+selected take cannot bypass its declared receipt. Scripted evidence remains a
+demonstration and cannot establish a hosted denominator or public comparison.
+Genuinely pending cells are excluded and zero completed finals have
 no per-answer ratio. An unknown vote denominator withholds ratios while retaining
 confirmed bookings. A missing ledger is unavailable cost evidence, distinct from
 a present empty ledger's zero bookings; an inconsistent ledger is explicitly
@@ -127,3 +159,24 @@ Historical workspaces with exact request documents remain supported without
 execution receipts. Missing request proof cannot establish assembly, even when
 a cached candidate or verdict is present. This does not authenticate unsigned
 archives or retroactively supply source evidence for an existing G1 export.
+
+Calibration effort and held-out repeats have their own evidence requirements.
+New workspace `tuning.json` and `g1.json` exports retain a versioned `source`
+capture: exact frozen input bytes, candidate vote files, request documents,
+invocations and any selected execution receipts. The producer and portable
+reader use the same final-attempt selection, reply parsing, core/nuance mapping
+and registered primary/fallback composition rules. Tuning trials are recomputed
+from those attempts in configured effort order; each chosen effort must match
+the run's frozen judge settings. Held-out pass-1/pass-2 scores and coverage come
+from the selected attempts on identical frozen requests. A copied observation
+or two agreeing scalar summaries cannot establish a repeat measurement.
+
+Reports also check the disclosure projection against the original digest-named
+exports in `grading/disclosure/g1/`. Contradictory copies are disclosed as
+unknown; the reader does not silently select one. Missing historical attempt
+proof leaves tuning or repeats explicitly unknown while independently supported
+G1 accuracy, reference checks and coverage remain available. Missing repeat
+history is distinct from a complete capture proving zero pass-2 records.
+Replay uses the captured corpus, prompt, schema and tuning questions without
+an index or provider access. Neither source captures nor their hashes
+authenticate provider contact.

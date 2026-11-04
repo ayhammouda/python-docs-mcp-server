@@ -74,8 +74,10 @@ def test_held_out_statistics_are_rebuilt_from_observations(validated_bundle):
     write(path, entries)
     write(summary_path, summary)
     before = _render(run)
-    expected = "Held-out probe test–retest, haiku: alpha 1.000, 2/700 paired, 2 pass-2 records"
+    expected = "Held-out probe test–retest, haiku: alpha unknown, unknown/700 paired"
     assert expected in before and "Grading outcome: Validated" in before
+    assert "held-out disclosure differs from original archive" in before
+    assert "2/700 paired, 2 pass-2 records" not in before
     entry["gate"]["details"]["held_out_test_retest"]["haiku"].update(
         alpha=-0.75, low=-0.95, high=-0.5, items=901, expected=901, pass2_records=901
     )
@@ -152,7 +154,6 @@ def test_real_second_pass_survives_cache_edits_and_requires_receipts(validated_b
     from collections import Counter
 
     from benchmarks import agentic_report, report_files, report_measurements
-    from benchmarks.grading import publication
 
     run = validated_bundle
     _record_second_pass(run)
@@ -165,7 +166,7 @@ def test_real_second_pass_survives_cache_edits_and_requires_receipts(validated_b
             reads[path] += 1
         return body
 
-    for module in (agentic_report, publication, report_files, report_measurements):
+    for module in (agentic_report, report_files, report_measurements):
         monkeypatch.setattr(module, "artifact_bytes", captured)
     before = _render(run)
     assert "Real-answer test–retest alpha, haiku: 1.000" in before

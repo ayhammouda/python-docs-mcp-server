@@ -3,41 +3,54 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 from benchmarks.agentic.inputs import CapturedInput
-from benchmarks.agentic.protocol import scanned_json_bytes
+from benchmarks.agentic.protocol import assert_no_key_shaped_json
+from benchmarks.grading.calibration_history import (
+    CalibrationSource,
+    held_out_scores,
+    tuning_summary,
+)
+from benchmarks.grading.calibration_history import (
+    judge_settings as judge_settings,
+)
+from benchmarks.grading.calibration_history import (
+    probe_retest as probe_retest,
+)
 from benchmarks.grading.gates import (
+    BINDING_INPUTS,
     G1Binding,
     GateResult,
     g1,
     reference_probe_check,
     select_g1,
-    test_retest,
 )
-from benchmarks.grading.panel import composition_key
+from benchmarks.grading.panel import composition_key, panel_from_mapping
 from benchmarks.grading.probes import Probe, probe_file_from_inputs, reference_subset
 from benchmarks.runner import BenchmarkValidationError
 
 
-def judge_settings(
-    panel_input: CapturedInput,
-    judges: Sequence[str],
-    *,
-    reference: str | None = None,
-    before_effort_freeze: bool = False,
-) -> dict[str, str]:
-    """Pin each participating judge's portable runtime settings independently."""
-    pins = {}
-    participants = [*judges, reference] if reference is not None else judges
-    for judge in participants:
-        settings = dict(panel_input.mapping["judges"][judge])
-        if before_effort_freeze:
-            settings.pop("effort", None)
-        body = scanned_json_bytes(settings, where="grading judge settings", sort_keys=True)
-        pins[judge] = hashlib.sha256(body).hexdigest()
-    return pins
+def g1_entries(body: bytes) -> dict[str, Any]:
+    """Parse original export bytes identically at import and report replay."""
+
+    def pairs(values: list[tuple[str, Any]]) -> dict[str, Any]:
+        assert_no_key_shaped_json(values, where="G1 evidence")
+        result = dict(values)
+        if len(result) != len(values):
+            raise BenchmarkValidationError("G1 evidence contains a duplicate JSON member")
+        return result
+
+    try:
+        data = json.loads(body.decode("utf-8"), object_pairs_hook=pairs)
+    except (ValueError, RecursionError) as exc:
+        raise BenchmarkValidationError("could not read G1 evidence as UTF-8 JSON") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("entries"), dict):
+        raise BenchmarkValidationError("G1 evidence needs an entries object")
+    return data["entries"]
 
 
 def _probe_scores(value: Any, probes: Sequence[Probe], where: str) -> dict[str, float | None]:
@@ -74,24 +87,6 @@ def _same(saved: Any, actual: Any) -> bool:
     return saved == actual
 
 
-def probe_retest(
-    judge: str, observations: Mapping[str, dict[str, Any]], *, expected: int, seed: str
-) -> dict[str, Any]:
-    paired = {k: r for k, r in observations.items() if None not in (r["pass1"], r["pass2"])}
-    statistic = test_retest(
-        {k: {judge: r["pass1"]} for k, r in paired.items()},
-        {k: {judge: r["pass2"]} for k, r in paired.items()},
-        {k: r["question_id"] for k, r in paired.items()},
-        seed=seed,
-    ).get(judge, {"alpha": None, "low": None, "high": None, "items": 0})
-    return {
-        **statistic,
-        "expected": expected,
-        "pass2_records": len(observations),
-        "observations": observations,
-    }
-
-
 def _recomputed_gate(saved: GateResult, actual: GateResult) -> GateResult:
     """Refuse contradictory annotations, retaining independent retest disclosure."""
     if (
@@ -105,6 +100,82 @@ def _recomputed_gate(saved: GateResult, actual: GateResult) -> GateResult:
     return GateResult(actual.id, actual.passed, {**saved.details, **actual.details})
 
 
+def verified_tuning(
+    evidence: Any,
+    *,
+    panel: CapturedInput,
+    probes: CapturedInput,
+    criteria: CapturedInput,
+    judges: Sequence[str],
+    inputs: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Recompute effort trials; an old summary alone cannot prove a trial occurred."""
+    verified = []
+    unknown = {}
+    selected = panel_from_mapping(panel.mapping, Path("/calibration/panel.yml"))
+    if not isinstance(evidence, list) or not evidence:
+        return [], {"tuning": "original tuning attempts and inputs unavailable"}
+    for record in evidence:
+        if not isinstance(record, dict) or "source" not in record:
+            unknown["tuning"] = "original tuning attempts and inputs unavailable (historic summary)"
+            continue
+        source, bodies = CalibrationSource.restore(record["source"])
+        try:
+            for name, frozen in (("probes", probes), ("criteria", criteria)):
+                if bodies[name] != frozen.content:
+                    raise BenchmarkValidationError("tuning source differs from frozen inputs")
+            tuning = CapturedInput.from_bytes(bodies["tuning"], "tuning", "tuning")
+            suite = probe_file_from_inputs(probes, criteria, tuning)
+            before = CapturedInput.from_bytes(bodies["panel"], "panel", "panel")
+            attempted_panel = panel_from_mapping(before.mapping, Path("/calibration/panel.yml"))
+            manifest = record.get("inputs")
+            if (
+                not isinstance(manifest, dict)
+                or any(
+                    hashlib.sha256(bodies[name]).hexdigest() != digest
+                    for name, digest in manifest.items()
+                )
+                or any(
+                    hashlib.sha256(bodies[name]).hexdigest() != manifest.get(name)
+                    or manifest.get(name) != inputs.get(name)
+                    for name in BINDING_INPUTS
+                )
+                or record.get("prompt_sha256") != manifest.get("judge_prompt")
+            ):
+                raise BenchmarkValidationError("tuning source differs from its input manifest")
+            actual = tuning_summary(
+                source, attempted_panel, [p for p in suite.probes if p.set == "tuning"], bodies
+            )
+            pins = judge_settings(before, list(actual), before_effort_freeze=True)
+            if not _same(record.get("judges"), actual) or record.get("judge_settings") != pins:
+                raise BenchmarkValidationError("tuning trials differ from original attempts")
+            expected = judge_settings(panel, judges, before_effort_freeze=True)
+            disclosed = {}
+            for judge in judges:
+                row = actual.get(judge)
+                if row is None or row["chosen"] is None:
+                    continue
+                if (
+                    pins.get(judge) != expected[judge]
+                    or row["chosen"] != selected.judges[judge].effort
+                ):
+                    raise BenchmarkValidationError(
+                        "tuning chosen effort differs from frozen settings"
+                    )
+                disclosed[judge] = row
+            verified.append({"judges": disclosed})
+        except BenchmarkValidationError:
+            raise
+        except (KeyError, TypeError, ValueError) as exc:
+            raise BenchmarkValidationError("incomplete tuning source proof") from exc
+    covered = {j for record in verified for j in record["judges"]}
+    if covered != set(judges):
+        unknown["tuning"] = "original selected tuning attempts unavailable for " + ", ".join(
+            sorted(set(judges) - covered)
+        )
+    return verified, unknown
+
+
 def replay_g1(
     entries: Mapping[str, Any],
     binding: G1Binding,
@@ -113,6 +184,7 @@ def replay_g1(
     probes: CapturedInput,
     criteria: CapturedInput,
     tuning: CapturedInput | None = None,
+    history_problems: Mapping[str, str] | None = None,
 ) -> tuple[GateResult, GateResult]:
     """Replay the selected raw score arrays; never open a path or trust aggregates.
 
@@ -121,6 +193,7 @@ def replay_g1(
     Missing legacy evidence remains readable but cannot establish PASS.
     """
     key = composition_key(list(binding.composition))
+    history_problems = history_problems or {}
     entry = entries.get(key)
     if entry is not None and not isinstance(entry, dict):
         raise BenchmarkValidationError("G1 entry must be an object")
@@ -183,51 +256,94 @@ def replay_g1(
             dropped=[d for d in suite.dropped if d["set"] == "held_out"],
         )
         selected = _recomputed_gate(selected, actual)
-        repeats = {}
-        held_by_id = {p.id: p for p in held}
-        saved_repeats = selected.details.get("held_out_test_retest")
-        for judge, saved in (saved_repeats if isinstance(saved_repeats, dict) else {}).items():
-            # Legacy aggregates without observations cannot establish coverage.
-            observations = saved.get("observations") if isinstance(saved, dict) else None
-            if judge not in judges or not isinstance(observations, dict):
-                continue
+        supported_tuning, unknown = (
+            verified_tuning(
+                entry.get("tuning"),
+                panel=panel,
+                probes=probes,
+                criteria=criteria,
+                judges=judges,
+                inputs=binding.inputs,
+            )
+            if "tuning" not in history_problems
+            else ([], {"tuning": history_problems["tuning"]})
+        )
+        repeats = {
+            j: {
+                "alpha": "unknown",
+                "items": "unknown",
+                "expected": len(held),
+                "pass2_records": "unknown",
+            }
+            for j in judges
+        }
+        if "source" in entry and "held_out_test_retest" not in history_problems:
+            source, bodies = CalibrationSource.restore(entry["source"])
             try:
-                for item, row in observations.items():
-                    probe = held_by_id[item]
-                    if (
-                        row["question_id"] != probe.question_id
-                        or not _same(row["pass1"], scores["judges"][judge][item])
-                        or any(
-                            v is not None and (type(v) not in (int, float) or not 0 <= v <= 1)
-                            for v in (row["pass1"], row["pass2"])
+                for name in BINDING_INPUTS:
+                    if hashlib.sha256(bodies[name]).hexdigest() != binding.inputs.get(name):
+                        raise BenchmarkValidationError(
+                            "calibration source differs from frozen inputs"
                         )
-                    ):
-                        raise ValueError("inconsistent held-out repeat observation")
-                repeats[judge] = probe_retest(
-                    judge, observations, expected=len(held), seed=suite.header["corpus_sha256"]
+                source_panel_input = CapturedInput.from_bytes(bodies["panel"], "panel", "panel")
+                if (
+                    judge_settings(
+                        source_panel_input,
+                        judges,
+                        reference=references[0] if check is not None else None,
+                    )
+                    != expected_settings
+                ):
+                    raise BenchmarkValidationError("calibration source differs from frozen judges")
+                exported_tuning = CapturedInput.from_bytes(bodies["tuning"], "tuning", "tuning")
+                probe_file_from_inputs(probes, criteria, exported_tuning)
+                source_panel = panel_from_mapping(
+                    source_panel_input.mapping, Path("/calibration/panel.yml")
                 )
-            except (KeyError, TypeError, ValueError):
-                repeats[judge] = {
-                    "alpha": "unknown",
-                    "items": "unknown",
-                    "expected": len(held),
-                    "pass2_records": "unknown",
-                }
+                if source.composition(source_panel) != binding.composition:
+                    raise BenchmarkValidationError("calibration source composition differs")
+                actual_scores, repeats, ref_scores = held_out_scores(
+                    source,
+                    source_panel,
+                    held,
+                    bodies,
+                    seed=suite.header["corpus_sha256"],
+                )
+                if not _same(scores, actual_scores):
+                    raise BenchmarkValidationError(
+                        "calibration scores differ from original attempts"
+                    )
+                if check is not None and not _same(reference.details.get("scores"), ref_scores):
+                    raise BenchmarkValidationError("reference scores differ from original attempts")
+                saved_repeats = selected.details.get("held_out_test_retest") or {}
+                if not isinstance(saved_repeats, dict):
+                    raise BenchmarkValidationError("invalid held-out repeat evidence")
+                for judge, saved in saved_repeats.items():
+                    if (
+                        judge not in repeats
+                        or not isinstance(saved, dict)
+                        or not _same(saved.get("observations"), repeats[judge]["observations"])
+                    ):
+                        raise BenchmarkValidationError(
+                            "held-out repeat differs from original attempts"
+                        )
+            except BenchmarkValidationError:
+                raise
+            except (KeyError, TypeError, ValueError, FileNotFoundError) as exc:
+                raise BenchmarkValidationError("incomplete held-out source proof") from exc
+        else:
+            unknown["held_out_test_retest"] = history_problems.get("held_out_test_retest") or (
+                "original held-out pass-1/pass-2 attempts and inputs unavailable (historic export)"
+            )
         selected = GateResult(
             selected.id,
             selected.passed,
             {
                 **actual.details,
-                **(
-                    {"composition": selected.details["composition"]}
-                    if "composition" in selected.details
-                    else {}
-                ),
-                **(
-                    {"held_out_test_retest": repeats}
-                    if "held_out_test_retest" in selected.details
-                    else {}
-                ),
+                "composition": key,
+                "held_out_test_retest": repeats,
+                "calibration_unknown": unknown,
+                **({"tuning": supported_tuning} if supported_tuning else {}),
             },
         )
     else:

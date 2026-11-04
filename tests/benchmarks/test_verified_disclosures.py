@@ -120,12 +120,25 @@ def test_cached_audit_subset_and_cost_cannot_fabricate_public_disclosures(valida
     assert "| google | 3.00 | 0.010000 |" in text
 
 
-def test_positive_audit_and_ledger_survive_portable_export(validated_bundle, tmp_path):
+def test_positive_audit_and_ledger_survive_portable_export(validated_bundle, tmp_path, monkeypatch):
+    from benchmarks import agentic_report, report_files
+
     record_audit(validated_bundle)
     moved = shutil.copytree(validated_bundle, tmp_path / "export")
     shutil.rmtree(validated_bundle)
     before = (moved / "grading/summary.json").read_bytes()
+    read_bytes = report_files.artifact_bytes
+    audit_reads = []
+
+    def read_once(root, path):
+        if path == moved / "grading/runs/audit.json":
+            audit_reads.append(path)
+        return read_bytes(root, path)
+
+    monkeypatch.setattr(agentic_report, "artifact_bytes", read_once)
+    monkeypatch.setattr(report_files, "artifact_bytes", read_once)
     text = _render(moved)
+    assert len(audit_reads) == 1
     assert "Answer-key audit: 50 keys audited" in text
     assert "flagged: SYN-EX-001." in text
     assert "Without flagged questions, C2/scripted-openai: pass, 0.500" in text
@@ -356,8 +369,8 @@ def test_cost_uses_current_settlements_and_genuine_graded_denominator(validated_
             row = read(path)
             row.update(score=None, grading=None, scoring_method="pending")
             write(path, row)
-            # Genuinely pending work has no final panel votes. Merely clearing
-            # the saved grade is covered above and must still count as complete.
+            # Receipts still declare these issued votes. Removing the files is
+            # corruption, even after clearing the saved grades; it is not pending.
             item = f"{row['competitor_id']}--{row['corpus_id']}"
             for vote in (run / "grading/votes/answers").glob(f"*/*/pass1/{item}/*.json"):
                 vote.unlink()
@@ -366,10 +379,12 @@ def test_cost_uses_current_settlements_and_genuine_graded_denominator(validated_
     if stage == "missing-ledger":
         assert "Grading cost: unverified" in text
         assert "| google | 3.00 |" not in text
-    elif stage == "pending":
-        assert len(metadata.grade_capture.finals) == 299
-        assert "| google | 3.00 | 0.010033 |" in text
     else:
+        assert not metadata.grade_capture.finals
+        assert metadata.grading_spend["graded_answers"] is None
+        assert metadata.grading_spend["by_provider"]["google"] == "3.00"
+        assert metadata.grading_spend["per_graded_answer"] == {}
+        assert "completed LLM-graded answers: 299" not in text
         assert "| google | 3.00 | n/a |" in text
 
 
