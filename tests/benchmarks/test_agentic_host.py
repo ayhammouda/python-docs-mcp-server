@@ -38,6 +38,7 @@ from benchmarks.agentic.protocol import (
     assert_no_key_shaped,
     encode_frame,
     read_frame_fd,
+    redact_key_shaped,
 )
 from benchmarks.model_matrix import ModelFamily, load_model_matrix, model_family_from_raw
 from benchmarks.runner import BenchmarkValidationError
@@ -233,6 +234,8 @@ ANTHROPIC_SHAPE = "sk-ant-api03-" + "a" * 90
         ("task-runner-" + "d" * 40, None),
         ("sk-ant-api03-" + "a" * 20, None),  # too short for any key shape
         ("AIza" + "b" * 36, None),  # a Google key is exactly 39 characters
+        ("bn" + "AIza" + "b" * 35, None),  # a base64 run containing a key-shaped suffix
+        ("base64u0020" + "sk-proj-" + "c" * 40, None),
     ],
 )
 def test_key_shaped_scan(text: str, pattern: str | None) -> None:
@@ -244,6 +247,17 @@ def test_key_shaped_scan(text: str, pattern: str | None) -> None:
         assert text not in str(caught.value)
     else:
         assert_no_key_shaped(f"before {text} after", where="test frame")
+
+
+@pytest.mark.parametrize("escape", [r"\b", r"\f", r"\n", r"\r", r"\t", r"\u000A", r"\\u0020"])
+def test_structured_escape_is_a_key_boundary_in_arbitrary_text(escape: str) -> None:
+    key = "sk-proj-" + "k" * 40
+    prefix = "arbitrary text, no JSON required " + escape
+    for value in (prefix + key, (prefix + key).encode()):
+        with pytest.raises(KeyLeakError, match="openai"):
+            assert_no_key_shaped(value, where="test output")
+    expected = (prefix + "[redacted]").encode()
+    assert redact_key_shaped((prefix + key).encode()) == (expected, "openai")
 
 
 def test_random_base64_is_not_key_shaped() -> None:
@@ -654,6 +668,24 @@ async def test_a_key_shape_in_a_worker_log_is_redacted_before_the_run_stops(
         await host.run([_job(tmp_path, [ANSWER])], launcher=KeyedLauncher(noisy, key=""))
     (log,) = (tmp_path / "logs").iterdir()
     assert log.read_text() == "debug: token=[redacted]\n"
+
+
+@pytest.mark.parametrize("indent", [None, 2], ids=["compact", "multiline"])
+async def test_structured_worker_stderr_is_redacted_on_publication(
+    host: Host, tmp_path: Path, indent: int | None
+) -> None:
+    key = "AIza" + "g" * 35
+    line = json.dumps({"detail": "failure\n" + key}, indent=indent) + "\n"
+    code = (
+        "import sys\nfrom benchmarks.agentic.worker import protect_output\n"
+        "channel = protect_output()\n"
+        f"sys.stderr.write({line!r})\nchannel.close()\n"
+    )
+    with pytest.raises(KeyLeakError, match="google") as caught:
+        await host.run([_job(tmp_path, [], job_id="lost")], launcher=KeyedLauncher(code, ""))
+    assert key not in str(caught.value)
+    expected = line.replace(key, "[redacted]").encode()
+    assert (tmp_path / "logs/lost.stderr.log").read_bytes() == expected
 
 
 @pytest.mark.parametrize("read_only", [False, True])

@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 import benchmarks.agentic.probe as probe
+from benchmarks.__main__ import main
 from benchmarks.agentic.egress import ProxyEvent, write_egress_summary
 from benchmarks.agentic.host import run_jobs
 from benchmarks.agentic.ledger import Ledger, LedgerService
@@ -38,6 +39,7 @@ from benchmarks.agentic.protocol import KeyLeakError
 from benchmarks.agentic.sandbox import ContainerLauncher, Sandbox
 from benchmarks.runner import BenchmarkValidationError
 from tests.benchmarks.test_agentic_egress import PROBE_LINES, PYPI_LINE
+from tests.benchmarks.test_agentic_run import _cli
 from tests.benchmarks.test_agentic_sandbox import (
     SYNTHETIC,
     FakeDocker,
@@ -539,6 +541,30 @@ async def test_probe_failure_never_echoes_key_in_traceback(
     assert key not in str(caught.value)
     assert key not in "".join(traceback.format_exception(caught.value))
     sandbox.remove_container.assert_awaited_once()
+
+
+def test_cli_withholds_structured_probe_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    key = "sk-proj-" + "k" * 40
+    stderr = json.dumps({"error": "." * 350 + "\n" + key})
+    sandbox = Mock(
+        create_resource=AsyncMock(return_value="fake-id"),
+        docker=AsyncMock(return_value=_done([], 1, err=stderr)),
+        remove_container=AsyncMock(),
+    )
+
+    async def prepare(*args: Any) -> None:
+        await probe._one_shot(sandbox, ["create"], "probe")
+
+    monkeypatch.setattr("benchmarks.agentic.host.LocalLauncher.prepare", prepare)
+    with pytest.raises(SystemExit) as caught:
+        main(_cli(tmp_path, "--systems", "no-docs"))
+    captured = capsys.readouterr()
+    assert key not in captured.out + captured.err
+    assert caught.value.code == 3 and "probe stderr" in captured.err
+    summary = json.loads((tmp_path / "run/run-summary.json").read_bytes())
+    assert "KeyLeakError" in summary["abort_reason"] and key not in summary["abort_reason"]
 
 
 async def test_probe_create_conflict_does_not_remove_the_existing_container(tmp_path: Path) -> None:

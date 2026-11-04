@@ -967,8 +967,16 @@ async def test_an_abnormal_proxy_exit_fails_the_collection(
     assert (collected["state_before_stop"], collected["state_after_stop"]) == (before, after)
 
 
+@pytest.mark.parametrize(
+    "line,key",
+    [
+        (f"WARNING: header {SYNTHETIC}\n", SYNTHETIC),
+        (json.dumps({"error": "bad\n" + "AIza" + "g" * 35}) + "\n", "AIza" + "g" * 35),
+    ],
+    ids=["plain", "structured"],
+)
 async def test_close_redacts_a_key_shaped_proxy_log_and_raises_after_cleanup(
-    tmp_path: Path,
+    tmp_path: Path, line: str, key: str
 ) -> None:
     docker = FakeDocker()
     launcher = ContainerLauncher(
@@ -977,13 +985,14 @@ async def test_close_redacts_a_key_shaped_proxy_log_and_raises_after_cleanup(
     job = _job("scripted-anthropic")
     await launcher.prepare([job])
     log_dir = tmp_path / "run" / "egress" / job.job_id
-    _logs(docker.squid_spool(job.job_id), cache=f"WARNING: header {SYNTHETIC}\n")
+    _logs(docker.squid_spool(job.job_id), cache=line)
     with pytest.raises(KeyLeakError, match="cache.log"):
         await launcher.close()
-    assert (log_dir / "cache.log").read_text() == "WARNING: header [redacted]\n"
+    assert (log_dir / "cache.log").read_bytes() == line.replace(key, "[redacted]").encode()
     assert docker.ran("rm", "-f", f"id-pdmcp-{RUN}-{job.job_id}-proxy")
     assert docker.ran("network", "rm", f"id-pdmcp-{RUN}-out")
     assert json.loads((log_dir / "collected.json").read_text())["ok"] is False
+    assert (tmp_path / "run/probe" / f"{job.job_id}.collection-pending").is_file()
 
 
 @pytest.mark.parametrize("failure", [MemoryError, PermissionError])

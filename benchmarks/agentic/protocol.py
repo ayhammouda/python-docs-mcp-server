@@ -18,8 +18,9 @@ from typing import Any
 from benchmarks.runner import BenchmarkValidationError
 
 MAX_FRAME_BYTES = 64 * 1024 * 1024
-#: A key starts a token, or follows a URL escape such as %20; a run of base64 never does.
-_START = r"(?:(?<=%[0-9A-Fa-f]{2})|(?<![A-Za-z0-9_-]))"
+# URL and JSON escapes can end in a token character even when they delimit a key.
+# Match their suffix so extra backslashes from nested serialization need no decoding.
+_START = r"(?:(?<![A-Za-z0-9_-])|(?<=%[0-9A-Fa-f]{2})|(?<=\\[bfnrt])|(?<=\\u[0-9A-Fa-f]{4}))"
 _END = r"(?![A-Za-z0-9_-])"
 #: Real key shapes, by provider. The Anthropic literal is specific enough to need no start
 #: boundary, so a key glued to a digit (``7sk-ant-api03-...``) is still caught.

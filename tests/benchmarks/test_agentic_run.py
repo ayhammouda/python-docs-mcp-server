@@ -952,6 +952,50 @@ def test_decoded_scan_visits_yaml_aliases_only_once() -> None:
         assert_no_key_shaped_json(value, where="aliased input")
 
 
+@pytest.mark.parametrize("case", ["malformed", "valid-nested", "truncated", "base64"])
+def test_transcript_checks_escaped_tool_arguments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    key = "AIza" + "g" * 35
+    raw = '{"url":"failure' + r"\n" + key + '"'  # missing the closing brace
+    if case == "valid-nested":
+        raw = json.dumps({"url": r"\n" + key}, indent=2)
+    elif case == "truncated":
+        # Only the clipped tool error ends exactly at the 39-character Google shape.
+        raw = raw[:-1] + "X"
+        limit = len("tool arguments must be a JSON object: " + raw) - 1
+        monkeypatch.setattr("benchmarks.agentic.run.HOSTED_CAPS", Caps(result_bytes=limit))
+    elif case == "base64":
+        raw = raw.replace(r"\n", "bn")
+    usage = {"input_tokens": 1000, "output_tokens": 100}
+    steps = [
+        {"tools": [{"name": "fetch", "arguments": raw}], "usage": usage},
+        {"text": "done", "usage": usage},
+    ]
+    config = _config(
+        tmp_path,
+        manifest_path=_write_manifest(tmp_path),
+        matrix_path=_matrix_with(tmp_path, {"scripted-anthropic": steps}),
+        models=("scripted-anthropic",),
+        systems=("docs-fetch",),
+        questions=("SYN-EX-001",),
+        repeats=1,
+    )
+    transcript = config.out_dir / "transcripts/docs-fetch--scripted-anthropic--r1/SYN-EX-001.json"
+    if case == "base64":
+        assert run_agentic(config)["succeeded_cells"] == 1
+        (call,) = json.loads(transcript.read_text())["tool_calls"]
+        assert call["raw_arguments"] == raw and raw in call["result"]
+    else:
+        with pytest.raises(KeyLeakError) as caught:
+            run_agentic(config)
+        assert key not in str(caught.value)
+        assert not transcript.exists()
+        assert all(
+            key.encode() not in p.read_bytes() for p in config.out_dir.rglob("*") if p.is_file()
+        )
+
+
 def _ref_tools_manifest(tmp_path: Path, **fields: Any) -> Path:
     template = yaml.safe_load(TEMPLATE_MANIFEST.read_text(encoding="utf-8"))
     (ref,) = [c for c in template["competitors"] if c["id"] == "ref-tools"]
