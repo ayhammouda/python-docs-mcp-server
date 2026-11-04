@@ -1208,15 +1208,16 @@ result = asyncio.run(docker_runner({})([sys.executable, "-c", sys.argv[1]]))
 print(json.dumps([result.returncode, result.stdout.decode().strip(), bool(received)]))
 """
     helper = """
-import os, signal
+import os, signal, sys
 parent = os.getppid()
 assert parent > 1 and os.getpgid(parent) == os.getsid(parent) == parent
 os.killpg(parent, signal.SIGHUP)
-print("rollback complete")
+print("rollback complete" if sys.stdin.read(1) == "" else "read host input")
 """
     run = subprocess.run(
         [sys.executable, "-c", host, helper],
         start_new_session=True,
+        input="host input",
         capture_output=True,
         text=True,
         timeout=15,
