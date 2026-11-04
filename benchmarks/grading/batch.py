@@ -188,31 +188,60 @@ def openai_result(raw: dict[str, Any]) -> BatchItemResult:
     error = raw.get("error") or {}
     response = raw.get("response") or {}
     status_code = response.get("status_code")
-    if error.get("code") == "batch_expired":
-        return _no_result(item_id, "expired", raw, unbilled=True)
-    if error or status_code != 200:
-        rejected = isinstance(status_code, int) and 400 <= status_code < 500
-        return _no_result(item_id, "errored", raw, unbilled=rejected)
     body = response.get("body") or {}
+    usage = body.get("usage")
+    # A partial receipt is evidence, but cannot be priced as if the absent count were zero.
+    buckets = (
+        openai_buckets(usage)
+        if usage is not None
+        and all(usage.get(k) is not None for k in ("input_tokens", "output_tokens"))
+        else None
+    )
+    state = body.get("status")
+    reason = (body.get("incomplete_details") or {}).get("reason")
+    expired = error.get("code") == "batch_expired"
+    if (
+        error
+        or status_code != 200
+        or state not in ("completed", "incomplete")
+        or (state == "incomplete" and reason not in ("max_output_tokens", "content_filter"))
+    ):
+        # A response body can describe a failed item even inside a successful HTTP
+        # response. Partial output is not a vote; retain any reported usage for pricing.
+        status: ItemStatus = (
+            "expired"
+            if expired
+            else ("canceled" if state in ("canceled", "cancelled") else "errored")
+        )
+        rejected = isinstance(status_code, int) and 400 <= status_code < 500
+        return BatchItemResult(
+            item_id=item_id,
+            status=status,
+            text=None,
+            refusal=False,
+            stop_reason=None,
+            raw=raw,
+            raw_usage=usage,
+            buckets=buckets,
+            reported_model=None,
+            unbilled=usage is None and (rejected or (expired and not response)),
+        )
     content = [
         part
         for item in body.get("output") or []
         if item.get("type") == "message"
         for part in item.get("content") or []
     ]
-    usage = body.get("usage")
-    details = body.get("incomplete_details") or {}
     return BatchItemResult(
         item_id=item_id,
         status="succeeded",
         text="".join(p.get("text", "") for p in content if p.get("type") == "output_text"),
-        refusal=any(p.get("type") == "refusal" for p in content),
-        stop_reason=details.get("reason")
-        if body.get("status") == "incomplete"
-        else body.get("status"),
+        refusal=any(p.get("type") == "refusal" for p in content)
+        or (state == "incomplete" and reason == "content_filter"),
+        stop_reason=reason if state == "incomplete" else state,
         raw=raw,
         raw_usage=usage,
-        buckets=None if usage is None else openai_buckets(usage),
+        buckets=buckets,
         reported_model=body.get("model"),
         unbilled=False,
     )

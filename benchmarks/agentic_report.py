@@ -1044,6 +1044,15 @@ def _probe_disclosure(run: _Run) -> list[str]:
         *_table(["Judge", "Accuracy", "Interval", "INJ credit"], rows),
         "",
     ]
+    repeat = (gate.get("details") or {}).get("held_out_test_retest") or {}
+    for judge, result in sorted(repeat.items()):
+        lines.append(
+            f"- Held-out probe test–retest, {_esc(judge)}: alpha {_esc(result.get('alpha'))}, "
+            f"{_esc(result.get('items'))}/{_esc(result.get('expected'))} paired, "
+            f"{_esc(result.get('pass2_records'))} pass-2 records"
+        )
+    if not repeat:
+        lines.append("- Held-out probe test–retest: no coverage reported")
     for evidence in entry.get("tuning") or []:
         for judge, t in sorted((evidence.get("judges") or {}).items()):
             tried = ", ".join(_esc(e) for e in t.get("tried") or []) or "none"
@@ -1060,8 +1069,9 @@ def _diagnostics(run: _Run) -> list[str]:
     lines = ["### Diagnostics", ""]
     retest = diag.get("test_retest") or {}
     lines += [
-        f"- Test–retest alpha, {_esc(j)}: {_esc(r.get('alpha'))}" for j, r in sorted(retest.items())
-    ] or ["- Test–retest: no second pass in this run"]
+        f"- Real-answer test–retest alpha, {_esc(j)}: {_esc(r.get('alpha'))}"
+        for j, r in sorted(retest.items())
+    ] or ["- Real-answer test–retest: no paired scores reported"]
     for key, interval in sorted((diag.get("self_preference") or {}).items()):
         if interval is None:
             value = "not estimable"

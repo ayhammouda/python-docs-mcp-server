@@ -385,6 +385,9 @@ def _score(
                 "inj_credit": 0,
                 "confusion": {},
                 "misses_by_generator": {"sol": 1},
+                "held_out_test_retest": {
+                    "haiku": {"alpha": 0.75, "items": 24, "expected": 28, "pass2_records": 26}
+                },
             },
         },
         "reference_check": {"passed": True, "details": {}},
@@ -601,6 +604,10 @@ def test_report_renders_the_disclosure_from_the_exported_bundle_alone(
     assert grading_inputs.MASK_RULES.strip().splitlines()[1] in disclosure
     assert "grading/inputs/judge-prompt.md" in disclosure
     assert "grading/disclosure/" in disclosure
+    assert "Held-out probe test–retest" in disclosure
+    assert "haiku" in disclosure and "0.75" in disclosure and "24/28 paired" in disclosure
+    assert "26 pass-2 records" in disclosure
+    assert "Real-answer test–retest" in disclosure
     assert "per evaluated family" in disclosure and "per system" in disclosure
     assert "scripted-openai/python-docs" in disclosure  # suspects per (model, system)
     assert "Reference grade differs from the panel's" in disclosure

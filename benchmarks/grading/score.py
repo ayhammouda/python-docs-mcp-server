@@ -927,6 +927,83 @@ def write_tuning(workspace: Path, *, panel_path: Path, tuning_path: Path = TUNIN
     return path
 
 
+def _probe_repeat(
+    workspace: Path,
+    probe: Probe,
+    judge: str,
+    spec: Mapping[str, str | None],
+    first: Mapping[str, Any] | None,
+    first_score: float | None,
+    weights: tuple[Weight, Weight],
+) -> dict[str, Any] | None:
+    """Select this judge's second take on the identical probe input."""
+    second = chosen_record(
+        workspace,
+        target="probes",
+        judge_id=judge,
+        effort=spec.get("effort"),
+        item_id=probe.id,
+        pass_number=2,
+    )
+    if second is None:
+        return None
+    for number, record in ((1, first), (2, second)):
+        if record is None:
+            continue
+        expected = {
+            "target": "probes",
+            "judge_id": judge,
+            "effort": spec.get("effort"),
+            "item_id": probe.id,
+            "model_id": spec.get("model_id"),
+            "pass": number,
+        }
+        if any(record.get(k) != v for k, v in expected.items()):
+            raise BenchmarkValidationError(f"foreign probe retest record for {judge}/{probe.id}")
+    input_sha = second.get("input_sha256")
+    if (
+        not isinstance(input_sha, str)
+        or len(input_sha) != 64
+        or any(c not in "0123456789abcdef" for c in input_sha)
+    ):
+        raise BenchmarkValidationError(f"invalid probe retest input digest for {judge}/{probe.id}")
+    if first is not None and input_sha != first.get("input_sha256"):
+        raise BenchmarkValidationError(f"probe retest input differs for {judge}/{probe.id}")
+    vote = _record_vote(second)
+    return {
+        "question_id": probe.question_id,
+        "pass1": first_score,
+        "pass2": None if vote is None else grade(vote.fields(), weights)[0],
+        "withheld": second["withheld"],
+        "input_sha256": input_sha,
+        "pass1_record": None
+        if first is None
+        else {
+            "grading_run_id": first["grading_run_id"],
+            "attempt": first["attempt"],
+        },
+        "pass2_record": {"grading_run_id": second["grading_run_id"], "attempt": second["attempt"]},
+    }
+
+
+def _probe_retest(
+    judge: str, observations: Mapping[str, dict[str, Any]], *, expected: int, seed: str
+) -> dict[str, Any]:
+    paired = {k: r for k, r in observations.items() if None not in (r["pass1"], r["pass2"])}
+    statistic = test_retest(
+        {k: {judge: r["pass1"]} for k, r in paired.items()},
+        {k: {judge: r["pass2"]} for k, r in paired.items()},
+        {k: r["question_id"] for k, r in paired.items()},
+        seed=seed,
+    ).get(judge, {"alpha": None, "low": None, "high": None, "items": 0})
+    return {
+        **statistic,
+        "expected": expected,
+        "pass2_records": len(observations),
+        "observations": observations,
+    }
+
+
 def write_g1(workspace: Path, *, panel_path: Path, tuning_path: Path = TUNING_PATH) -> Path:
     """held-out workspace: G1 for its composition, the reference probe check, the dropped
     probes and the handed-off tuning evidence, as one entry of ``g1.json``."""
@@ -938,6 +1015,7 @@ def write_g1(workspace: Path, *, panel_path: Path, tuning_path: Path = TUNING_PA
     composition = pass1_composition(workspace, "probes", panel)
     judge_scores: dict[str, dict[str, float | None]] = {}
     panel_scores: dict[str, float | None] = {}
+    repeats: dict[str, dict[str, dict[str, Any]]] = {j: {} for j in composition}
     for probe in held_out:
         votes: dict[str, Vote | None] = {}
         for judge_id, spec in composition.items():
@@ -954,6 +1032,17 @@ def write_g1(workspace: Path, *, panel_path: Path, tuning_path: Path = TUNING_PA
             judge_scores.setdefault(judge_id, {})[probe.id] = (
                 None if vote is None else grade(vote.fields(), weights[probe.question_id])[0]
             )
+            repeat = _probe_repeat(
+                workspace,
+                probe,
+                judge_id,
+                spec,
+                record,
+                judge_scores[judge_id][probe.id],
+                weights[probe.question_id],
+            )
+            if repeat is not None:
+                repeats[judge_id][probe.id] = repeat
         fields = panel_fields(votes)
         panel_scores[probe.id] = (
             None
@@ -985,6 +1074,12 @@ def write_g1(workspace: Path, *, panel_path: Path, tuning_path: Path = TUNING_PA
         for name in sorted(meta.get("handoff") or {})
         if name.startswith("tuning")
     ]
+    gate.details["held_out_test_retest"] = {
+        judge: _probe_retest(
+            judge, rows, expected=len(held_out), seed=probe_file.header["corpus_sha256"]
+        )
+        for judge, rows in repeats.items()
+    }
     entry = {
         "binding": {
             "composition": composition,

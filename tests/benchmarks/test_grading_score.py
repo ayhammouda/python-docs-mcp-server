@@ -601,6 +601,79 @@ def test_assemble_workspace_probes_and_write_g1_are_separate_steps(
     assert entry["gate"]["passed"] is True and entry["reference_check"]["passed"] is None
 
 
+def test_g1_exports_only_observed_held_out_retest_pairs(tmp_path: Path) -> None:
+    held = _workspace(tmp_path / "held", "held-out", {"probes.yml": PROBES})
+    _json(held / "runs/run-1.json", {"target": "probes", "pass": 1, "composition": COMPOSITION})
+    keys = ["KEY--SYN-EX-001", "IDK--SYN-EX-002", "FACT--SYN-EX-001"]
+    for key in keys:
+        _vote(held, "haiku", key, _vote_text(attempted=key == keys[0]), target="probes")
+
+    def entry():
+        (result,) = json.loads(write_g1(held, panel_path=PANEL_PATH).read_text())[
+            "entries"
+        ].values()
+        return result
+
+    first = entry()
+    for key in keys:
+        text = "invalid" if key == keys[2] else _vote_text(attempted=key != keys[0])
+        _vote(held, "haiku", key, text, target="probes", pass_number=2)
+    # Valid votes for another effort or the tuning set do not belong to this comparison.
+    _vote(held, "luna", keys[0], _vote_text(), target="probes", pass_number=2, effort="high")
+    _vote(held, "haiku", "KEY--TUNE-001", _vote_text(), target="probes", pass_number=2)
+    second = entry()
+    metric = "held_out_test_retest"
+    before = first["gate"]["details"].pop(metric)
+    assert before["haiku"]["items"] == 0 and before["haiku"]["alpha"] is None
+    observed = second["gate"]["details"].pop(metric)
+    assert first == second
+    haiku = observed["haiku"]
+    assert (haiku["alpha"], haiku["items"], haiku["expected"], haiku["pass2_records"]) == (
+        -0.5,
+        2,
+        28,
+        3,
+    )
+    bad = haiku["observations"][keys[2]]
+    assert bad["withheld"] == "parse_failure" and bad["pass2"] is None
+    assert bad["pass1_record"] == bad["pass2_record"] == {"grading_run_id": "run-1", "attempt": 1}
+    assert observed["luna"]["pass2_records"] == 0
+    run = _build_run(tmp_path)
+    summary = score_run_dir(
+        run,
+        criteria_path=CRITERIA,
+        panel_path=PANEL_PATH,
+        schema_path=SCHEMA,
+        g1_paths=[held / "g1.json"],
+        resamples=30,
+    )
+    shutil.rmtree(held)
+    assert summary["gates"]["G1"]["details"][metric] == observed
+    assert summary["diagnostics"]["test_retest"] is None
+    (copy,) = summary["disclosure"]["g1_files"]
+    (exported,) = json.loads((run / "grading" / copy["path"]).read_text())["entries"].values()
+    assert exported["binding"] == first["binding"]
+    assert exported["gate"]["details"][metric] == observed
+
+
+@pytest.mark.parametrize(
+    "field,value", [("input_sha256", "b" * 64), ("model_id", "unrelated"), ("pass", 1)]
+)
+def test_g1_rejects_a_foreign_retest(field, value, tmp_path):
+    from benchmarks.runner import BenchmarkValidationError
+
+    held = _workspace(tmp_path / "held", "held-out", {"probes.yml": PROBES})
+    _json(held / "runs/run-1.json", {"target": "probes", "pass": 1, "composition": COMPOSITION})
+    key = "KEY--SYN-EX-001"
+    for number in (1, 2):
+        _vote(held, "haiku", key, _vote_text(), target="probes", pass_number=number)
+    (path,) = (held / "votes/probes/haiku/low/pass2" / key).glob("*.json")
+    _json(path, {**json.loads(path.read_text()), field: value})
+    with pytest.raises(BenchmarkValidationError, match=key):
+        write_g1(held, panel_path=PANEL_PATH)
+    assert not (held / "g1.json").exists()
+
+
 def test_cli_agentic_score_needs_no_network_and_exits_2_on_bad_input(
     scripted_graded_run: Path,
     tmp_path: Path,

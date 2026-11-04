@@ -21,6 +21,7 @@ import yaml
 from benchmarks.adapters.guard import PAID_KEY_ENVS, LiveProviderDisabledError
 from benchmarks.agentic.clients import anthropic_sdk, gemini_sdk, openai_sdk
 from benchmarks.agentic.types import Buckets, ProviderCallError
+from benchmarks.grading.aggregate import has_final_record, read_vote_record, write_vote_record
 from benchmarks.grading.batch import (
     AnthropicBatchClient,
     BatchItemResult,
@@ -34,6 +35,7 @@ from benchmarks.grading.batch import (
     openai_failed_result,
     openai_result,
 )
+from benchmarks.grading.panel import load_panel
 from benchmarks.model_matrix import model_family_from_raw
 from benchmarks.runner import BenchmarkValidationError
 
@@ -662,6 +664,14 @@ def test_unbilled_follows_each_providers_documented_rule(
             False,
             "max_output_tokens",
         ),
+        (
+            "openai",
+            _openai_body(
+                "i1", status="incomplete", incomplete_details={"reason": "content_filter"}
+            ),
+            True,
+            "content_filter",
+        ),
         ("google", _gemini_response("i1", finish="SAFETY"), True, "SAFETY"),
         ("google", _gemini_response("i1", finish="MAX_TOKENS"), False, "MAX_TOKENS"),
     ],
@@ -722,6 +732,73 @@ async def test_a_failed_openai_batch_returns_every_item_errored_and_not_retryabl
         ("i1", "errored", True, False),
         ("i2", "errored", True, False),
     ]
+
+
+@pytest.mark.parametrize(
+    "status,expected,usage",
+    [
+        ("failed", "errored", None),
+        ("failed", "errored", {"input_tokens": 100, "output_tokens": 2}),
+        ("cancelled", "canceled", {"input_tokens": 20, "output_tokens": 0}),
+        ("in_progress", "errored", None),
+        ("queued", "errored", None),
+        ("incomplete", "errored", None),
+        ("failed", "errored", {"input_tokens": 0, "output_tokens": 0}),
+    ],
+)
+async def test_openai_unsuccessful_item_is_withheld_and_remains_gradable(
+    tmp_path: Path, status: str, expected: str, usage: dict | None
+) -> None:
+    line = _openai_body(
+        "i1",
+        status=status,
+        usage=usage,
+        error={"code": "server_error"} if status == "failed" else None,
+    )
+    # A failed response may contain no output or a partial reply that looks parseable.
+    if status == "failed":
+        line["response"]["body"]["output"] = []
+    (result,) = await _openai_results([line]).results("batch_1", ["i1"])
+    panel = load_panel(Path(__file__).parent / "fixtures/grading/panel.yml")
+    where = {
+        "target": "probes",
+        "judge_id": "luna",
+        "effort": "low",
+        "pass_number": 1,
+        "item_id": "i1",
+    }
+    path = write_vote_record(
+        tmp_path,
+        target="probes",
+        judge=panel.judges["luna"],
+        effort="low",
+        pass_number=1,
+        grading_run_id="local",
+        attempt=1,
+        result=result,
+        terminal=False,
+        unit_id="u1",
+        provider_batch_id="batch_1",
+        input_sha256="d" * 64,
+        schema=SCHEMA,
+    )
+    record = read_vote_record(path)
+    assert record["withheld"] == record["status"] == expected
+    assert not has_final_record(tmp_path, **where)
+    assert result.retryable and not result.unbilled and result.text is None
+    assert record["vote"] is None and record["raw_usage"] == usage and result.raw == line
+    assert result.buckets == (
+        Buckets(usage["input_tokens"], 0, 0, usage["output_tokens"], 0)
+        if usage is not None
+        else None
+    )
+
+
+async def test_failed_openai_items_keep_partial_usage_without_assuming_zero() -> None:
+    line = _openai_body("i1", status="failed", output=[], usage={"input_tokens": 25})
+    (result,) = await _openai_results([line]).results("batch_1", ["i1"])
+    assert result.status == "errored" and result.raw_usage == {"input_tokens": 25}
+    assert result.buckets is None and not result.unbilled
 
 
 async def test_a_failed_gemini_job_without_results_is_all_missing() -> None:
