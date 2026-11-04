@@ -68,11 +68,42 @@ _LIVE_APIS = {
     "openai-chat-completions": "ollama",  # keyless: OLLAMA_BASE_URL instead
 }
 
+# Count the root container too. Leave headroom for dataclasses.asdict, evidence
+# envelopes and the MCP SDK's recursive JSON validation on Python 3.12–3.14.
+MAX_TOOL_ARGUMENT_DEPTH = 64
+
+
+def _argument_depth_exceeded(text: str) -> bool:
+    """Bound decoding without recursion or allocating a tree, including shadowed fields.
+
+    This is only a depth preflight; json.loads still decides validity. Content
+    inspection runs separately after usage settlement and scans the entire text.
+    """
+    depth = 0
+    quoted = escaped = False
+    for char in text:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+        elif char == '"':
+            quoted = True
+        elif char in "[{":
+            depth += 1
+            if depth > MAX_TOOL_ARGUMENT_DEPTH:
+                return True
+        elif char in "]}":
+            depth -= 1
+    return False
+
 
 def _parse_tool_arguments(value: Any) -> tuple[dict[str, Any], str | None]:
     """Normalize a response without raising a content failure before usage is settled."""
     if isinstance(value, str):
-        if len(value) > MAX_FRAME_BYTES:
+        if len(value) > MAX_FRAME_BYTES or _argument_depth_exceeded(value):
             return {}, value  # The bounded content check runs after usage settlement.
         try:
             parsed = json.loads(value)

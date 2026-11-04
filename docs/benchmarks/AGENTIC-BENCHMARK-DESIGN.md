@@ -284,6 +284,11 @@ came from. Container settings:
   The scan does not parse document structure or retry from interior quotes.
   Integer conversion and nesting-limit failures during adapter normalization keep
   the raw argument as invalid input so the loop can settle returned usage first.
+  JSON argument strings are limited to 64 nested objects/arrays, counting the root,
+  before decoding, so accepted arguments fit recursive transcript serialization
+  and MCP validation on supported Pythons. Deeper arguments follow the same invalid
+  input path, retaining exact native replay and evidence; the content scan still
+  checks the entire string, including values shadowed by duplicate object keys.
   A content failure does not replace known usage with a lost worker charge.
   Both the full MCP envelope and the truncated result are checked. Gemini
   content scanning includes the SDK's ASCII JSON escaping before reservation.
