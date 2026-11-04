@@ -228,11 +228,14 @@ def _no_final_record(
     grading: Path, efforts: Mapping[str, str | None], items: Sequence[str]
 ) -> dict[str, dict[str, list[str]]]:
     """Amendment 2: per judge, the items with no final pass-1 record, by last not_run reason."""
-    last_reason: dict[tuple[str, str], str] = {}
-    for path in sorted((grading / "runs").glob("*.json")):
-        for entry in _read(path).get("not_run") or []:
+    # Invocation timestamps are written in UTC. Their one-second precision allows ties.
+    history: dict[tuple[str, str], dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+    for path in (grading / "runs").glob("*.json"):
+        run = _read(path)
+        when = run.get("completed_at") or run.get("started_at") or ""
+        for entry in run.get("not_run") or []:
             if entry.get("target") == "answers" and entry.get("pass") == 1:
-                last_reason[(entry["judge_id"], entry["item_id"])] = entry["reason"]
+                history[entry["judge_id"], entry["item_id"]][when].add(entry["reason"])
     result: dict[str, dict[str, list[str]]] = {}
     for judge_id, effort in efforts.items():
         for item in items:
@@ -244,7 +247,11 @@ def _no_final_record(
                 pass_number=1,
                 item_id=item,
             ):
-                reason = last_reason.get((judge_id, item), NO_RECORD)
+                reasons = history.get((judge_id, item), {})
+                latest = reasons.get(max(reasons, default=""), set()) | reasons.get("", set())
+                reason = next(iter(latest), NO_RECORD)
+                if len(latest) > 1:
+                    reason = f"chronology unknown ({', '.join(sorted(latest))})"
                 result.setdefault(judge_id, {}).setdefault(reason, []).append(item)
     return result
 
@@ -368,13 +375,24 @@ def score_run_dir(
     }
     weights = {qid: q.weights for qid, q in questions.items()}
 
-    # 3. G2 on the judges' own pass-1 grades of every panel-graded (non-suspect) answer.
-    own = {
+    # 3. G2 uses independent pass-1 votes even while the final grade is pending.
+    panel_votes = {
         av.item_id: {j: _own(av, j, weights[av.corpus_id]) for j in efforts}
         for k, av in answer_votes.items()
-        if k in finals and not av.suspect
+        if k in transcripts and not av.suspect
     }
-    g2_result = g2(own, question_of, seed=seed, resamples=resamples)
+    agreement = {
+        item: votes
+        for item, votes in panel_votes.items()
+        if sum(v is not None for v in votes.values()) >= 2
+    }
+    # Other diagnostics retain their finalized-answer cohort.
+    own = {
+        av.item_id: panel_votes[av.item_id]
+        for k, av in answer_votes.items()
+        if k in finals and av.item_id in panel_votes
+    }
+    g2_result = g2(agreement, question_of, seed=seed, resamples=resamples)
 
     # 4. G3 on the stored reference sample: final grade vs an independent reference vote.
     pairs: dict[str, tuple[float, float]] = {}
@@ -411,13 +429,13 @@ def score_run_dir(
         confusion[str(final_score)][str(reference_score)] += 1
 
     # 6. Claims under the panel and under each single judge, then G4.
+    plan_path = run_dir / "planned-cells.json"
+    plan = _read(plan_path) if plan_path.exists() else {}
+    plan_cells = plan.get("cells") or []
     planned: set[CellKey] = {
-        (c["system_id"], c["model_family_id"], c["corpus_id"], int(c["repeat"]))
-        for c in _read(run_dir / "planned-cells.json")["cells"]
+        (c["system_id"], c["model_family_id"], c["corpus_id"], int(c["repeat"])) for c in plan_cells
     }
-    cell_family = {
-        c["cell"]: c["model_family_id"] for c in _read(run_dir / "planned-cells.json")["cells"]
-    }
+    cell_family = {c["cell"]: c["model_family_id"] for c in plan_cells}
     key_of: dict[tuple[str, str], CellKey] = {
         k: (t["system_id"], t["model_family_id"], t["corpus_id"], int(t["repeat"]))
         for k, t in transcripts.items()
@@ -442,7 +460,7 @@ def score_run_dir(
     families = _model_families(run_dir)
     airgap = {fid for fid, f in families.items() if f.get("arm") == "air-gapped"}
     systems_of: dict[str, set[str]] = defaultdict(set)
-    for system, model, _q, _r in planned:
+    for system, model, _q, _r in planned.union(key_of.values()):
         systems_of[model].add(system)
     c2_models = sorted(m for m, s in systems_of.items() if {"python-docs", "docs-fetch"} <= s)
     c3_models = sorted(
@@ -607,7 +625,10 @@ def score_run_dir(
 
     g3_grades = {i: {"final": p[0], "reference": p[1]} for i, p in in_sample.items()}
     breakdowns = {
-        "G2": {"by_family": breakdown(own, family_of), "by_system": breakdown(own, system_of)},
+        "G2": {
+            "by_family": breakdown(agreement, family_of),
+            "by_system": breakdown(agreement, system_of),
+        },
         "G3": {
             "by_family": breakdown(g3_grades, family_of),
             "by_system": breakdown(g3_grades, system_of),

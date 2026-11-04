@@ -457,17 +457,30 @@ def g3_sample(
     return ids, info
 
 
-def _missing_cells(
+def _pairing_error(
     planned: set[CellKey],
     scores: Mapping[CellKey, float | None],
     systems: tuple[str, str],
     model: str,
-) -> list[str]:
-    return [
-        f"{s}/{m}/{q}/r{r}"
-        for s, m, q, r in sorted(planned)
-        if s in systems and m == model and (s, m, q, r) not in scores
-    ]
+) -> str | None:
+    cells = {k for k in planned if k[0] in systems and k[1] == model}
+    actual = {k for k in scores if k[0] in systems and k[1] == model}
+    if not cells:
+        return f"no planned cells for {model} comparing {systems[0]} and {systems[1]}"
+    for difference, reason in (
+        (cells - actual, "planned cells with no scored record"),
+        (actual - cells, "scored cells absent from the planned set"),
+    ):
+        if difference:
+            labels = [f"{s}/{m}/{q}/r{r}" for s, m, q, r in sorted(difference)]
+            return f"{reason}: {labels}"
+    left, right = ({(q, r) for s, _, q, r in cells if s == system} for system in systems)
+    if left != right:
+        return (
+            f"unequal question/repeat sets: {systems[0]} alone {sorted(left - right)}, "
+            f"{systems[1]} alone {sorted(right - left)}"
+        )
+    return None
 
 
 def _not_evaluable(claim: str, model: str, reason: str) -> ClaimResult:
@@ -488,12 +501,10 @@ def c2(
     if peer == "no-docs":
         raise ValueError("no-docs is never a token peer: it is the correctness floor (design §2)")
     systems = ("python-docs", peer)
-    missing = _missing_cells(planned, scores, systems, model)
-    if missing:
-        return _not_evaluable("C2", model, f"planned cells with no scored record: {missing}")
+    reason = _pairing_error(planned, scores, systems, model)
+    if reason:
+        return _not_evaluable("C2", model, reason)
     cells = [k for k in planned if k[0] in systems and k[1] == model]
-    if not cells:
-        return _not_evaluable("C2", model, "no planned cells")
     open_cells = sorted(
         f"{k[0]}/{k[1]}/{k[2]}/r{k[3]}"
         for k in cells
@@ -566,12 +577,10 @@ def c3(
 ) -> ClaimResult:
     """Mean correctness with docs minus without; passes when the CI's bottom is > 0, offline."""
     systems = ("python-docs", "no-docs")
-    missing = _missing_cells(planned, scores, systems, model)
-    if missing:
-        return _not_evaluable("C3", model, f"planned cells with no scored record: {missing}")
+    reason = _pairing_error(planned, scores, systems, model)
+    if reason:
+        return _not_evaluable("C3", model, reason)
     cells = [k for k in planned if k[0] in systems and k[1] == model]
-    if not cells:
-        return _not_evaluable("C3", model, "no planned cells")
     pending = sorted(f"{k[0]}/{k[1]}/{k[2]}/r{k[3]}" for k in cells if scores.get(k) is None)
     if pending:
         return _not_evaluable("C3", model, f"ungraded cells: {pending}")

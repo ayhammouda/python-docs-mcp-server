@@ -271,8 +271,9 @@ def _header(run: _Run, methodology_path: Path) -> list[str]:
         f"- Run {_esc(summary.get('run_id'))} at commit {_esc(summary.get('repo_commit'))}",
         f"- Methodology: [{methodology_path.name}]({link})",
         f"- Corpus sha256: `{run.bundle.corpus_hash}`",
-        f"- Planned cells: {_esc(summary.get('planned_cells'))}; scored cells: "
-        f"{_esc(summary.get('scored_cells'))}",
+        f"- Planned cells: {_esc(summary.get('planned_cells'))}; "
+        f"completed trajectories: {len(run.transcripts)}; scored cells: "
+        f"{sum(run.scoring.get(k, {}).get('score') is not None for k in run.transcripts)}",
         "",
         *_table(["Model family", "Provider", "Model id", "Arm"], rows),
     ]
@@ -523,6 +524,34 @@ def _disclosure(run: _Run) -> list[str]:
         by = breakdowns.get(gate) or {}
         lines += _alpha_table(f"{gate} per evaluated family", by.get("by_family") or {})
         lines += _alpha_table(f"{gate} per system", by.get("by_system") or {})
+    sample = _read_json(run.dir / "grading" / "reference-sample.json") or {}
+    groups = sample.get("groups") or {}
+    borrowed = sample.get("borrowed") or {}
+    shortfall = sample.get("shortfall") or {}
+    if groups or borrowed or shortfall:
+        allocation_rows = []
+        for group in sorted(groups.keys() | borrowed.keys() | shortfall.keys()):
+            counts = groups.get(group, {})
+            donors = ", ".join(
+                f"{n} from {category}" for category, n in sorted(borrowed.get(group, {}).items())
+            )
+            allocation_rows.append(
+                [
+                    group,
+                    _fmt(counts.get("allocated")),
+                    _fmt(counts.get("taken")),
+                    donors or ("none" if "borrowed" in sample else "n/a"),
+                    _fmt(shortfall.get(group, 0) if "shortfall" in sample else None),
+                ]
+            )
+        lines += [
+            "G3 reference sample allocation:",
+            "",
+            *_table(
+                ["Model/system", "Allocated", "Taken", "Borrowed", "Shortfall"], allocation_rows
+            ),
+            "",
+        ]
     confusion = (breakdowns.get("G3") or {}).get("confusion") or {}
     lines += [
         "G3 confusion (final grade by reference grade):",
@@ -666,7 +695,8 @@ def _diagnostics(run: _Run) -> list[str]:
         for reason, items in sorted(reasons.items()):
             lines.append(
                 f"- {_esc(judge)}: {len(items)} items with no final pass-1 record, last "
-                f"not_run reason {_esc(reason)}; they block the reference grader until fixed"
+                f"not_run reason {_esc(reason)}: {', '.join(_esc(i) for i in items)}; "
+                "they block the reference grader until fixed"
             )
     audit = summary.get("key_audit") or {}
     flagged = ", ".join(_esc(q) for q in audit.get("flagged") or [])
@@ -819,6 +849,7 @@ def _cost(run: _Run) -> list[str]:
     reasoning: Counter[str] = Counter()
     cached: Counter[str] = Counter()
     credit: dict[str, float] = defaultdict(float)
+    pending: set[str] = set()
     for key, t in run.transcripts.items():
         family = str(t.get("model_family_id"))
         price = snapshot.models.get(str(run.families.get(family, {}).get("model_id")))
@@ -829,17 +860,27 @@ def _cost(run: _Run) -> list[str]:
                 reasoning[family] += buckets.reasoning
                 cached[family] += buckets.cached_input
         score = run.scoring.get(key, {}).get("score")
-        credit[family] += float(score) if score is not None else 0.0
-    rows = [
-        [
-            f,
-            f"{totals[f]:.4f}",
-            f"{totals[f] / Decimal(str(credit[f])):.4f}" if credit[f] else "no correct answer",
-            str(reasoning[f]),
-            str(cached[f]),
-        ]
-        for f in sorted(totals)
-    ]
+        if score is None:
+            pending.add(family)
+        else:
+            credit[family] += float(score)
+    rows = []
+    for family, cost in sorted(totals.items()):
+        if family in pending:
+            per_correct = "pending"
+        elif credit[family]:
+            per_correct = f"{cost / Decimal(str(credit[family])):.4f}"
+        else:
+            per_correct = "no correct answer"
+        rows.append(
+            [
+                family,
+                f"{cost:.4f}",
+                per_correct,
+                str(reasoning[family]),
+                str(cached[family]),
+            ]
+        )
     return [
         "## Cost per correct answer",
         "",
@@ -848,6 +889,7 @@ def _cost(run: _Run) -> list[str]:
             "Reasoning tokens are shown for information (already inside output); cached "
             "tokens are disclosed. Never compared across models."
         ),
+        *(["Known spend is shown while a model has grades pending."] if pending else []),
         "",
         *_table(
             [
