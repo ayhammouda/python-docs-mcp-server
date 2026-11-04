@@ -185,7 +185,8 @@ def worker_env(family: ModelFamily) -> dict[str, str]:
 
 
 def _tail(proc: subprocess.CompletedProcess[bytes]) -> str:
-    lines = proc.stderr.decode("utf-8", errors="replace").strip().splitlines()
+    scrubbed, _ = redact_key_shaped(proc.stderr)
+    lines = scrubbed.decode("utf-8", errors="replace").strip().splitlines()
     return lines[-1] if lines else f"exit {proc.returncode}"
 
 
@@ -296,7 +297,8 @@ class Sandbox:
         """One docker command; raises BenchmarkValidationError when it fails."""
         proc = await self.docker(["docker", *args])
         if proc.returncode != 0:
-            raise BenchmarkValidationError(f"docker {' '.join(args[:2])} failed: {_tail(proc)}")
+            operation = args[:3] if args[:2] in (("network", "rm"), ("rm", "-f")) else args[:2]
+            raise BenchmarkValidationError(f"docker {' '.join(operation)} failed: {_tail(proc)}")
         return proc
 
     async def output(self, *args: str) -> str:

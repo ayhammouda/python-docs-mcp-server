@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import time
+import traceback
 from collections.abc import Sequence
 from dataclasses import asdict, replace
 from decimal import Decimal
@@ -1437,6 +1438,72 @@ async def test_a_failing_stop_worker_still_scrubs_the_log_and_settles_the_unit(
         "settle:worker_lost",
     ]
     assert launcher.events[-1] == ("close",)
+
+
+@pytest.mark.parametrize("phase", ["spawn", "kill", "reap", "stop", "chained_stop"])
+async def test_cleanup_scrubs_and_accounts_even_with_a_broken_stderr(
+    host: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    granted, started = asyncio.Event(), asyncio.Event()
+    stopped = AsyncMock()
+
+    async def spawn(*args: Any, stderr: Any, **kwargs: Any) -> Mock:
+        os.write(stderr.fileno(), f"debug: {SYNTHETIC_KEY}\n".encode())
+        started.set()
+        if phase == "spawn":
+            await asyncio.Event().wait()
+        stdout = asyncio.StreamReader()
+        stdout.feed_data(encode_frame(_reserve_frame(1024)))
+
+        def write(frame: bytes) -> None:
+            if _frames(frame)[0]["type"] == "grant":
+                granted.set()
+
+        return Mock(stdin=Mock(write=write, drain=AsyncMock()), stdout=stdout, wait=AsyncMock())
+
+    class Launcher(LocalLauncher):
+        async def stop_worker(self, job: WorkerJob) -> None:
+            await stopped(job)
+            if phase == "chained_stop":
+                try:
+                    raise ValueError(SYNTHETIC_KEY)
+                except ValueError as cause:
+                    raise RuntimeError("removal failed") from cause
+            if phase == "stop":
+                raise RuntimeError(f"removal failed: {SYNTHETIC_KEY}")
+
+    _fake_host_processes(monkeypatch, spawn)
+    if phase == "kill":
+        monkeypatch.setattr(agentic_host, "_kill_group", Mock(side_effect=OSError("kill failed")))
+    if phase == "reap":
+        monkeypatch.setattr(agentic_host, "_reap", AsyncMock(side_effect=OSError("reap failed")))
+    job = _job(tmp_path, [ANSWER], job_id="interrupted")
+    task = asyncio.create_task(host.run([job], launcher=Launcher()))
+    await asyncio.wait_for((started if phase == "spawn" else granted).wait(), 2)
+    broken = Mock(write=Mock(side_effect=BrokenPipeError("reader closed")))
+    with monkeypatch.context() as stream:
+        stream.setattr(sys, "stderr", broken)
+        task.cancel("signal SIGTERM")
+        with pytest.raises(asyncio.CancelledError, match="signal SIGTERM") as error:
+            await task
+    log = tmp_path / "logs" / "interrupted.stderr.log"
+    assert log.read_text() == "debug: [redacted]\n"
+    stopped.assert_awaited_once_with(job)
+    trace = "".join(traceback.format_exception(error.value))
+    assert SYNTHETIC_KEY not in trace
+    assert log.name in trace and "KeyLeakError" in trace
+    if phase in ("stop", "chained_stop"):
+        assert "removal failed" in trace
+    assert host.ledger.spent("anthropic") == (0 if phase == "spawn" else 2 * D("0.002024"))
+
+
+def test_unreadable_worker_log_is_unlinked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    log = tmp_path / "worker.stderr.log"
+    log.write_text(SYNTHETIC_KEY)
+    monkeypatch.setattr(Path, "read_bytes", Mock(side_effect=OSError("read failed")))
+    with pytest.raises(OSError, match="read failed"):
+        agentic_host._publish_scrubbed(log)
+    assert not log.exists()
 
 
 async def test_close_problems_fail_a_clean_run(host: Host, tmp_path: Path) -> None:

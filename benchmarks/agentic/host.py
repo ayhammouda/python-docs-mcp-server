@@ -14,8 +14,9 @@ import os
 import signal
 import subprocess
 import sys
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from contextlib import suppress
+import traceback
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass
 from functools import partial
 from pathlib import Path
@@ -170,8 +171,15 @@ async def _reap(anchor: subprocess.Popen[bytes]) -> None:
         await asyncio.to_thread(anchor.wait, _EXIT_WAIT_S)
 
 
+def _diagnostic(message: str) -> None:
+    # During terminal hangup even stderr can be closed.
+    if sys.stderr is not None:
+        with suppress(OSError, ValueError):
+            print(KEY_SHAPED.sub("[redacted]", message), file=sys.stderr, flush=True)
+
+
 async def _teardown(
-    proc: asyncio.subprocess.Process,
+    proc: asyncio.subprocess.Process | None,
     anchor: subprocess.Popen[bytes],
     log_path: Path,
     ledger: LedgerService,
@@ -180,46 +188,48 @@ async def _teardown(
 ) -> None:
     """Kill the worker, scrub its log and book any open unit before teardown returns."""
 
-    def report(error: BaseException) -> None:
-        # gather can propagate a sibling's cancellation first. Report while this job still owns it.
-        detail = KEY_SHAPED.sub("[redacted]", str(error))
-        print(
-            f"worker teardown ({log_path.name}): {type(error).__name__}: {detail}", file=sys.stderr
-        )
+    errors: list[BaseException] = []
+    location = f"worker teardown ({log_path.name})"
 
-    stop_error: BaseException | None = None
-    try:
-        # The whole group, even after the worker exited: no descendant outlives it to write.
+    @contextmanager
+    def attempt() -> Iterator[None]:
+        # All five steps run independently. Report each job's failures before gather drains it.
         try:
-            _kill_group(anchor)
-            with suppress(TimeoutError):  # a worker that never exits cannot hang the run
+            yield
+        except BaseException as exc:  # noqa: BLE001 - propagate after all cleanup steps
+            detail = f"{location}: {type(exc).__name__}: {exc}"
+            if KEY_SHAPED.search("".join(traceback.format_exception(exc, limit=0))):
+                # An outer exception may be clean while its notes or chained daemon error leak.
+                safe = KeyLeakError(KEY_SHAPED.sub("[redacted]", detail) + " (key shape redacted)")
+                errors.append(safe)
+            else:
+                exc.add_note(location)
+                errors.append(exc)
+            _diagnostic(detail)
+
+    with attempt():
+        _kill_group(anchor)
+        if proc is not None:
+            with suppress(TimeoutError):
                 await asyncio.wait_for(proc.wait(), _EXIT_WAIT_S)
-        finally:
-            await _reap(anchor)
-        if stop_worker is not None:
-            try:
-                await stop_worker()  # a container's removal ends everything in it
-            except BaseException as exc:  # noqa: BLE001 - kept, then re-raised below
-                stop_error = exc
-                report(exc)
+    with attempt():
+        await _reap(anchor)
+    if stop_worker is not None:
+        with attempt():
+            await stop_worker()
+    with attempt():
         if pattern := _publish_scrubbed(log_path):
             raise KeyLeakError(
                 f"a key-shaped string ({pattern} pattern) was found in {log_path}; redacted there"
             )
-    except Exception as error:
-        report(error)
-        if stop_error is not None and isinstance(error, KeyLeakError):
-            raise stop_error from error
-        raise
-    finally:  # whatever happened to the log
-        if in_flight is not None:  # may have been billed: booked at twice its bound
-            try:
-                await ledger.settle(in_flight, outcome="worker_lost", buckets=None)
-            except Exception as error:
-                report(error)
-                raise
-    if stop_error is not None:
-        raise stop_error
+    if in_flight is not None:
+        with attempt():
+            await ledger.settle(in_flight, outcome="worker_lost", buckets=None)
+
+    if errors:
+        for primary, secondary in zip(errors, errors[1:]):
+            primary.__cause__ = secondary
+        raise errors[0]
 
 
 def _publish_scrubbed(log_path: Path) -> str | None:
@@ -229,9 +239,9 @@ def _publish_scrubbed(log_path: Path) -> str | None:
     replaces the log, so a writer still holding it writes into an unlinked file. If the copy
     cannot be published, the log is unlinked instead, for the same reason.
     """
-    redacted, pattern = redact_key_shaped(log_path.read_bytes())
     scrubbed = log_path.with_name(log_path.name + ".tmp")
     try:
+        redacted, pattern = redact_key_shaped(log_path.read_bytes())
         scrubbed.write_bytes(redacted)
         os.replace(scrubbed, log_path)
     except OSError:  # a full or read-only disk, say
@@ -253,9 +263,9 @@ async def _supervise(
 ) -> None:
     argv, env = launcher.command(job)
     log_path = log_dir / f"{job.job_id}.stderr.log"
-    anchor = _start_anchor()
-    try:
-        with log_path.open("wb") as log:
+    with log_path.open("wb") as log:
+        anchor = _start_anchor()
+        try:
             proc = await asyncio.create_subprocess_exec(
                 *argv,
                 env=env,
@@ -265,16 +275,13 @@ async def _supervise(
                 stderr=log,
                 process_group=anchor.pid,  # the anchor's group, which teardown kills whole
             )
-    except BaseException as exc:
-
-        async def discard_anchor() -> None:
-            try:
-                _kill_group(anchor)
-            finally:
-                await _reap(anchor)
-
-        await finish(discard_anchor(), exc)
-        raise
+        except BaseException as exc:
+            # A child may already have written stderr before its pipe transport is ready.
+            await finish(
+                _teardown(None, anchor, log_path, ledger, None, partial(launcher.stop_worker, job)),
+                exc,
+            )
+            raise
     assert proc.stdin is not None and proc.stdout is not None
     in_flight: str | None = None
     reported: set[tuple[str, int]] = set()
@@ -438,9 +445,9 @@ async def run_jobs(
         async def close() -> None:
             nonlocal reported
             if problems := await launcher.close():
-                detail = "; ".join(problems)
+                detail = KEY_SHAPED.sub("[redacted]", "; ".join(problems))
                 if failed:
-                    print(f"launcher cleanup problems: {detail}", file=sys.stderr)
+                    _diagnostic(f"launcher cleanup problems: {detail}")
                 reason = (
                     "launcher cleanup problems"
                     if failed

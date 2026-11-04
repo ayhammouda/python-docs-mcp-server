@@ -811,6 +811,24 @@ def _logs(log_dir: Path, access: str = PARTIAL, cache: str = "squid started\n") 
     (log_dir / "cache.log").write_text(cache, encoding="utf-8")
 
 
+async def test_network_remove_failure_names_the_owned_id_and_scrubs_daemon_stderr(
+    tmp_path: Path,
+) -> None:
+    sandbox = _sandbox(tmp_path, FakeDocker())
+    await sandbox.ensure_outside()
+    owned = sandbox.outside_id
+    assert owned is not None
+
+    async def disconnected(argv: Sequence[str]) -> Any:
+        return _done(argv, 1, err=f"daemon disconnected: {SYNTHETIC}")
+
+    sandbox.docker = disconnected
+    problems = await ContainerLauncher(sandbox).close()
+    assert len(problems) == 1
+    assert owned in problems[0] and "daemon disconnected: [redacted]" in problems[0]
+    assert SYNTHETIC not in problems[0]
+
+
 async def test_close_stops_each_proxy_then_removes_what_it_created(tmp_path: Path) -> None:
     docker = FakeDocker()
     keys = _keys(tmp_path, "ANTHROPIC_API_KEY=dummy")
