@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import random
 import signal
 import subprocess
@@ -41,6 +40,7 @@ from benchmarks.model_matrix import load_model_matrix
 from benchmarks.report import generate_report
 from benchmarks.runner import BenchmarkValidationError, _load_questions, _load_yaml_mapping
 from benchmarks.scoring import score_run
+from tests.benchmarks.test_agentic_host import _alive
 from tests.test_mcp_get_docs_cache_smoke import _create_contentful_json_index
 from tests.test_stdio_smoke import _isolated_cache_env
 
@@ -364,15 +364,13 @@ def _when_ready(host: subprocess.Popen[bytes], ready: Path) -> tuple[int, int]:
 
 
 def _gone(pid: int) -> bool:
-    """Whether ``pid`` is gone within 5 s (reaped: an orphan's new parent reaps it at once)."""
+    """Whether ``pid`` has exited within 5 s; a zombie has, whoever has yet to reap it."""
     deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return True
+    while _alive(pid):
+        if time.monotonic() > deadline:
+            return False
         time.sleep(0.01)
-    return False
+    return True
 
 
 @pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP])
@@ -413,10 +411,8 @@ def test_no_anchor_outlives_a_host_killed_outright(tmp_path: Path) -> None:
         if host.poll() is None:
             host.kill()
             host.wait()
-    gone = _gone(anchor)
-    if not gone:  # alive throughout the wait, so still the anchor this test's host started
-        os.kill(anchor, signal.SIGKILL)
-    assert gone, "the anchor outlived its host"
+    # No cleanup by raw pid: the test holds no handle to its host's anchor.
+    assert _gone(anchor), f"the anchor (pid {anchor}) outlived its host"
 
 
 def test_a_rerun_that_never_ran_is_not_counted(tmp_path: Path) -> None:
