@@ -213,10 +213,17 @@ async def _teardown(
         with attempt():
             await stop_worker()
     with attempt():
-        if pattern := _publish_scrubbed(worker_log, log_path):
-            raise KeyLeakError(
-                f"a key-shaped string ({pattern} pattern) was found in {log_path}; redacted there"
-            )
+        redacted, pattern = _scrubbed_snapshot(worker_log)
+        detected = f"a key-shaped string ({pattern} pattern) was found in {log_path}"
+        try:
+            _publish_worker_log(redacted, log_path)
+        except Exception:
+            if pattern:
+                # Keep the leak primary and report the storage error after settlement.
+                errors.append(KeyLeakError(f"{detected}; scrubbed log publication failed"))
+            raise
+        if pattern:
+            raise KeyLeakError(f"{detected}; redacted there")
     with attempt():
         worker_log.close()
     if in_flight is not None:
@@ -241,8 +248,8 @@ async def _teardown(
         raise errors[0]
 
 
-def _publish_scrubbed(worker_log: BinaryIO, log_path: Path) -> str | None:
-    """Publish only a scanned snapshot. Late writers keep their anonymous inode and offset."""
+def _scrubbed_snapshot(worker_log: BinaryIO) -> tuple[bytes, str | None]:
+    """Late writers keep their anonymous inode and offset."""
     fd = worker_log.fileno()
     size = os.fstat(fd).st_size
     if size > _MAX_LOG_BYTES:
@@ -250,7 +257,10 @@ def _publish_scrubbed(worker_log: BinaryIO, log_path: Path) -> str | None:
     data = os.pread(fd, size, 0)
     if len(data) != size:
         raise OSError("incomplete worker log read")
-    redacted, pattern = redact_key_shaped(data)
+    return redact_key_shaped(data)
+
+
+def _publish_worker_log(redacted: bytes, log_path: Path) -> None:
     stage = tempfile.NamedTemporaryFile(dir=log_path.parent, suffix=".tmp", delete=False)
     try:
         with stage:
@@ -260,7 +270,6 @@ def _publish_scrubbed(worker_log: BinaryIO, log_path: Path) -> str | None:
     except BaseException:
         os.unlink(stage.name)
         raise
-    return pattern
 
 
 async def _supervise(

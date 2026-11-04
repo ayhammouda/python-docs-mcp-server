@@ -683,24 +683,20 @@ class Sandbox:
             )
 
         try:
-            try:
-                data = encode_record()
-            except KeyLeakError:
+            data = encode_record()
+        except Exception as exc:  # noqa: BLE001 - retry without unscannable state or diagnostics
+            if isinstance(exc, KeyLeakError):
                 self.leaks.append(f"{egress.job_id}/collected.json")
-                problems = [
-                    *removal_failures,
-                    "a key-shaped string was found in collection diagnostics",
-                ]
-                collected.update(
-                    ok=False, problems=problems, state_before_stop={}, state_after_stop={}
-                )
-                data = encode_record()
-        except Exception as exc:  # noqa: BLE001 - unscanned diagnostics cannot leave collection
-            return [
-                *removal_failures,
-                f"collection diagnostics could not be scanned: {type(exc).__name__}",
-            ]
+                reason = "a key-shaped string was found in collection diagnostics"
+            else:
+                reason = f"collection diagnostics could not be scanned: {type(exc).__name__}"
+            problems = [*removal_failures, reason]
+            collected.update(ok=False, problems=problems, state_before_stop={}, state_after_stop={})
+            data = None
+
         try:
+            if data is None:
+                data = encode_record()
             with open_log_dir(egress.log_dir) as dir_fd:
                 write_new(dir_fd, "collected.json", data, mode=0o644)
                 if not problems:

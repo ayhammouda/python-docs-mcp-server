@@ -1794,6 +1794,35 @@ async def test_run_jobs_withholds_key_shaped_collection_state(
     assert set(docker.resources) == failed_ids
 
 
+@pytest.mark.parametrize("removal_fails", [False, True])
+async def test_one_time_encoding_oom_publishes_failed_collection_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, removal_fails: bool
+) -> None:
+    survivors = {_PROXY, _NETWORK} if removal_fails else set()
+    docker = FakeDocker(fail=lambda args: "rm" in args and args[-1] in survivors)
+    dumps = json.dumps
+    failed = False
+
+    def fail_full_record_once(value: Any, **kwargs: Any) -> str:
+        nonlocal failed
+        if not failed and isinstance(value, dict) and value.get("state_before_stop"):
+            failed = True
+            raise MemoryError(_PRIVATE_DETAIL + _GOOGLE)
+        return dumps(value, **kwargs)
+
+    monkeypatch.setattr(json, "dumps", fail_full_record_once)
+    with pytest.raises(BenchmarkValidationError, match="MemoryError") as caught:
+        await _run_collection_pair(tmp_path, monkeypatch, docker)
+    assert failed and set(docker.resources) == survivors
+    directory = _check_first_collection(tmp_path, ok=False)
+    record = json.loads((directory / "collected.json").read_text())
+    assert record["ok"] is False
+    assert record["state_before_stop"] == record["state_after_stop"] == {}
+    for output in (" ".join(record["problems"]), "".join(traceback.format_exception(caught.value))):
+        assert "MemoryError" in output and all(owned in output for owned in survivors)
+        assert _PRIVATE_DETAIL not in output and _GOOGLE not in output
+
+
 @pytest.mark.parametrize(
     "fault", ["memory", "encoding", "publish", "publish-leak", "collector", "interrupted", "cancel"]
 )
@@ -1804,11 +1833,13 @@ async def test_run_jobs_preserves_removal_ids_after_collection_error(
 
     docker = FakeDocker(fail=lambda args: "rm" in args and args[-1] in {_PROXY, _NETWORK})
     interrupt = asyncio.CancelledError("original test interruption")
+    attempted_states = []
     if fault in {"encoding", "memory"}:
         dumps = json.dumps
 
         def fail_encode(value: Any, **kwargs: Any) -> str:
             if isinstance(value, dict) and "state_before_stop" in value and value["problems"]:
+                attempted_states.append(value["state_before_stop"])
                 raise (ValueError if fault == "encoding" else MemoryError)(_PRIVATE_DETAIL)
             return dumps(value, **kwargs)
 
@@ -1843,7 +1874,10 @@ async def test_run_jobs_preserves_removal_ids_after_collection_error(
     assert _PROXY in trace and _NETWORK in trace
     assert _PRIVATE_DETAIL not in trace and _GOOGLE not in trace
     assert set(docker.resources) == {_PROXY, _NETWORK}
-    _check_first_collection(tmp_path, ok=False)
+    directory = _check_first_collection(tmp_path, ok=False)
+    if fault in {"encoding", "memory"}:
+        assert attempted_states == [RUNNING, {}]
+        assert not (directory / "collected.json").exists()
 
 
 @pytest.mark.parametrize("size_case", ["sparse", "growing", "limit"])

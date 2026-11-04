@@ -712,7 +712,7 @@ async def test_raw_worker_stderr_is_private_before_publication(
                 log_dir.chmod(0o500)
 
     try:
-        with pytest.raises(PermissionError if read_only else KeyLeakError) as error:
+        with pytest.raises(KeyLeakError, match="anthropic") as error:
             await host.run([_job(tmp_path, [ANSWER], job_id="lost")], launcher=Launcher(code, ""))
     finally:
         log_dir.chmod(0o700)
@@ -721,6 +721,7 @@ async def test_raw_worker_stderr_is_private_before_publication(
     assert not visible_at_stop
     assert links.read_text() == "0"
     if read_only:
+        assert isinstance(error.value.__cause__, PermissionError)
         assert not log.exists()
     else:
         assert log.read_text() == "[redacted]"
@@ -1208,7 +1209,7 @@ async def test_a_worker_that_never_exits_cannot_hang_its_teardown(
     ]
 
 
-@pytest.mark.parametrize("failure", ["write", "close", "replace"])
+@pytest.mark.parametrize("failure", ["stage", "write", "close", "replace"])
 async def test_a_failed_log_publish_still_settles_and_leaves_no_key(
     host: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
@@ -1216,11 +1217,14 @@ async def test_a_failed_log_publish_still_settles_and_leaves_no_key(
         [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True
     )
     create_stage = tempfile.NamedTemporaryFile
+    storage_error = OSError(28, "No space left on device")
 
     def fail(*args: Any) -> None:
-        raise OSError(28, "No space left on device")
+        raise storage_error
 
     def full_disk(**kwargs: Any) -> Any:
+        if failure == "stage":
+            fail()
         stage = create_stage(**kwargs)
         write = stage.write
         close = stage.file.close
@@ -1253,9 +1257,12 @@ async def test_a_failed_log_publish_still_settles_and_leaves_no_key(
     # A writer that kept its descriptor through teardown.
     retained = os.fdopen(os.dup(capture.fileno()), "wb")
     try:
-        with pytest.raises(OSError, match="No space left"):
+        with pytest.raises(KeyLeakError, match="anthropic") as error:
             worker, anchor = _Exited(group.pid), group
             await agentic_host._teardown(worker, anchor, log, service, unit, capture)  # type: ignore[arg-type]
+        assert error.value.__cause__ is storage_error
+        trace = "".join(traceback.format_exception(error.value))
+        assert "No space left" in trace and SYNTHETIC_KEY not in trace
         retained.write(b"late: sk-ant-api03-" + b"z" * 90 + b"\n")
     finally:
         retained.close()
@@ -1265,7 +1272,34 @@ async def test_a_failed_log_publish_still_settles_and_leaves_no_key(
         ("worker_lost", 2 * D("0.002024"))
     ]
     assert [path.name for path in tmp_path.glob("*.tmp")] == []
-    assert not log.exists() or "sk-ant-api03-" not in log.read_text()
+    assert not log.exists()
+
+
+def test_cli_reports_leak_and_storage_failure_after_worker_reservation(
+    host: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from benchmarks.__main__ import main
+
+    job = _job(tmp_path, [], job_id="lost")
+    code = (
+        f"import os\nos.write(2, {('private stderr: ' + SYNTHETIC_KEY).encode()!r})\n"
+        + _fake_worker(_reserve_frame(1024))
+    )
+
+    def run(*args: Any, **kwargs: Any) -> None:
+        asyncio.run(host.run([job], launcher=LostLauncher(code)))
+
+    monkeypatch.setattr("benchmarks.agentic.run.run_agentic", run)
+    monkeypatch.setattr(os, "replace", Mock(side_effect=PermissionError("artifact inaccessible")))
+    with pytest.raises(SystemExit) as stopped:
+        main(["agentic-run", "--corpus", "unused", "--out", str(tmp_path)])
+    assert stopped.value.code == 3
+    output = capsys.readouterr()
+    assert not output.out and "anthropic" in output.err and "artifact inaccessible" in output.err
+    assert SYNTHETIC_KEY not in output.err and "private stderr" not in output.err
+    assert not list((tmp_path / "logs").iterdir())
+    settles = [e for e in host.ledger.events("host-test") if e["event"] == "settle"]
+    assert [(e["outcome"], D(e["booked"])) for e in settles] == [("worker_lost", 2 * D("0.002024"))]
 
 
 async def test_host_aborts_the_run_when_a_worker_frame_holds_a_key_shaped_string(
@@ -1724,15 +1758,15 @@ async def test_parent_log_close_failure_still_cleans_the_spawned_worker(
         assert str(error.value) == "signal SIGTERM"
 
 
-def test_unreadable_worker_log_is_not_published(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+async def test_unreadable_worker_log_is_not_published(
+    host: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    log = tmp_path / "worker.stderr.log"
-    capture = _worker_log(SYNTHETIC_KEY.encode())
+    job = _job(tmp_path, [], job_id="lost")
+    code = f"import os\nos.write(2, {SYNTHETIC_KEY.encode()!r})"
     monkeypatch.setattr(os, "pread", Mock(side_effect=OSError("read failed")))
-    with capture, pytest.raises(OSError, match="read failed"):
-        agentic_host._publish_scrubbed(capture, log)
-    assert not log.exists()
+    with pytest.raises(OSError, match="read failed"):
+        await host.run([job], launcher=KeyedLauncher(code, ""))
+    assert not list((tmp_path / "logs").iterdir())
 
 
 async def test_scrub_allocation_failure_leaves_no_log_and_settles(
