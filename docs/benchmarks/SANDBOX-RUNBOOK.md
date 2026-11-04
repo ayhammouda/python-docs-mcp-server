@@ -19,6 +19,8 @@ add `--live`.
   `uv run python-docs-mcp-server build-index --versions 3.10,3.11,3.12,3.13,3.14`.
 - A keys file, mode 600, outside any commit (`.env.local` by default, which `.gitignore`
   covers): one `NAME=VALUE` line per provider key. `chmod 600 .env.local`.
+- Use a new, empty output directory outside the checkout for each run (for example,
+  `"$HOME/benchmark-runs/smoke"`). The host writes evidence before it checks the tree.
 - A clean checkout: the image must hold exactly the commit you run. `run.sh` builds from
   `HEAD`, and the launcher refuses a dirty tree or an image built from another commit.
 

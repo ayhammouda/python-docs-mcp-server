@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SANDBOX = REPO_ROOT / "benchmarks" / "sandbox"
@@ -57,3 +60,33 @@ def test_run_sh_builds_from_git_archive_and_defaults_to_a_dry_run() -> None:
         assert banned not in text
     for tool in ("git", "docker", "uv", "cat"):
         assert tool in text.split("for tool in", 1)[1].split(";", 1)[0]
+
+
+@pytest.mark.parametrize("key", ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", None])
+def test_run_sh_filters_the_build_environment_before_docker(
+    tmp_path: Path, key: str | None
+) -> None:
+    docker = tmp_path / "docker"
+    docker.write_text(
+        '#!/bin/sh\ncat >/dev/null\nprintf "%s" "${BUILD_CANARY-}" > "$0.started"\nexit 42\n'
+    )
+    docker.chmod(0o700)
+    marker = Path(f"{docker}.started")
+    env = {name: os.environ[name] for name in ("HOME", "PATH")}
+    env.update(PATH=f"{tmp_path}:{env['PATH']}", BUILD_CANARY="exported")
+    if key is not None:
+        env[key] = "dummy-key-for-test"
+    result = subprocess.run(
+        [str(SANDBOX / "run.sh")],
+        env=env,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    if key is not None:
+        assert result.returncode != 0 and not marker.exists()
+        assert key in result.stderr and env[key] not in result.stderr
+    else:
+        assert result.returncode == 42
+        assert marker.read_text() == ""

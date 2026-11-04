@@ -318,6 +318,7 @@ network:
 
    ```bash
    pip download python-docs-mcp-server==<version> -d wheels/
+   pip install python-docs-mcp-server==<version>
    python-docs-mcp-server build-index --versions 3.10,3.11,3.12,3.13,3.14
    ```
 
