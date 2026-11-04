@@ -21,6 +21,7 @@ from benchmarks.agentic.bridge import BridgeCrash, ToolBridge, truncate_utf8
 from benchmarks.agentic.ledger import Outcome
 from benchmarks.agentic.ledger import _utc_now as _utc_now_ms  # wall_s needs sub-second times
 from benchmarks.agentic.prompt import SYSTEM_PROMPT
+from benchmarks.agentic.protocol import scanned_json_bytes
 from benchmarks.agentic.schemas import schemas_sha256
 from benchmarks.agentic.types import (
     Buckets,
@@ -180,7 +181,7 @@ class _Trajectory:
         wall = time.perf_counter() - self.started
         s = self.seconds
         overhead = wall - sum(s[k] for k in s if k != "used")
-        return {
+        record = {
             "status": status,
             "error": error,
             "answer": answer,
@@ -197,6 +198,8 @@ class _Trajectory:
             "started_at": self.started_at,
             "completed_at": _utc_now_ms(),
         }
+        scanned_json_bytes(record, where="trajectory record")
+        return record
 
     def discard(
         self, reason: Literal["budget_stop", "retries_exhausted"], message: str
@@ -261,6 +264,12 @@ class _Trajectory:
         self.model_calls.append(entry)
         retries = 0
         while True:
+            # Shared spend boundary for every client and every attempt. Incremental bounds
+            # alone omit earlier native replay; validate the complete rendered request even
+            # when usage lets us reserve using only the added entries. Rendering checks both
+            # decoded fields and the JSON actually used for provider messages, never SDK auth.
+            scanned_json_bytes(self.client.request_params(), where="outgoing provider settings")
+            self.client.rendered_bytes(self.conv, 0)
             waited = time.perf_counter()
             unit = await self.ledger.reserve(
                 provider=self.client.provider,
@@ -310,6 +319,9 @@ class _Trajectory:
             attempt |= {"outcome": error.kind, "status": error.status}
             await self.ledger.settle(unit, outcome=error.kind, buckets=None)
             self.seconds["failed_attempt"] += wall
+            # A failed attempt is already billed/settled. Unsafe diagnostics must stop here,
+            # before retry backoff, another reservation, or publishing a failure transcript.
+            scanned_json_bytes(str(error), where="provider error")
             if error.kind not in RETRYABLE:
                 raise _Failed("provider_rejected", str(error), "ProviderCallError")
             retries += 1
@@ -331,6 +343,7 @@ class _Trajectory:
                 self.conv.entries.append(ToolResults(tuple(results)))
 
     async def _run_tools(self, turn: ModelTurn, results: list[ToolResult]) -> None:
+        scanned_json_bytes([asdict(call) for call in turn.tool_calls], where="outgoing MCP calls")
         for call in turn.tool_calls:
             if len(self.tool_calls) >= self.caps.tool_calls:
                 raise _Failed(
@@ -373,7 +386,9 @@ class _Trajectory:
                 wall = time.perf_counter() - started
                 self.seen.add(key)
                 text, is_error = outcome.text, outcome.is_error
+            scanned_json_bytes(text, where="raw tool result")
             sent, truncated = truncate_utf8(text, self.caps.result_bytes)
+            scanned_json_bytes(sent, where="outgoing tool result")
             entry |= {
                 "result": text,
                 "result_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
@@ -403,4 +418,8 @@ async def run_trajectory(
     except _Failed as failure:
         error = {"category": failure.category, "type": failure.kind, "message": str(failure)}
         return trajectory.record("failed", error, "")
+    except Exception as exc:
+        # Unexpected bridge/client failures must not escape with untrusted diagnostics.
+        scanned_json_bytes(str(exc), where="trajectory exception")
+        raise
     return trajectory.record("succeeded", None, answer)

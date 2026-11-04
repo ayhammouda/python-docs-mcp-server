@@ -121,6 +121,8 @@ def systems_from_mapping(data: dict[str, Any]) -> list[SystemSpec]:
 
 def canonical_text(result: CallToolResult) -> str:
     """Compact JSON of ``structured_content`` when present, else the joined text blocks."""
+    # Check the decoded MCP envelope before canonicalization drops text, metadata or fields.
+    scanned_json_bytes(result.model_dump(mode="json", by_alias=True), where="MCP tool result")
     if result.structured_content is not None:
         return scanned_json_bytes(
             result.structured_content,
@@ -164,10 +166,12 @@ class Bridge:
         try:
             result = await self._session.call_tool(name, arguments)
         except MCPError as exc:
+            scanned_json_bytes(exc.error.model_dump(mode="json"), where="MCP tool error")
             if exc.code == CONNECTION_CLOSED:
                 raise BridgeCrash(f"MCP connection closed during {name}: {exc}") from exc
             return ToolOutcome(text=str(exc.message), is_error=True)
         except Exception as exc:  # noqa: BLE001 - any other failure means the session is gone
+            assert_no_key_shaped(str(exc), where="MCP tool exception")
             failure = cell_failure_from(exc, timeout_seconds=0.0, label=f"MCP tool {name}")
             raise BridgeCrash(str(failure)) from exc
         return ToolOutcome(text=canonical_text(result), is_error=bool(result.is_error))

@@ -110,9 +110,11 @@ class ModelClient(Protocol):
         raise NotImplementedError
 
     def rendered_bytes(self, conv: Conversation, start: int) -> int:
-        """UTF-8 bytes of the provider-rendered request.
+        """Validate outgoing content and return its provider-rendered UTF-8 byte count.
 
         System, tools and ``entries[start:]`` when ``start == 0``, else ``entries[start:]`` only.
+        Check decoded strings and rendered JSON, including native replay, for key shapes.
+        The loop calls this with ``start == 0`` before every spend reservation.
         """
         raise NotImplementedError
 

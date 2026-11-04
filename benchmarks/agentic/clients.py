@@ -120,7 +120,14 @@ def _status_error(status: int, headers: Mapping[str, str], message: str) -> Prov
 
 
 def _utf8_len(payload: Any) -> int:
-    return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    # All supported renderers use this boundary, including native assistant replay.
+    # Check decoded fields and the exact rendered JSON: encoding can create a token boundary.
+    # SDK credentials and HTTP authentication headers are deliberately outside this payload.
+    return len(
+        scanned_json_bytes(
+            payload, where="outgoing provider content", ensure_ascii=False, separators=(",", ":")
+        )
+    )
 
 
 #: Pinned, so no *_BASE_URL variable can send a key to another host.

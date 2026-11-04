@@ -253,7 +253,9 @@ async def test_reservations_carry_independently_computed_bounds(harness: Harness
         {"tools": [SEARCH], "usage": None},  # call 1, retry
         {"text": "done", "usage": openai_usage},  # call 2, after the call without usage
     ]
-    sizes = {(0, 1): 500, (1, 3): 300, (0, 5): 2_000}
+    # Full rendering at call 1 is also validated before each attempt, but does not
+    # replace the usage-based incremental bound or change any reserved amount.
+    sizes = {(0, 1): 500, (1, 3): 300, (0, 3): 9_000, (0, 5): 2_000}
     client = FixedBytesClient(sizes, "openai", "gpt-6.1-sol", steps)
     record = await harness.run(client=client, family=family, price=price)
     assert record["status"] == "succeeded"

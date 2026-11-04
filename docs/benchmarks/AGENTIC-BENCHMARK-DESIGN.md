@@ -265,6 +265,13 @@ came from. Container settings:
   key value and fails the step if the key appears. On the host, the harness
   also scans every artifact for key-shaped strings (each provider's key
   prefixes) and fails the run on a match.
+- Before each model-call spend reservation, the shared trajectory loop checks the
+  complete provider-rendered conversation, including native replay. MCP results
+  are checked before canonicalization and truncation, and again after rendering;
+  errors are checked before retry or publication. A match aborts with a clean
+  diagnostic and no transcript, without another provider call or reservation.
+  Private credential bootstrap frames and SDK authentication headers are outside
+  this content boundary.
 
 ### 7.4 Air-gapped arm (**Call**)
 
