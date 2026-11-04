@@ -170,3 +170,22 @@ def test_score_checks_legacy_vote_provenance_before_grading_a_cell(tmp_path: Pat
     assert GOOGLE not in str(error.value)
     assert GOOGLE.encode() not in scored_cell.read_bytes()
     assert json.loads(scored_cell.read_bytes()).get("grading") is None
+
+
+def test_pending_vote_queue_does_not_copy_a_key_from_an_answer(tmp_path: Path) -> None:
+    from benchmarks.scoring import ScoringPaths
+
+    run = runs._build_run(tmp_path)
+    vote = next((run / "grading" / "votes" / "answers").rglob("*.json"))
+    item_id = json.loads(vote.read_bytes())["item_id"]
+    vote.unlink()
+    item = json.loads((run / "grading" / "items" / "answers" / f"{item_id}.json").read_bytes())
+    meta = item["meta"]
+    path = run / "transcripts" / meta["competitor_id"] / f"{meta['corpus_id']}.json"
+    transcript = json.loads(path.read_bytes())
+    transcript["answer"] = "pending reply\n" + GOOGLE
+    runs._json(path, transcript)
+    with pytest.raises(KeyLeakError) as error:
+        _score(run)
+    assert GOOGLE not in str(error.value)
+    assert not ScoringPaths(run).queue_path.exists()

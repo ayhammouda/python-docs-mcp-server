@@ -65,6 +65,7 @@ from typing import Any
 
 import yaml
 
+from benchmarks.agentic.protocol import write_json_evidence
 from benchmarks.corpus import CorpusQuestion, validate_corpus
 from benchmarks.report import _sha256_of
 from benchmarks.runner import BenchmarkValidationError
@@ -179,6 +180,7 @@ def score_run(
     already_human = 0
     queued = 0
     agentic = _is_agentic(run_dir)
+    write_record = write_json_evidence if agentic else _write_json
 
     for key in sorted(scoring_records):
         path, record = scoring_records[key]
@@ -191,7 +193,7 @@ def score_run(
 
         if record.get("status") == "failed":
             updated = _finalize_failed(record)
-            _write_json(path, updated)
+            write_record(path, updated)
             finalized.append(updated)
             automatic_decided += 1
             continue
@@ -223,26 +225,26 @@ def score_run(
                 reason=decision.reason,
                 grounding_evidence_present=grounding_evidence_present,
             )
-            _write_json(path, updated)
+            write_record(path, updated)
             finalized.append(updated)
             automatic_decided += 1
             continue
 
         pending = _annotate_pending(record, grounding_evidence_present=grounding_evidence_present)
-        _write_json(path, pending)
+        write_record(path, pending)
         finalized.append(pending)
         queued += 1
         queue_entries.append(
             _build_queue_entry(pending, answer_keys, paths.transcripts_dir, agentic=agentic)
         )
 
-    _write_json(
+    write_record(
         paths.queue_path,
         {"run_dir": str(run_dir), "generated_at": _utc_now(), "cells": queue_entries},
     )
     rollups = _compute_rollups(finalized, answer_keys)
     rollups["corpus_sha256"] = corpus_sha256
-    _write_json(paths.rollups_path, rollups)
+    write_record(paths.rollups_path, rollups)
 
     return {
         "run_dir": str(run_dir),
