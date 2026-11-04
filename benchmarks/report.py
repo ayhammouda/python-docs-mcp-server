@@ -47,7 +47,6 @@ context (the benchmark's target model axis) and never assumes an observed
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import os
 import re
@@ -56,11 +55,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
-import yaml
-
+from benchmarks.agentic.inputs import CapturedInput, json_mapping
 from benchmarks.agentic.protocol import assert_no_key_shaped
 from benchmarks.model_matrix import METHODOLOGY_TOKEN_LABEL, ModelMatrix, load_model_matrix
+from benchmarks.report_files import artifact_bytes, artifact_paths, checked_path
 from benchmarks.runner import BenchmarkValidationError
 
 METHODOLOGY_DISCLAIMER = (
@@ -138,6 +138,9 @@ class RunBundle:
     competitors: dict[str, dict[str, Any]]
     exclusions: list[dict[str, Any]]
     cells: list[CellRecord]
+    scoring: dict[tuple[str, str], dict[str, Any]]
+    latency: dict[tuple[str, str], dict[str, Any]]
+    tokens: dict[tuple[str, str], dict[str, Any]]
     failure_records: list[dict[str, Any]]
     token_failure_records: list[dict[str, Any]]
 
@@ -155,7 +158,21 @@ def generate_report(
     corpus-hash source file, or raw per-cell result files are missing.
     """
     bundle = _load_run_bundle(run_dir)
-    matrix = load_model_matrix(model_matrix_path)
+    if model_matrix_path.absolute().is_relative_to(run_dir.absolute()):
+        from benchmarks.model_matrix import model_matrix_from_mapping
+
+        _require_file(
+            checked_path(run_dir.absolute(), model_matrix_path.absolute()), "model matrix"
+        )
+        matrix = model_matrix_from_mapping(
+            _load_yaml_mapping(
+                artifact_bytes(run_dir.absolute(), model_matrix_path.absolute()), "model matrix"
+            )
+        )
+    else:
+        matrix = load_model_matrix(model_matrix_path)
+    if methodology_path.absolute().is_relative_to(run_dir.absolute()):
+        checked_path(run_dir.absolute(), methodology_path.absolute())
     _require_file(methodology_path, "methodology file")
 
     report_path = out_path or (run_dir / "REPORT.md")
@@ -163,11 +180,9 @@ def generate_report(
         from benchmarks.agentic_report import render_agentic_report  # it imports this module
 
         content = render_agentic_report(bundle, matrix, methodology_path, report_path)
-        assert_no_key_shaped(content, where="agentic report")
     else:
         content = _render_report(bundle, matrix, methodology_path, report_path)
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(content, encoding="utf-8")
+    _write_report(run_dir, report_path, content)
     return report_path
 
 
@@ -185,6 +200,8 @@ def generate_readme_summary(
     requires exactly the same audit trail as the full report.
     """
     bundle = _load_run_bundle(run_dir)
+    if methodology_path.absolute().is_relative_to(run_dir.absolute()):
+        checked_path(run_dir.absolute(), methodology_path.absolute())
     _require_file(methodology_path, "methodology file")
 
     summary_path = out_path or (run_dir / "README-SUMMARY.md")
@@ -192,12 +209,27 @@ def generate_readme_summary(
         from benchmarks.agentic_report import render_agentic_readme_summary
 
         content = render_agentic_readme_summary(bundle, methodology_path, summary_path)
-        assert_no_key_shaped(content, where="agentic README summary")
     else:
         content = _render_readme_summary(bundle, methodology_path, summary_path)
-    summary_path.parent.mkdir(parents=True, exist_ok=True)
-    summary_path.write_text(content, encoding="utf-8")
+    _write_report(run_dir, summary_path, content)
     return summary_path
+
+
+def _write_report(run_dir: Path, path: Path, content: str) -> None:
+    body = content.encode("utf-8")
+    assert_no_key_shaped(body, where="rendered report")
+    if path.absolute().is_relative_to(run_dir.absolute()):
+        checked_path(run_dir.absolute(), path.parent.absolute())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Replace the name itself, including when the exported output name is a link.
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    file = temporary.open("xb")
+    try:
+        with file:
+            file.write(body)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 # --- Artifact loading and validation ----------------------------------------
@@ -207,33 +239,50 @@ def _load_run_bundle(run_dir: Path) -> RunBundle:
     if not run_dir.is_dir():
         raise BenchmarkValidationError(f"run artifact directory does not exist: {run_dir}")
 
-    run_summary = _load_required_json(run_dir / "run-summary.json")
+    run_summary = _load_required_json(run_dir, run_dir / "run-summary.json")
     _require_fields(run_summary, _RUN_SUMMARY_REQUIRED_FIELDS, "run-summary.json")
 
-    environment = _load_required_json(run_dir / "environment.json")
+    environment = _load_required_json(run_dir, run_dir / "environment.json")
     _require_fields(environment, _ENVIRONMENT_REQUIRED_FIELDS, "environment.json")
 
     corpus_snapshot_path = run_dir / "snapshots" / "corpus.yml"
     manifest_snapshot_path = run_dir / "snapshots" / "competitor-manifest.yml"
-    _require_file(corpus_snapshot_path, "corpus snapshot (needed to compute the corpus hash)")
-    _require_file(manifest_snapshot_path, "competitor manifest snapshot")
+    _require_file(
+        checked_path(run_dir, corpus_snapshot_path),
+        "corpus snapshot (needed to compute the corpus hash)",
+    )
+    _require_file(checked_path(run_dir, manifest_snapshot_path), "competitor manifest snapshot")
 
-    corpus_hash = _sha256_of(corpus_snapshot_path)
-    manifest_hash = _sha256_of(manifest_snapshot_path)
-    corpus_categories = _load_corpus_categories(corpus_snapshot_path)
-    competitors, exclusions = _load_competitor_manifest(manifest_snapshot_path)
+    corpus_body = artifact_bytes(run_dir, corpus_snapshot_path)
+    manifest_body = artifact_bytes(run_dir, manifest_snapshot_path)
+    corpus_hash = hashlib.sha256(corpus_body).hexdigest()
+    manifest_hash = hashlib.sha256(manifest_body).hexdigest()
+    corpus_categories = _load_corpus_categories(corpus_body)
+    competitors, exclusions = _load_competitor_manifest(manifest_body)
 
-    scoring_entries = _load_cell_records(run_dir / "scoring")
+    scoring_entries = _load_cell_records(run_dir, run_dir / "scoring")
     if not scoring_entries:
         raise BenchmarkValidationError(
             "no raw scoring result files found under "
             f"{run_dir / 'scoring'}; required raw result files are missing "
             "(this run directory may be a --dry-run plan with no executed cells)"
         )
-    latency_records = _load_cell_records(run_dir / "latency")
-    token_records = _load_cell_records(run_dir / "tokens")
-    latency_by_key = {_cell_key(record): record for _, record in latency_records}
-    tokens_by_key = {_cell_key(record): record for _, record in token_records}
+    latency_records = _load_cell_records(run_dir, run_dir / "latency")
+    token_records = _load_cell_records(run_dir, run_dir / "tokens")
+
+    def by_key(entries: list[tuple[Path, dict[str, Any]]]) -> dict[tuple[str, str], dict[str, Any]]:
+        result = {}
+        for path, record in entries:
+            key = _cell_key(record)
+            if run_summary.get("mode") == "agentic" and key != (path.parent.name, path.stem):
+                raise BenchmarkValidationError(
+                    f"cell coordinates disagree with artifact path: {path}"
+                )
+            result[key] = record
+        return result
+
+    latency_by_key = by_key(latency_records)
+    tokens_by_key = by_key(token_records)
 
     cells: list[CellRecord] = []
     for path, record in scoring_entries:
@@ -264,7 +313,7 @@ def _load_run_bundle(run_dir: Path) -> RunBundle:
             )
         )
 
-    failure_records = [record for _, record in _load_cell_records(run_dir / "failures")]
+    failure_records = [record for _, record in _load_cell_records(run_dir, run_dir / "failures")]
     token_failure_records = [
         record for _, record in token_records if record.get("status") == "failed"
     ]
@@ -278,6 +327,9 @@ def _load_run_bundle(run_dir: Path) -> RunBundle:
         competitors=competitors,
         exclusions=exclusions,
         cells=cells,
+        scoring=by_key(scoring_entries),
+        latency=latency_by_key,
+        tokens=tokens_by_key,
         failure_records=failure_records,
         token_failure_records=token_failure_records,
     )
@@ -292,15 +344,9 @@ def _require_file(path: Path, label: str) -> None:
         raise BenchmarkValidationError(f"required {label} is missing: {path}")
 
 
-def _load_required_json(path: Path) -> dict[str, Any]:
-    _require_file(path, f"run artifact ({path.name})")
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise BenchmarkValidationError(f"{path} is not valid JSON: {exc}") from exc
-    if not isinstance(data, dict):
-        raise BenchmarkValidationError(f"{path} must contain a JSON object")
-    return data
+def _load_required_json(root: Path, path: Path) -> dict[str, Any]:
+    _require_file(checked_path(root, path), f"run artifact ({path.name})")
+    return json_mapping(artifact_bytes(root, path), str(path))
 
 
 def _require_fields(data: dict[str, Any], fields: tuple[str, ...], label: str) -> None:
@@ -313,18 +359,12 @@ def _sha256_of(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _load_yaml_mapping(path: Path, label: str) -> dict[str, Any]:
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except yaml.YAMLError as exc:
-        raise BenchmarkValidationError(f"{label} is not valid YAML: {exc}") from exc
-    if not isinstance(data, dict):
-        raise BenchmarkValidationError(f"{label} must contain a YAML mapping")
-    return data
+def _load_yaml_mapping(body: bytes, label: str) -> dict[str, Any]:
+    return CapturedInput.from_bytes(body, label, label).mapping
 
 
-def _load_corpus_categories(path: Path) -> dict[str, str]:
-    data = _load_yaml_mapping(path, "corpus snapshot")
+def _load_corpus_categories(body: bytes) -> dict[str, str]:
+    data = _load_yaml_mapping(body, "corpus snapshot")
     items = data.get("questions")
     if not isinstance(items, list):
         raise BenchmarkValidationError("corpus snapshot must contain a 'questions' list")
@@ -343,9 +383,9 @@ def _load_corpus_categories(path: Path) -> dict[str, str]:
 
 
 def _load_competitor_manifest(
-    path: Path,
+    body: bytes,
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
-    data = _load_yaml_mapping(path, "competitor manifest snapshot")
+    data = _load_yaml_mapping(body, "competitor manifest snapshot")
     items = data.get("competitors")
     if not isinstance(items, list):
         raise BenchmarkValidationError(
@@ -367,20 +407,11 @@ def _load_competitor_manifest(
     return competitors, exclusions
 
 
-def _load_cell_records(base_dir: Path) -> list[tuple[Path, dict[str, Any]]]:
-    if not base_dir.is_dir():
-        return []
-    records: list[tuple[Path, dict[str, Any]]] = []
-    for competitor_dir in sorted(p for p in base_dir.iterdir() if p.is_dir()):
-        for cell_file in sorted(competitor_dir.glob("*.json")):
-            try:
-                data = json.loads(cell_file.read_text(encoding="utf-8"))
-            except json.JSONDecodeError as exc:
-                raise BenchmarkValidationError(f"{cell_file} is not valid JSON: {exc}") from exc
-            if not isinstance(data, dict):
-                raise BenchmarkValidationError(f"{cell_file} must contain a JSON object")
-            records.append((cell_file, data))
-    return records
+def _load_cell_records(root: Path, base_dir: Path) -> list[tuple[Path, dict[str, Any]]]:
+    return [
+        (path, _load_required_json(root, path))
+        for path in artifact_paths(root, base_dir, "*/*.json")
+    ]
 
 
 # --- Aggregation --------------------------------------------------------------
@@ -443,9 +474,7 @@ def _basic_stats(cells: list[CellRecord]) -> dict[str, Any]:
         and cell.status == "failed"
     )
     tokens_approximated = sum(
-        1
-        for cell in cells
-        if cell.client_wrapped_tokens is not None and cell.token_approximation
+        1 for cell in cells if cell.client_wrapped_tokens is not None and cell.token_approximation
     )
     tokens_count_failed = sum(
         1 for cell in cells if cell.client_wrapped_tokens is None and cell.token_status == "failed"

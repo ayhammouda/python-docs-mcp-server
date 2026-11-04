@@ -101,26 +101,7 @@ def _read_reference_rates(run_dir: Path) -> dict[str, ReferenceRate]:
             record = captured.mapping
             transcripts.verify(path.relative_to(run_dir).as_posix(), captured.content, record)
             family_id = record["model_family_id"]
-            provider = record["provider"]
             family = families[family_id]
-            execution = record.get("execution")
-            if not isinstance(execution, dict) or any(
-                not isinstance(execution.get(field), str) or not execution[field]
-                for field in ("provider", "model_id", "api")
-            ):
-                raise ValueError(
-                    f"reference transcript lacks executed provider/model/API for {family_id}"
-                )
-            if (execution["provider"], execution["model_id"], execution["api"]) != (
-                family.provider,
-                family.model_id,
-                family.api,
-            ):
-                raise ValueError(
-                    f"executed client disagrees with the model snapshot for {family_id}"
-                )
-            if (provider, record["model_id"]) != (family.provider, family.model_id):
-                raise ValueError(f"transcript disagrees with the model snapshot for {family_id}")
             if record["competitor_id"] != path.parent.name:
                 raise ValueError("reference transcript cell disagrees with its path")
             units.add(record, family)

@@ -7,7 +7,9 @@ fixtures adjust summary.json or the evidence files.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import shutil
 from pathlib import Path
@@ -360,10 +362,12 @@ def _build(
     return run
 
 
-def _score(run: Path, tmp_path: Path) -> Path:
+def _score(
+    run: Path, tmp_path: Path, *, panel_path: Path = GFIX / "panel.yml", composition=COMPOSITION
+) -> Path:
     inputs = json.loads((run / "grading" / "inputs" / "inputs.json").read_text())
     entry = {
-        "binding": {"composition": COMPOSITION, "inputs": inputs},
+        "binding": {"composition": composition, "inputs": inputs},
         "gate": {
             "passed": True,
             "details": {
@@ -388,11 +392,11 @@ def _score(run: Path, tmp_path: Path) -> Path:
         "tuning": [{"judges": {"haiku": {"tried": ["low"], "chosen": "low"}}}],
     }
     g1 = tmp_path / "g1.json"
-    _json(g1, {"entries": {"haiku+luna+flash-lite": entry}})
+    _json(g1, {"entries": {"+".join(composition): entry}})
     score_run_dir(
         run,
         criteria_path=GFIX / "criteria.sample.yml",
-        panel_path=GFIX / "panel.yml",
+        panel_path=panel_path,
         schema_path=SCHEMA,
         g1_paths=[g1],
     )
@@ -412,10 +416,18 @@ def agentic_bundle(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def live_like_bundle(agentic_bundle: Path) -> Path:
-    """Report-only fixture with live adapter snapshots for the active aliases."""
+def live_like_bundle(tmp_path: Path) -> Path:
+    return _live_like_run(tmp_path)
+
+
+def _live_like_run(tmp_path: Path, *, gemini_only: bool = False) -> Path:
+    """Synthetic recorded calls and votes matching the active adapter snapshots."""
+
     docs = REPO_ROOT / "docs" / "benchmarks"
-    matrix = yaml.safe_load(MATRIX.read_text())
+    matrix_source = docs / "model-matrix.yml" if gemini_only else MATRIX
+    active = ("gemini-3.8-flash",) if gemini_only else FAMILIES
+    agentic_bundle = _build(tmp_path, families_run=active, matrix=matrix_source)
+    matrix = yaml.safe_load(matrix_source.read_text())
     hosted = {
         f["provider"]: f
         for f in yaml.safe_load((docs / "model-matrix.yml").read_text())["model_families"]
@@ -433,8 +445,102 @@ def live_like_bundle(agentic_bundle: Path) -> Path:
         panel["judges"][judge].update(real["judges"][judge], effort=PANEL.judges[judge].effort)
         del panel["judges"][judge]["script"]
     panel_path.write_text(yaml.safe_dump(panel))
+    _refresh_manifest(agentic_bundle)
+    families = {f["id"]: f for f in matrix["model_families"]}
+    events = []
+    summary_path = agentic_bundle / "run-summary.json"
+    summary = json.loads(summary_path.read_bytes())
+    for balance in summary["ledger"].values():
+        balance["spent_after"] = 0
+    for path in (agentic_bundle / "transcripts").glob("*/*.json"):
+        record = json.loads(path.read_bytes())
+        family = families[record["model_family_id"]]
+        record["execution"] = {k: family[k] for k in ("provider", "model_id", "api")}
+        record.update(provider=family["provider"], model_id=family["model_id"])
+        call = record["model_calls"][0]
+        call.update(
+            reported_model=family["model_id"],
+            request_params={"model": family["model_id"]},
+            raw_response={"model": family["model_id"], "id": "saved-response"},
+            attempts=[{"unit_id": f"{path.parent.name}/{path.stem}", "outcome": "ok"}],
+        )
+        _json(path, record)
+        unit = {
+            "run_id": summary["run_id"],
+            "provider": family["provider"],
+            "unit_id": call["attempts"][0]["unit_id"],
+        }
+        events.extend(
+            [
+                {
+                    **unit,
+                    "event": "reserve",
+                    "job_id": f"{family['id']}--{record['system_id']}",
+                    "model_id": family["model_id"],
+                    "api": family["api"],
+                    "kind": "model_call",
+                    "bound": "1",
+                    "input_bound": 1024,
+                    "output_bound": 128,
+                },
+                {
+                    **unit,
+                    "event": "settle",
+                    "actual": "1",
+                    "booked": "1",
+                    "buckets": call["buckets"],
+                    "outcome": "ok",
+                },
+            ]
+        )
+        summary["ledger"][family["provider"]]["spent_after"] += 1
+    _json(summary_path, summary)
+    (agentic_bundle / "ledger-events.jsonl").write_text(
+        "".join(json.dumps(e) + "\n" for e in events)
+    )
+    for path in (agentic_bundle / "tokens").glob("*/*.json"):
+        record = json.loads(path.read_bytes())
+        record.update(
+            approximation=False,
+            execution={
+                "provider": "anthropic",
+                "model_id": record["count_model"],
+                "api": "anthropic-messages",
+            },
+        )
+        _json(path, record)
+    grading = agentic_bundle / "grading"
+    composition = {j: {"model_id": panel["judges"][j]["model_id"], "effort": "low"} for j in JUDGES}
+    for path in (grading / "votes").rglob("*.json"):
+        vote = json.loads(path.read_bytes())
+        vote["model_id"] = panel["judges"][vote["judge_id"]]["model_id"]
+        if vote["target"] == "reference":
+            vote["grading_run_id"] = "ref-1"
+            path.unlink()
+            path = path.with_name("ref-1--a1.json")
+        _json(path, vote)
+    for target, run_id, members in (
+        ("answers", "run-1", composition),
+        (
+            "reference",
+            "ref-1",
+            {"reference": {"model_id": panel["judges"]["reference"]["model_id"], "effort": "high"}},
+        ),
+    ):
+        _json(
+            grading / "runs" / f"{run_id}.json",
+            {"target": target, "pass": 1, "grading_run_id": run_id, "composition": members},
+        )
     # The unused family, fallback and generators retain their scripted adapters.
-    return agentic_bundle
+    return _score(agentic_bundle, tmp_path, panel_path=panel_path, composition=composition)
+
+
+def _refresh_manifest(run: Path) -> None:
+    path = run / "grading/inputs/inputs.json"
+    manifest = json.loads(path.read_bytes())
+    for key, name in {"panel": "panel.yml", "mapping_table": "mapping.txt"}.items():
+        manifest[key] = hashlib.sha256((path.parent / name).read_bytes()).hexdigest()
+    _json(path, manifest)
 
 
 def generate_report(run: Path, **kwargs: Any) -> Path:
@@ -529,18 +635,35 @@ def test_input_bound_exceeded_is_surfaced_for_answering_and_grading(agentic_bund
 
 @pytest.fixture
 def agentic_bundle_with_fallback(tmp_path: Path) -> Path:
-    matrix = REPO_ROOT / "docs/benchmarks/model-matrix.yml"
-    agentic_bundle = _score(
-        _build(tmp_path, families_run=("gemini-3.8-flash",), matrix=matrix), tmp_path
-    )
-    inputs = agentic_bundle / "grading" / "inputs"
-    shutil.copy(REPO_ROOT / "docs" / "benchmarks" / "grading" / "panel.yml", inputs / "panel.yml")
-    _edit_summary(
-        agentic_bundle,
-        composition="haiku+luna+flash",
-        efforts={"haiku": "low", "luna": "none", "flash": "low"},
-    )
-    return agentic_bundle
+    run = _live_like_run(tmp_path, gemini_only=True)
+    grading = run / "grading"
+    panel_path = grading / "inputs/panel.yml"
+    panel = yaml.safe_load(panel_path.read_bytes())
+    docs = REPO_ROOT / "docs/benchmarks"
+    panel["judges"]["flash"] = yaml.safe_load((docs / "grading/panel.yml").read_bytes())["judges"][
+        "flash"
+    ]
+    panel["judges"]["flash"]["effort"] = "low"
+    panel_path.write_text(yaml.safe_dump(panel))
+    _refresh_manifest(run)
+    source = grading / "votes/answers/flash-lite"
+    dest = source.with_name("flash")
+    source.rename(dest)
+    model = panel["judges"]["flash"]["model_id"]
+    for path in dest.rglob("*.json"):
+        _json(
+            path,
+            json.loads(path.read_bytes())
+            | {"judge_id": "flash", "model_id": model, "reported_model": "flash-2026-11-01"},
+        )
+    metadata = grading / "runs/run-1.json"
+    invocation = json.loads(metadata.read_bytes())
+    members = invocation["composition"]
+    del members["flash-lite"]
+    members["flash"] = {"model_id": model, "effort": "low"}
+    _json(metadata, invocation)
+    _score(run, tmp_path, panel_path=panel_path, composition=members)
+    return run
 
 
 def test_grading_disclosure_names_judges_versions_and_self_grading(
@@ -646,21 +769,8 @@ def test_readme_summary_has_no_claim_below_validated(live_like_bundle: Path) -> 
 
 
 def _validated(run: Path) -> Path:
-    def claim(model: str) -> dict[str, Any]:
-        return {
-            "id": "C2",
-            "model": model,
-            "passed": True,
-            "interval": {"point": 0.5, "low": 0.4, "high": 0.6},
-            "reason": None,
-        }
-
-    _edit_summary(
-        run,
-        tier="Validated",
-        claims={"C2": {m: claim(m) for m in FAMILIES}, "C3": {}},
-        judge_sensitive=["C2/scripted-openai"],
-    )
+    # Isolate the publication rule while retaining the scorer's actual paired claims.
+    _edit_summary(run, tier="Validated", judge_sensitive=["C2/scripted-openai"])
     return run
 
 
@@ -688,7 +798,11 @@ def test_validated_scripted_bundle_has_only_demonstration_results(agentic_bundle
     assert "hosted batch APIs" not in report
     assert "Only answering ran in the air-gapped arm" not in report
     assert "scripted-1" in report
-    assert "95% CI" in _section(report, "## Claims")
+    claims = _section(report, "## Claims")
+    assert "95% CI" in claims
+    # All three systems were scored. Their diagnostics remain visible in a demonstration.
+    assert "| scripted-anthropic | 0.500, 95% CI 0.500 to 0.500 |" in claims
+    assert "Gate and claim bootstrap resamples: 10000" in report
 
 
 @pytest.mark.parametrize("scripted", ["answer", "luna", "reference"])
@@ -707,6 +821,7 @@ def test_one_active_scripted_adapter_blocks_public_claim(
             scripted
         ]
     path.write_text(yaml.safe_dump(data))
+    _refresh_manifest(run)
     readme = _readme(run)
     assert "fewer normalized tokens" not in readme
     for text in (readme, _render(run)):
@@ -732,6 +847,7 @@ def test_unknown_active_api_withholds_public_claim(live_like_bundle: Path) -> No
     data = yaml.safe_load(path.read_text())
     data["judges"]["reference"]["api"] = "unrecognized"
     path.write_text(yaml.safe_dump(data))
+    _refresh_manifest(run)
     text = _readme(run)
     assert "unknown" in text.lower() and "demonstration" not in text.lower()
     assert "fewer normalized tokens" not in text and REQUIRED_WORDING not in text
@@ -845,6 +961,7 @@ def agentic_bundle_hostile(live_like_bundle: Path) -> Path:
     (run / "grading" / "inputs" / "mapping.txt").write_text(
         "````\n# heading\n<img src=x onerror=alert(1)>\n``````` and more\n"
     )
+    _refresh_manifest(run)
     graded = json.loads((run / "grading" / "summary.json").read_text())
     interval = {"point": 0.5, "low": 0.25, "high": 0.75}
     _edit_summary(
@@ -914,35 +1031,77 @@ def test_no_run_data_value_becomes_markdown_in_the_readme_summary(live_like_bund
     _assert_inert(text)
 
 
+@pytest.mark.parametrize("filename", ["REPORT.md", "README-SUMMARY.md"])
 @pytest.mark.parametrize("field", ["reported_model", "legacy_extra"])
 def test_report_rejects_sensitive_fields_in_old_votes_before_publication(
-    agentic_bundle: Path, field: str
+    agentic_bundle: Path, field: str, filename: str
 ) -> None:
     marker = "AIza" + "g" * 35
     path = next((agentic_bundle / "grading/votes/answers/haiku").rglob("*.json"))
     record = json.loads(path.read_bytes())
     record[field] = marker
     path.write_text(json.dumps(record).replace(marker, r"\u0041" + marker[1:]))
-    out = agentic_bundle / "REPORT.md"
+    out = agentic_bundle / filename
     out.write_text("previous report")
     with pytest.raises(KeyLeakError) as caught:
-        _render(agentic_bundle)
+        (_render if filename == "REPORT.md" else _readme)(agentic_bundle)
     assert marker not in str(caught.value)
     assert out.read_text() == "previous report"
 
 
+@pytest.mark.parametrize("filename", ["REPORT.md", "README-SUMMARY.md"])
 def test_readme_refuses_sensitive_rendered_text_before_publication(
-    agentic_bundle: Path, tmp_path: Path
+    agentic_bundle: Path, tmp_path: Path, filename: str
 ) -> None:
     marker = "AIza" + "g" * 35
     methodology = tmp_path / (marker + ".md")
     methodology.write_text("fixture methodology")
-    out = agentic_bundle / "README-SUMMARY.md"
-    out.write_text("previous summary")
+    out = agentic_bundle / filename
+    out.write_text("previous output")
     with pytest.raises(KeyLeakError) as caught:
-        generate_readme_summary(agentic_bundle, methodology_path=methodology)
+        if filename == "REPORT.md":
+            _generate_report(agentic_bundle, model_matrix_path=MATRIX, methodology_path=methodology)
+        else:
+            generate_readme_summary(agentic_bundle, methodology_path=methodology)
     assert marker not in str(caught.value)
-    assert out.read_text() == "previous summary"
+    assert out.read_text() == "previous output"
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "graded",
+        "transcript",
+        "ledger-events.jsonl",
+        "grading/inputs/judge-schema.json",
+        "grading/inputs/grading-criteria.yml",
+        "snapshots/price-snapshot.yml",
+        "egress/summary.json",
+        "airgap/checks.json",
+        "planned-cells.json",
+    ],
+)
+def test_report_scans_captured_evidence_before_parsing_or_digest_fallback(
+    tmp_path: Path, relative: str
+) -> None:
+    run = _build(tmp_path)
+    if relative in {"graded", "transcript"}:
+        folder = "scoring" if relative == "graded" else "transcripts"
+        path = next((run / folder).glob("*/*.json"))
+    else:
+        path = run / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    marker = "AIza" + "g" * 35
+    escaped = r"\u0041" + marker[1:]
+    if path.suffix == ".yml":
+        path.write_text(f'unused: "{escaped}"\nunused: ordinary\n')
+    else:
+        # Malformed evidence (including a broken ledger row) still takes the key-leak path.
+        path.write_text('broken\n{"old":"' + escaped + '","old":"ordinary"}')
+    with pytest.raises(KeyLeakError) as caught:
+        _render(run)
+    assert marker not in str(caught.value)
+    assert not (run / "REPORT.md").exists()
 
 
 def _c1_row(run: Path, system: str) -> list[str]:
@@ -1072,6 +1231,10 @@ def test_gemma_only_run_discloses_google_and_unestimable_spi(tmp_path: Path) -> 
     row = _c1_row(run, "python-docs")
     assert row[2:4] == ["unknown", "unknown"]  # no hosted job ran
     assert row[-2:] == ["yes (air-gapped arm)", "1"]
+    checks = run / "airgap/checks.json"
+    checks.unlink()
+    assert _c1_row(run, "python-docs")[-2] == "not shown"
+    _json(checks, {"all_passed": True, "internet_hosts": [], "checks": 6})
 
     _json(run / "egress/summary.json", {"jobs": jobs, "isolation_probe": "fail"})
     _score(run, tmp_path)
@@ -1096,3 +1259,265 @@ def test_partial_c1_keeps_observed_values_without_claiming_totals(agentic_bundle
         "unknown (observed: pypi.org:443)",
     ]
     assert row[-1] == "unknown (observed: 2)"
+
+
+@pytest.mark.parametrize("keep_execution", [False, True])
+def test_saved_relabelled_pilot_cannot_publish(
+    live_like_bundle: Path, keep_execution: bool
+) -> None:
+    run = _validated(live_like_bundle)
+    saved = FIX / "agentic/r13-scripted-live"
+    transcript = next((saved / "transcripts").glob("*/*.json"))
+    original = json.loads(transcript.read_bytes())
+    raw = original["model_calls"][0]["raw_response"]
+    assert "scripted_step" in raw
+    target = run / transcript.relative_to(saved)
+    if keep_execution:
+        # Even when the inventory fields, request, usage and ledger agree, the
+        # actual scripted response contradicts the purported live adapter.
+        record = json.loads(target.read_bytes())
+        record["model_calls"][0]["raw_response"] = raw
+        _json(target, record)
+    else:
+        shutil.copyfile(transcript, target)
+    for text in (_readme(run), _render(run)):
+        assert "scripted answering" in text
+    assert "fewer normalized tokens" not in _readme(run)
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "grading/inputs/mapping.txt",
+        "grading/inputs",
+        "egress/summary.json",
+        "airgap/checks.json",
+        "discarded/c/q--attempt1.json",
+        "scoring/python-docs--scripted-anthropic--r1/SYN-EX-001.json",
+    ],
+)
+def test_export_cannot_follow_evidence_links(
+    agentic_bundle: Path, tmp_path: Path, relative: str
+) -> None:
+    from benchmarks.runner import BenchmarkValidationError
+
+    export = shutil.copytree(agentic_bundle, tmp_path / "export")
+    dest = export / relative
+    outside = tmp_path / "outside"
+    if dest.is_dir():
+        dest.rename(outside)
+        (outside / "mapping.txt").write_text("ordinary outside marker")
+    else:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            dest.rename(outside)
+        else:
+            outside.write_text("{}")
+        if relative.endswith("mapping.txt"):
+            outside.write_text("ordinary outside marker")
+    dest.symlink_to(outside)
+    path = export / "run-summary.json"
+    _json(
+        path,
+        json.loads(path.read_bytes())
+        | {"discarded": [{"cell": "c", "corpus_id": "q", "attempt": 1}]},
+    )
+    with pytest.raises(BenchmarkValidationError):
+        _render(export)
+    assert not (export / "REPORT.md").exists()
+
+
+def test_report_output_links_do_not_overwrite_targets(agentic_bundle: Path, tmp_path: Path) -> None:
+    outside = tmp_path / "ordinary.txt"
+    outside.write_text("ordinary outside marker")
+    for filename, render in (("REPORT.md", _render), ("README-SUMMARY.md", _readme)):
+        (agentic_bundle / filename).symlink_to(outside)
+        render(agentic_bundle)
+        assert outside.read_text() == "ordinary outside marker"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "missing_execution",
+        "wrong_model",
+        "scripted_execution",
+        "missing_calls",
+        "scripted_vote",
+        "missing_vote",
+        "wrong_composition",
+        "scripted_reservation",
+        "count",
+        "scripted_count",
+        "legacy_count",
+        "copied_claim",
+        "offline",
+        "digest",
+    ],
+)
+def test_saved_claim_needs_matching_evidence(live_like_bundle: Path, change: str) -> None:
+    run = _validated(live_like_bundle)
+    if change in {"missing_execution", "wrong_model", "scripted_execution", "missing_calls"}:
+        path = next((run / "transcripts").glob("*/*.json"))
+        record = json.loads(path.read_bytes())
+        if change == "missing_execution":
+            record.pop("execution", None)
+        elif change == "missing_calls":
+            record["model_calls"] = []
+        else:
+            record["execution"] = (record.get("execution") or {}) | (
+                {"model_id": "other"} if change == "wrong_model" else {"api": "scripted"}
+            )
+        _json(path, record)
+    elif change in {"scripted_vote", "missing_vote"}:
+        path = next((run / "grading/votes/answers/luna").rglob("*.json"))
+        if change == "scripted_vote":
+            _json(path, json.loads(path.read_bytes()) | {"provider_batch_id": "scripted-batch-1"})
+        else:
+            path.unlink()
+    elif change == "wrong_composition":
+        path = run / "grading/runs/run-1.json"
+        invocation = json.loads(path.read_bytes())
+        invocation["composition"]["luna"]["model_id"] = "another-model"
+        _json(path, invocation)
+    elif change == "scripted_reservation":
+        path = run / "grading/ledger-events.jsonl"
+        with path.open("a") as ledger:
+            ledger.write(
+                json.dumps({"event": "reserve", "unit_id": "u1", "api": "scripted"}) + "\n"
+            )
+    elif change == "count":
+        next((run / "tokens/python-docs--scripted-anthropic--r1").glob("*.json")).unlink()
+    elif change in {"scripted_count", "legacy_count"}:
+        path = next((run / "tokens/python-docs--scripted-anthropic--r1").glob("*.json"))
+        token = json.loads(path.read_bytes())
+        if change == "legacy_count":
+            token.pop("execution")
+        else:
+            token["execution"]["api"] = "scripted"
+        _json(path, token)
+    elif change == "copied_claim":
+        # Genuine live counter metadata cannot turn an old interval into current evidence.
+        for path in (run / "tokens/python-docs--scripted-anthropic--r1").glob("*.json"):
+            _json(path, json.loads(path.read_bytes()) | {"client_wrapped_tokens": 2000})
+    elif change == "offline":
+        _edit_summary(run, claims={"C3": {FAMILIES[0]: {"passed": True, "interval": {}}}})
+    else:
+        (run / "grading/inputs/mapping.txt").write_text("unbound ordinary text")
+        assert "unbound ordinary text" not in _render(run)
+    readme = _readme(run)
+    assert "fewer normalized tokens" not in readme and "answers the corpus better" not in readme
+    if change in {"count", "scripted_count", "legacy_count", "copied_claim", "offline"}:
+        assert r"not evaluable\: missing or inconsistent execution evidence" in _render(run)
+    if change in {"missing_execution", "missing_calls", "wrong_model"}:
+        assert "unknown for answering" in readme and "scripted answering" not in readme
+
+
+def test_real_worker_hosted_only_ungraded_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.benchmarks.test_agentic_reference_evidence import _hosted_mock_pilot
+
+    run = _hosted_mock_pilot(tmp_path / "hosted", monkeypatch)
+    for text in (_readme(run), _render(run)):
+        assert (
+            "not graded" in text
+            and "unknown for answering" not in text
+            and "scripted answering" not in text
+        )
+
+
+def test_export_cli_rechecks_offline_evidence_for_c3(
+    live_like_bundle: Path, tmp_path: Path
+) -> None:
+    from benchmarks.__main__ import main
+
+    run = _validated(live_like_bundle).rename(tmp_path / "export")
+    path = run / "snapshots/model-matrix.yml"
+    matrix = yaml.safe_load(path.read_bytes())
+    real = yaml.safe_load((REPO_ROOT / "docs/benchmarks/model-matrix.yml").read_bytes())
+    local = next(f for f in real["model_families"] if f["arm"] == "air-gapped")
+    model = FAMILIES[0]
+    family = next(f for f in matrix["model_families"] if f["id"] == model)
+    family.update(local, id=model)
+    path.write_text(yaml.safe_dump(matrix))
+    identity = {k: family[k] for k in ("provider", "model_id", "api")}
+    jobs = {}
+    attempts = 0
+    for path in (run / "transcripts").glob("*/*.json"):
+        record = json.loads(path.read_bytes())
+        if record["model_family_id"] == model:
+            record.update(execution=identity, model_id=identity["model_id"], provider="ollama")
+            call = record["model_calls"][0]
+            call["reported_model"] = identity["model_id"]
+            call["request_params"]["model"] = identity["model_id"]
+            call["raw_response"] = {
+                "model": identity["model_id"],
+                "choices": [{"message": {"content": record["answer"]}}],
+            }
+            _json(path, record)
+            attempts += 1
+            jobs[f"{model}--{record['system_id']}"] = {
+                "hosts_allowed": ["host.docker.internal:11434"],
+                "hosts_denied": [],
+                "lookup_package_docs_attempts": 0,
+            }
+    path = run / "ledger-events.jsonl"
+    path.write_text(
+        "".join(
+            line + "\n"
+            for line in path.read_text().splitlines()
+            if json.loads(line)["provider"] != "anthropic"
+        )
+    )
+    path = run / "run-summary.json"
+    summary = json.loads(path.read_bytes())
+    summary["ledger"]["anthropic"]["spent_after"] = 0
+    _json(path, summary)
+    _json(run / "egress/summary.json", {"jobs": jobs, "isolation_probe": "pass"})
+    checks = run / "airgap/checks.json"
+    _json(checks, {"checks": attempts + 2, "all_passed": True, "internet_hosts": []})
+    composition = json.loads((run / "grading/runs/run-1.json").read_bytes())["composition"]
+    _score(run, tmp_path, panel_path=run / "grading/inputs/panel.yml", composition=composition)
+    _validated(run)
+    args = [
+        "report",
+        "--run-dir",
+        str(run),
+        "--methodology",
+        str(METHODOLOGY),
+        "--model-matrix",
+        str(MATRIX),
+    ]
+    assert main(args) == 0
+    assert "answers the corpus better" in (run / "README-SUMMARY.md").read_text()
+    checks.unlink()
+    assert main(args) == 0
+    assert "answers the corpus better" not in (run / "README-SUMMARY.md").read_text()
+    assert "missing or inconsistent execution evidence" in (run / "REPORT.md").read_text()
+
+
+@pytest.mark.parametrize("artifact", ["fifo", "oversized"])
+def test_report_rejects_unreadable_evidence_without_open_ended_reads(
+    agentic_bundle: Path, artifact: str
+) -> None:
+    from benchmarks.agentic.protocol import MAX_FRAME_BYTES
+    from benchmarks.runner import BenchmarkValidationError
+
+    path = agentic_bundle / "grading/inputs/mapping.txt"
+    path.unlink()
+    if artifact == "fifo":
+        os.mkfifo(path)
+    else:
+        with path.open("wb") as file:
+            file.truncate(MAX_FRAME_BYTES + 1)
+    with pytest.raises(BenchmarkValidationError):
+        _render(agentic_bundle)
+
+
+def test_hidden_export_files_are_not_evidence(live_like_bundle: Path) -> None:
+    run = _validated(live_like_bundle)
+    path = run / "transcripts/.notes/old.json"
+    _json(path, {"error": "ordinary hidden marker"})
+    assert "fewer normalized tokens" in _readme(run)
+    assert "ordinary hidden marker" not in _render(run)

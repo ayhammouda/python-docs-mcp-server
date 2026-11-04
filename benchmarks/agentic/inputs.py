@@ -18,6 +18,7 @@ from benchmarks.agentic.protocol import (
     KeyLeakError,
     assert_no_key_shaped,
     assert_no_key_shaped_json,
+    check_json_text,
 )
 from benchmarks.runner import BenchmarkValidationError, _require_yaml_mapping
 
@@ -44,7 +45,12 @@ class CapturedInput:
     @classmethod
     def read(cls, path: Path, name: str, label: str) -> CapturedInput:
         content = read_input_bytes(path, name, label)
+        return cls.from_bytes(content, name, label)
+
+    @classmethod
+    def from_bytes(cls, content: bytes, name: str, label: str) -> CapturedInput:
         where = f"input {name}"
+        assert_no_key_shaped(content, where=where)
         try:
             text = content.decode("utf-8")  # same encoding as the path-based loaders
             for token in yaml.scan(text, Loader=yaml.SafeLoader):
@@ -71,7 +77,9 @@ class CapturedInput:
         return cls(name, content, _require_yaml_mapping(data, label))
 
 
-def _json_mapping(content: bytes, label: str) -> dict[str, Any]:
+def json_mapping(content: bytes, label: str) -> dict[str, Any]:
+    assert_no_key_shaped(content, where=label)
+
     def checked_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         # Scan before dict construction discards a duplicate key's earlier value.
         assert_no_key_shaped_json(pairs, where=label)
@@ -82,6 +90,8 @@ def _json_mapping(content: bytes, label: str) -> dict[str, Any]:
     except KeyLeakError:
         raise
     except (ValueError, TypeError, RecursionError):
+        # Malformed structure can hide a decoded string from the object hook.
+        check_json_text(content.decode("utf-8", errors="replace"), where=label)
         raise BenchmarkValidationError(f"{label} file is not valid JSON") from None
     assert_no_key_shaped_json(data, where=label)
     return _require_yaml_mapping(data, label)
@@ -95,7 +105,7 @@ class CapturedJSON:
     @classmethod
     def read(cls, path: Path, label: str) -> CapturedJSON:
         content = read_input_bytes(path, label, label)
-        return cls(content, _json_mapping(content, label))
+        return cls(content, json_mapping(content, label))
 
 
 def read_json(path: Path, label: str) -> dict[str, Any]:
@@ -104,4 +114,4 @@ def read_json(path: Path, label: str) -> dict[str, Any]:
 
 def read_jsonl(path: Path, label: str) -> list[dict[str, Any]]:
     content = read_input_bytes(path, label, label)
-    return [_json_mapping(line, label) for line in content.splitlines() if line]
+    return [json_mapping(line, label) for line in content.splitlines() if line]

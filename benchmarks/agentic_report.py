@@ -9,31 +9,40 @@ everywhere: no anti-claim, and ``REQUIRED_WORDING`` for the grading.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import statistics
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from decimal import Decimal
+from dataclasses import asdict
+from decimal import Decimal, DecimalException
 from pathlib import Path
 from typing import Any
 
+from benchmarks.adapters.claude_tokens import DEFAULT_COUNT_MODEL
 from benchmarks.agentic.egress import PROVIDER_HOSTS
-from benchmarks.agentic.inputs import CapturedInput, read_json, read_jsonl
-from benchmarks.agentic.ledger import actual_cost, load_price_snapshot
-from benchmarks.agentic.protocol import KeyLeakError
+from benchmarks.agentic.inputs import CapturedInput, json_mapping
+from benchmarks.agentic.ledger import actual_cost, price_snapshot_from_mapping
+from benchmarks.agentic.protocol import KeyLeakError, check_json_text
+from benchmarks.agentic.reference import ReferenceTranscripts, ReferenceUnits, scripted_response
 from benchmarks.agentic.types import Buckets
 from benchmarks.grading.gates import (
     EGRESS_JOB_FIELDS,
-    load_egress_evidence,
+    CellKey,
+    c2,
+    c3,
+    egress_from_mapping,
     load_offline_evidence,
     model_lineage,
+    offline_verdict,
     read_evidence_json,
 )
-from benchmarks.grading.inputs import SNAPSHOT_NAMES
-from benchmarks.grading.stats import paired_bootstrap
-from benchmarks.model_matrix import KNOWN_APIS, ModelMatrix
+from benchmarks.grading.inputs import SNAPSHOT_FILES, safe_id
+from benchmarks.grading.stats import GATE_RESAMPLES, paired_bootstrap
+from benchmarks.model_matrix import KNOWN_APIS, ModelMatrix, model_family_from_raw
 from benchmarks.report import RunBundle, _cell, _percentile, _relative_link, _table
+from benchmarks.report_files import artifact_bytes, artifact_paths, checked_path, optional_json
 from benchmarks.runner import BenchmarkValidationError
 
 REQUIRED_WORDING = "LLM-graded, validated against synthetic probes and inter-model agreement"
@@ -69,37 +78,36 @@ RESIDUAL_RISK = (
 )
 
 
-def _read_json(path: Path) -> Any:
+def _read_yaml(root: Path, path: Path) -> Any:
     try:
-        return read_json(path, "agentic report evidence")
+        body = artifact_bytes(root, path)
+    except FileNotFoundError:
+        return None
+    try:
+        return CapturedInput.from_bytes(body, "report snapshot", "report snapshot").mapping
     except KeyLeakError:
         raise
     except BenchmarkValidationError:
         return None
 
 
-def _read_yaml(path: Path) -> Any:
+def _events(root: Path, path: Path) -> list[dict[str, Any]]:
     try:
-        return CapturedInput.read(path, "report snapshot", "report snapshot").mapping
-    except KeyLeakError:
-        raise
-    except BenchmarkValidationError:
-        return None
-
-
-def _cells(base: Path) -> dict[tuple[str, str], dict[str, Any]]:
-    found: dict[tuple[str, str], dict[str, Any]] = {}
-    for path in sorted(base.glob("*/*.json")):
-        data = _read_json(path)
-        if isinstance(data, dict) and "competitor_id" in data and "corpus_id" in data:
-            found[(data["competitor_id"], data["corpus_id"])] = data
-    return found
-
-
-def _events(path: Path) -> list[dict[str, Any]]:
-    if not path.is_file():
+        content = artifact_bytes(root, path)
+    except FileNotFoundError:
         return []
-    return read_jsonl(path, "agentic report ledger")
+    try:
+        return [
+            json_mapping(line, "agentic report ledger")
+            for line in content.splitlines()
+            if line.strip()
+        ]
+    except KeyLeakError:
+        raise
+    except BenchmarkValidationError:
+        # A malformed row must not hide escaped credentials later in the same ledger.
+        check_json_text(content.decode("utf-8", errors="replace"), where="agentic report ledger")
+        raise
 
 
 def _fmt(value: Any, digits: int = 3) -> str:
@@ -151,28 +159,364 @@ def _execution_kind(apis: Sequence[str | None], *, grading: bool = False) -> str
     return "live" if apis and known else "unknown"
 
 
+def _answering_evidence(
+    bundle: RunBundle,
+    families: dict[str, dict[str, Any]],
+    models: Sequence[str],
+    events: list[dict[str, Any]],
+) -> tuple[str, dict[tuple[str, str], dict[str, Any]], dict[tuple[str, str], dict[str, Any]]]:
+    transcripts: dict[tuple[str, str], dict[str, Any]] = {}
+    discarded: dict[tuple[str, str], dict[str, Any]] = {}
+    root = bundle.run_dir
+    summary = bundle.run_summary
+    declared = _execution_kind([families.get(fid, {}).get("api") for fid in models])
+    units = ReferenceUnits()
+    inventory = None
+    consistent = True
+    seen: set[str] = set()
+    try:
+        if "transcript_inventory" in summary:
+            inventory = ReferenceTranscripts(summary)
+    except ValueError:
+        consistent = False
+    scripted = declared == "scripted"
+    for kind in ("transcripts", "discarded"):
+        for path in artifact_paths(root, root / kind, "*/*.json"):
+            body = artifact_bytes(root, path)
+            record = json_mapping(body, "answering transcript")
+            if not isinstance(record.get("model_calls", []), list):
+                raise BenchmarkValidationError(f"invalid transcript: {path}")
+            calls = record.get("model_calls") or []
+            execution = record.get("execution")
+            execution = execution if isinstance(execution, dict) else {}
+            scripted |= execution.get("api") == "scripted" or any(
+                isinstance(call, dict) and scripted_response(call) for call in calls
+            )
+            key = (record.get("competitor_id"), record.get("corpus_id"))
+            if kind == "transcripts":
+                transcripts[path.parent.name, path.stem] = record
+            else:
+                discarded[path.parent.name, path.name] = record
+            try:
+                if inventory is not None:
+                    inventory.verify(path.relative_to(root).as_posix(), body, record)
+                family = model_family_from_raw(families[record["model_family_id"]])
+                cell = f"{record['system_id']}--{family.id}--r{record['repeat']}"
+                consistent &= key[0] == path.parent.name == cell
+                units.add(record, family)
+                if kind == "transcripts":
+                    consistent &= path.stem == key[1]
+                    if any(call.get("attempts") for call in calls):
+                        seen.add(family.id)
+                    if record.get("status") == "succeeded":
+                        consistent &= any(call.get("raw_response") is not None for call in calls)
+            except (ValueError, KeyError, TypeError, DecimalException):
+                consistent = False
+    if scripted:
+        return "scripted", transcripts, discarded
+    try:
+        if inventory is not None:
+            inventory.finish()
+        units.reconcile(events, summary)
+    except (ValueError, KeyError, TypeError, DecimalException):
+        consistent = False
+    expected = {(c.competitor_id, c.corpus_id) for c in bundle.cells}
+    listed_discards = {
+        (d.get("cell"), f"{d.get('corpus_id')}--attempt{d.get('attempt')}.json")
+        for d in summary.get("discarded") or []
+    }
+    complete = (
+        transcripts.keys() == expected
+        and len(expected) == summary.get("scored_cells")
+        and discarded.keys() == listed_discards
+    )
+    live = declared == "live" and consistent and complete and seen == set(models)
+    return ("live" if live else "unknown"), transcripts, discarded
+
+
+def _graded_execution(
+    root: Path,
+    judges: dict[str, Any],
+    efforts: dict[str, Any],
+    reference: str,
+    inputs: dict[str, str],
+    scoring: dict[tuple[str, str], dict[str, Any]],
+    events: list[dict[str, Any]],
+    reported_versions: dict[Path, str | None],
+) -> str:
+    # Join chosen votes by their digest and coordinates. Recorded path strings
+    # may name the original machine or be relative to a different working directory.
+    runs = {
+        p.stem: optional_json(root, p) or {}
+        for p in artifact_paths(root, root / "grading/runs", "*.json")
+    }
+    reservations = {e.get("unit_id"): e for e in events if e.get("event") == "reserve"}
+    votes = {}
+    for target, members in (
+        ("answers", efforts),
+        ("reference", {reference: judges[reference].get("effort")}),
+    ):
+        for judge, effort in members.items():
+            parts = (judge, effort or "default")
+            if not all(
+                isinstance(p, str) and p and Path(p).name == p and not p.startswith(".")
+                for p in parts
+            ):
+                return "unknown"
+            base = root.joinpath("grading/votes", target, *parts, "pass1")
+            for path in artifact_paths(root, base, "*/*.json"):
+                body = artifact_bytes(root, path)
+                vote = json_mapping(body, "grading vote")
+                reported_versions[path] = vote.get("reported_model")
+                if str(vote.get("provider_batch_id")).startswith("scripted-batch-"):
+                    return "scripted"
+                run_id = vote.get("grading_run_id")
+                if not isinstance(run_id, str):
+                    continue
+                invocation = runs.get(run_id, {})
+                model_id = judges[judge].get("model_id")
+                spec = {"model_id": model_id, "effort": effort}
+                if (
+                    invocation.get("grading_run_id") != vote.get("grading_run_id")
+                    or invocation.get("target") != target
+                    or invocation.get("pass") != 1
+                    or invocation.get("dry_run")
+                    or (invocation.get("composition") or {}).get(judge) != spec
+                ):
+                    continue
+                reserve = reservations.get(vote.get("unit_id"))
+                if reserve and reserve.get("api") == "scripted":
+                    return "scripted"
+                if reserve and (
+                    reserve.get("provider") != judges[judge].get("provider")
+                    or reserve.get("model_id") != model_id
+                    or reserve.get("api", judges[judge]["api"]) != judges[judge]["api"]
+                    or reserve.get("job_id") != f"{judge}--grading"
+                ):
+                    continue
+                identity = {
+                    "model_id": model_id,
+                    "effort": effort,
+                    "judge_id": judge,
+                    "target": target,
+                    "pass": 1,
+                    "item_id": path.parent.name,
+                }
+                if vote.get("provider_batch_id") and all(
+                    vote.get(k) == v for k, v in identity.items()
+                ):
+                    votes[judge, path.parent.name, hashlib.sha256(body).hexdigest()] = model_id
+
+    observed = set()
+    for record in scoring.values():
+        grade = record.get("grading")
+        if not grade:
+            # Automatic zeroes (e.g. a failed trajectory) have no LLM votes.
+            if record.get("score") is not None and record.get("scoring_method") != "automatic":
+                return "unknown"
+            continue
+        try:
+            item = safe_id(record["competitor_id"], record["corpus_id"])
+        except ValueError:
+            return "unknown"
+        if grade.get("inputs") != inputs or grade.get("item_id") != item:
+            return "unknown"
+        chosen = dict(grade.get("votes") or {})
+        if grade.get("reference"):
+            chosen[reference] = grade["reference"]
+        if not chosen:
+            return "unknown"
+        for judge, binding in chosen.items():
+            model_id = votes.get((judge, item, binding.get("sha256")))
+            if not model_id or model_id != binding.get("model_id"):
+                return "unknown"
+            observed.add(judge)
+    return "live" if efforts and set(efforts) <= observed else "unknown"
+
+
+def _live_count(record: dict[str, Any]) -> bool:
+    # ScriptedCountClient also writes DEFAULT_COUNT_MODEL and approximation=False.
+    # The model label alone cannot establish which adapter measured the tokens.
+    execution = record.get("execution")
+    return (
+        isinstance(execution, dict)
+        and record.get("status") == "counted"
+        and record.get("approximation") is False
+        and record.get("count_model") == DEFAULT_COUNT_MODEL
+        and execution.get("provider") == "anthropic"
+        and execution.get("api") == "anthropic-messages"
+        and execution.get("model_id") == record["count_model"]
+        and type(record.get("client_wrapped_tokens")) is int
+        and record["client_wrapped_tokens"] >= 0
+    )
+
+
 class _RunMetadata:
     """Execution provenance shared by both renderers, from exported inputs only."""
 
     def __init__(self, bundle: RunBundle) -> None:
         run = bundle.run_dir
-        self.summary: dict[str, Any] = _read_json(run / "grading" / "summary.json") or {}
-        snapshot = _read_yaml(run / "snapshots" / "model-matrix.yml") or {}
+        self.summary: dict[str, Any] = optional_json(run, run / "grading" / "summary.json") or {}
+        snapshot = _read_yaml(run, run / "snapshots" / "model-matrix.yml") or {}
         self.families: dict[str, dict[str, Any]] = {
             str(f["id"]): f for f in snapshot.get("model_families") or [] if "id" in f
         }
-        panel = _read_yaml(run / "grading" / "inputs" / "panel.yml") or {}
+        self.inputs = optional_json(run, run / "grading/inputs/inputs.json") or {}
+        self.frozen: dict[str, bytes] = {}
+        panel = {}
+        for key, filename in SNAPSHOT_FILES.items():
+            if key not in self.inputs:
+                continue
+            try:
+                body = artifact_bytes(run, run / "grading/inputs" / filename)
+            except FileNotFoundError:
+                continue
+            bound = hashlib.sha256(body).hexdigest() == self.inputs[key]
+            try:
+                if filename.endswith(".yml"):
+                    mapping = CapturedInput.from_bytes(body, key, "frozen report input").mapping
+                    if key == "panel" and bound:
+                        panel = mapping
+                elif filename.endswith(".json"):
+                    json_mapping(body, "frozen report input")
+            except KeyLeakError:
+                raise
+            except BenchmarkValidationError:
+                continue  # A malformed snapshot cannot establish grading provenance.
+            if bound:
+                self.frozen[key] = body
         self.judges: dict[str, dict[str, Any]] = panel.get("judges") or {}
 
         models = bundle.run_summary.get("models") or bundle.run_summary.get("families") or []
-        self.answering = _execution_kind([self.families.get(fid, {}).get("api") for fid in models])
+        self.answer_events = _events(run, run / "ledger-events.jsonl")
+        self.grading_events = _events(run, run / "grading/ledger-events.jsonl")
+        self.egress_data = read_evidence_json(run, "egress/summary.json")
+        self.offline = load_offline_evidence(run)
+        self.plan = read_evidence_json(run, "planned-cells.json") or {}
+        self.seed = str(bundle.environment.get("seed"))
+        self.answering, self.transcripts, self.discarded = _answering_evidence(
+            bundle, self.families, models, self.answer_events
+        )
         efforts = self.summary.get("efforts") or {}
         active = [self.judges.get(j, {}).get("api") for j in efforts]
         references = [j.get("api") for j in self.judges.values() if j.get("role") == "reference"]
         if len(active) != 3 or len(references) != 1:
             active.append(None)  # an incomplete panel cannot establish live grading
         self.grading = _execution_kind([*active, *references], grading=True)
+        self.scoring = bundle.scoring
+        self.tokens = bundle.tokens
+        checked_versions: dict[Path, str | None] = {}
+        if self.grading == "live":
+            reference = next(
+                j for j, spec in self.judges.items() if spec.get("role") == "reference"
+            )
+            if (
+                self.inputs.keys() != self.frozen.keys()
+                or not (SNAPSHOT_FILES.keys() - {"probes"}) <= self.frozen.keys()
+            ):
+                self.grading = "unknown"
+            else:
+                self.grading = _graded_execution(
+                    run,
+                    self.judges,
+                    efforts,
+                    reference,
+                    self.inputs,
+                    self.scoring,
+                    self.grading_events,
+                    checked_versions,
+                )
+        self.versions = {
+            judge: _reported_versions(run, judge, checked_versions) for judge in efforts
+        }
         self.tier = str(self.summary.get("tier", NOT_GRADED))
+
+    def claim_evidence(self, claim: str, model: str) -> bool:
+        systems = TOKEN_SYSTEMS if claim == "C2" else ("python-docs", "no-docs")
+        records = {
+            k: t
+            for k, t in self.transcripts.items()
+            if t.get("model_family_id") == model and t.get("system_id") in systems
+        }
+        cells = self.plan.get("cells")
+        if not isinstance(cells, list) or not all(isinstance(p, dict) for p in cells):
+            return False
+        planned = {
+            (p.get("competitor_id"), p.get("corpus_id")): (
+                p.get("system_id"),
+                model,
+                p.get("corpus_id"),
+                p.get("repeat"),
+            )
+            for p in cells
+            if p.get("model_family_id") == model and p.get("system_id") in systems
+        }
+        if not records or records.keys() != planned.keys():
+            return False
+        scores: dict[CellKey, float] = {}
+        counts: dict[CellKey, int] = {}
+        for key, transcript in records.items():
+            coord = planned[key]
+            score = self.scoring.get(key, {}).get("score")
+            if (
+                coord != (transcript["system_id"], model, key[1], transcript.get("repeat"))
+                or type(coord[3]) is not int
+                or type(score) not in (int, float)
+                or score not in (0, 0.5, 1)
+            ):
+                return False
+            scores[coord] = score
+            if claim == "C2":
+                token = self.tokens.get(key, {})
+                if not _live_count(token):
+                    return False
+                counts[coord] = token["client_wrapped_tokens"]
+
+        # A copied verdict or interval cannot certify a different set of paired observations.
+        if self.summary.get("resamples") != GATE_RESAMPLES:
+            return False
+        if claim == "C2":
+            try:
+                result = c2(counts, scores, set(scores), model=model, seed=self.seed)
+            except ZeroDivisionError:
+                return False  # No defined ratio for a zero-token peer.
+        elif claim == "C3" and self.families.get(model, {}).get("arm") == "air-gapped":
+            result = c3(
+                scores, set(scores), model=model, seed=self.seed, offline_ok=self.offline_ok()
+            )
+        else:
+            return False
+        return result.passed is True and asdict(result) == self.summary["claims"][claim][model]
+
+    def offline_ok(self) -> bool:
+        local = {f for f, spec in self.families.items() if spec.get("arm") == "air-gapped"}
+        attempts = [
+            t
+            for t in (*self.transcripts.values(), *self.discarded.values())
+            if t.get("model_family_id") in local
+        ]
+        cells = self.plan.get("cells")
+        if not isinstance(cells, list) or any(
+            not isinstance(cell, dict) or not isinstance(cell.get("system_id"), str)
+            for cell in cells
+        ):
+            return False
+        jobs = {
+            f"{cell['model_family_id']}--{cell['system_id']}"
+            for cell in cells
+            if cell.get("model_family_id") in local
+        }
+        egress = egress_from_mapping(self.egress_data)
+        return bool(
+            egress
+            and egress["isolation_probe"] == "pass"
+            and offline_verdict(
+                self.offline,
+                egress,
+                expected_checks=len(attempts) + 2,
+                airgap_jobs=sorted(jobs),
+            ).ok
+        )
 
     @property
     def grading_label(self) -> str:
@@ -204,33 +548,22 @@ class _Run(_RunMetadata):
         super().__init__(bundle)
         run = bundle.run_dir
         self.dir, self.bundle, self.report_dir = run, bundle, report_dir
-        self.inputs: dict[str, str] = _read_json(run / "grading" / "inputs" / "inputs.json") or {}
         # The caller's matrix is a display fallback, never evidence for a claim.
         if not self.families:
             self.families = {
                 f.id: {"id": f.id, "provider": f.provider, "model_id": f.model_id, "arm": f.arm}
                 for f in matrix.model_families
             }
-        self.transcripts = _cells(run / "transcripts")
-        self.scoring = _cells(run / "scoring")
-        self.tokens = _cells(run / "tokens")
-        self.latency = _cells(run / "latency")
-        self.egress = load_egress_evidence(run, partial=True)
-        self.offline = load_offline_evidence(run)
-        self.answer_events = _events(run / "ledger-events.jsonl")
-        self.grading_events = _events(run / "grading" / "ledger-events.jsonl")
-        manifest = _read_yaml(run / "snapshots" / "competitor-manifest.yml") or {}
-        self.systems: dict[str, dict[str, Any]] = {
-            str(c["id"]): c for c in manifest.get("competitors") or []
-        }
-        self.seed = str(bundle.environment.get("seed"))
+        self.latency = bundle.latency
+        self.egress = egress_from_mapping(self.egress_data, partial=True)
+        self.systems = bundle.competitors
         groups: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
         for key, t in self.transcripts.items():
             groups[(str(t.get("model_family_id")), str(t.get("system_id")))].append(key)
         self.groups = dict(sorted(groups.items()))
 
     def link(self, *parts: str) -> str:
-        return _relative_link(self.dir.joinpath(*parts), self.report_dir)
+        return _relative_link(checked_path(self.dir, self.dir.joinpath(*parts)), self.report_dir)
 
     def airgapped(self) -> set[str]:
         return {fid for fid, f in self.families.items() if f.get("arm") == "air-gapped"}
@@ -287,7 +620,7 @@ def _header(run: _Run, methodology_path: Path) -> list[str]:
 
 
 def _claim_rows(
-    claims: Mapping[str, Any], sensitive: Sequence[str], claim_id: str
+    run: _Run, claims: Mapping[str, Any], sensitive: Sequence[str], claim_id: str
 ) -> list[list[str]]:
     rows = []
     for model, claim in sorted(claims.items()):
@@ -295,14 +628,15 @@ def _claim_rows(
         verdict = (
             _verdict(passed) if passed is not None else str(claim.get("reason") or "not evaluable")
         )
+        if passed is True and not run.claim_blocker and not run.claim_evidence(claim_id, model):
+            verdict = "not evaluable: missing or inconsistent execution evidence"
         flag = "judge-sensitive" if f"{claim_id}/{model}" in sensitive else ""
         rows.append([model, _interval(claim.get("interval")), verdict, flag])
     return rows
 
 
 def _planned_job_families(run: _Run) -> dict[str, set[str]]:
-    plan = read_evidence_json(run.dir, "planned-cells.json") or {}
-    cells = plan.get("cells")
+    cells = run.plan.get("cells")
     if not isinstance(cells, list) or len(cells) != run.bundle.run_summary.get("planned_cells"):
         return {}
     systems: dict[str, set[str]] = defaultdict(set)
@@ -355,7 +689,7 @@ def _c1(run: _Run) -> list[str]:
     probe = evidence.get("isolation_probe", "unknown")
     expected = _planned_job_families(run)
     airgap = run.airgapped()
-    offline_ok = (run.summary.get("offline") or {}).get("ok")
+    offline_ok = (run.summary.get("offline") or {}).get("ok") is True and run.offline_ok()
     rows = []
     for system_id, system in sorted(run.systems.items()):
         families = expected.get(system_id, set())
@@ -435,7 +769,7 @@ def _claims(run: _Run) -> list[str]:
     else:
         lines += _table(
             ["Model", "Ratio python-docs ÷ docs-fetch", "Verdict", "G4"],
-            _claim_rows(claims.get("C2") or {}, sensitive, "C2"),
+            _claim_rows(run, claims.get("C2") or {}, sensitive, "C2"),
         )
     lines += ["", "### C3: offline, with docs better than without", ""]
     if not graded:
@@ -445,7 +779,7 @@ def _claims(run: _Run) -> list[str]:
     else:
         lines += _table(
             ["Model", "Score difference with docs minus without", "Verdict", "G4"],
-            _claim_rows(claims["C3"], sensitive, "C3"),
+            _claim_rows(run, claims["C3"], sensitive, "C3"),
         )
         offline = run.summary.get("offline") or {}
         lines += [
@@ -480,12 +814,16 @@ def _claims(run: _Run) -> list[str]:
     return lines
 
 
-def _reported_versions(run: _Run, judge_id: str) -> list[str]:
+def _reported_versions(root: Path, judge_id: str, checked: dict[Path, str | None]) -> list[str]:
     seen: set[str] = set()
-    for path in (run.dir / "grading" / "votes" / "answers" / judge_id).glob("*/*/*/*.json"):
-        record = _read_json(path) or {}
-        if record.get("reported_model"):
-            seen.add(str(record["reported_model"]))
+    if not judge_id or Path(judge_id).name != judge_id or judge_id.startswith("."):
+        return []
+    for path in artifact_paths(root, root / "grading/votes/answers" / judge_id, "*/*/*/*.json"):
+        if path not in checked:
+            record = optional_json(root, path) or {}
+            checked[path] = record.get("reported_model")
+        if version := checked[path]:
+            seen.add(str(version))
     return sorted(seen)
 
 
@@ -518,7 +856,7 @@ def _disclosure(run: _Run) -> list[str]:
     described = []
     for judge_id, effort in efforts.items():
         model = (run.judges.get(judge_id) or {}).get("model_id", "?")
-        versions = ", ".join(_esc(v) for v in _reported_versions(run, judge_id)) or "n/a"
+        versions = ", ".join(_esc(v) for v in run.versions[judge_id]) or "n/a"
         described.append(
             f"{_esc(judge_id)} ({_esc(model)}, reported {versions}, "
             f"effort {_esc(effort or 'default')})"
@@ -564,17 +902,16 @@ def _disclosure(run: _Run) -> list[str]:
                     f"with the evaluated model {_esc(fid)}."
                 )
     lines += ["", "### Frozen inputs", ""]
-    files = {**SNAPSHOT_NAMES, "mapping_table": "mapping.txt", "mask_rules": "masking.txt"}
     for name, sha in sorted(run.inputs.items()):
-        target = files.get(name)  # a fixed file name, never run data
-        link = f" ([{target}]({run.link('grading', 'inputs', target)}))" if target else ""
-        lines.append(f"- {_esc(name)}: {_esc(sha)}{link}")
-    for title, name in (("Score mapping", "mapping.txt"), ("Link masking", "masking.txt")):
-        text = (
-            (run.dir / "grading" / "inputs" / name).read_text(encoding="utf-8")
-            if (run.dir / "grading" / "inputs" / name).is_file()
-            else "(missing)"
+        target = SNAPSHOT_FILES.get(name)  # a fixed file name, never run data
+        link = (
+            f" ([{target}]({run.link('grading', 'inputs', target)}))"
+            if name in run.frozen and target
+            else " (missing or digest mismatch)"
         )
+        lines.append(f"- {_esc(name)}: {_esc(sha)}{link}")
+    for title, key in (("Score mapping", "mapping_table"), ("Link masking", "mask_rules")):
+        text = run.frozen.get(key, b"(missing or digest mismatch)").decode("utf-8")
         lines += ["", f"{title}:", "", *_fence(text)]
     lines += _probe_disclosure(run)
     gates = summary.get("gates") or {}
@@ -593,7 +930,7 @@ def _disclosure(run: _Run) -> list[str]:
         by = breakdowns.get(gate) or {}
         lines += _alpha_table(f"{gate} per evaluated family", by.get("by_family") or {})
         lines += _alpha_table(f"{gate} per system", by.get("by_system") or {})
-    sample = _read_json(run.dir / "grading" / "reference-sample.json") or {}
+    sample = optional_json(run.dir, run.dir / "grading" / "reference-sample.json") or {}
     groups = sample.get("groups") or {}
     borrowed = sample.get("borrowed") or {}
     shortfall = sample.get("shortfall") or {}
@@ -652,7 +989,7 @@ def _disclosure(run: _Run) -> list[str]:
 
 
 def _probe_disclosure(run: _Run) -> list[str]:
-    entries = _read_json(run.dir / "grading" / "disclosure" / "g1-entries.json") or {}
+    entries = optional_json(run.dir, run.dir / "grading" / "disclosure" / "g1-entries.json") or {}
     composition = str(run.summary.get("composition"))
     entry = entries.get(composition) or {}
     gate = run.summary.get("gates", {}).get("G1") or {}
@@ -916,8 +1253,9 @@ def _tokens(run: _Run) -> list[str]:
 
 
 def _cost(run: _Run) -> list[str]:
+    prices = _read_yaml(run.dir, run.dir / "snapshots/price-snapshot.yml") or {}
     try:
-        snapshot = load_price_snapshot(run.dir / "snapshots" / "price-snapshot.yml")
+        snapshot = price_snapshot_from_mapping(prices)
     except BenchmarkValidationError as exc:
         return ["## Cost per correct answer", "", f"Not computed: {_esc(str(exc))}"]
     totals: dict[str, Decimal] = defaultdict(Decimal)
@@ -1142,16 +1480,17 @@ def _budget(run: _Run) -> list[str]:
     ]
     for d in summary.get("discarded") or []:
         name = f"{d.get('corpus_id')}--attempt{d.get('attempt')}.json"
-        cell_dir = (run.dir / "discarded" / str(d.get("cell"))).resolve()
-        # a hostile summary must not steer the read outside the run's discarded/ tree
-        inside = cell_dir.parent == (run.dir / "discarded").resolve() and "/" not in name
-        record = (_read_json(cell_dir / name) if inside else None) or {}
+        record = run.discarded.get((str(d.get("cell")), name), {})
         units = {
             a.get("unit_id")
             for c in record.get("model_calls") or []
             for a in c.get("attempts") or []
         }
-        spend = sum((booked.get(u, Decimal(0)) for u in units), Decimal(0))
+        spend = (
+            str(sum((booked.get(u, Decimal(0)) for u in units), Decimal(0)))
+            if record
+            else "unknown"
+        )
         lines.append(
             f"- Discarded {_esc(d.get('cell'))}/{_esc(d.get('corpus_id'))} attempt "
             f"{_esc(d.get('attempt'))}: {_esc(d.get('reason'))}, spend {spend}"
@@ -1194,8 +1533,8 @@ def _reproducibility(run: _Run) -> list[str]:
     index = sorted(
         {
             str(i)
-            for p in (run.dir / "systems").glob("*.json")
-            if (i := (_read_json(p) or {}).get("index_sha256"))
+            for p in artifact_paths(run.dir, run.dir / "systems", "*.json")
+            if (i := (optional_json(run.dir, p) or {}).get("index_sha256"))
         }
     )
     count_models = sorted(
@@ -1282,16 +1621,23 @@ def render_agentic_readme_summary(
             + "\n"
         )
     for cid, model, claim in claims:
+        label = _esc(model)
+        if not run.claim_evidence(cid, model):
+            lines.append(
+                f"No public claim for {_esc(cid)}/{label}: "
+                "missing or inconsistent execution evidence."
+            )
+            continue
         interval = _esc(_interval(claim.get("interval")))
         if cid == "C2":
             lines.append(
-                f"- {_esc(model)}: python-docs-mcp-server uses fewer normalized tokens per "
+                f"- {label}: python-docs-mcp-server uses fewer normalized tokens per "
                 f"correct answer than docs-fetch (ratio {interval}). Round 1 supports only "
                 f'"{ROUND_1_SCOPE}".'
             )
         elif cid == "C3":
             lines.append(
-                f"- {_esc(model)}: with the internet unreachable, the model answers the "
+                f"- {label}: with the internet unreachable, the model answers the "
                 "corpus better with python-docs-mcp-server than alone (score "
                 f"difference {interval})."
             )

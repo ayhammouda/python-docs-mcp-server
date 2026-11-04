@@ -8,7 +8,6 @@ only through the two loaders at the end of this module.
 
 from __future__ import annotations
 
-import json
 import math
 import random
 import re
@@ -20,7 +19,6 @@ from pathlib import Path
 from typing import Any, Literal, TypeGuard
 
 from benchmarks.agentic.inputs import read_json
-from benchmarks.agentic.protocol import KeyLeakError
 from benchmarks.grading.panel import Panel, composition_key
 from benchmarks.grading.probes import (
     HELD_OUT_QUESTIONS,
@@ -38,6 +36,7 @@ from benchmarks.grading.stats import (
     tokens_per_correct,
     wilson,
 )
+from benchmarks.report_files import optional_json
 from benchmarks.runner import BenchmarkValidationError
 
 CellKey = tuple[str, str, str, int]  # (system_id, model_family_id, corpus_id, repeat)
@@ -797,19 +796,11 @@ def _strings(value: Any) -> TypeGuard[list[str]]:
 
 
 def read_evidence_json(
-    run_dir: Path, filename: Literal["planned-cells.json", "egress/summary.json"]
+    run_dir: Path,
+    filename: Literal["planned-cells.json", "egress/summary.json", "airgap/checks.json"],
 ) -> dict[str, Any] | None:
     """Read a fixed exported artifact, without following links or exposing unsafe text."""
-    try:
-        root = run_dir.resolve()
-        path = root / filename
-        if not path.is_relative_to(root) or path.resolve(strict=True) != path or not path.is_file():
-            return None
-        return read_json(path, filename)
-    except KeyLeakError:
-        raise
-    except (OSError, RuntimeError, ValueError):
-        return None
+    return optional_json(run_dir, run_dir / filename)
 
 
 EGRESS_JOB_FIELDS = {"hosts_allowed", "hosts_denied", "lookup_package_docs_attempts"}
@@ -817,7 +808,12 @@ EGRESS_JOB_FIELDS = {"hosts_allowed", "hosts_denied", "lookup_package_docs_attem
 
 def load_egress_evidence(run_dir: Path, *, partial: bool = False) -> dict[str, Any] | None:
     """Read ruling-9 evidence. C1 may disclose partial observations, C3 needs full records."""
-    data = read_evidence_json(run_dir, "egress/summary.json")
+    return egress_from_mapping(read_evidence_json(run_dir, "egress/summary.json"), partial=partial)
+
+
+def egress_from_mapping(
+    data: dict[str, Any] | None, *, partial: bool = False
+) -> dict[str, Any] | None:
     if not data or not isinstance(data.get("jobs"), dict):
         return None
     probe = data.get("isolation_probe")
@@ -846,11 +842,8 @@ def load_egress_evidence(run_dir: Path, *, partial: bool = False) -> dict[str, A
 
 def load_offline_evidence(run_dir: Path) -> OfflineEvidence | None:
     """``<run>/airgap/checks.json`` (#200 Task 15), or ``None`` (fail closed)."""
-    try:
-        data = json.loads((run_dir / "airgap" / "checks.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict):
+    data = read_evidence_json(run_dir, "airgap/checks.json")
+    if data is None:
         return None
     all_passed, checks, hosts = (
         data.get("all_passed"),
