@@ -522,6 +522,33 @@ async def test_a_key_shape_in_a_worker_log_is_redacted_before_the_run_stops(
     assert log.read_text() == "debug: token=[redacted]\n"
 
 
+async def test_every_worker_log_is_scrubbed_when_a_frame_leak_aborts_the_run(
+    host: Host, tmp_path: Path
+) -> None:
+    # Both workers log the key. "leak" then sends it in a frame, which aborts the run;
+    # "quiet" is cancelled with the rest. Neither log may keep the key.
+    leaked = "sk-ant-api03-" + "z" * 90
+    code = (
+        "import json, sys, time\n"
+        "job = json.loads(sys.stdin.buffer.read(int.from_bytes(sys.stdin.buffer.read(8), 'big')))\n"
+        f"sys.stderr.write('debug: {leaked}\\n')\n"
+        "sys.stderr.flush()\n"
+        "if job['job_id'] == 'leak':\n"
+        "    time.sleep(0.5)\n"
+        f"    body = json.dumps({{'type': 'system_info', 'note': '{leaked}'}}).encode()\n"
+        "    sys.stdout.buffer.write(len(body).to_bytes(8, 'big') + body)\n"
+        "    sys.stdout.buffer.flush()\n"
+        "time.sleep(30)\n"
+    )
+    jobs = [_job(tmp_path, [ANSWER], job_id=job_id) for job_id in ("leak", "quiet")]
+    with pytest.raises(KeyLeakError):
+        await host.run(jobs, launcher=KeyedLauncher(code, key=""))
+    logs = sorted((tmp_path / "logs").iterdir())
+    assert [log.name for log in logs] == ["leak.stderr.log", "quiet.stderr.log"]
+    for log in logs:
+        assert log.read_text() == "debug: [redacted]\n"
+
+
 async def test_host_aborts_the_run_when_a_worker_frame_holds_a_key_shaped_string(
     host: Host, tmp_path: Path
 ) -> None:

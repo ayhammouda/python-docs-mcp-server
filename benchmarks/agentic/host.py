@@ -194,11 +194,13 @@ async def _supervise(
         if proc.returncode is None:
             proc.kill()
             await proc.wait()
+        # On every exit, a raise or a cancel included: the leaked bytes never stay on disk.
+        redacted, pattern = redact_key_shaped(log_path.read_bytes())
+        if pattern:
+            log_path.write_bytes(redacted)
         if in_flight is not None:  # may have been billed: booked at twice its bound
             await ledger.settle(in_flight, outcome="worker_lost", buckets=None)
-    redacted, pattern = redact_key_shaped(log_path.read_bytes())
     if pattern:
-        log_path.write_bytes(redacted)  # the leaked bytes never stay on disk
         raise KeyLeakError(
             f"a key-shaped string ({pattern} pattern) was found in {log_path}; redacted there"
         )
