@@ -297,14 +297,15 @@ def score_run_dir(
     sample_path = grading / "reference-sample.json"
     if sample_path.is_file():
         sample = _read(sample_path)
-        sample_ids = list(sample["ids"])
+        sample_ids = sample.get("ids")
+        if not isinstance(sample_ids, list) or not all(isinstance(i, str) for i in sample_ids):
+            raise BenchmarkValidationError("reference-sample.json must list answer IDs")
         g3_result = g3(
             sample_ids,
             pairs,
             question_of,
             seed=seed,
             reference_check=reference_check,
-            size=int(sample["size"]),
             sample_info=sample,
             resamples=resamples,
         )

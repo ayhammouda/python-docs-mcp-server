@@ -231,10 +231,10 @@ def g3_shortfall_sentence(n: int, size: int, info: Mapping[str, Any]) -> str:
         for group, counts in sorted((info.get("groups") or {}).items())
         if group in (info.get("shortfall") or {})
     )
-    return (
-        f"G3 was not evaluated: the reference sample holds {n} of {size} answers, "
-        f"because {groups} have too few eligible answers."
-    )
+    reason = f"G3 was not evaluated: the reference sample holds {n} of {size} answers"
+    if groups:
+        reason += f", because {groups} have too few eligible answers"
+    return reason + "."
 
 
 def g3(
@@ -249,6 +249,10 @@ def g3(
     resamples: int = 10_000,
 ) -> GateResult:
     """Reference agreement on the full sample: alpha >= 0.80 and its lower bound >= 0.667."""
+    distinct = len(set(sample_ids))
+    if distinct != len(sample_ids):
+        reason = f"G3 was not evaluated: the sample contains only {distinct} distinct answers."
+        return GateResult("G3", None, {"reason": reason, "sample_size": distinct})
     if len(sample_ids) != size:
         reason = (
             g3_shortfall_sentence(len(sample_ids), size, sample_info)

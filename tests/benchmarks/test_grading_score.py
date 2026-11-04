@@ -270,7 +270,9 @@ def test_score_run_dir_writes_grades_gates_claims_and_disclosure(
     assert json.loads((run / "grading" / "summary.json").read_text()) == summary
     assert set(summary["gates"]) == {"G1", "G2", "G3", "G4"}
     assert summary["gates"]["G1"]["passed"] is True
-    assert summary["gates"]["G3"]["passed"] is not None
+    # A short artifact cannot redefine the preregistered 300-answer gate.
+    assert summary["gates"]["G3"]["passed"] is None
+    assert "of 300 answers" in summary["gates"]["G3"]["details"]["reason"]
     assert summary["tier"] in ("Validated", "Tentative", "Judge not validated")
     c2 = summary["claims"]["C2"][FAMILY]
     assert c2["interval"]["point"] == pytest.approx((500 * 2 / 1.5) / (1000 * 2 / 2))

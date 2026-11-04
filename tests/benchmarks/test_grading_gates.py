@@ -396,6 +396,8 @@ def test_g3_is_not_evaluable_with_a_shortfall_or_a_withheld_reference_vote() -> 
     pairs = {i: (grades[i]["a"] or 0.0, grades[i]["a"] or 0.0) for i in ids}
     ok = GateResult("reference_probe_check", True, {})
     assert g3(ids[:299], pairs, question_of, seed="7", reference_check=ok).passed is None
+    duplicate = g3([*ids[:-1], ids[0]], pairs, question_of, seed="7", reference_check=ok)
+    assert duplicate.passed is None and "299 distinct" in duplicate.details["reason"]
     withheld = dict(pairs)
     del withheld[ids[5]]
     result = g3(ids, withheld, question_of, seed="7", reference_check=ok)
