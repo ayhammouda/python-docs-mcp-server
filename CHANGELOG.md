@@ -14,8 +14,25 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   worker processes. CI runs it end to end with scripted models and no network.
   The provider SDKs join the `dev` dependency group at exact pins:
   `anthropic` 1.15.0, `openai` 3.32.0 and `google-genai` 2.31.0.
+- Benchmark sandbox (development tooling, not part of the package):
+  `benchmarks/sandbox/` builds a hardened worker container and runs each
+  (model, system) job in its own container behind its own logging Squid egress
+  proxy, after a keyless isolation probe.
+- `agentic-run --launcher container`, a dry run by default, with `--live`, one
+  authorization gate (refused under `CI`, then an interactive confirmation of
+  each provider's spend, cap and estimate) and `--reference-run` for the
+  full-run gate.
+- The Ollama client for the benchmark's air-gapped arm, with host offline checks
+  around every trajectory.
+- The "Air-gapped install" README section.
 
 ### Changed
+
+- The benchmark's `docs-fetch` and `python-docs` systems reach the network only
+  through the run's egress proxy.
+- Benchmark keys reach a worker only as a bootstrap frame on its stdin, never
+  through a container's environment, `--env-file` or argv. This is a recorded
+  departure from the agentic design §7.3.
 
 - The benchmark harness (development tooling, not part of the package) now
   reports success latency and failed-cell latency separately, lists manifest
@@ -37,6 +54,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+- The Security workflow's dependency audit also covers
+  `benchmarks/sandbox/fetch-requirements.txt`, the hashed `mcp-server-fetch`
+  2026.10.19 environment of the benchmark sandbox image.
+- The benchmark sandbox never follows a link in a proxy's world-writable log
+  directory: logs are read with `O_NOFOLLOW` and only as regular files, and the
+  host writes there only through new files renamed over the name.
 - Updated locked Pydantic (2.14.2, pydantic-core 2.50.2, with the
   typing-extensions 4.16.0 and typing-inspection 0.4.4 it requires) and
   Platformdirs (4.14.0). Pydantic 2.14.2 fixes four validation advisories

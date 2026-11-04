@@ -601,8 +601,9 @@ async def test_a_failing_stop_worker_still_scrubs_the_log_and_settles_the_unit(t
 async def test_close_problems_fail_a_clean_run(tmp_path) -> None
 # tests/benchmarks/test_agentic_run.py (ledger-events.jsonl is written only by write_outcome)
 def test_every_reserve_event_names_its_job(tmp_path) -> None
-    # a scripted two-job run_agentic: every "reserve" event in the run's ledger-events.jsonl has job_id
-    # equal to the job that reserved it
+    # a scripted two-job run_agentic with two families of different providers (scripted-anthropic,
+    # scripted-openai): every "reserve" event in the run's ledger-events.jsonl has job_id equal to
+    # the job that reserved it, and that job's family belongs to the event's provider (amendment 5)
 # tests/benchmarks/test_agentic_ledger.py
 def test_reserve_events_without_job_id_still_load(tmp_path) -> None
     # Ledger.reserve without job_id writes job_id None; and a <provider>.jsonl whose reserve lines lack
@@ -912,12 +913,13 @@ git commit -m "feat(benchmarks): Squid config with lookup-free allowlists and a 
   - `cli_env(environ: Mapping[str, str]) -> dict[str, str]`: the docker CLI allowlist in Global Constraints. It never holds a key.
   - `@dataclass(frozen=True) class SandboxConfig: image: str; run_id: str; out_dir: Path; index_path: Path; keys_file: Path | None; repo_commit: str`. `__post_init__` refuses an `image` that does not match `^sha256:[0-9a-f]{64}$`.
   - `@dataclass(frozen=True) class Egress: job_id: str; network: str; proxy: str; allow: tuple[tuple[str, int], ...]; log_dir: Path; gateways: tuple[str, ...]; inspect: dict[str, Any]`.
-  - `VerifyFn = Callable[[Sandbox], Awaitable[dict[str, str]]]`.
+  - `VerifyFn = Callable[["Sandbox"], Awaitable[dict[str, str]]]`, the forward reference quoted (amendment 4).
   - `async verify_image(sandbox: Sandbox, *, repo_root: Path = REPO_ROOT) -> dict[str, str]`, the real check, as a module function (`REPO_ROOT` is the checkout root, computed like `run._REPO_ROOT`). All of these must hold, checked before any container starts:
     - `docker context inspect --format '{{.Endpoints.docker.Host}}'` (the active context) gives an endpoint starting `unix://`, and `DOCKER_HOST`, when set in `cli_env`, also starts `unix://` (round-3 item 4);
     - `docker image inspect` gives `Id == config.image` and the label `org.opencontainers.image.revision == config.repo_commit`;
+    - `docker image inspect` on `SQUID_IMAGE` succeeds: the pinned proxy image is present locally (amendment 2);
     - `docker version` gives a server version ≥ `MIN_ENGINE`;
-    - `git -C <repo_root> status --porcelain` is empty (the only dirty-tree check; `run.sh` has none).
+    - `git -C <repo_root> status --porcelain --untracked-files=normal` is empty, so a global `status.showUntrackedFiles=no` cannot hide an untracked file (amendment 1; the only dirty-tree check; `run.sh` has none).
     It writes `out_dir/sandbox.json` (image, revision, proxy image, engine version, docker context and endpoint).
   - `class Sandbox(config, docker: DockerRun | None = None, verify: VerifyFn = verify_image)`. `verify` is the test seam (round-4 item 2): production keeps the real check, and tests that only need to reach `prepare` pass a stub, so they work on a dirty checkout. PR 5's tests use the same seam.
     - `async open_egress(job_id: str, allow) -> Egress`:
@@ -927,11 +929,12 @@ git commit -m "feat(benchmarks): Squid config with lookup-free allowlists and a 
       4. Create `log_dir = out_dir/egress/<job_id>/` with `mkdir(parents=True)`, then `log_dir.chmod(0o777)`, because `mkdir(mode=...)` is cut by the umask and Squid's uid differs from the host user's (round-3 item 3). Write `squid.conf` into it, then `chmod(0o644)` it, so Squid running as `proxy` can read it under umask 077 (round-4 item 4).
       5. Start the proxy: `docker run -d --pull never --name <proxy> --label RUN_LABEL=<run_id> --network <outside> --read-only --tmpfs /run --tmpfs /var/spool/squid --cap-drop ALL --security-opt no-new-privileges --user proxy --memory 256m --cpus 0.5 --entrypoint /usr/sbin/squid --mount type=bind,src=<log_dir>/squid.conf,dst=/etc/squid/squid.conf,readonly --mount type=bind,src=<log_dir>,dst=/var/log/squid-bench SQUID_IMAGE -N -f /etc/squid/squid.conf`.
       6. Run `docker network connect --alias egress <internal> <proxy>`.
+      On any failure after the internal network exists (step 3 onwards, the proxy `docker run` and `network connect` included), remove the proxy (`docker rm -f`) and the network, then raise (amendment 2).
     - `container_argv(*, name: str, network: str, env: Mapping[str, str], mounts: Sequence[str], argv: Sequence[str], interactive: bool = True) -> list[str]`: the full `docker run` argv with the Global Constraints hardening, `--log-driver none` included (`-i` only when `interactive`). `env` becomes `-e NAME=VALUE` and each mount a `--mount`, then the image ID, then `argv`. It has no key parameter.
     - `async close_egress(egress: Egress) -> list[str]`:
       1. `docker inspect --format '{{json .State}}' <proxy>`, before our stop (round-3 item 1). The proxy ended abnormally when it is no longer `Running` (it ended on its own, for example exit 137 from a kill or an OOM) or `OOMKilled` is true.
       2. `docker stop -t 5 <proxy>`. Squid closes its log within `shutdown_lifetime`, and the access log is already on the host.
-      3. Inspect `State` again. It must show `ExitCode == 0` and `OOMKilled` false (round-4 item 1). A healthy Squid exits 0 within `shutdown_lifetime 1 seconds`, well inside `-t 5` (sandbox note §C, from the Squid 6.6 source). Any non-zero exit after our stop is abnormal, including 137 from `docker stop`'s forced kill of a hung Squid, because the log may then be partial even when it is well formed.
+      3. Inspect `State` again. It must show `Running` false (amendment 7), `ExitCode == 0` and `OOMKilled` false (round-4 item 1). A healthy Squid exits 0 within `shutdown_lifetime 1 seconds`, well inside `-t 5` (sandbox note §C, from the Squid 6.6 source). Any non-zero exit after our stop is abnormal, including 137 from `docker stop`'s forced kill of a hung Squid, because the log may then be partial even when it is well formed.
       4. Check the key shape of `access.log` and `cache.log` with `redact_key_shaped`, rewriting a file in place when a pattern is found.
       5. `docker rm -f <proxy>`, then `docker network rm <internal>`.
       6. Write `egress/<job_id>/collected.json` as `{"ok": bool, "problems": [...], "state_before_stop": {...}, "state_after_stop": {...}}`. `ok` is false after any failed step or an abnormal end.
@@ -977,8 +980,8 @@ async def test_internal_networks_are_ipv4_only_with_an_isolated_gateway(tmp_path
 async def test_prepare_builds_one_network_and_proxy_per_job_with_a_file_log(tmp_path, monkeypatch) -> None
     # verify stubbed; one outside network; per job one squid run with the conf and the log dir
     # bind-mounted, and one "network connect --alias egress"; egress/<job>/squid.conf ==
-    # squid_conf(allowlist(...)); probe per job; with os.umask(0o077) in force, egress/<job>/ is still
-    # mode 0o777 and egress/<job>/squid.conf is mode 0o644
+    # squid_conf(allowlist(...)); probe per job; with os.umask(0o077) in force, set and restored by a
+    # fixture (amendment 8), egress/<job>/ is still mode 0o777 and egress/<job>/squid.conf is mode 0o644
 # The verify_image tests call the real check with FakeDocker and repo_root = a clean `git init` repo in tmp_path.
 async def test_prepare_refuses_a_daemon_that_is_not_local(tmp_path, monkeypatch) -> None
     # FakeDocker context endpoint "tcp://10.0.0.5:2376" -> refused; DOCKER_HOST=tcp://... with a unix
@@ -1294,6 +1297,9 @@ def test_cli_container_launcher_defaults_to_a_dry_run(tmp_path, monkeypatch) -> 
     # main([... "--launcher", "container", "--image", "sha256:" + "0" * 64]) prints dry_run true;
     # Sandbox is patched to fail on any docker call
 def test_cli_refuses_live_with_the_local_launcher() -> None
+def test_cli_builds_the_production_sandbox_with_the_real_check(tmp_path, monkeypatch) -> None
+    # amendment 6: on the production CLI path, launcher.sandbox.verify is verify_image, and the
+    # sandbox and the run share one run_id
 ```
 
 The existing scripted end-to-end tests stay unchanged: a run of scripted
@@ -1682,5 +1688,17 @@ From #200 (round 1), as amended by the round-2 message on #200:
     - `squid.conf` is set to mode 0o644 (Task 10);
     - Task 10's abnormal-exit test asserts `collected.json` only; Task 12 owns the summary verdict;
     - the reserve-event test reads the run's `ledger-events.jsonl` in `test_agentic_run.py`, and old `<provider>.jsonl` lines without `job_id` still load (Task 5).
+16. **Binding amendments on #200** (Fable round-4 Lows and Nits, owner-ruled, applied in PR 4):
+    1. `verify_image` runs `git status --porcelain --untracked-files=normal` (Task 10).
+    2. `open_egress` removes the proxy and the network on any failure after the internal network exists, then raises; `verify_image` inspects `SQUID_IMAGE` (Task 10).
+    3. **PR 5 handoff:** grading jobs pass `job_id` on every reservation, and each grading invocation's evidence lives under `<run>/grading/sandbox/<grading_run_id>/`.
+    4. The forward reference in `VerifyFn = Callable[["Sandbox"], ...]` is quoted (Task 10).
+    5. `test_every_reserve_event_names_its_job` uses two families of different providers and checks each `job_id`'s family against the event's provider (Task 5).
+    6. A CLI test asserts `sandbox.verify is verify_image` on the production path (Task 13).
+    7. `close_egress` also requires `Running` to be false after the stop (Task 10).
+    8. The umask test restores the umask in a fixture (Task 10).
+
+Where the implementation had to depart from this plan, each departure is recorded with its
+cost under "Rulings" in the PR 4 body.
 
 No open question remains for this plan.

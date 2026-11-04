@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -44,3 +45,15 @@ def test_dockerfile_pins_every_base_by_digest_and_runs_unprivileged() -> None:
     assert not any(name in env for name in ("PROXY", "SSL_CERT", "REQUESTS_CA"))
     for needed in ("uv sync --locked", "command -v cat", "! command -v node"):
         assert needed in text
+
+
+def test_run_sh_builds_from_git_archive_and_defaults_to_a_dry_run() -> None:
+    path = SANDBOX / "run.sh"
+    text = path.read_text(encoding="utf-8")
+    assert os.access(path, os.X_OK)
+    assert "git archive --format=tar HEAD" in text and "set -euo pipefail" in text
+    assert "--live" not in text  # live only when the operator passes it
+    for banned in ("git status", "printenv", "env |", "set -x", "cat .env"):
+        assert banned not in text
+    for tool in ("git", "docker", "uv", "cat"):
+        assert tool in text.split("for tool in", 1)[1].split(";", 1)[0]

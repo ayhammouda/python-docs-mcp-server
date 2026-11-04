@@ -306,6 +306,41 @@ docs index, older entries are ignored automatically. Deleting
 `retrieved-docs-cache.sqlite3` is safe; it removes cached retrieval results, not
 the docs index.
 
+## Air-gapped install
+
+The server needs no network at query time. To install it on a machine with no
+network:
+
+1. On a connected machine with the same OS, CPU architecture and Python minor
+   version, download the wheels and build the index. Elsewhere, add pip's
+   `--platform`, `--python-version` and `--only-binary=:all:` options to
+   `pip download`.
+
+   ```bash
+   pip download python-docs-mcp-server==<version> -d wheels/
+   python-docs-mcp-server build-index --versions 3.10,3.11,3.12,3.13,3.14
+   ```
+
+2. Copy `wheels/` and the built `index.db` to the target machine.
+3. On the target, install from the copied wheels only:
+
+   ```bash
+   pip install --no-index --find-links wheels/ python-docs-mcp-server==<version>
+   ```
+
+4. Put `index.db` at `~/Library/Caches/mcp-python-docs/index.db` on macOS, or
+   at `~/.cache/mcp-python-docs/index.db` on Linux
+   (`$XDG_CACHE_HOME/mcp-python-docs/index.db` when `XDG_CACHE_HOME` is set).
+5. Set `PYTHON_DOCS_MCP_DISABLE_AUTO_INDEX=1`, so a missing index never starts
+   a network build, and check the install:
+
+   ```bash
+   PYTHON_DOCS_MCP_DISABLE_AUTO_INDEX=1 python-docs-mcp-server doctor
+   ```
+
+`lookup_package_docs` needs PyPI. Offline, it returns a clear note instead of
+package sources. There is no separate offline command.
+
 ## PyPI package docs lookup
 
 `lookup_package_docs` queries the official PyPI JSON API documented at
