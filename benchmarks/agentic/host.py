@@ -14,6 +14,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import traceback
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
@@ -46,6 +47,8 @@ from benchmarks.runner import BenchmarkValidationError
 _LOCAL_ENV = ("PATH", "HOME", "LANG", "TMPDIR", "XDG_CACHE_HOME", "VIRTUAL_ENV")
 #: How long teardown waits for a killed worker to exit before it scrubs and settles anyway.
 _EXIT_WAIT_S = 30.0
+#: Scan a whole snapshot so a token cannot straddle scan boundaries. Fail closed above this size.
+_MAX_LOG_BYTES = 8 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -184,8 +187,8 @@ async def _teardown(
     log_path: Path,
     ledger: LedgerService,
     in_flight: str | None,
+    worker_log: BinaryIO,
     stop_worker: Callable[[], Awaitable[None]] | None = None,
-    worker_log: BinaryIO | None = None,
 ) -> None:
     """Kill the worker, scrub its log and book any open unit before teardown returns."""
 
@@ -210,14 +213,13 @@ async def _teardown(
     if stop_worker is not None:
         with attempt():
             await stop_worker()
-    if worker_log is not None and not worker_log.closed:
-        with attempt():
-            worker_log.close()
     with attempt():
-        if pattern := _publish_scrubbed(log_path):
+        if pattern := _publish_scrubbed(worker_log, log_path):
             raise KeyLeakError(
                 f"a key-shaped string ({pattern} pattern) was found in {log_path}; redacted there"
             )
+    with attempt():
+        worker_log.close()
     if in_flight is not None:
         with attempt():
             await ledger.settle(in_flight, outcome="worker_lost", buckets=None)
@@ -242,21 +244,27 @@ async def _teardown(
         raise errors[0]
 
 
-def _publish_scrubbed(log_path: Path) -> str | None:
-    """Replace the log by its scrubbed snapshot; the key pattern it held, if any.
-
-    On every exit, a raise or a cancel included, the leaked bytes never stay on disk. The copy
-    replaces the log, so a writer still holding it writes into an unlinked file. If the copy
-    cannot be published, the log is unlinked instead, for the same reason.
-    """
-    scrubbed = log_path.with_name(log_path.name + ".tmp")
+def _publish_scrubbed(worker_log: BinaryIO, log_path: Path) -> str | None:
+    """Publish only a scanned snapshot. Late writers keep their anonymous inode and offset."""
+    fd = worker_log.fileno()
+    size = os.fstat(fd).st_size
+    if size > _MAX_LOG_BYTES:
+        raise BenchmarkValidationError(f"worker log exceeds the {_MAX_LOG_BYTES}-byte scan limit")
+    data = os.pread(fd, size, 0)
+    if len(data) != size:
+        raise OSError("incomplete worker log read")
+    redacted, pattern = redact_key_shaped(data)
+    # A replacement can introduce a token boundary for a previously adjacent key.
+    if pattern and redact_key_shaped(redacted)[1]:
+        redacted = b"[redacted]"
+    stage = tempfile.NamedTemporaryFile(dir=log_path.parent, suffix=".tmp", delete=False)
     try:
-        redacted, pattern = redact_key_shaped(log_path.read_bytes())
-        scrubbed.write_bytes(redacted)
-        os.replace(scrubbed, log_path)
-    except BaseException:  # an I/O or allocation failure must not publish the original bytes
-        log_path.unlink(missing_ok=True)
-        scrubbed.unlink(missing_ok=True)
+        with stage:
+            if stage.write(redacted) != len(redacted):
+                raise OSError("incomplete scrubbed log write")
+        os.replace(stage.name, log_path)
+    except BaseException:
+        os.unlink(stage.name)
         raise
     return pattern
 
@@ -273,7 +281,9 @@ async def _supervise(
 ) -> None:
     argv, env = launcher.command(job)
     log_path = log_dir / f"{job.job_id}.stderr.log"
-    log = log_path.open("wb")
+    # On POSIX the TemporaryFile fallback unlinks before returning the descriptor.
+    with tempfile.TemporaryDirectory() as private_dir:
+        log = tempfile.TemporaryFile(dir=private_dir, buffering=0)
     try:
         anchor = _start_anchor()
     except BaseException:
@@ -294,7 +304,6 @@ async def _supervise(
             stderr=log,
             process_group=anchor.pid,  # the anchor's group, which teardown kills whole
         )
-        log.close()  # the child has its descriptor; a failed close still runs full teardown
         assert proc.stdin is not None and proc.stdout is not None
         try:
             # The private key frame first, then the job. The frame is never logged or kept.
@@ -385,7 +394,7 @@ async def _supervise(
     finally:
         await finish(
             _teardown(
-                proc, anchor, log_path, ledger, in_flight, partial(launcher.stop_worker, job), log
+                proc, anchor, log_path, ledger, in_flight, log, partial(launcher.stop_worker, job)
             ),
             sys.exception(),
         )

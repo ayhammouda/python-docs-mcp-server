@@ -12,13 +12,14 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from collections.abc import Sequence
 from dataclasses import asdict, replace
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -627,6 +628,92 @@ async def test_a_key_shape_in_a_worker_log_is_redacted_before_the_run_stops(
     assert log.read_text() == "debug: token=[redacted]\n"
 
 
+@pytest.mark.parametrize("read_only", [False, True])
+async def test_raw_worker_stderr_is_private_before_publication(
+    host: Host, tmp_path: Path, read_only: bool
+) -> None:
+    if read_only and os.geteuid() == 0:
+        pytest.skip("the read-only directory fixture requires unprivileged permissions")
+    log_dir = tmp_path / "logs"
+    log = log_dir / "lost.stderr.log"
+    links = tmp_path / "stderr-link-count"
+    code = (
+        "import os\nfrom pathlib import Path\n"
+        f"os.write(2, {SYNTHETIC_KEY.encode()!r})\n"
+        f"Path({str(links)!r}).write_text(str(os.fstat(2).st_nlink))\n"
+        + _fake_worker(_reserve_frame(1024))
+    )
+    visible_at_stop = []
+
+    class Launcher(KeyedLauncher):
+        async def stop_worker(self, job: WorkerJob) -> None:
+            visible_at_stop.extend(log_dir.iterdir())
+            if read_only:
+                log_dir.chmod(0o500)
+
+    try:
+        with pytest.raises(PermissionError if read_only else KeyLeakError) as error:
+            await host.run([_job(tmp_path, [ANSWER], job_id="lost")], launcher=Launcher(code, ""))
+    finally:
+        log_dir.chmod(0o700)
+    assert host.ledger.spent("anthropic") == 2 * D("0.002024")
+    assert SYNTHETIC_KEY not in "".join(traceback.format_exception(error.value))
+    assert not visible_at_stop
+    assert links.read_text() == "0"
+    if read_only:
+        assert not log.exists()
+    else:
+        assert log.read_text() == "[redacted]"
+
+
+async def test_worker_log_publication_does_not_follow_path_collisions(
+    host: Host, tmp_path: Path
+) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    log = log_dir / "lost.stderr.log"
+    target = tmp_path / "other-artifact"
+    target.write_bytes(b"keep me")
+    log.symlink_to(target)
+    legacy_stage = log_dir / (log.name + ".tmp")
+    legacy_stage.symlink_to(target)
+    code = f"import os\nos.write(2, {SYNTHETIC_KEY.encode()!r})"
+    with pytest.raises(KeyLeakError):
+        await host.run([_job(tmp_path, [], job_id="lost")], launcher=KeyedLauncher(code, ""))
+    assert target.read_bytes() == b"keep me"
+    assert legacy_stage.is_symlink()
+    assert not log.is_symlink() and log.read_text() == "[redacted]"
+
+
+async def test_worker_log_redaction_cannot_expose_an_adjacent_key(
+    host: Host, tmp_path: Path
+) -> None:
+    # The Google key acquires a token boundary when the adjacent Anthropic key is removed.
+    google = "AIza" + "g" * 35
+    code = f"import os\nos.write(2, {(google + SYNTHETIC_KEY).encode()!r})"
+    with pytest.raises(KeyLeakError):
+        await host.run([_job(tmp_path, [], job_id="lost")], launcher=KeyedLauncher(code, ""))
+    assert google not in (tmp_path / "logs" / "lost.stderr.log").read_text()
+
+
+async def test_oversized_worker_log_is_rejected_before_reading(
+    host: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job = _job(tmp_path, [], job_id="lost")
+    code = (
+        f"import os\nos.ftruncate(2, {agentic_host._MAX_LOG_BYTES + 1})\n"
+        + _fake_worker(_reserve_frame(1024))
+    )
+    pread = Mock(side_effect=AssertionError("oversized log read"))
+    monkeypatch.setattr(os, "pread", pread)
+    with pytest.raises(BenchmarkValidationError, match="scan limit") as error:
+        await host.run([job], launcher=KeyedLauncher(code, ""))
+    assert "lost.stderr.log" in "".join(traceback.format_exception(error.value))
+    pread.assert_not_called()
+    assert not list((tmp_path / "logs").iterdir())
+    assert host.ledger.spent("anthropic") == 2 * D("0.002024")
+
+
 async def test_a_line_logged_just_before_an_error_frame_reaches_the_log(
     host: Host, tmp_path: Path
 ) -> None:
@@ -1003,6 +1090,12 @@ class _Exited:
         return 0
 
 
+def _worker_log(data: bytes) -> BinaryIO:
+    capture = tempfile.TemporaryFile(buffering=0)
+    capture.write(data)
+    return capture
+
+
 async def test_teardown_of_an_anchor_that_died_early(host: Host, tmp_path: Path) -> None:
     # Its group holds only a zombie, and macOS answers a group kill with EPERM.
     zombie = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
@@ -1012,10 +1105,10 @@ async def test_teardown_of_an_anchor_that_died_early(host: Host, tmp_path: Path)
         time.sleep(0.01)
     try:
         log = tmp_path / "exited.stderr.log"
-        log.write_text("worker: done\n", encoding="utf-8")
+        capture = _worker_log(b"worker: done\n")
         service = host.service(_job(tmp_path, [ANSWER]).family)
         worker, anchor = _Exited(zombie.pid), zombie  # the anchor died early
-        pattern = await agentic_host._teardown(worker, anchor, log, service, None)  # type: ignore[arg-type]
+        pattern = await agentic_host._teardown(worker, anchor, log, service, None, capture)  # type: ignore[arg-type]
         assert pattern is None and log.read_text() == "worker: done\n"
     finally:
         zombie.wait()
@@ -1042,11 +1135,11 @@ async def test_a_worker_that_never_exits_cannot_hang_its_teardown(
         provider="anthropic", model_id="scripted-1", input_bound=1000, output_bound=1024
     )
     log = tmp_path / "never-exits.stderr.log"
-    log.write_text("debug: sk-ant-api03-" + "z" * 90 + "\n", encoding="utf-8")
+    capture = _worker_log(f"debug: {SYNTHETIC_KEY}\n".encode())
     async with asyncio.timeout(5):  # the bound under test is 0.1 s
         worker, anchor = _Unending(group.pid), group
         with pytest.raises(KeyLeakError, match="anthropic"):
-            await agentic_host._teardown(worker, anchor, log, service, unit)  # type: ignore[arg-type]
+            await agentic_host._teardown(worker, anchor, log, service, unit, capture)  # type: ignore[arg-type]
     assert group.wait(timeout=5) == -signal.SIGKILL
     assert log.read_text() == "debug: [redacted]\n"
     settles = [e for e in host.ledger.events("host-test") if e["event"] == "settle"]
@@ -1055,32 +1148,54 @@ async def test_a_worker_that_never_exits_cannot_hang_its_teardown(
     ]
 
 
+@pytest.mark.parametrize("failure", ["write", "close", "replace"])
 async def test_a_failed_log_publish_still_settles_and_leaves_no_key(
-    host: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    host: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
     group = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True
     )
-    real_write = Path.write_bytes
+    create_stage = tempfile.NamedTemporaryFile
 
-    def full_disk(self: Path, data: bytes) -> int:
-        if self.name.endswith(".tmp"):  # a partial copy, then the disk is full
-            real_write(self, data[:10])
-            raise OSError(28, "No space left on device")
-        return real_write(self, data)
+    def fail(*args: Any) -> None:
+        raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr(Path, "write_bytes", full_disk)
+    def full_disk(**kwargs: Any) -> Any:
+        stage = create_stage(**kwargs)
+        write = stage.write
+        close = stage.file.close
+
+        def partial_write(data: bytes) -> None:
+            assert SYNTHETIC_KEY.encode() not in data
+            write(data[:10])
+            fail()
+
+        def delayed_close() -> None:
+            if not stage.file.closed:
+                close()
+                fail()
+
+        if failure == "write":
+            stage.write = partial_write
+        elif failure == "close":
+            stage.file.close = delayed_close
+        return stage
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", full_disk)
+    if failure == "replace":
+        monkeypatch.setattr(os, "replace", fail)
     service = host.service(_job(tmp_path, [ANSWER]).family)
     unit = await service.reserve(
         provider="anthropic", model_id="scripted-1", input_bound=1000, output_bound=1024
     )
     log = tmp_path / "full.stderr.log"
-    log.write_text("debug: sk-ant-api03-" + "z" * 90 + "\n", encoding="utf-8")
-    retained = log.open("ab")  # a writer that kept its descriptor through the teardown
+    capture = _worker_log(f"debug: {SYNTHETIC_KEY}\n".encode())
+    # A writer that kept its descriptor through teardown.
+    retained = os.fdopen(os.dup(capture.fileno()), "wb")
     try:
         with pytest.raises(OSError, match="No space left"):
             worker, anchor = _Exited(group.pid), group
-            await agentic_host._teardown(worker, anchor, log, service, unit)  # type: ignore[arg-type]
+            await agentic_host._teardown(worker, anchor, log, service, unit, capture)  # type: ignore[arg-type]
         retained.write(b"late: sk-ant-api03-" + b"z" * 90 + b"\n")
     finally:
         retained.close()
@@ -1504,31 +1619,32 @@ async def test_parent_log_close_failure_still_cleans_the_spawned_worker(
 ) -> None:
     opened = asyncio.Event()
     log = tmp_path / "logs" / "interrupted.stderr.log"
-    original_open = Path.open
+    create_capture = tempfile.TemporaryFile
 
     class FailingClose(io.FileIO):
         def close(self) -> None:
             super().close()
             raise OSError("log close failed")
 
-    def open_file(path: Path, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
-        if path == log and mode == "wb":
-            return FailingClose(path, mode)
-        return original_open(path, mode, *args, **kwargs)
+    def open_file(**kwargs: Any) -> FailingClose:
+        with create_capture(**kwargs) as capture:
+            return FailingClose(os.dup(capture.fileno()), "rb+")
 
     async def spawn(*args: Any, stderr: Any, **kwargs: Any) -> Mock:
         os.write(stderr.fileno(), SYNTHETIC_KEY.encode())
         opened.set()
         if cancel_spawn:
             await asyncio.Event().wait()
-        return Mock(wait=AsyncMock())
+        stdout = asyncio.StreamReader()
+        stdout.feed_eof()
+        return Mock(stdin=Mock(drain=AsyncMock()), stdout=stdout, wait=AsyncMock())
 
     _fake_host_processes(monkeypatch, spawn)
     kill = Mock()
     reap = AsyncMock()
     monkeypatch.setattr(agentic_host, "_kill_group", kill)
     monkeypatch.setattr(agentic_host, "_reap", reap)
-    monkeypatch.setattr(Path, "open", open_file)
+    monkeypatch.setattr(tempfile, "TemporaryFile", open_file)
     launcher = RecordingLauncher()
     job = _job(tmp_path, [ANSWER], job_id="interrupted")
     task = asyncio.create_task(host.run([job], launcher=launcher))
@@ -1548,27 +1664,29 @@ async def test_parent_log_close_failure_still_cleans_the_spawned_worker(
         assert str(error.value) == "signal SIGTERM"
 
 
-def test_unreadable_worker_log_is_unlinked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    log = tmp_path / "worker.stderr.log"
-    log.write_text(SYNTHETIC_KEY)
-    monkeypatch.setattr(Path, "read_bytes", Mock(side_effect=OSError("read failed")))
-    with pytest.raises(OSError, match="read failed"):
-        agentic_host._publish_scrubbed(log)
-    assert not log.exists()
-
-
-async def test_scrub_allocation_failure_unlinks_the_log_and_settles(
+def test_unreadable_worker_log_is_not_published(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     log = tmp_path / "worker.stderr.log"
-    log.write_text(SYNTHETIC_KEY)
+    capture = _worker_log(SYNTHETIC_KEY.encode())
+    monkeypatch.setattr(os, "pread", Mock(side_effect=OSError("read failed")))
+    with capture, pytest.raises(OSError, match="read failed"):
+        agentic_host._publish_scrubbed(capture, log)
+    assert not log.exists()
+
+
+async def test_scrub_allocation_failure_leaves_no_log_and_settles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = tmp_path / "worker.stderr.log"
+    capture = _worker_log(SYNTHETIC_KEY.encode())
     failure = MemoryError("redaction allocation failed")
     monkeypatch.setattr(agentic_host, "redact_key_shaped", Mock(side_effect=failure))
     monkeypatch.setattr(agentic_host, "_kill_group", Mock())
     monkeypatch.setattr(agentic_host, "_reap", AsyncMock())
     ledger = Mock(settle=AsyncMock())
     with pytest.raises(MemoryError, match="redaction allocation failed") as error:
-        await agentic_host._teardown(None, Mock(), log, ledger, "reserved")
+        await agentic_host._teardown(None, Mock(), log, ledger, "reserved", capture)
     assert error.value is failure
     assert not log.exists() and not log.with_suffix(".log.tmp").exists()
     ledger.settle.assert_awaited_once_with("reserved", outcome="worker_lost", buckets=None)
@@ -1578,14 +1696,14 @@ async def test_unformattable_removal_error_cannot_skip_scrub_or_settlement(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     log = tmp_path / "worker.stderr.log"
-    log.write_text(SYNTHETIC_KEY)
+    capture = _worker_log(SYNTHETIC_KEY.encode())
     monkeypatch.setattr(agentic_host, "_kill_group", Mock())
     monkeypatch.setattr(agentic_host, "_reap", AsyncMock())
     ledger = Mock(settle=AsyncMock())
     stop = AsyncMock(side_effect=RuntimeError(f"removal failed: {SYNTHETIC_KEY}"))
     with monkeypatch.context() as formatting, pytest.raises(KeyLeakError) as error:
         formatting.setattr(traceback, "format_exception", Mock(side_effect=MemoryError()))
-        await agentic_host._teardown(None, Mock(), log, ledger, "reserved", stop)
+        await agentic_host._teardown(None, Mock(), log, ledger, "reserved", capture, stop)
     assert log.read_text() == "[redacted]"
     ledger.settle.assert_awaited_once_with("reserved", outcome="worker_lost", buckets=None)
     trace = "".join(traceback.format_exception(error.value))
@@ -1725,7 +1843,7 @@ async def test_later_worker_reports_cleanup_after_clean_sibling_cancellation(
     first_done, release = asyncio.Event(), asyncio.Event()
 
     async def spawn(*args: Any, stderr: Any, **kwargs: Any) -> Mock:
-        name = Path(stderr.name).name.split(".")[0]
+        name = args[-1]
         if name == "first":
             supervisor = asyncio.current_task()
             assert supervisor is not None
@@ -1736,6 +1854,9 @@ async def test_later_worker_reports_cleanup_after_clean_sibling_cancellation(
         return Mock(stdin=Mock(drain=AsyncMock()), stdout=asyncio.StreamReader(), wait=AsyncMock())
 
     class Launcher(LocalLauncher):
+        def command(self, job: WorkerJob) -> tuple[list[str], dict[str, str]]:
+            return ["unused", job.job_id], {}
+
         async def stop_worker(self, job: WorkerJob) -> None:
             if job.job_id == "later":
                 await release.wait()
