@@ -169,6 +169,40 @@ def assert_no_key_shaped_json(
                 stack.extend(node.values())
 
 
+# One non-overlapping pass through string bodies. This is deliberately not a JSON
+# document parser: malformed structure, trailing text and duplicate fields must not
+# hide strings. Each match consumes a plain run or one complete JSON escape.
+_JSON_STRING_PART = re.compile(r'[^"\\\x00-\x1f]+|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})')
+
+
+def check_json_text(
+    text: str, *, where: str, check_content: Callable[[bytes], None] | None = None
+) -> None:
+    """Check raw text and recoverable JSON strings in linear, frame-bounded work.
+
+    Decode each string once with the stdlib, adding a closing quote for an
+    unfinished string. Check the completed prefix before refusing a broken escape
+    or control character; uninspectable content must never be replayed. Document
+    validity remains the caller's/native SDK's decision.
+    """
+    if len(text) > MAX_FRAME_BYTES:
+        raise KeyLeakError(f"content inspection limit exceeded in {where}")
+    assert_no_key_shaped_json(text, where=where, check_content=check_content)
+    position = 0
+    while (start := text.find('"', position)) != -1:
+        end = start + 1
+        while match := _JSON_STRING_PART.match(text, end):
+            end = match.end()
+        decoded = json.loads('"' + text[start + 1 : end] + '"')
+        try:
+            assert_no_key_shaped_json(decoded, where=where, check_content=check_content)
+        except UnicodeEncodeError:
+            raise KeyLeakError(f"uninspectable JSON string in {where}") from None
+        if end < len(text) and text[end] != '"':
+            raise KeyLeakError(f"uninspectable JSON string in {where}")
+        position = end + 1
+
+
 def scanned_json_bytes(
     value: object,
     *,

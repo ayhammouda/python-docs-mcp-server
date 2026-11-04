@@ -7,7 +7,6 @@ No SDK globals or caller-owned streams are patched.
 
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from typing import TextIO
@@ -29,7 +28,7 @@ from benchmarks.agentic.protocol import (
     FrameTooLarge,
     KeyLeakError,
     assert_no_key_shaped,
-    assert_no_key_shaped_json,
+    check_json_text,
 )
 
 
@@ -41,12 +40,7 @@ def checked_line(
     if check_content is not None:
         check_content(line)
     text = line.decode(params.encoding, errors=params.encoding_error_handler)
-    try:
-        decoded = json.loads(text, object_pairs_hook=list)
-    except ValueError:
-        pass  # The SDK still owns the clean malformed-JSON outcome.
-    else:
-        assert_no_key_shaped_json(decoded, where="MCP stdio reply", check_content=check_content)
+    check_json_text(text, where="MCP stdio reply", check_content=check_content)
     return _parse_line(text)
 
 

@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import ssl
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
@@ -36,7 +35,7 @@ from benchmarks.adapters.guard import (
     PROVIDER_API_KEY_ENV,
     require_live_environment,
 )
-from benchmarks.agentic.protocol import scanned_json_bytes
+from benchmarks.agentic.protocol import MAX_FRAME_BYTES, check_json_text, scanned_json_bytes
 from benchmarks.agentic.schemas import (
     to_anthropic,
     to_gemini,
@@ -73,19 +72,18 @@ _LIVE_APIS = {
 def _parse_tool_arguments(value: Any) -> tuple[dict[str, Any], str | None]:
     """Normalize a response without raising a content failure before usage is settled."""
     if isinstance(value, str):
+        if len(value) > MAX_FRAME_BYTES:
+            return {}, value  # The bounded content check runs after usage settlement.
         try:
             parsed = json.loads(value)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):
+            # Includes the stdlib integer conversion and nesting limits. Keep the
+            # original argument for inspection/error feedback, and return known usage.
             return {}, value
         return (parsed, None) if isinstance(parsed, dict) else ({}, value)
     if isinstance(value, dict):
         return value, None
     return {}, json.dumps(value)
-
-
-# Inspect every quoted JSON token, even in a malformed document or an object whose
-# duplicate keys json.loads will collapse. The original string is replayed unchanged.
-_JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
 
 
 def tool_arguments(
@@ -94,12 +92,7 @@ def tool_arguments(
     """Check raw and decoded arguments, then accept only a JSON object for dispatch."""
     scanned_json_bytes(value, where="tool arguments", check_content=check_content)
     if isinstance(value, str):
-        for match in _JSON_STRING.finditer(value):
-            try:
-                decoded = json.loads(match.group())
-            except json.JSONDecodeError:
-                continue  # malformed tokens still received the raw check above
-            scanned_json_bytes(decoded, where="tool arguments", check_content=check_content)
+        check_json_text(value, where="tool arguments", check_content=check_content)
     return _parse_tool_arguments(value)
 
 

@@ -27,6 +27,9 @@ CASES = [
     "malformed-content",
     "dropped-field",
     "escaped-field",
+    "trailing-encoded",
+    "unfinished-encoded",
+    "broken-encoded",
     "error-result",
     "rpc-error",
     "dropped-error",
@@ -275,6 +278,22 @@ async def test_stdio_line_limit_bounds_buffer_and_releases_process(monkeypatch):
                 with pytest.raises(BridgeCrash):
                     await bridge.call("search_docs", {})
     assert caught.value.subgroup(FrameTooLarge) is not None
+
+
+@pytest.mark.parametrize("suffix", [" trailing", ' "note":"ordinary', '\n'])
+def test_clean_malformed_reply_keeps_sdk_disposition(suffix):
+    from mcp.client.stdio import _parse_line
+
+    from benchmarks.agentic.mcp_stdio import checked_line
+
+    text = '{"jsonrpc":"2.0","id":2,"result":{"content":[]}}' + suffix
+    expected = _parse_line(text)
+    actual = checked_line(text.encode(), StdioServerParameters(command="unused"), None)
+    assert type(actual) is type(expected)
+    if isinstance(actual, Exception):
+        assert str(actual) == str(expected)
+    else:
+        assert actual == expected
 
 
 async def test_broken_stdio_scans_the_pending_partial_line(monkeypatch):

@@ -61,6 +61,10 @@ CASES = [
     "duplicate-array",
     "duplicate-name",
     "malformed",
+    "unfinished",
+    "unfinished-slash",
+    "unfinished-unicode",
+    "broken-escape",
     "raw-invalid",
     "name",
     "later-name",
@@ -91,6 +95,20 @@ async def test_arguments_stop_before_dispatch_or_second_grant_with_first_usage_s
         "malformed": f'{{"query":{encoded},',
         "raw-invalid": "not-json " + value,
     }.get(case, '{"query":"json"}')
+    if case.startswith("unfinished") or case == "broken-escape":
+        # Only one encoded character, with a completed harmless marker before damage.
+        prefix = ('"' if mode == "lexical" else '"prefix') + literal.replace(
+            literal[0], f"\\u{ord(literal[0]):04x}", 1
+        )
+        tail = {
+            "unfinished": "-suffix",
+            "unfinished-slash": "-suffix\\",
+            "unfinished-unicode": "-suffix\\u00",
+            "broken-escape": '-suffix\\x20"}',
+        }[case]
+        if mode == "lexical":
+            tail = tail.replace("-suffix", " ")
+        arguments = '{"query":' + prefix + tail
     if case == "later-object":
         arguments = f'{{"query":{encoded}}}'
     client, recorder = _argument_client(
@@ -135,6 +153,8 @@ async def test_arguments_stop_before_dispatch_or_second_grant_with_first_usage_s
         ("true", False),
         ("null", False),
         ('{"query":"ordinary",', False),
+        ('{"query":"ord\\u0069nary', False),
+        ('{"query":"quote: \\" slash: \\\\ emoji: \\ud83d\\ude00"}', True),
     ],
 )
 async def test_safe_arguments_keep_native_replay_dispatch_and_billing(provider, arguments, valid):
@@ -147,7 +167,7 @@ async def test_safe_arguments_keep_native_replay_dispatch_and_billing(provider, 
         assert record["status"] == "succeeded"
         assert len(recorder.seen) == len(ledger.reserves) == len(ledger.settles) == 2
         if valid:
-            dispatch.assert_awaited_once_with("search_docs", {"query": "json"})
+            dispatch.assert_awaited_once_with("search_docs", json.loads(arguments))
         else:
             dispatch.assert_not_awaited()
             assert record["tool_calls"][0]["is_error"] is True
@@ -184,6 +204,64 @@ async def test_argument_rejection_settles_even_when_usage_absent_or_model_cap_re
         assert len(recorder.seen) == len(ledger.reserves) == len(ledger.settles) == 1
         assert ledger.settles[0]["outcome"] == ("ok" if usage else "no_usage")
         assert (ledger.settles[0]["buckets"] is not None) is usage
+    finally:
+        await _close(client)
+
+
+@pytest.mark.parametrize("provider", ["openai", "ollama"])
+@pytest.mark.parametrize("case", ["integer-limit", "nesting-limit"])
+async def test_argument_normalization_limits_keep_known_usage_and_safe_continuation(provider, case):
+    arguments = (
+        '{"query":' + "7" * 4301 + "}"
+        if case == "integer-limit"
+        else '{"query":' + "[" * 20000 + "0" + "]" * 20000 + "}"
+    )
+    client, recorder = _argument_client(provider, arguments)
+    ledger = RecordingLedger()
+    bridge, dispatch = _bridge(CallToolResult(content=[TextContent(type="text", text="safe")]))
+    channel = ProtocolChannel(-1, (b"synthetic_bootstrap_opaque",), -1, Mock(), (Mock(), Mock()))
+    try:
+        record = await _run(client, bridge, ledger, check_content=channel.check_content)
+        assert record["status"] == "succeeded"
+        assert len(recorder.seen) == len(ledger.reserves) == len(ledger.settles) == 2
+        expected = (
+            Buckets(500, 300, 200, 50, 40) if provider == "openai" else Buckets(120, 0, 0, 30)
+        )
+        assert ledger.settles[0] == {"unit_id": "1", "outcome": "ok", "buckets": expected}
+        assert record["tool_calls"][0]["is_error"] is True
+        assert record["tool_calls"][0]["raw_arguments"] == arguments
+        dispatch.assert_not_awaited()
+    finally:
+        await _close(client)
+
+
+@pytest.mark.parametrize("provider", ["openai", "ollama"])
+@pytest.mark.parametrize("arguments", ['{"query":"ordinary\\', '{"query":"ordinary\\u00'])
+async def test_uninspectable_argument_suffix_stops_after_honest_settlement(provider, arguments):
+    client, recorder = _argument_client(provider, arguments)
+    ledger = RecordingLedger()
+    try:
+        with pytest.raises(KeyLeakError, match="uninspectable JSON string"):
+            await _run(client, None, ledger)
+        assert len(recorder.seen) == len(ledger.reserves) == len(ledger.settles) == 1
+        assert ledger.settles[0]["outcome"] == "ok"
+    finally:
+        await _close(client)
+
+
+@pytest.mark.parametrize("provider", ["openai", "ollama"])
+async def test_argument_inspection_budget_fails_closed_after_settlement(monkeypatch, provider):
+    from benchmarks.agentic import clients, protocol
+
+    monkeypatch.setattr(clients, "MAX_FRAME_BYTES", 64)
+    monkeypatch.setattr(protocol, "MAX_FRAME_BYTES", 64)
+    client, recorder = _argument_client(provider, '{"query":"' + "x" * 65 + '"}')
+    ledger = RecordingLedger()
+    try:
+        with pytest.raises(KeyLeakError, match="content inspection limit"):
+            await _run(client, None, ledger)
+        assert len(recorder.seen) == len(ledger.reserves) == len(ledger.settles) == 1
+        assert ledger.settles[0]["outcome"] == "ok"
     finally:
         await _close(client)
 
