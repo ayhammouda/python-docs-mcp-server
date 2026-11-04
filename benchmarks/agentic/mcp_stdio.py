@@ -42,7 +42,7 @@ def checked_line(
         check_content(line)
     text = line.decode(params.encoding, errors=params.encoding_error_handler)
     try:
-        decoded = json.loads(text)
+        decoded = json.loads(text, object_pairs_hook=list)
     except ValueError:
         pass  # The SDK still owns the clean malformed-JSON outcome.
     else:

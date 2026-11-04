@@ -213,3 +213,19 @@ async def test_close_does_not_swallow_grouped_key_failure(cancelled):
     with pytest.raises(KeyLeakError) as caught:
         await worker._close(stack)
     assert caught.value is leak
+
+
+def test_mcp_reply_checks_escaped_values_before_duplicate_fields_are_discarded():
+    from benchmarks.agentic.mcp_stdio import ReplyGuard
+    from benchmarks.agentic.worker import ProtocolChannel
+
+    channel = ProtocolChannel(-1, (b"opaque_marker",), -1, None, ())
+    guard = ReplyGuard(channel.check_content)
+    line = (
+        rb'{"jsonrpc":"2.0","id":2,"result":{"content":[],'
+        rb'"note":"prefix\u006fpaque_marker-suffix","note":"safe"}}'
+    )
+    with pytest.raises(KeyLeakError):
+        guard.parse(line, StdioServerParameters(command="unused"))
+    with pytest.raises(KeyLeakError):
+        guard.raise_if_failed()
