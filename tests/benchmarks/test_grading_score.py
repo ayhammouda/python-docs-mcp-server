@@ -645,7 +645,6 @@ def test_g1_exports_only_observed_held_out_retest_pairs(tmp_path: Path) -> None:
         panel_path=PANEL_PATH,
         schema_path=SCHEMA,
         g1_paths=[held / "g1.json"],
-        resamples=30,
     )
     shutil.rmtree(held)
     assert summary["gates"]["G1"]["details"][metric] == observed
