@@ -1437,6 +1437,43 @@ async def _run_prepare(box: Sandbox, job: WorkerJob) -> None:
     )
 
 
+@pytest.mark.parametrize("owned_ids", [("owned-a",), ("owned-a", "owned-b"), ()])
+async def test_lost_network_create_response_during_prepare(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, owned_ids: tuple[str, ...]
+) -> None:
+    monkeypatch.setattr("benchmarks.agentic.sandbox._RESOURCE_RECOVERY_S", 0.2)
+
+    class LostResponse(FakeDocker):
+        async def __call__(self, argv: Sequence[str]) -> Any:
+            if argv[1:3] == ["network", "create"]:
+                self.calls.append(list(argv))
+                return _done(argv, 1, err="lost create response")
+            result = await super().__call__(argv)
+            if argv[1:3] == ["network", "ls"] and len(self.ran("network", "ls")) == 1:
+                assert not result.stdout
+                # The daemon publishes after the first list has taken its snapshot.
+                (create,) = self.ran("network", "create")
+                labels = {v for k, v in zip(create, create[1:]) if k == "--label"}
+                self.resources.update({i: labels for i in owned_ids})
+            return result
+
+    docker = LostResponse()
+    box = _sandbox(tmp_path, docker)
+    foreign = {"foreign-id": {f"{RUN_LABEL}={RUN}"}}
+    docker.resources.update(foreign)
+    with pytest.raises(BenchmarkValidationError, match="lost create response") as caught:
+        await _run_prepare(box, _job("scripted-anthropic"))
+    selector = f"label={box._ownership(box.outside)}"
+    lookups = docker.ran("network", "ls")
+    assert 2 <= len(lookups) <= 4
+    assert all(c[3:] == ["--no-trunc", "--quiet", "--filter", selector] for c in lookups)
+    assert [c[-1] for c in docker.ran("network", "rm")] == list(owned_ids)
+    assert docker.resources == foreign
+    if not owned_ids:
+        assert "outcome is unknown" in str(caught.value)
+        assert selector in str(caught.value)
+
+
 @pytest.mark.parametrize("network_failure", ["exit", "start", "timeout", "spool"])
 def test_failed_connect_reports_both_removals_to_caller_and_cli(
     tmp_path: Path,

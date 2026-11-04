@@ -393,10 +393,8 @@ class Sandbox:
         if failures:
             raise BenchmarkValidationError("; ".join(failures))
 
-    async def remove_owned(
-        self, name: str, *, network: bool = False, wait_for_create: bool = False
-    ) -> None:
-        """Recover a partial create or worker by its invocation label, never by its name."""
+    async def remove_owned(self, name: str, *, network: bool = False) -> None:
+        """Recover an ambiguous create by its invocation label, never by its name."""
         ls = ("network", "ls") if network else ("container", "ls", "--all")
         label_filter = f"label={self._ownership(name)}"
         loop = asyncio.get_running_loop()
@@ -409,15 +407,16 @@ class Sandbox:
                 raise BenchmarkValidationError(
                     f"Docker lookup for {label_filter} failed: {detail}"
                 ) from None
-            if ids.strip() or not wait_for_create:
+            if ids.strip():
                 break
-            # Killing a timed-out CLI does not roll back a POST already sent to the daemon.
-            if loop.time() >= deadline:
+            # A CLI failure can precede publication of a create the daemon already accepted.
+            remaining = deadline - loop.time()
+            if remaining <= 0:
                 raise BenchmarkValidationError(
-                    f"Docker create timed out for {name} and its outcome is unknown; "
+                    f"Docker create outcome is unknown for {name}; "
                     f"check the daemon for {label_filter}"
                 )
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(min(0.1, remaining))
         if network:
             await self._remove_resources(networks=ids.split())
         else:
@@ -434,16 +433,7 @@ class Sandbox:
                 raise BenchmarkValidationError(f"Docker returned no ID for {name}")
         except BaseException as exc:
             if isinstance(exc, (subprocess.TimeoutExpired, BenchmarkValidationError)):
-                # A failed run -d can leave a container even with a nonzero CLI exit.
-                await _rollback(
-                    self.remove_owned(
-                        name,
-                        network=network,
-                        wait_for_create=isinstance(exc, subprocess.TimeoutExpired),
-                    ),
-                    exc,
-                    cancelled,
-                )
+                await _rollback(self.remove_owned(name, network=network), exc, cancelled)
             if cancelled is not None:
                 raise cancelled from exc
             raise
