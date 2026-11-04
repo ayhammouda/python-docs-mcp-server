@@ -43,8 +43,11 @@ def default_routes(
     """Every default route, IPv4 or IPv6: a VPN's or Private Relay's ``utun`` one included."""
     system = system or platform.system()
     text = read() if read is not None else _read_routes(system)
+    lines = text.splitlines()
+    if system == "Darwin" and not {"Internet:", "Internet6:"}.intersection(lines):
+        raise OSError("netstat returned no IPv4 or IPv6 routing table")
     found = []
-    for line in text.splitlines():
+    for line in lines:
         fields = line.split()
         if system == "Darwin":
             default = fields[:1] == ["default"]

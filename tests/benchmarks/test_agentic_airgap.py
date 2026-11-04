@@ -98,6 +98,15 @@ def test_offline_checks_need_both_a_name_and_an_address_to_fail() -> None:
     assert route["passed"] is False and route["detail"] == ["default x UGScg en0"]
 
 
+@pytest.mark.parametrize("output", ["", "permission denied"])
+def test_unrecognized_netstat_output_cannot_certify_an_offline_host(output: str) -> None:
+    checks = host_offline_checks(
+        connect=_connect(set()), routes=lambda: default_routes(system="Darwin", read=lambda: output)
+    )
+    route = next(check for check in checks if check["check"] == "no_default_route")
+    assert route["passed"] is False
+
+
 def test_failed_netstat_is_a_failed_offline_check(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
