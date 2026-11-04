@@ -43,6 +43,7 @@ dev = [
     "anthropic==1.15.0",
     "openai==3.32.0",
     "google-genai==2.31.0",
+    "certifi>=2026.10.23",
 ]
 
 [project.scripts]
