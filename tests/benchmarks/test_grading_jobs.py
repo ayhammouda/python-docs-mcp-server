@@ -756,12 +756,23 @@ async def test_mixed_paid_missing_history_survives_two_free_submits(judges):
     assert judges.frames("item_not_run")[0]["reason"] == "retries_exhausted"
 
 
-async def test_intervening_success_resets_whole_job_failures(judges):
+@pytest.mark.parametrize("intervening,expected_results", [(None, [("i1", 2)]), (FREE, [])])
+async def test_intervening_outcome_preserves_whole_job_failures(
+    judges, intervening, expected_results,
+):
     await judges.run(
-        judges.job(count=2, script={"submit_errors": [PAID, None, PAID, None]}), margin=".17"
+        judges.job(count=3, script={"submit_errors": [PAID, intervening, PAID]}), margin=".17"
     )
-    assert [(r["item_id"], r["attempt"]) for r in judges.results()] == [("i1", 2), ("i2", 2)]
-    assert not judges.frames("item_not_run")
+    assert [(r["item_id"], r["attempt"]) for r in judges.results()] == expected_results
+    assert len(judges.events("reserve")) == len(judges.events("settle")) == 3
+    assert [
+        row["item_id"] for row in judges.frames("item_not_run")
+        if row["reason"] == "whole_batch_failures"
+    ] == ["i2", "i3"]
+    reserves = {event["unit_id"]: D(event["bound"]) for event in judges.events("reserve")}
+    paid = [event for event in judges.events("settle") if event["outcome"] == "server"]
+    assert len(paid) == 2
+    assert all(D(event["booked"]) == 2 * reserves[event["unit_id"]] for event in paid)
 
 
 async def test_cancellation_retries_only_the_owed_terminal_notification(judges):

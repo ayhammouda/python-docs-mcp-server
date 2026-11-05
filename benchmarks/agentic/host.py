@@ -748,7 +748,7 @@ class _GradingJob:
         self.unit = None
         if paid:
             self.source.note_paid_no_result(unit)
-        self.failures = self.failures + 1 if paid else 0
+        self.failures += int(paid)
         if unavailable:
             self.source.give_up(unit, self.source.held(unit), "batch_failed")
             self.source.complete(unit)
@@ -825,7 +825,7 @@ class _GradingJob:
             ],
         )
         whole = all(status == "missing" for status, _ in self.status.values())
-        self.failures = self.failures + 1 if whole else 0
+        self.failures += int(whole)
         failed = [i for i, (_, retryable) in self.status.items() if not retryable]
         self.source.give_up(unit, failed, "batch_failed")
         self.source.release(
