@@ -210,15 +210,23 @@ Frozen YAML readers allow ordinary aliases and merges within finite construction
 limits: 64 MiB per document, 100,000 nodes including alias references, 64 levels
 of nesting or merge dependencies, and 10,000 inherited mapping pairs across all
 merges. Merge sizes are checked on the shared node graph before any mapping is
-flattened, including pairs later discarded by an override. Original binary
-scalars are inspected before duplicate keys or merge overrides can discard them.
-Decoded binary text receives the same finite character-escape and attachment
-inspection as retained calibration text, before YAML construction. Supported
+flattened, including pairs later discarded by an override. Every YAML scalar,
+including keys and decoded binary text, receives the same finite character-escape
+and attachment inspection as retained calibration text before duplicate keys or
+merge overrides can discard it. Frozen JSON strings and keys are inspected before
+duplicate members are discarded. Literal prompts, specifications, score mapping
+and masking text cross the same boundary before snapshot writes, scoring and
+publication. Each original frozen file is limited to 64 MiB, including JSON with
+many smaller strings, and manifest files are read with that bound. Raw bytes and
+comments still receive the literal credential check;
+owning readers validate YAML/JSON syntax. Supported
 escapes are recovered anywhere, including complete JSON objects following
 unmatched prose quotes, nested strings, duplicate members and incomplete strings.
 Quotes do not control inspection. It shares a four-layer and 64 MiB original/
 total decoded UTF-8 budget per scalar. The strict wire JSON inspector retains
-its default semantics. Benign binary bytes,
+its default semantics. Generic JSON evidence readers keep the separate packed
+calibration transport budget; frozen-input inspection does not decode or limit
+packed blob strings as retained text. Benign binary bytes,
 quoted paths and regex prose retain their original bytes and manifest hashes.
 Inputs exceeding
 these limits fail with a content-free validation error during production or

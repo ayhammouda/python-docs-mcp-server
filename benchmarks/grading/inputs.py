@@ -16,8 +16,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from benchmarks.agentic.inputs import CapturedInput, CapturedJSON, json_mapping, read_input_bytes
-from benchmarks.agentic.protocol import scanned_json_bytes
+from benchmarks.agentic.inputs import (
+    CapturedInput,
+    inspect_input_bytes,
+    json_mapping,
+    read_input_bytes,
+)
+from benchmarks.agentic.protocol import MAX_FRAME_BYTES, scanned_json_bytes
 from benchmarks.corpus import validate_corpus
 from benchmarks.runner import BenchmarkValidationError
 from benchmarks.urls import _GFM_TRAILING, _URL_RE, DOCS_PATH_RE, _trim
@@ -330,12 +335,13 @@ def render_judge_input(
 
 def frozen_judge_document(prompt: bytes, schema: bytes) -> tuple[str, dict[str, Any]]:
     """Decode the captured prompt/schema exactly as the canonical grade producer."""
+    inspect_input_bytes(prompt, suffix=".md", label="grading prompt")
     try:
         # The worker reads the UTF-8 system prompt in universal-newline text mode.
         system = prompt.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
     except UnicodeDecodeError:
         raise BenchmarkValidationError("invalid UTF-8 grading prompt") from None
-    shape = json_mapping(schema, "judge schema")
+    shape = json_mapping(schema, "judge schema", inspect_strings=True)
     expected = {**dict.fromkeys(VOTE_FIELDS, "boolean"), "explanation": "string"}
     properties = shape.get("properties")
     if (
@@ -390,9 +396,10 @@ def scanned_input(path: Path, *, suffix: str) -> bytes:
     """Read and inspect the same bytes that will be hashed or exported."""
     if suffix in (".yml", ".yaml"):
         return CapturedInput.read(path, "grading input", "grading input").content
-    if suffix == ".json":
-        return CapturedJSON.read(path, "grading input").content
-    return read_input_bytes(path, "grading input", "grading input")
+    return inspect_input_bytes(
+        read_input_bytes(path, "grading input", "grading input", max_bytes=MAX_FRAME_BYTES),
+        suffix=suffix, label="grading input",
+    )
 
 
 def _input_bytes(
@@ -403,6 +410,8 @@ def _input_bytes(
         for name, path in _manifest_files(criteria_path, panel_path, probes_path).items()
     }
     files.update(mapping_table=MAPPING_TABLE.encode(), mask_rules=MASK_RULES.encode())
+    for name in ("mapping_table", "mask_rules"):
+        inspect_input_bytes(files[name], suffix=".txt", label=name)
     return files
 
 

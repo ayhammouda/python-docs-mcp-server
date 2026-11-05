@@ -14,7 +14,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any
 
-from benchmarks.agentic.inputs import CapturedInput, json_mapping
+from benchmarks.agentic.inputs import CapturedInput, inspect_input_bytes, json_mapping
 from benchmarks.agentic.protocol import MAX_FRAME_BYTES, assert_no_key_shaped, scanned_json_bytes
 from benchmarks.grading.aggregate import recorded_result, select_vote_file, vote_from_record
 from benchmarks.grading.calibration_scan import scan_calibration_source
@@ -224,10 +224,10 @@ class CalibrationSource:
             )
             if filename is None:
                 raise BenchmarkValidationError("unknown calibration source input")
-            if Path(filename).suffix in (".yml", ".json"):
-                CapturedInput.from_bytes(text.encode("utf-8"), name, "calibration source input")
-            else:
-                assert_no_key_shaped(text, where="calibration source input")
+            inspect_input_bytes(
+                text.encode("utf-8"), suffix=Path(filename).suffix,
+                label="calibration source input",
+            )
         scan_calibration_source(proof)
         return cls(Path("/calibration"), files), {
             k: v.encode("utf-8") for k, v in proof["inputs"].items()

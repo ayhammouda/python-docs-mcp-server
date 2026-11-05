@@ -95,6 +95,14 @@ character and attachment scans share that decoded-byte budget. Ordinary prose,
 URL/`data:` mentions, quoted regexes and Windows paths remain supported. Safe
 attachments, metadata and source files keep their exact original bytes.
 
+Frozen-input capture applies this same inspection to every decoded YAML scalar
+and JSON string or key before construction can discard duplicates or merge
+overrides, and to literal prompts, specifications, mapping and masking text.
+The scorer and publication readers inspect these declared slots again using
+their exact captured bytes. Typed YAML syntax remains the YAML reader's concern;
+it is not treated as an anonymous metadata encoding declaration. Generic JSON
+transport readers retain the separate verified packed-source allowance.
+
 A refused archive leaves existing
 grading outputs and immutable archive copies unchanged. The same inspection
 applies when publication reads an original archive or its entry projection.

@@ -23,6 +23,7 @@ from benchmarks.agentic.egress import read_log_at, write_new
 from benchmarks.agentic.inputs import (
     CapturedInput,
     CapturedJSON,
+    inspect_input_bytes,
     json_mapping,
     read_input_bytes,
     read_json,
@@ -299,8 +300,8 @@ def _frozen_inputs(
         body = bodies[name] = capture(path)
         if name in {"criteria", "panel", "probes"}:
             settings[name] = CapturedInput.from_bytes(body, name, name)
-        elif path.suffix == ".json":
-            json_mapping(body, name)
+        else:
+            inspect_input_bytes(body, suffix=path.suffix, label=name)
         if hashlib.sha256(body).hexdigest() != manifest.get(name):
             raise BenchmarkValidationError(f"frozen {name} differs from the grading input manifest")
         override = overrides.get(name)

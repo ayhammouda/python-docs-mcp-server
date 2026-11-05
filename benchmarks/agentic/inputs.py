@@ -32,6 +32,13 @@ _MAX_YAML_DEPTH = 64
 _MAX_YAML_MERGE_PAIRS = 10_000
 
 
+def _inspect_text(body: bytes) -> None:
+    text_inspection.inspect_text(
+        body.decode("utf-8", errors="replace"),
+        limit=text_inspection.MAX_FRAME_BYTES, yaml_token_limit=_MAX_YAML_NODES,
+    )
+
+
 class _CapturedLoader(yaml.SafeLoader):
     def __init__(self, stream: str):
         super().__init__(stream)
@@ -94,16 +101,18 @@ class _CapturedLoader(yaml.SafeLoader):
             elif isinstance(current, SequenceNode):
                 pending.extend(current.value)
             elif isinstance(current, ScalarNode):
-                assert_no_key_shaped(current.value, where="input YAML scalar")
+                # Inspect scalar contents, not the owning document's typed YAML
+                # syntax. This includes keys and values construction discards.
+                text_inspection.inspect_text(
+                    current.value, limit=text_inspection.MAX_FRAME_BYTES,
+                    yaml_token_limit=_MAX_YAML_NODES,
+                )
                 if current.tag == "tag:yaml.org,2002:binary":
                     # Decode before duplicate/merge construction drops values.
                     # Only construct scalars; shared aliases are visited once.
                     assert_no_key_shaped_json(
                         self.construct_object(current), where="input YAML scalar",
-                        check_content=lambda body: text_inspection.inspect_text(
-                            body.decode("utf-8", errors="replace"),
-                            limit=text_inspection.MAX_FRAME_BYTES, yaml_token_limit=_MAX_YAML_NODES,
-                        ),
+                        check_content=_inspect_text,
                     )
         return super().construct_document(node)
 
@@ -172,12 +181,18 @@ class CapturedInput:
         return cls(name, content, _require_yaml_mapping(data, label))
 
 
-def json_mapping(content: bytes, label: str) -> dict[str, Any]:
+def json_mapping(
+    content: bytes, label: str, *, inspect_strings: bool = False,
+) -> dict[str, Any]:
+    # Generic evidence readers also carry typed packed calibration transport.
+    # Only declared frozen JSON inputs apply retained-text decoding here; the
+    # archive boundary inspects verified unpacked sources under its own budgets.
     assert_no_key_shaped(content, where=label)
+    check_content = _inspect_text if inspect_strings else None
 
     def checked_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         # Scan before dict construction discards a duplicate key's earlier value.
-        assert_no_key_shaped_json(pairs, where=label)
+        assert_no_key_shaped_json(pairs, where=label, check_content=check_content)
         return dict(pairs)
 
     try:
@@ -186,10 +201,37 @@ def json_mapping(content: bytes, label: str) -> dict[str, Any]:
         raise
     except (ValueError, TypeError, RecursionError):
         # Malformed structure can hide a decoded string from the object hook.
-        check_json_text(content.decode("utf-8", errors="replace"), where=label)
+        check_json_text(
+            content.decode("utf-8", errors="replace"), where=label, check_content=check_content,
+        )
         raise BenchmarkValidationError(f"{label} file is not valid JSON") from None
-    assert_no_key_shaped_json(data, where=label)
+    assert_no_key_shaped_json(data, where=label, check_content=check_content)
     return _require_yaml_mapping(data, label)
+
+
+def inspect_input_bytes(content: bytes, *, suffix: str, label: str) -> bytes:
+    """Inspect exact frozen bytes in their declared format, before any writes.
+
+    Raw comments stay covered by the literal scan. Owning YAML/JSON readers
+    validate syntax and inspect decoded strings before duplicate construction.
+    Literal prompts and programmatic mapping/masking text share the inspector.
+    """
+    if len(content) > MAX_FRAME_BYTES:
+        raise BenchmarkValidationError(f"{label} exceeds the artifact size limit")
+    assert_no_key_shaped(content, where=label)
+    if suffix in (".yml", ".yaml"):
+        CapturedInput.from_bytes(content, label, label)
+    elif suffix == ".json":
+        json_mapping(content, label, inspect_strings=True)
+    else:
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            raise BenchmarkValidationError(f"{label} is not valid UTF-8") from None
+        text_inspection.inspect_text(
+            text, limit=text_inspection.MAX_FRAME_BYTES, yaml_token_limit=_MAX_YAML_NODES,
+        )
+    return content
 
 
 @dataclass(frozen=True)

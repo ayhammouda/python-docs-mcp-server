@@ -18,7 +18,13 @@ ENCODED = base64.b64encode(MARKER.encode()).decode()
 ])
 def test_complete_encoded_attachment_headers_are_inspected(header):
     note = "data:" + header + "," + ENCODED
-    assert DataHandler().data_open(Request(note)).read() == MARKER.encode()
+    try:
+        assert DataHandler().data_open(Request(note)).read() == MARKER.encode()
+    except ValueError as error:
+        # Patched CPython rejects header controls before decoding the payload.
+        assert "\v" in header
+        assert str(error) == "Control characters not allowed in data: mediatype"
+        assert base64.b64decode(note.partition(",")[2]) == MARKER.encode()
     with pytest.raises(KeyLeakError):
         g1_entries(json.dumps({"entries": {"other": {"notes": note}}}).encode())
 

@@ -32,7 +32,13 @@ OBJECT = json.dumps({"note": MARKER}).replace(MARKER, r"\u0041" + MARKER[1:])
 @pytest.mark.parametrize("text", ATTACHMENTS)
 @pytest.mark.parametrize("packed", [False, True])
 def test_complete_attachments_refuse_before_any_export_write(tmp_path, text, packed):
-    assert DataHandler().data_open(Request(text)).read() == MARKER.encode()
+    try:
+        assert DataHandler().data_open(Request(text)).read() == MARKER.encode()
+    except ValueError as error:
+        # Patched CPython rejects header controls before decoding the payload.
+        assert "\v" in text.partition(",")[0]
+        assert str(error) == "Control characters not allowed in data: mediatype"
+        assert base64.b64decode(text.partition(",")[2]) == MARKER.encode()
     files = {"votes/old.json": json.dumps({"text": text})}
     proof = {**(pack_files(files) if packed else {"version": 1, "files": files}), "inputs": {}}
     entries = {"other": {"source": proof, "notes": text}}

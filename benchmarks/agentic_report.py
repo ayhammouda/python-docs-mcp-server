@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.agentic.egress import PROVIDER_HOSTS
-from benchmarks.agentic.inputs import CapturedInput, json_mapping
+from benchmarks.agentic.inputs import CapturedInput, inspect_input_bytes, json_mapping
 from benchmarks.agentic.ledger import actual_cost, price_snapshot_from_mapping
 from benchmarks.agentic.protocol import KeyLeakError, check_json_text
 from benchmarks.agentic.reference import ReferenceTranscripts, ReferenceUnits, scripted_response
@@ -705,8 +705,10 @@ class _RunMetadata:
                     mapping = CapturedInput.from_bytes(body, key, "frozen report input").mapping
                     if key == "panel" and bound:
                         panel = mapping
-                elif filename.endswith(".json"):
-                    json_mapping(body, "frozen report input")
+                else:
+                    inspect_input_bytes(
+                        body, suffix=Path(filename).suffix, label="frozen report input",
+                    )
             except KeyLeakError:
                 raise
             except BenchmarkValidationError:
