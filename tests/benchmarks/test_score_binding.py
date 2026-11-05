@@ -304,8 +304,13 @@ def test_public_claim_rechecks_answer_after_scoring(tmp_path):
     reports._validated(run)  # An adversarial tier must not bypass the answer check.
     path = run / "transcripts" / runs._cell("docs-fetch") / f"{runs.QUESTIONS[0]}.json"
     runs._json(path, {**json.loads(path.read_bytes()), "answer": "An entirely different answer."})
+    current = _RunMetadata(reports._load_run_bundle(run))
+    model = json.loads(path.read_bytes())["model_family_id"]
+    assert (current.answering, current.grading) == ("unknown", "unknown")
+    assert current.claim_data_available("C2", model) is False
+    assert current.summary["claims"]["C2"][model]["interval"] is None
     raw = reports._section(reports._render(run), "## Claims")
-    assert r"not evaluable\: missing or inconsistent grading evidence" in raw
+    assert r"not evaluable\: missing or inconsistent execution evidence" in raw
     readme = reports._readme(run)
     assert "Execution provenance is unknown for answering and grading." in readme
     assert reports.ROUND_1_SCOPE not in readme

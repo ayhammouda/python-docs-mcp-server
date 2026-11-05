@@ -15,6 +15,7 @@ import yaml
 from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 from yaml.tokens import ScalarToken
 
+from benchmarks import text_inspection
 from benchmarks.agentic.protocol import (
     MAX_FRAME_BYTES,
     KeyLeakError,
@@ -99,9 +100,9 @@ class _CapturedLoader(yaml.SafeLoader):
                     # Only construct scalars; shared aliases are visited once.
                     assert_no_key_shaped_json(
                         self.construct_object(current), where="input YAML scalar",
-                        check_content=lambda body: check_json_text(
+                        check_content=lambda body: text_inspection.inspect_text(
                             body.decode("utf-8", errors="replace"),
-                            where="input YAML binary", embedded=True,
+                            limit=text_inspection.MAX_FRAME_BYTES, yaml_token_limit=_MAX_YAML_NODES,
                         ),
                     )
         return super().construct_document(node)

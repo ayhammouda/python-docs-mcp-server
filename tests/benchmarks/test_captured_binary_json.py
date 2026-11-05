@@ -8,7 +8,7 @@ import pytest
 import yaml
 from yaml.constructor import SafeConstructor
 
-from benchmarks.agentic import protocol
+from benchmarks import text_inspection
 from benchmarks.agentic.inputs import CapturedInput, json_mapping
 from benchmarks.agentic.protocol import KeyLeakError
 from benchmarks.grading import inputs as grading_inputs
@@ -33,6 +33,9 @@ def concealed(kind):
         "broken-prefix": ('{"note":"literal\\d+ ' + ESCAPED + '"}').encode(),
         "broken-suffix": ('{"note":"' + ESCAPED + '\\u00').encode(),
         "non-utf8": b"\xff" + ordinary.encode() + b"\x80",
+        "stray-quote": ('prefix" ' + ordinary).encode(),
+        "bare-escape": ESCAPED.encode(),
+        "hex-prose": ('prefix" ' + ordinary.replace(r'\u0041', r'\x41')).encode(),
     }[kind]
 
 
@@ -77,6 +80,7 @@ def assert_snapshot_files(dest, manifest, panel_body):
 @pytest.mark.parametrize("kind", [
     "object", "key", "duplicate", "nested", "nested-duplicate", "incomplete",
     "incomplete-nested", "prose", "broken-prefix", "broken-suffix", "non-utf8",
+    "stray-quote", "bare-escape", "hex-prose",
 ])
 def test_snapshot_rejects_binary_json_before_physical_writes(
     tmp_path, monkeypatch, syntax, tag, kind,
@@ -172,19 +176,20 @@ def test_rejection_preserves_existing_snapshot_files(tmp_path):
 @pytest.mark.parametrize("payload,limit", [
     (b'"' + b"x" * 63 + b'"', 64),  # Original text exceeds the frame bound.
     ('"éééé"'.encode(), 8),  # Bound bytes, not just code points.
-    (json.dumps(json.dumps("x" * 40)).encode(), 64),  # Shared decoded budget.
+    (json.dumps("x" * 40 + r"\u0041").encode(), 64),  # Two finite decoding steps.
 ])
 def test_binary_json_inspection_has_bounded_bytes(monkeypatch, payload, limit):
-    monkeypatch.setattr(protocol, "MAX_FRAME_BYTES", limit)
-    with pytest.raises(KeyLeakError, match="content inspection limit"):
+    monkeypatch.setattr(text_inspection, "MAX_FRAME_BYTES", limit)
+    with pytest.raises(KeyLeakError, match="size limit"):
         CapturedInput.from_bytes(
             binary_fragment(payload, "duplicate", "!!binary"), "panel", "panel",
         )
 
 
 def test_binary_json_inspection_has_bounded_decoding_depth():
-    text = "harmless"
-    for _ in range(4):
+    # Four character decoding steps, independent of surrounding quote parity.
+    text = r"\u0041"
+    for _ in range(3):
         text = json.dumps(text)
     body = binary_fragment(text.encode(), "alias", "!!binary")
     assert CapturedInput.from_bytes(body, "panel", "panel").mapping == yaml.safe_load(body)

@@ -63,19 +63,28 @@ without outer JSON quotes. Unknown or incomplete escapes remain prose.
 Actual source JSON/YAML and schema loaders validate their declared documents.
 Quotes in ordinary text preserve their prose semantics. This inspection does
 not evaluate regex groups/classes or infer arbitrary encodings.
-Supported `data:` attachments are also inspected locally.
-Supported attachments are `text/plain` and `application/json`,
-with percent encoding or canonical strict standard base64 and optional `charset=utf-8`
-or `charset=us-ascii`. Unsupported media types, encoding parameters, invalid
+Comma-terminated `data:` declarations are inspected locally before validating
+their headers, including malformed headers and Unicode whitespace.
+Unparameterized snippets with unrecognized media labels receive complete-string
+UTF-8 percent inspection. Literal or incomplete percent placeholders remain
+prose, preserving logging examples and literal `data:` regexes. Valid percent
+escapes anywhere in the string share the decoding budget and credential checks.
+Base64 and
+parameterized attachments support only `text/plain` and `application/json`,
+canonical strict standard base64 and optional `charset=utf-8` or
+`charset=us-ascii`. Unsupported base64 media types, encoding parameters, invalid
 encoding and non-text bytes are refused. Internal punctuation stays in the
 payload. Quotes/markup surrounding a URI and terminal closing brackets may
 delimit prose while continued tokens receive complete inspection. Whitespace
 continuing an unpadded base64 token is ambiguous and refused, including ASCII
 whitespace between four-character groups, including vertical tabs and Unicode
-whitespace. Percent text with a tab/newline
-continuation is also refused. Unwrapped percent-text URIs followed by whitespace
-and later percent escapes are refused because the payload end is ambiguous.
-Noncanonical whitespace in an explicit media header is refused. Use percent
+whitespace, even when the continuation begins with punctuation outside the
+base64 alphabet. Declared `text/plain` or `application/json` percent payloads
+with a tab/newline continuation are also refused. These unwrapped URIs followed
+by whitespace and later percent escapes are refused because the payload end is
+ambiguous. Bare labels and regex snippets receive complete-string inspection
+across whitespace, including any later percent escapes.
+Noncanonical whitespace in a base64 or parameterized media header is refused. Use percent
 encoding for payload whitespace, and wrap separate URI notes in quotes/brackets.
 Padded base64 followed by ordinary prose and `(data:...)` notes remain supported.
 Decoded content retains inspection of duplicate keys, character escapes and

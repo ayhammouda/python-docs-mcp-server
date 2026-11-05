@@ -104,11 +104,18 @@ def test_report_import_graph_is_acyclic_including_typing_edges() -> None:
         visit(name, [], name)
 
 
-def test_malformed_gate_container_is_unavailable() -> None:
+def test_malformed_gate_container_is_unavailable(tmp_path) -> None:
     from types import SimpleNamespace
 
     from benchmarks.grading.publication import reconcile_gates
+    from benchmarks.report_measurements import CountCapture
 
-    gates = reconcile_gates(SimpleNamespace(summary={"gates": ["malformed export"]}))
+    run = SimpleNamespace(
+        summary={"gates": ["malformed export"]},
+        count_capture=CountCapture(tmp_path),
+        transcripts={}, tokens={}, families={},
+    )
+    gates = reconcile_gates(run)
     assert set(gates) == {"G1", "G2", "G3", "G4"}
     assert all(gate.passed is None for gate in gates.values())
+    assert run.counts == {}

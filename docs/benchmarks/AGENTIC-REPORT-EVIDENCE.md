@@ -212,9 +212,13 @@ of nesting or merge dependencies, and 10,000 inherited mapping pairs across all
 merges. Merge sizes are checked on the shared node graph before any mapping is
 flattened, including pairs later discarded by an override. Original binary
 scalars are inspected before duplicate keys or merge overrides can discard them.
-Decoded binary text also receives bounded embedded-JSON inspection, including
-nested strings, duplicate members and recoverable incomplete strings. It shares
-a four-layer and 64 MiB decoded-byte budget per scalar. Benign binary bytes,
+Decoded binary text receives the same finite character-escape and attachment
+inspection as retained calibration text, before YAML construction. Supported
+escapes are recovered anywhere, including complete JSON objects following
+unmatched prose quotes, nested strings, duplicate members and incomplete strings.
+Quotes do not control inspection. It shares a four-layer and 64 MiB original/
+total decoded UTF-8 budget per scalar. The strict wire JSON inspector retains
+its default semantics. Benign binary bytes,
 quoted paths and regex prose retain their original bytes and manifest hashes.
 Inputs exceeding
 these limits fail with a content-free validation error during production or
