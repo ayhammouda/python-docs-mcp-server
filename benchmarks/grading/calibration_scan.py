@@ -43,7 +43,7 @@ def _metadata(value: Any) -> None:
 
 
 def _structured_input(body: bytes) -> None:
-    """Scan YAML/JSON scalars without expanding aliases or YAML merge mappings.
+    """Scan YAML scalars without expanding aliases or YAML merge mappings.
 
     Representation nodes retain duplicate values and share alias nodes. Only
     binary scalars need construction; constructing mappings could amplify a
@@ -160,9 +160,7 @@ def scan_calibration_source(proof: Any, budget: list[int] | None = None) -> None
             if not isinstance(filename, str):
                 _unknown_history(text)
                 continue
-            if filename.endswith((".yml", ".yaml")) or (
-                section == "inputs" and filename.endswith(".json")
-            ):
+            if filename.endswith((".yml", ".yaml")):
                 _structured_input(body)
             elif filename.endswith(".json"):
                 _source_json(body)

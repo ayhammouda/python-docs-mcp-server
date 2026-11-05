@@ -392,3 +392,46 @@ def test_non_yaml_frozen_file_reads_use_the_original_file_bound(tmp_path, monkey
     monkeypatch.setattr(inputs, "read_input_bytes", observe)
     assert inputs.scanned_input(path, suffix=suffix) == b"{}"
     assert limits == [captured_inputs.MAX_FRAME_BYTES]
+
+@pytest.mark.parametrize("ensure_ascii", [False, True])
+@pytest.mark.parametrize("packed", [False, True])
+@pytest.mark.parametrize("slot", ["description", "key"])
+def test_frozen_json_unicode_round_trips_exact_bytes(
+    tmp_path, monkeypatch, ensure_ascii, packed, slot,
+):
+    schema = json.loads(inputs.JUDGE_SCHEMA_PATH.read_bytes())
+    annotation = "Explain clearly \U0001f642"
+    if slot == "description":
+        schema["properties"]["explanation"]["description"] = annotation
+    else:
+        schema[annotation] = {"description": annotation}
+    body = json.dumps(schema, ensure_ascii=ensure_ascii).encode()
+    path = tmp_path / "schema.json"
+    path.write_bytes(body)
+    monkeypatch.setattr(inputs, "JUDGE_SCHEMA_PATH", path)
+    destination = tmp_path / "snapshot"
+    manifest = inputs.snapshot_inputs(
+        destination, criteria_path=inputs.CRITERIA_PATH, panel_path=PANEL_PATH,
+        probes_path=None,
+    )
+    assert_snapshot_files(destination, manifest, PANEL_PATH.read_bytes())
+    frozen = {
+        name: (destination / filename).read_bytes()
+        for name, filename in inputs.SNAPSHOT_FILES.items() if name in manifest
+    }
+    assert frozen["judge_schema"] == body
+    assert inputs.frozen_judge_document(frozen["judge_prompt"], body)[1] == schema
+    source = CalibrationSource(tmp_path, {})
+    assert source.export(frozen)["inputs"]["judge_schema"].encode() == body
+    proof = {
+        **(pack_files({}) if packed else {"version": 1, "files": {}}),
+        "inputs": {name: content.decode() for name, content in frozen.items()},
+    }
+    restored, replayed = CalibrationSource.restore(proof)
+    assert replayed == frozen
+    assert restored.export(replayed)["inputs"] == proof["inputs"]
+    entries = {"other": {"source": proof}}
+    for projection in (False, True):
+        envelope = entries if projection else {"entries": entries}
+        assert g1_entries(json.dumps(envelope).encode(), projection=projection) == entries
+    assert_snapshot_files(destination, manifest, PANEL_PATH.read_bytes())

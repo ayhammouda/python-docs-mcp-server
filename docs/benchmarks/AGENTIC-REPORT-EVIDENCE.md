@@ -216,7 +216,10 @@ and attachment inspection as retained calibration text before duplicate keys or
 merge overrides can discard it. Frozen JSON strings and keys are inspected before
 duplicate members are discarded. Literal prompts, specifications, score mapping
 and masking text cross the same boundary before snapshot writes, scoring and
-publication. Each original frozen file is limited to 64 MiB, including JSON with
+publication. Archive scanning uses the declared JSON decoder for frozen JSON,
+preserving supplementary Unicode whether written literally or as escaped
+surrogate pairs, and inspects every duplicate member before selection. Each
+original frozen file is limited to 64 MiB, including JSON with
 many smaller strings, and manifest files are read with that bound. Raw bytes and
 comments still receive the literal credential check;
 owning readers validate YAML/JSON syntax. Supported

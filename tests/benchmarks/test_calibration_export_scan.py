@@ -126,6 +126,8 @@ def test_all_frozen_structured_inputs_are_scanned(name, history):
     marker = _marker()
     # YAML !!binary and overridden duplicate scalars both remain inspected.
     text = 'note: "\\x41' + marker[1:] + '"\nnote: harmless\n'
+    if name == "judge_schema":
+        text = '{"note":"\\u0041' + marker[1:] + '","note":"harmless"}'
     proof = {"inputs": {name: text}, "files": {}}
     entry = {"tuning": [{"source": proof}]} if history else {"source": proof}
     with pytest.raises(KeyLeakError):
@@ -140,6 +142,22 @@ def test_all_typed_json_files_are_scanned(name):
     proof = {"files": {name: _encoded(_marker())}}
     with pytest.raises(KeyLeakError):
         g1_entries(json.dumps({"entries": {FALLBACK: {"source": proof}}}).encode())
+
+@pytest.mark.parametrize("text", [
+    "description: ordinary YAML\n",
+    '{"description":"ordinary trailing comma",}',
+    '{"description":"\\uD83D"}',
+])
+def test_declared_json_input_refuses_invalid_text_before_replacing_export(tmp_path, text):
+    entries = {FALLBACK: {"source": {"inputs": {"judge_schema": text}, "files": {}}}}
+    destination = tmp_path / "g1.json"
+    destination.write_bytes(b"prior evidence")
+    before = _snapshot(tmp_path)
+    with pytest.raises(BenchmarkValidationError) as caught:
+        score._write(tmp_path, destination, {"entries": entries}, calibration=True)
+    assert text not in str(caught.value)
+    assert _snapshot(tmp_path) == before
+
 
 
 @pytest.mark.parametrize("receipt", [False, True])
