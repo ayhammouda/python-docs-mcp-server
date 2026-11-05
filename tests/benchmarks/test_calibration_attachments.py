@@ -133,17 +133,27 @@ def test_attachment_depth_allows_exactly_four_decoding_steps():
         _metadata_text(uri(text))
 
 
-def test_attachment_decoded_byte_budget_is_shared_with_quoted_layers(monkeypatch):
+def test_attachment_decoded_byte_budget_is_shared_with_character_layers(monkeypatch):
     from benchmarks.grading import calibration_scan
 
-    text = json.dumps({"attachment": uri("x" * 50)})
+    text = json.dumps({"attachment": uri("x" * 50)}) + r' literal \u0041'
     monkeypatch.setattr(calibration_scan, "MAX_FRAME_BYTES", len(text.encode()))
-    # The original text fits; repeatedly inspecting overlapping quoted and URI
+    # The original text fits; repeatedly inspecting overlapping character and URI
     # layers must still charge a single finite decoded-byte budget.
     data = archive()
     inject(data, "entry", text)
     with pytest.raises(KeyLeakError, match="size limit"):
         g1_entries(json.dumps(data).encode())
+
+
+def test_quotes_without_character_escapes_do_not_duplicate_decoded_bytes(monkeypatch):
+    from benchmarks.grading import calibration_scan
+
+    text = json.dumps({"attachment": uri("x" * 50)})
+    monkeypatch.setattr(calibration_scan, "MAX_FRAME_BYTES", len(text.encode()))
+    data = archive()
+    inject(data, "entry", text)
+    assert g1_entries(json.dumps(data).encode()) == data["entries"]
 
 
 def test_metadata_size_limit_counts_utf8_bytes(monkeypatch):

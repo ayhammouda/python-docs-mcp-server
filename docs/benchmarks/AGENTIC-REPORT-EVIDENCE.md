@@ -212,9 +212,28 @@ of nesting or merge dependencies, and 10,000 inherited mapping pairs across all
 merges. Merge sizes are checked on the shared node graph before any mapping is
 flattened, including pairs later discarded by an override. Original binary
 scalars are inspected before duplicate keys or merge overrides can discard them.
+Decoded binary text also receives bounded embedded-JSON inspection, including
+nested strings, duplicate members and recoverable incomplete strings. It shares
+a four-layer and 64 MiB decoded-byte budget per scalar. Benign binary bytes,
+quoted paths and regex prose retain their original bytes and manifest hashes.
 Inputs exceeding
 these limits fail with a content-free validation error during production or
 replay; a bounded credential scan alone does not establish safe construction.
+
+Anonymous calibration metadata (including archive, entry, tuning, binding and
+source extension names and values) does not support explicit YAML encodings.
+Declared binary payloads such as `!!binary BASE64` and
+`!<tag:yaml.org,2002:binary> BASE64`, other explicit tags with payloads, and YAML
+directives are refused before export or report replacement, even for harmless
+payloads. Ordinary prose mentioning tags and bare tag names remains usable.
+When these encoding markers occur, metadata is tokenized without constructing
+YAML objects, resolving aliases or expanding merges, with at most 100,000 tokens
+per inspected string. Invalid YAML in such strings is also refused. Quoted YAML
+string wrappers containing these markers share the existing four decoding steps
+and 64 MiB total decoded-byte budget with character escapes and attachments.
+This metadata format limit does not apply to declared structured input slots:
+their bounded YAML readers inspect actual binary scalars and retain benign input
+bytes exactly. No recorded path or URL is opened to inspect metadata.
 
 Reports also check the disclosure projection against the original digest-named
 exports in `grading/disclosure/g1/`. A missing, invalid, hash-mismatched or

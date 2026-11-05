@@ -98,7 +98,11 @@ class _CapturedLoader(yaml.SafeLoader):
                     # Decode before duplicate/merge construction drops values.
                     # Only construct scalars; shared aliases are visited once.
                     assert_no_key_shaped_json(
-                        self.construct_object(current), where="input YAML scalar"
+                        self.construct_object(current), where="input YAML scalar",
+                        check_content=lambda body: check_json_text(
+                            body.decode("utf-8", errors="replace"),
+                            where="input YAML binary", embedded=True,
+                        ),
                     )
         return super().construct_document(node)
 

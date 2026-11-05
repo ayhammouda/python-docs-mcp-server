@@ -11,7 +11,7 @@ import asyncio
 import json
 import os
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -204,10 +204,16 @@ def assert_no_key_shaped_json(
 # document parser: malformed structure, trailing text and duplicate fields must not
 # hide strings. Each match consumes a plain run or one complete JSON escape.
 _JSON_STRING_PART = re.compile(r'[^"\\]+|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})')
+# Embedded prose may contain literal invalid JSON escapes (Windows paths/regexes).
+# Consume them once and preserve the slash when recovering the surrounding text.
+_JSON_TEXT_PART = re.compile(r'[^"\\]+|\\[\s\S]?')
+_JSON_TEXT_ESCAPE = re.compile(r'\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})|(\\)')
+_MAX_EMBEDDED_JSON_LAYERS = 4
 
 
 def check_json_text(
-    text: str, *, where: str, check_content: Callable[[bytes], None] | None = None
+    text: str, *, where: str, check_content: Callable[[bytes], None] | None = None,
+    embedded: bool = False,
 ) -> None:
     """Check raw text and recoverable JSON strings in linear, frame-bounded work.
 
@@ -215,27 +221,59 @@ def check_json_text(
     unfinished string. Check the completed prefix before refusing a broken escape;
     uninspectable content must never be replayed. Document validity remains the
     caller's/native SDK's decision, including unescaped controls (strict=False).
+
+    For embedded text, gaps and invalid escapes are ordinary prose. Recover up
+    to four quoted layers with one shared frame-sized decoded UTF-8 budget;
+    neither nested serialization nor duplicates require object construction.
     """
     if len(text) > MAX_FRAME_BYTES:
         raise KeyLeakError(f"content inspection limit exceeded in {where}")
     assert_no_key_shaped_json(text, where=where, check_content=check_content)
-    position = 0
-    while position < len(text):
-        start = text.find('"', position)
-        # Escapes outside a string have no unambiguous JSON interpretation.
-        gap_end = start if start != -1 else len(text)
-        if text.find("\\", position, gap_end) != -1:
-            raise KeyLeakError(f"uninspectable JSON escape in {where}")
-        if start == -1:
-            break
-        end = start + 1
-        while match := _JSON_STRING_PART.match(text, end):
-            end = match.end()
-        decoded = json.loads('"' + text[start + 1 : end] + '"', strict=False)
+    if embedded and len(text.encode("utf-8")) > MAX_FRAME_BYTES:
+        raise KeyLeakError(f"content inspection limit exceeded in {where}")
+
+    def strings(value: str) -> Iterator[str]:
+        position = 0
+        part = _JSON_TEXT_PART if embedded else _JSON_STRING_PART
+        while position < len(value):
+            start = value.find('"', position)
+            # Wire JSON refuses ambiguous escapes; embedded text keeps prose.
+            gap_end = start if start != -1 else len(value)
+            if not embedded and value.find("\\", position, gap_end) != -1:
+                raise KeyLeakError(f"uninspectable JSON escape in {where}")
+            if start == -1:
+                break
+            end = start + 1
+            while match := part.match(value, end):
+                end = match.end()
+            body = value[start + 1 : end]
+            if embedded:
+                body = _JSON_TEXT_ESCAPE.sub(
+                    lambda match: r"\\" if match[1] else match[0], body,
+                )
+            yield json.loads('"' + body + '"', strict=False)
+            if end < len(value) and value[end] != '"':
+                raise KeyLeakError(f"uninspectable JSON string in {where}")
+            position = end + 1
+
+    pending = [(strings(text), 1)]
+    remaining = MAX_FRAME_BYTES
+    while pending:
+        frame, layer = pending[-1]
+        try:
+            decoded = next(frame)
+        except StopIteration:
+            pending.pop()
+            continue
+        if embedded:
+            remaining -= len(decoded.encode("utf-8", errors="surrogatepass"))
+            if remaining < 0:
+                raise KeyLeakError(f"content inspection limit exceeded in {where}")
         scanned_json_bytes(decoded, where=where, check_content=check_content)
-        if end < len(text) and text[end] != '"':
-            raise KeyLeakError(f"uninspectable JSON string in {where}")
-        position = end + 1
+        if embedded and '"' in decoded:
+            if layer == _MAX_EMBEDDED_JSON_LAYERS:
+                raise KeyLeakError(f"content inspection decoding depth exceeded in {where}")
+            pending.append((strings(decoded), layer + 1))
 
 
 def scanned_json_bytes(

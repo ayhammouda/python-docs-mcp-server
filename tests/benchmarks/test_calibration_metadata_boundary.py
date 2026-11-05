@@ -92,9 +92,13 @@ def test_harmless_anonymous_metadata_survives_exactly(text):
     'old "broken\\q" passage',
     'old "unfinished\\u00',
 ])
-def test_malformed_quoted_escapes_are_not_exported(text):
+def test_harmless_unknown_or_incomplete_prose_escapes_are_preserved(text):
     data = archive()
     inject(data, "entry", text)
+    assert g1_entries(json.dumps(data).encode()) == data["entries"]
+    # These were harmless availability refusals, not invalid source documents.
+    # Unknown prose escapes must not conceal a supported escaped credential.
+    inject(data, "entry", text + ' \\u0041' + MARKER[1:])
     with pytest.raises(KeyLeakError):
         g1_entries(json.dumps(data).encode())
 

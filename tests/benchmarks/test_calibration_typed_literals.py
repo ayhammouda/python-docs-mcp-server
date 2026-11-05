@@ -29,7 +29,7 @@ PATTERN = r'^"[A-Z]\d+"$'
 @pytest.mark.parametrize("packed", [False, True])
 @pytest.mark.parametrize("escape", ["unicode", "hex"])
 @pytest.mark.parametrize("slot", ["pattern", "patternProperties"])
-def test_declared_regex_cannot_hide_a_literal_credential(tmp_path, packed, escape, slot):
+def test_regex_character_escapes_cannot_hide_a_literal_credential(tmp_path, packed, escape, slot):
     code = "\\u%04x" if escape == "unicode" else "\\x%02x"
     pattern = r'^\s*"' + "".join(code % ord(char) for char in MARKER) + '"$'
     assert re.fullmatch(pattern, '"' + MARKER + '"')
@@ -117,7 +117,7 @@ def test_custom_frozen_json_schema_uses_the_same_regex_semantics(tmp_path, monke
     "additionalProperties", "items", "contains", "not", "if", "then", "else",
     "allOf", "anyOf", "oneOf", "prefixItems",
 ])
-def test_only_schema_positions_carry_regex_semantics(keyword):
+def test_nested_schema_positions_keep_regex_text(keyword):
     child = {"type": "string", "pattern": PATTERN}
     if keyword in ("properties", "$defs", "definitions", "dependentSchemas", "patternProperties"):
         child = {PATTERN if keyword == "patternProperties" else "named": child}
@@ -203,6 +203,7 @@ def test_healthy_score_report_readme_and_atomic_refusals(validated_bundle, packe
                                                + ".json")
     data = json.loads(original.read_bytes())
     data["entries"]["other"] = {"source": proof_for(response(schema_with_regex()), packed)}
+    data["entries"]["other"]["notes"] = 'old "broken\\q" passage'
     archive = run.parent / "literal-g1.json"
     archive.write_bytes(json.dumps(data, ensure_ascii=True).encode())
     args = ["agentic-score", "--run-dir", str(run), "--g1", str(archive)]
@@ -218,10 +219,11 @@ def test_healthy_score_report_readme_and_atomic_refusals(validated_bundle, packe
     assert exported.read_bytes() == archive.read_bytes()
     assert json.loads((run / "grading/disclosure/g1-entries.json").read_bytes()) == data["entries"]
     capsys.readouterr()
-    # Mix harmless declared regexes with malformed metadata and opaque raw replies.
+    # Keep harmless unknown prose escapes; refuse their hostile escaped-key twin
+    # and opaque raw replies. Source document validation remains independent.
     def corrupt(entries, kind):
-        if kind == "malformed":
-            entries["other"]["notes"] = 'old "broken\\q" passage'
+        if kind == "escaped-prose":
+            entries["other"]["notes"] = 'old "broken\\q" passage \\u0041' + MARKER[1:]
         else:
             record = response(schema_with_regex())
             record["result"]["raw"]["response"]["body"]["output"][0]["content"][0]["text"] = {
@@ -230,7 +232,7 @@ def test_healthy_score_report_readme_and_atomic_refusals(validated_bundle, packe
             entries["other"]["source"] = proof_for(record, packed)
 
     before = _snapshot(run)
-    for kind in ("malformed", "raw-secret"):
+    for kind in ("escaped-prose", "raw-secret"):
         hostile = copy.deepcopy(data)
         corrupt(hostile["entries"], kind)
         archive.write_bytes(json.dumps(hostile).encode())

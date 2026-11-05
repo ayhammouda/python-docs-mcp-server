@@ -53,25 +53,38 @@ Before scoring or copying a supplied archive, credential inspection covers every
 composition's source and tuning source, including unselected fallback history.
 It inspects declared JSON vote and receipt replies, including strings retained
 inside a structured provider text block, and frozen JSON/YAML inputs.
-Declared regex slots in the frozen judge schema and Responses schema configuration
-retain their regex syntax. Inspection covers literal credentials, Unicode and hex
-character escapes, and explicit attachments in those slots, including
-`patternProperties` keys.
-All retained metadata keys and string values receive the same inspection,
-including archive/entry notes, source extensions and tuning history.
-Inspection decodes quoted JSON strings and supported `data:` attachments locally.
+All retained keys and string values receive the same inspection, including
+archive/entry notes, source extensions, tuning history, literal inputs, reply
+explanations, item user text and schema regexes (including `patternProperties`
+keys). Inspection checks literal credentials and locally recovers JSON character
+escapes (`\uXXXX`, `\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`) and hex
+character escapes (`\xXX`) anywhere in text, including escaped prose quotes
+without outer JSON quotes. Unknown or incomplete escapes remain prose.
+Actual source JSON/YAML and schema loaders validate their declared documents.
+Quotes in ordinary text preserve their prose semantics. This inspection does
+not evaluate regex groups/classes or infer arbitrary encodings.
+Supported `data:` attachments are also inspected locally.
 Supported attachments are `text/plain` and `application/json`,
-with percent encoding or strict standard base64 and optional `charset=utf-8`
+with percent encoding or canonical strict standard base64 and optional `charset=utf-8`
 or `charset=us-ascii`. Unsupported media types, encoding parameters, invalid
-encoding and non-text bytes are refused. Decoded JSON retains inspection of
-duplicate keys and recoverable quoted strings, including nested attachments.
-Each metadata string admits at most four combined quote/attachment decoding
-steps, 64 MiB of original UTF-8 and 64 MiB of total decoded UTF-8; overlapping
-quote and attachment scans share that decoded-byte budget. Ordinary prose,
-URL/`data:` mentions and literal prompt/regex inputs do not imply an encoding.
-Responses `text.format` schema strings use metadata inspection; actual reply
-strings also receive reply recovery. Safe attachments and source files keep
-their exact original bytes.
+encoding and non-text bytes are refused. Internal punctuation stays in the
+payload. Quotes/markup surrounding a URI and terminal closing brackets may
+delimit prose while continued tokens receive complete inspection. Whitespace
+continuing an unpadded base64 token is ambiguous and refused, including ASCII
+whitespace between four-character groups, including vertical tabs and Unicode
+whitespace. Percent text with a tab/newline
+continuation is also refused. Unwrapped percent-text URIs followed by whitespace
+and later percent escapes are refused because the payload end is ambiguous.
+Noncanonical whitespace in an explicit media header is refused. Use percent
+encoding for payload whitespace, and wrap separate URI notes in quotes/brackets.
+Padded base64 followed by ordinary prose and `(data:...)` notes remain supported.
+Decoded content retains inspection of duplicate keys, character escapes and
+nested attachments.
+Each metadata string admits at most four combined character/attachment decoding
+steps, 64 MiB of original UTF-8 and 64 MiB of total decoded UTF-8. Overlapping
+character and attachment scans share that decoded-byte budget. Ordinary prose,
+URL/`data:` mentions, quoted regexes and Windows paths remain supported. Safe
+attachments, metadata and source files keep their exact original bytes.
 
 A refused archive leaves existing
 grading outputs and immutable archive copies unchanged. The same inspection
