@@ -47,20 +47,25 @@ context (the benchmark's target model axis) and never assumes an observed
 from __future__ import annotations
 
 import hashlib
-import json
-import math
-import os
-import re
 import statistics
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
-import yaml
-
+from benchmarks import report_common
+from benchmarks.agentic.inputs import CapturedInput, json_mapping
+from benchmarks.agentic.protocol import assert_no_key_shaped
 from benchmarks.model_matrix import METHODOLOGY_TOKEN_LABEL, ModelMatrix, load_model_matrix
+from benchmarks.report_files import artifact_bytes, artifact_paths, checked_path
 from benchmarks.runner import BenchmarkValidationError
+
+CellRecord = report_common.CellRecord
+RunBundle = report_common.RunBundle
+_cell = report_common._cell
+_percentile = report_common._percentile
+_relative_link = report_common._relative_link
+_table = report_common._table
 
 METHODOLOGY_DISCLAIMER = (
     "This is a generated raw report, not a publication-ready claim. Per roadmap "
@@ -99,48 +104,6 @@ _ENVIRONMENT_REQUIRED_FIELDS = (
 _SCORING_REQUIRED_FIELDS = ("competitor_id", "corpus_id", "status")
 
 
-@dataclass(frozen=True)
-class CellRecord:
-    """One merged competitor/question result, joined across artifact kinds."""
-
-    competitor_id: str
-    corpus_id: str
-    tool_model_key: str
-    category: str
-    status: str
-    error_category: str | None
-    score: float | None
-    requires_manual_scoring: bool
-    included_in_correctness_denominator: bool
-    latency_ms: float | None
-    client_wrapped_tokens: int | None
-    raw_payload_tokens: int | None
-    token_approximation: bool
-    """True when the token record's ``client_wrapped_tokens`` count (if any) is an
-    approximation -- issue #89 / methodology amendment of 2026-10-30: the fixed-flow
-    envelope has name-only tool stubs and no system prompt. Approximate counts must
-    never be used for headline claims (see ``_basic_stats``, which excludes them)."""
-    token_status: str | None
-    """The token record's ``status`` (``counted``, ``placeholder``, ``failed``), or
-    ``None`` when the cell has no token record or the record has no status."""
-
-
-@dataclass(frozen=True)
-class RunBundle:
-    """Loaded and validated raw artifacts for one benchmark run."""
-
-    run_dir: Path
-    run_summary: dict[str, Any]
-    environment: dict[str, Any]
-    corpus_hash: str
-    manifest_hash: str
-    competitors: dict[str, dict[str, Any]]
-    exclusions: list[dict[str, Any]]
-    cells: list[CellRecord]
-    failure_records: list[dict[str, Any]]
-    token_failure_records: list[dict[str, Any]]
-
-
 def generate_report(
     run_dir: Path,
     *,
@@ -154,13 +117,31 @@ def generate_report(
     corpus-hash source file, or raw per-cell result files are missing.
     """
     bundle = _load_run_bundle(run_dir)
-    matrix = load_model_matrix(model_matrix_path)
+    if model_matrix_path.absolute().is_relative_to(run_dir.absolute()):
+        from benchmarks.model_matrix import model_matrix_from_mapping
+
+        _require_file(
+            checked_path(run_dir.absolute(), model_matrix_path.absolute()), "model matrix"
+        )
+        matrix = model_matrix_from_mapping(
+            _load_yaml_mapping(
+                artifact_bytes(run_dir.absolute(), model_matrix_path.absolute()), "model matrix"
+            )
+        )
+    else:
+        matrix = load_model_matrix(model_matrix_path)
+    if methodology_path.absolute().is_relative_to(run_dir.absolute()):
+        checked_path(run_dir.absolute(), methodology_path.absolute())
     _require_file(methodology_path, "methodology file")
 
     report_path = out_path or (run_dir / "REPORT.md")
-    content = _render_report(bundle, matrix, methodology_path, report_path)
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(content, encoding="utf-8")
+    if bundle.run_summary.get("mode") == "agentic":
+        from benchmarks.agentic_report import render_agentic_report
+
+        content = render_agentic_report(bundle, matrix, methodology_path, report_path)
+    else:
+        content = _render_report(bundle, matrix, methodology_path, report_path)
+    _write_report(run_dir, report_path, content)
     return report_path
 
 
@@ -178,13 +159,36 @@ def generate_readme_summary(
     requires exactly the same audit trail as the full report.
     """
     bundle = _load_run_bundle(run_dir)
+    if methodology_path.absolute().is_relative_to(run_dir.absolute()):
+        checked_path(run_dir.absolute(), methodology_path.absolute())
     _require_file(methodology_path, "methodology file")
 
     summary_path = out_path or (run_dir / "README-SUMMARY.md")
-    content = _render_readme_summary(bundle, methodology_path, summary_path)
-    summary_path.parent.mkdir(parents=True, exist_ok=True)
-    summary_path.write_text(content, encoding="utf-8")
+    if bundle.run_summary.get("mode") == "agentic":
+        from benchmarks.agentic_report import render_agentic_readme_summary
+
+        content = render_agentic_readme_summary(bundle, methodology_path, summary_path)
+    else:
+        content = _render_readme_summary(bundle, methodology_path, summary_path)
+    _write_report(run_dir, summary_path, content)
     return summary_path
+
+
+def _write_report(run_dir: Path, path: Path, content: str) -> None:
+    body = content.encode("utf-8")
+    assert_no_key_shaped(body, where="rendered report")
+    if path.absolute().is_relative_to(run_dir.absolute()):
+        checked_path(run_dir.absolute(), path.parent.absolute())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Replace the name itself, including when the exported output name is a link.
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    file = temporary.open("xb")
+    try:
+        with file:
+            file.write(body)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 # --- Artifact loading and validation ----------------------------------------
@@ -194,33 +198,50 @@ def _load_run_bundle(run_dir: Path) -> RunBundle:
     if not run_dir.is_dir():
         raise BenchmarkValidationError(f"run artifact directory does not exist: {run_dir}")
 
-    run_summary = _load_required_json(run_dir / "run-summary.json")
+    run_summary = _load_required_json(run_dir, run_dir / "run-summary.json")
     _require_fields(run_summary, _RUN_SUMMARY_REQUIRED_FIELDS, "run-summary.json")
 
-    environment = _load_required_json(run_dir / "environment.json")
+    environment = _load_required_json(run_dir, run_dir / "environment.json")
     _require_fields(environment, _ENVIRONMENT_REQUIRED_FIELDS, "environment.json")
 
     corpus_snapshot_path = run_dir / "snapshots" / "corpus.yml"
     manifest_snapshot_path = run_dir / "snapshots" / "competitor-manifest.yml"
-    _require_file(corpus_snapshot_path, "corpus snapshot (needed to compute the corpus hash)")
-    _require_file(manifest_snapshot_path, "competitor manifest snapshot")
+    _require_file(
+        checked_path(run_dir, corpus_snapshot_path),
+        "corpus snapshot (needed to compute the corpus hash)",
+    )
+    _require_file(checked_path(run_dir, manifest_snapshot_path), "competitor manifest snapshot")
 
-    corpus_hash = _sha256_of(corpus_snapshot_path)
-    manifest_hash = _sha256_of(manifest_snapshot_path)
-    corpus_categories = _load_corpus_categories(corpus_snapshot_path)
-    competitors, exclusions = _load_competitor_manifest(manifest_snapshot_path)
+    corpus_body = artifact_bytes(run_dir, corpus_snapshot_path)
+    manifest_body = artifact_bytes(run_dir, manifest_snapshot_path)
+    corpus_hash = hashlib.sha256(corpus_body).hexdigest()
+    manifest_hash = hashlib.sha256(manifest_body).hexdigest()
+    corpus_categories = _load_corpus_categories(corpus_body)
+    competitors, exclusions = _load_competitor_manifest(manifest_body)
 
-    scoring_entries = _load_cell_records(run_dir / "scoring")
+    scoring_entries = _load_cell_records(run_dir, run_dir / "scoring")
     if not scoring_entries:
         raise BenchmarkValidationError(
             "no raw scoring result files found under "
             f"{run_dir / 'scoring'}; required raw result files are missing "
             "(this run directory may be a --dry-run plan with no executed cells)"
         )
-    latency_records = _load_cell_records(run_dir / "latency")
-    token_records = _load_cell_records(run_dir / "tokens")
-    latency_by_key = {_cell_key(record): record for _, record in latency_records}
-    tokens_by_key = {_cell_key(record): record for _, record in token_records}
+    latency_records = _load_cell_records(run_dir, run_dir / "latency")
+    token_records = _load_cell_records(run_dir, run_dir / "tokens")
+
+    def by_key(entries: list[tuple[Path, dict[str, Any]]]) -> dict[tuple[str, str], dict[str, Any]]:
+        result = {}
+        for path, record in entries:
+            key = _cell_key(record)
+            if run_summary.get("mode") == "agentic" and key != (path.parent.name, path.stem):
+                raise BenchmarkValidationError(
+                    f"cell coordinates disagree with artifact path: {path}"
+                )
+            result[key] = record
+        return result
+
+    latency_by_key = by_key(latency_records)
+    tokens_by_key = by_key(token_records)
 
     cells: list[CellRecord] = []
     for path, record in scoring_entries:
@@ -251,7 +272,7 @@ def _load_run_bundle(run_dir: Path) -> RunBundle:
             )
         )
 
-    failure_records = [record for _, record in _load_cell_records(run_dir / "failures")]
+    failure_records = [record for _, record in _load_cell_records(run_dir, run_dir / "failures")]
     token_failure_records = [
         record for _, record in token_records if record.get("status") == "failed"
     ]
@@ -265,6 +286,9 @@ def _load_run_bundle(run_dir: Path) -> RunBundle:
         competitors=competitors,
         exclusions=exclusions,
         cells=cells,
+        scoring=by_key(scoring_entries),
+        latency=latency_by_key,
+        tokens=tokens_by_key,
         failure_records=failure_records,
         token_failure_records=token_failure_records,
     )
@@ -279,15 +303,9 @@ def _require_file(path: Path, label: str) -> None:
         raise BenchmarkValidationError(f"required {label} is missing: {path}")
 
 
-def _load_required_json(path: Path) -> dict[str, Any]:
-    _require_file(path, f"run artifact ({path.name})")
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise BenchmarkValidationError(f"{path} is not valid JSON: {exc}") from exc
-    if not isinstance(data, dict):
-        raise BenchmarkValidationError(f"{path} must contain a JSON object")
-    return data
+def _load_required_json(root: Path, path: Path) -> dict[str, Any]:
+    _require_file(checked_path(root, path), f"run artifact ({path.name})")
+    return json_mapping(artifact_bytes(root, path), str(path))
 
 
 def _require_fields(data: dict[str, Any], fields: tuple[str, ...], label: str) -> None:
@@ -300,18 +318,12 @@ def _sha256_of(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _load_yaml_mapping(path: Path, label: str) -> dict[str, Any]:
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except yaml.YAMLError as exc:
-        raise BenchmarkValidationError(f"{label} is not valid YAML: {exc}") from exc
-    if not isinstance(data, dict):
-        raise BenchmarkValidationError(f"{label} must contain a YAML mapping")
-    return data
+def _load_yaml_mapping(body: bytes, label: str) -> dict[str, Any]:
+    return CapturedInput.from_bytes(body, label, label).mapping
 
 
-def _load_corpus_categories(path: Path) -> dict[str, str]:
-    data = _load_yaml_mapping(path, "corpus snapshot")
+def _load_corpus_categories(body: bytes) -> dict[str, str]:
+    data = _load_yaml_mapping(body, "corpus snapshot")
     items = data.get("questions")
     if not isinstance(items, list):
         raise BenchmarkValidationError("corpus snapshot must contain a 'questions' list")
@@ -330,9 +342,9 @@ def _load_corpus_categories(path: Path) -> dict[str, str]:
 
 
 def _load_competitor_manifest(
-    path: Path,
+    body: bytes,
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
-    data = _load_yaml_mapping(path, "competitor manifest snapshot")
+    data = _load_yaml_mapping(body, "competitor manifest snapshot")
     items = data.get("competitors")
     if not isinstance(items, list):
         raise BenchmarkValidationError(
@@ -354,20 +366,11 @@ def _load_competitor_manifest(
     return competitors, exclusions
 
 
-def _load_cell_records(base_dir: Path) -> list[tuple[Path, dict[str, Any]]]:
-    if not base_dir.is_dir():
-        return []
-    records: list[tuple[Path, dict[str, Any]]] = []
-    for competitor_dir in sorted(p for p in base_dir.iterdir() if p.is_dir()):
-        for cell_file in sorted(competitor_dir.glob("*.json")):
-            try:
-                data = json.loads(cell_file.read_text(encoding="utf-8"))
-            except json.JSONDecodeError as exc:
-                raise BenchmarkValidationError(f"{cell_file} is not valid JSON: {exc}") from exc
-            if not isinstance(data, dict):
-                raise BenchmarkValidationError(f"{cell_file} must contain a JSON object")
-            records.append((cell_file, data))
-    return records
+def _load_cell_records(root: Path, base_dir: Path) -> list[tuple[Path, dict[str, Any]]]:
+    return [
+        (path, _load_required_json(root, path))
+        for path in artifact_paths(root, base_dir, "*/*.json")
+    ]
 
 
 # --- Aggregation --------------------------------------------------------------
@@ -380,18 +383,6 @@ def _group_by(
     for cell in cells:
         groups.setdefault(key_fn(cell), []).append(cell)
     return groups
-
-
-def _percentile(values: list[float], pct: float) -> float:
-    ordered = sorted(values)
-    if len(ordered) == 1:
-        return ordered[0]
-    rank = (len(ordered) - 1) * pct
-    lower = math.floor(rank)
-    upper = math.ceil(rank)
-    if lower == upper:
-        return ordered[int(rank)]
-    return ordered[lower] * (upper - rank) + ordered[upper] * (rank - lower)
 
 
 def _basic_stats(cells: list[CellRecord]) -> dict[str, Any]:
@@ -430,9 +421,7 @@ def _basic_stats(cells: list[CellRecord]) -> dict[str, Any]:
         and cell.status == "failed"
     )
     tokens_approximated = sum(
-        1
-        for cell in cells
-        if cell.client_wrapped_tokens is not None and cell.token_approximation
+        1 for cell in cells if cell.client_wrapped_tokens is not None and cell.token_approximation
     )
     tokens_count_failed = sum(
         1 for cell in cells if cell.client_wrapped_tokens is None and cell.token_status == "failed"
@@ -519,50 +508,6 @@ def _fmt_failed_latency(stats: dict[str, Any]) -> str:
 
 def _fmt_field(value: object) -> str:
     return "" if value is None else str(value)
-
-
-def _relative_link(target: Path, from_dir: Path) -> str:
-    return os.path.relpath(target.resolve(), start=from_dir.resolve())
-
-
-#: Every Markdown-significant ASCII punctuation character, a dot not followed by a
-#: digit, the dot of "www.", and the first slash of "//". Digits are exempt so numbers
-#: such as 1000.0 and 52.0% stay unescaped; a dot before any letter, ASCII or not, is
-#: escaped, so a non-ASCII TLD cannot form a domain either. The escaped slash stops
-#: protocol-relative links ("//host"), which a dot before a digit does not. Escaping
-#: keeps raw HTML, images, code spans and extra columns out of a cell, and it stops
-#: "scheme://", "www.", "//host" and bare-domain autolinks (an escaped ":", "." or
-#: "/"), so no link's visible text differs from its target. It cannot stop every link:
-#: see the email shortcut in _cell. "_" counts only at a word edge: between letters or
-#: digits it cannot open or close emphasis.
-_CELL_MARKDOWN = re.compile(
-    r"[\\`*\[\]<>()!|&#~:]|\.(?![0-9])|(?<=www)\.|/(?=/)|(?<![^\W_])_|_(?![^\W_])"
-)
-#: C0 controls and DEL: one of them inside text can change how a renderer parses it.
-_CELL_CONTROLS = dict.fromkeys([*range(0x20), 0x7F], "�")
-
-
-def _cell(text: str) -> str:
-    """Render ``text`` as one literal plain-text table cell.
-
-    Line breaks and tabs become spaces (a newline would end the row), any other
-    control character becomes U+FFFD, and then one linear pass puts a backslash before
-    every significant character, so a proxy error body such as "Error | Gateway"
-    cannot add a column and ``__init__`` stays ``__init__``.
-    """
-    text = re.sub(r"\r\n|[\r\n\t]", " ", text).translate(_CELL_CONTROLS)
-    # shortcut: cmark-gfm (GitHub's renderer) still links an email address in cell text,
-    # because its autolink pass runs after escapes resolve; the link text equals the
-    # address, so it is not deceptive (owner accepted, 2026-10-30). Upgrade if a renderer
-    # used for reports links an email with text that differs from its target, or if the
-    # cell contract is tightened to forbid every link.
-    return _CELL_MARKDOWN.sub(r"\\\g<0>", text)
-
-
-def _table(headers: list[str], rows: list[list[str]]) -> list[str]:
-    lines = ["| " + " | ".join(headers) + " |", "| " + " | ".join(["---"] * len(headers)) + " |"]
-    lines.extend("| " + " | ".join(_cell(cell) for cell in row) + " |" for row in rows)
-    return lines
 
 
 # --- Rendering -----------------------------------------------------------------

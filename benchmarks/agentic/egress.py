@@ -206,9 +206,10 @@ _MAX_SQUID_LOG_BYTES = 8 * 1024 * 1024
 
 
 @contextmanager
-def open_log_dir(path: Path) -> Iterator[int]:
+def open_log_dir(path: Path, *, dir_fd: int | None = None) -> Iterator[int]:
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        fd = os.open(path, flags, dir_fd=dir_fd)
     except OSError as exc:
         raise BenchmarkValidationError(f"log directory is a link or unavailable: {exc}") from exc
     try:

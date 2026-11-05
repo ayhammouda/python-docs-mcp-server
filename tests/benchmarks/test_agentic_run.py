@@ -47,7 +47,7 @@ from benchmarks.agentic.run import (
 from benchmarks.agentic.sandbox import ContainerLauncher, Sandbox, SandboxConfig
 from benchmarks.agentic.types import Buckets
 from benchmarks.model_matrix import load_model_matrix
-from benchmarks.report import generate_report
+from benchmarks.report import generate_readme_summary, generate_report
 from benchmarks.runner import BenchmarkValidationError, _load_questions, _load_yaml_mapping
 from benchmarks.scoring import score_run
 from tests.benchmarks.test_agentic_host import _alive
@@ -190,6 +190,11 @@ def test_agentic_run_end_to_end_with_scripted_models(
         run, model_matrix_path=FIX / "model-matrix.yml", methodology_path=METHODOLOGY_PATH
     ).read_text()
     assert "scripted-1" in report
+    assert "demonstration" in report.lower()
+    readme = generate_readme_summary(run, methodology_path=METHODOLOGY_PATH).read_text()
+    assert "demonstration" in readme.lower()
+    assert "fewer normalized tokens" not in readme
+    assert "answers the corpus better" not in readme
     for path in run.rglob("*"):
         if path.is_file():
             assert KEY_SHAPED.search(path.read_text(errors="replace")) is None

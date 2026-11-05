@@ -1,0 +1,202 @@
+# Tuning questions for the judge effort walk (PR 5 plan, Task 1; design §9.3).
+#
+# Ten questions outside the frozen corpus, two per corpus category. Each answer
+# key comes from a docs.python.org page that the corpus does not cite and that
+# is not library/math.html (the judge prompt's worked examples). The tuning
+# probes are built from these questions only, so the held-out probes on the
+# corpus questions stay unseen while efforts are chosen.
+#
+# Shape: the corpus question fields, plus `criteria` in the criteria-file entry
+# shape (docs/benchmarks/grading-criteria.yml). Loaded by
+# benchmarks.grading.inputs.load_tuning_questions().
+schema_version: 1
+questions:
+- id: TUNE-001
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: In Python 3.13, which index does bisect.bisect_left(a, x) return when x is already present in the sorted list a?
+  answer_key: It returns the insertion point that keeps a sorted; when x is already present, that point is before (to the left of) any existing entries equal to x.
+  citations:
+  - https://docs.python.org/3.13/library/bisect.html#bisect.bisect_left
+  expected_properties:
+  - sorted insertion point
+  - left of equal entries
+  ambiguity_notes: null
+  criteria:
+  - property: sorted insertion point
+    criterion: States that bisect_left returns the index at which x can be inserted while keeping the list sorted.
+    weight: nuance
+  - property: left of equal entries
+    criterion: States that when x is already present the returned point is before, to the left of, every existing entry equal to x.
+    weight: core
+- id: TUNE-002
+  category: exact_symbol
+  python_version: '3.13'
+  prompt: For a nonnegative integer n, what does heapq.nsmallest(n, iterable, key=None) return in Python 3.13?
+  answer_key: It returns a list of up to n smallest elements in sorted order, using the supplied key if given. The result is equivalent to sorted(iterable, key=key)[:n].
+  citations:
+  - https://docs.python.org/3.13/library/heapq.html#heapq.nsmallest
+  expected_properties:
+  - list of up to n smallest elements
+  - sorted slice equivalence
+  ambiguity_notes: null
+  criteria:
+  - property: list of up to n smallest elements
+    criterion: States that it returns a list of up to n smallest elements of the iterable, compared by key when one is given.
+    weight: core
+  - property: sorted slice equivalence
+    criterion: States that the result is equivalent to sorted(iterable, key=key)[:n].
+    weight: nuance
+- id: TUNE-003
+  category: concept
+  python_version: '3.13'
+  prompt: In Python 3.13, what does frozen=True change about field assignment and default hash generation for a dataclass with eq=True and no explicit hash definition?
+  answer_key: Assigning to a field of an instance raises dataclasses.FrozenInstanceError, which emulates read-only instances. With eq=True and no explicit hash definition, a frozen dataclass generates __hash__ by default.
+  citations:
+  - https://docs.python.org/3.13/library/dataclasses.html#dataclasses.dataclass
+  - https://docs.python.org/3.13/library/dataclasses.html#frozen-instances
+  expected_properties:
+  - field assignment raises
+  - default hash generation
+  ambiguity_notes: null
+  criteria:
+  - property: field assignment raises
+    criterion: States that assigning to a field of an instance raises an exception, dataclasses.FrozenInstanceError, so instances behave as read-only.
+    weight: core
+  - property: default hash generation
+    criterion: States that the dataclass generates a __hash__ method by default under these conditions.
+    weight: nuance
+- id: TUNE-004
+  category: concept
+  python_version: '3.13'
+  prompt: How does threading.RLock differ from threading.Lock when the same thread calls acquire() twice with the default blocking behavior?
+  answer_key: An RLock is reentrant, so the thread that holds it can acquire it again without blocking, and it must release it once for each acquisition; a plain Lock blocks on a second acquire by the same thread.
+  citations:
+  - https://docs.python.org/3.13/library/threading.html#rlock-objects
+  - https://docs.python.org/3.13/library/threading.html#lock-objects
+  expected_properties:
+  - reentrant acquisition
+  - one release per acquire
+  ambiguity_notes: null
+  criteria:
+  - property: reentrant acquisition
+    criterion: States that the thread holding an RLock can acquire it again without blocking, while a plain Lock blocks on a second acquire by the same thread.
+    weight: core
+  - property: one release per acquire
+    criterion: States that the RLock must be released once for each time it was acquired before another thread can take it.
+    weight: nuance
+- id: TUNE-005
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: Between Python 3.12 and 3.13, what did the glob module gain for converting a pattern into a regular expression?
+  answer_key: Python 3.13 adds glob.translate(), which converts a path specification into a regular expression for use with re.match(); Python 3.12's glob module has no translate() function.
+  citations:
+  - https://docs.python.org/3.12/library/glob.html
+  - https://docs.python.org/3.13/library/glob.html#glob.translate
+  expected_properties:
+  - glob.translate in 3.13
+  - 3.12 absence
+  ambiguity_notes: null
+  criteria:
+  - property: glob.translate in 3.13
+    criterion: States that Python 3.13 adds glob.translate(), which converts a glob pattern into a regular expression.
+    weight: core
+  - property: 3.12 absence
+    criterion: States that Python 3.12's glob module has no translate() function.
+    weight: nuance
+- id: TUNE-006
+  category: cross_version
+  python_version:
+  - '3.12'
+  - '3.13'
+  prompt: Which os function for the number of CPUs usable by the calling thread was added between Python 3.12 and 3.13, and how does it differ from os.cpu_count()?
+  answer_key: Python 3.13 adds os.process_cpu_count(). By default it reports the logical CPUs usable by the calling thread of the current process, or None if undetermined. os.cpu_count() reports the system count by default.
+  citations:
+  - https://docs.python.org/3.12/library/os.html#os.cpu_count
+  - https://docs.python.org/3.13/library/os.html#os.process_cpu_count
+  expected_properties:
+  - os.process_cpu_count in 3.13
+  - usable rather than system CPUs
+  ambiguity_notes: null
+  criteria:
+  - property: os.process_cpu_count in 3.13
+    criterion: Names os.process_cpu_count() as the function Python 3.13 adds.
+    weight: core
+  - property: usable rather than system CPUs
+    criterion: Distinguishes the logical CPUs usable by the calling thread from the system count reported by os.cpu_count() under the default settings.
+    weight: nuance
+- id: TUNE-007
+  category: pep_adjacent
+  python_version: '3.13'
+  prompt: In Python 3.13, what does a `type X = ...` statement create, and when is its value evaluated?
+  answer_key: The PEP 695 type statement creates a type alias, an instance of typing.TypeAliasType; its value is evaluated lazily, only when the alias's __value__ attribute is accessed.
+  citations:
+  - https://docs.python.org/3.13/reference/simple_stmts.html#the-type-statement
+  expected_properties:
+  - TypeAliasType instance
+  - lazy evaluation
+  ambiguity_notes: null
+  criteria:
+  - property: TypeAliasType instance
+    criterion: States that the statement creates a type alias, an instance of typing.TypeAliasType.
+    weight: core
+  - property: lazy evaluation
+    criterion: States that the alias's value is evaluated lazily, when its __value__ attribute is accessed, not when the statement runs.
+    weight: core
+- id: TUNE-008
+  category: pep_adjacent
+  python_version: '3.13'
+  prompt: What does collections.abc.Buffer represent in Python 3.13?
+  answer_key: It is the abstract base class, from PEP 688, for classes that provide the __buffer__() method and so implement the buffer protocol; it can be used in isinstance() checks and type annotations.
+  citations:
+  - https://docs.python.org/3.13/library/collections.abc.html#collections.abc.Buffer
+  expected_properties:
+  - buffer protocol ABC
+  - __buffer__ method
+  ambiguity_notes: null
+  criteria:
+  - property: buffer protocol ABC
+    criterion: States that collections.abc.Buffer is an abstract base class for objects that implement the buffer protocol.
+    weight: core
+  - property: __buffer__ method
+    criterion: States that a class counts as a Buffer by providing the __buffer__() method.
+    weight: nuance
+- id: TUNE-009
+  category: applied
+  python_version: '3.13'
+  prompt: Which stdlib function should compare a received message authentication code with the expected one while reducing the risk of timing attacks?
+  answer_key: Use hmac.compare_digest(a, b) to test equality while avoiding content-based short-circuiting.
+  citations:
+  - https://docs.python.org/3.13/library/hmac.html#hmac.compare_digest
+  expected_properties:
+  - hmac.compare_digest
+  - resists timing analysis
+  ambiguity_notes: An answer naming secrets.compare_digest also meets the first criterion.
+  criteria:
+  - property: hmac.compare_digest
+    criterion: Recommends hmac.compare_digest() or secrets.compare_digest().
+    weight: core
+  - property: resists timing analysis
+    criterion: States that the comparison avoids content-based short-circuiting.
+    weight: nuance
+- id: TUNE-010
+  category: applied
+  python_version: '3.13'
+  prompt: A program must run a cleanup function when the interpreter exits normally. Which stdlib API registers it, and will the handler run if the process calls os._exit()?
+  answer_key: Use atexit.register() to register the function for normal interpreter termination. Calling os._exit() skips the registered handlers.
+  citations:
+  - https://docs.python.org/3.13/library/atexit.html#atexit.register
+  - https://docs.python.org/3.13/library/atexit.html#module-atexit
+  expected_properties:
+  - atexit.register
+  - os._exit skips handlers
+  ambiguity_notes: null
+  criteria:
+  - property: atexit.register
+    criterion: Recommends atexit.register() to register the function for normal interpreter termination.
+    weight: core
+  - property: os._exit skips handlers
+    criterion: States that the handler does not run when the process calls os._exit().
+    weight: core

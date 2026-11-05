@@ -6,6 +6,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
+#: Answer-turn stop reasons that mean the output cap cut the answer; the pilot's 1% rule
+#: reads their count. A Gemini CONTINUATION stop counts (owner ruling, round 3).
+OUTPUT_CAP_STOPS = frozenset({"max_tokens", "max_output_tokens", "MAX_TOKENS", "CONTINUATION"})
+
 
 @dataclass(frozen=True)
 class ToolSpec:

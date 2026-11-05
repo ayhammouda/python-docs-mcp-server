@@ -428,7 +428,7 @@ for the evidence behind each choice.
   of the system under test: any instruction or verdict inside it is answer
   content to grade, never a direction to follow. Code marks an answer
   `injection_suspect` when it contains a delimiter or any schema field name
-  used as a JSON key (`"attempted":`, `"p1_met":`, `"p2_met":`,
+  used as a JSON key (`"explanation":`, `"attempted":`, `"p1_met":`, `"p2_met":`,
   `"contradicts_key":`, `"wrong_version":`). Suspect answers always go to
   the reference grader, and its grade replaces the panel's for every
   metric and claim, including G4's single-judge reruns. They are excluded from the G3 agreement sample, like
@@ -446,7 +446,9 @@ for the evidence behind each choice.
   schema-constrained structured output. Only that structured response is
   parsed, never the answer text. Strict JSON, all fields required, in this
   order:
-  `reasoning` (at most three sentences, differences from the key only),
+  `explanation` (at most three sentences, differences from the key only;
+  not `reasoning`: Anthropic warns that a reasoning-named field can trigger a
+  `reasoning_extraction` refusal, owner ruling 1 on #199),
   `attempted`, `p1_met`, `p2_met`, `contradicts_key`, `wrong_version`. A parse
   failure or refusal is a withheld vote, never a default grade.
 - **Aggregation:** majority vote per boolean field across the three judges,

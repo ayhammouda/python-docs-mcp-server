@@ -289,6 +289,21 @@ that design.
 - **Claims** (§2). The C1–C3 pass rules and every anti-claim apply as written
   there. `no-docs` is never ranked on tokens. Round 1 supports only "fewer
   tokens than fetching the official docs pages".
+  Reports derive the grading tier from G1–G4 and the exported evidence using
+  the scorer's rules, rather than trusting the saved tier label. Missing or
+  contradictory calibration, reference, method or single-judge evidence
+  withholds comparative claims; measured intervals remain in the raw report.
+  Subgroup agreement tables, confusion counts and grading diagnostics are
+  recomputed from the captured observations used by the scorer. Saved summary
+  and disclosure projections cannot certify those quantities. Missing or
+  inconsistent observations are reported as unknown; pending answers retain
+  eligible independent G2 votes without acquiring a final grade.
+  Missing-final failure reasons use only matching answer/pass-1 judge, model,
+  effort and item coordinates, with a matching invocation composition when
+  recorded. Legacy records without that envelope remain diagnostic history;
+  explicit contradictions are excluded. Recorded completion (or start) times
+  order eligible failures. Tied or undated conflicting reasons retain unknown
+  chronology; durations and saved summaries cannot supply missing timestamps.
 - **Denominators:**
   - A hit on a §6 model-call, tool-call or time cap is a failure scored 0.0.
     The §6 result cap is not a failure.

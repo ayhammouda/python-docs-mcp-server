@@ -22,6 +22,43 @@ import re
 _URL_RE = re.compile(r"https?://[^\s<>\"'`{}|\\^\[\]]+")
 _GFM_TRAILING = "?!.,:*~"
 
+# Match a standalone docs path, never a suffix of a host, address or local path.
+# Capture the corpus-relative path so masking and grounding consume the same span.
+_DOC_SECTIONS = (
+    "library|reference|tutorial|howto|whatsnew|using|c-api|faq|glossary|extending|"
+    "install|installing|deprecations|distributing|distutils"
+)
+_TOP_LEVEL = (
+    "glossary|index|genindex(?:-[A-Z_]|-Symbols|-all)?|py-modindex|contents|search|about|bugs|"
+    "copyright|license|download|improve-page(?:-nojs)?"
+)
+# Dotted library slugs in the local docs index. Without .html, these would
+# otherwise be indistinguishable from filenames such as library/example.py.
+_DOTTED_LIBRARY_PAGES = """
+    collections.abc compression.zstd concurrent.futures concurrent.interpreters curses.ascii
+    curses.panel email.charset email.compat32-message email.contentmanager email.encoders
+    email.errors email.examples email.generator email.header email.headerregistry email.iterators
+    email.message email.mime email.parser email.policy email.utils html.entities html.parser
+    http.client http.cookiejar http.cookies http.server importlib.metadata importlib.resources
+    importlib.resources.abc logging.config logging.handlers multiprocessing.shared_memory os.path
+    string.templatelib sys.monitoring tkinter.colorchooser tkinter.dnd tkinter.font
+    tkinter.messagebox tkinter.scrolledtext tkinter.tix tkinter.ttk unittest.mock
+    unittest.mock-examples urllib.error
+    urllib.parse urllib.request urllib.robotparser xml.dom xml.dom.minidom xml.dom.pulldom
+    xml.etree.elementtree xml.sax xml.sax.handler xml.sax.reader xml.sax.utils xmlrpc.client
+    xmlrpc.server
+""".split()
+_DOTTED_LIBRARY_PATTERN = "|".join(map(re.escape, _DOTTED_LIBRARY_PAGES))
+DOCS_PATH_RE = re.compile(
+    r"""(?<![^\s(\[<"'`*])(?:/|(?:\.\.?/)+)?"""
+    r"(?P<path>(?:(?:\d\.\d+|3)/)?"
+    rf"(?:(?:{_DOC_SECTIONS})/(?:[\w-]+/)*(?:[\w.-]+\.html|[\w-]+)"
+    rf"|library/(?:{_DOTTED_LIBRARY_PATTERN})|whatsnew/\d\.\d+"
+    rf"|deprecations/(?:c-api-)?pending-removal-in-\d\.\d+|(?:{_TOP_LEVEL})\.html))"
+    r"(?:#(?P<anchor>[\w.:-]*[\w-]))?"
+    r"""(?=[?!.,:;*~]*(?:$|[\s)\]>"'`]))"""
+)
+
 
 def _trim(url: str) -> str:
     while True:

@@ -9,27 +9,30 @@ its bound.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import signal
 import subprocess
 import sys
 import tempfile
 import traceback
+from collections import deque
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import Any, BinaryIO, Protocol
+from typing import Any, BinaryIO, Literal, Protocol
 
 from benchmarks.adapters.guard import PROVIDER_API_KEY_ENV
-from benchmarks.agentic.bridge import SystemSpec
+from benchmarks.agentic.bridge import SystemSpec, system_spec_from_raw
 from benchmarks.agentic.cleanup import add_cleanup_cause, add_safe_cleanup_cause, finish
-from benchmarks.agentic.ledger import LedgerService
+from benchmarks.agentic.ledger import BatchItemSettle, LedgerService, PlannedItem
 from benchmarks.agentic.loop import Caps
 from benchmarks.agentic.protocol import (
     KEY_SHAPED,
     MAX_FRAME_BYTES,
+    MAX_RERUNS,
     WORKER_FRAME_LIMIT_EXIT,
     WORKER_LEAK_REASON,
     FrameTooLarge,
@@ -39,8 +42,22 @@ from benchmarks.agentic.protocol import (
     redact_key_shaped,
     redact_key_shaped_text,
 )
+from benchmarks.agentic.protocol import (
+    RESULT_CHUNK_BYTES as RESULT_CHUNK_BYTES,
+)
 from benchmarks.agentic.types import Buckets
-from benchmarks.agentic.worker import MAX_RERUNS
+from benchmarks.agentic.usage import anthropic_buckets, gemini_buckets, openai_buckets
+from benchmarks.grading.batch import (
+    _OPENAI_TERMINAL,
+    BatchItemResult,
+    ScriptedBatchClient,
+    _snake,
+    anthropic_result,
+    compact_unbilled_evidence,
+    drop_batch_raw,
+    gemini_result,
+    openai_result,
+)
 from benchmarks.model_matrix import ModelFamily
 from benchmarks.runner import BenchmarkValidationError
 
@@ -52,6 +69,109 @@ _EXIT_WAIT_S = 30.0
 _MAX_LOG_BYTES = 8 * 1024 * 1024
 
 
+GRADING_SYSTEM = system_spec_from_raw({"id": "grading", "adapter": "none"})
+GRADING_CAPS = Caps(trajectory_s=600.0, model_call_timeout_s=300.0)
+WHOLE_BATCH_FAILURE_LIMIT = 2
+# A private result file lives for at most one unit; refuse excess evidence before settlement.
+_MAX_STAGED_BYTES = 512 * 1024 * 1024
+_BATCH_STATES = {
+    "anthropic": {"ended"},
+    "openai": _OPENAI_TERMINAL,
+    "google": {
+        "JOB_STATE_SUCCEEDED",
+        "JOB_STATE_PARTIALLY_SUCCEEDED",
+        "JOB_STATE_FAILED",
+        "JOB_STATE_CANCELLED",
+        "JOB_STATE_EXPIRED",
+    },
+}
+
+
+class ItemSource:
+    """One invocation's ordered queue. Only the host assigns items and attempt numbers.
+
+    A batch wire item is the fields of its BatchRequest. A pull wire item holds
+    the free task's input. The host adds item_id and attempt to either at grant time.
+    """
+
+    def __init__(
+        self, items: Sequence[tuple[PlannedItem, dict[str, Any]]], *, max_attempts: int = 3
+    ):
+        self._items = {p.item_id: (p, wire) for p, wire in items}
+        if len(items) != len(self._items) or max_attempts < 1:
+            raise BenchmarkValidationError("invalid batch item queue")
+        self.max_attempts = max_attempts
+        self._pending = list(self._items)
+        self._taken: dict[str | None, list[str]] = {}
+        self._attempts = dict.fromkeys(self._items, 0)
+        self._paid: set[str] = set()
+        self._not_run: list[dict[str, Any]] = []
+
+    def pending(self) -> list[PlannedItem]:
+        return [self._items[i][0] for i in self._pending]
+
+    def take(self, unit_id: str | None, n: int) -> list[dict[str, Any]]:
+        if self._taken.get(unit_id):
+            raise BenchmarkValidationError("worker still holds items")
+        ids = self._pending[:n]
+        del self._pending[: len(ids)]
+        self._taken[unit_id] = ids
+        for i in ids:
+            self._attempts[i] += 1
+        return [{**self._items[i][1], "item_id": i, "attempt": self.attempts(i)} for i in ids]
+
+    def held(self, unit_id: str | None) -> list[str]:
+        return self._taken.get(unit_id, [])
+
+    def attempts(self, item_id: str) -> int:
+        return self._attempts[item_id]
+
+    def exhausted(self, unit_id: str) -> list[str]:
+        return [i for i in self.held(unit_id) if self.attempts(i) >= self.max_attempts]
+
+    def note_paid_no_result(self, unit_id: str, item_ids: Sequence[str] | None = None) -> None:
+        self._paid.update(self.held(unit_id) if item_ids is None else item_ids)
+
+    def paid_no_result(self, item_id: str) -> bool:
+        return item_id in self._paid
+
+    def _record(self, item_id: str, reason: str) -> None:
+        self._not_run.append(
+            {"item_id": item_id, "reason": reason, "attempt": self.attempts(item_id)}
+        )
+
+    def give_up(self, unit_id: str, item_ids: Sequence[str], reason: str) -> None:
+        for i in item_ids:
+            self._record(i, reason)
+        excluded = set(item_ids)
+        self._taken[unit_id] = [i for i in self.held(unit_id) if i not in excluded]
+
+    def release(self, unit_id: str, item_ids: Sequence[str] | None = None) -> None:
+        held = self.held(unit_id)
+        released = set(held if item_ids is None else item_ids)
+        retry = []
+        for i in held:
+            if i in released:
+                if self.attempts(i) < self.max_attempts:
+                    retry.append(i)
+                else:
+                    self._record(i, "retries_exhausted")
+        self._pending[:0] = retry
+        self._taken[unit_id] = [i for i in held if i not in released]
+
+    def complete(self, unit_id: str | None) -> None:
+        self._taken.pop(unit_id, None)
+
+    def lose(self, unit_id: str | None, reason: str) -> None:
+        for i in [*self.held(unit_id), *self._pending]:
+            self._record(i, reason)
+        self.complete(unit_id)
+        self._pending.clear()
+
+    def not_run(self) -> list[dict[str, Any]]:
+        return list(self._not_run)
+
+
 @dataclass(frozen=True)
 class WorkerJob:
     job_id: str  # f"{family.id}--{system.id}"
@@ -59,6 +179,10 @@ class WorkerJob:
     system: SystemSpec
     trajectories: tuple[dict[str, Any], ...]  # {"corpus_id", "prompt", "repeat"}, in run order
     caps: Caps
+
+    task: Literal["trajectories", "batches", "items"] = "trajectories"
+    payload: dict[str, Any] = field(default_factory=dict)
+    source: ItemSource | None = field(default=None, compare=False, repr=False)
 
     def report_coordinates(self, message: dict[str, Any]) -> tuple[str, int]:
         """Validate a cell report and return its host-planned output coordinates."""
@@ -182,11 +306,16 @@ def _diagnostic(message: str) -> None:
             print(redact_key_shaped_text(message), file=sys.stderr, flush=True)
 
 
+def _stop_grants(ledger: LedgerService | None) -> None:
+    if ledger is not None:  # free token counting has no spend ledger
+        ledger.stop_grants()
+
+
 async def _teardown(
     proc: asyncio.subprocess.Process | None,
     anchor: subprocess.Popen[bytes],
     log_path: Path,
-    ledger: LedgerService,
+    ledger: LedgerService | None,
     in_flight: str | None,
     worker_log: BinaryIO,
     stop_worker: Callable[[], Awaitable[None]] | None = None,
@@ -204,7 +333,7 @@ async def _teardown(
             yield
         except BaseException as exc:  # noqa: BLE001 - propagate after all cleanup steps
             if isinstance(exc, KeyLeakError):
-                ledger.stop_grants()
+                _stop_grants(ledger)
                 if on_leak is not None:
                     on_leak(exc)
             errors.append(exc)
@@ -222,7 +351,7 @@ async def _teardown(
     with attempt():
         redacted, pattern = _scrubbed_snapshot(worker_log)
         if pattern:
-            ledger.stop_grants()
+            _stop_grants(ledger)
         detected = f"a key-shaped string ({pattern} pattern) was found in {log_path}"
         leak = KeyLeakError(detected) if pattern else None
         if leak is not None and on_leak is not None:
@@ -242,6 +371,7 @@ async def _teardown(
         worker_log.close()
     if in_flight is not None:
         with attempt():
+            assert ledger is not None
             await ledger.settle(in_flight, outcome="worker_lost", buckets=None)
 
     # Formatting failures must never interrupt mandatory scrubbing or accounting.
@@ -252,7 +382,7 @@ async def _teardown(
                 # An outer exception may be clean while its notes or chained daemon error leak.
                 leak = KeyLeakError(detail + " (key shape redacted)")
                 errors[i] = leak
-                ledger.stop_grants()
+                _stop_grants(ledger)
                 if on_leak is not None:
                     on_leak(leak)
             else:
@@ -261,7 +391,7 @@ async def _teardown(
         except Exception:  # noqa: BLE001 - an unscannable failure must not enter the traceback
             leak = KeyLeakError(f"{location}: could not safely report {type(exc).__name__}")
             errors[i] = leak
-            ledger.stop_grants()
+            _stop_grants(ledger)
             if on_leak is not None:
                 on_leak(leak)
     if errors:
@@ -294,11 +424,489 @@ def _publish_worker_log(redacted: bytes, log_path: Path) -> None:
         raise
 
 
+def _validate_token_counts(usage: dict[str, Any]) -> None:
+    # The shared bucket functions accept int-coercible values. The worker wire does not.
+    for key, value in usage.items():
+        if key.endswith(("tokens", "token_count", "TokenCount")) and value is not None:
+            if type(value) is not int or value < 0:
+                raise BenchmarkValidationError("invalid provider token count")
+        elif isinstance(value, dict):
+            _validate_token_counts(value)
+
+
+def _verified_buckets(row: dict[str, Any], provider: str) -> Buckets | None:
+    usage, claimed = row["raw_usage"], row["buckets"]
+    if usage is None and claimed is None:
+        return None
+    if (
+        provider == "openai"
+        and row["status"] != "succeeded"
+        and isinstance(usage, dict)
+        and claimed is None
+        and any(usage.get(k) is None for k in ("input_tokens", "output_tokens"))
+    ):
+        _validate_token_counts(usage)
+        return None  # Preserve the partial receipt; the raw-line match below is still mandatory.
+    if (
+        not isinstance(usage, dict)
+        or not isinstance(claimed, dict)
+        or any(type(v) is not int or v < 0 for v in claimed.values())
+    ):
+        raise BenchmarkValidationError("invalid batch result usage")
+    _validate_token_counts(usage)
+    if provider in ("anthropic", "openai") and any(
+        usage.get(k) is None for k in ("input_tokens", "output_tokens")
+    ):
+        raise BenchmarkValidationError("missing provider token counts")
+    if provider == "google":
+        fields = _snake(usage)  # JSONL is camelCase; SDK/scripted usage can be snake_case.
+        if len(fields) != len(usage):
+            raise BenchmarkValidationError("ambiguous Gemini usage fields")
+        expected = gemini_buckets(fields)
+    elif provider == "anthropic":
+        expected = anthropic_buckets(usage)
+    else:
+        if any(
+            usage.get(k) is not None and not isinstance(usage[k], dict)
+            for k in ("input_tokens_details", "output_tokens_details")
+        ):
+            raise BenchmarkValidationError("invalid OpenAI token details")
+        expected = openai_buckets(usage)
+        if (
+            usage.get("total_tokens") is not None
+            and usage["total_tokens"] != expected.total_input + expected.output
+        ):
+            raise BenchmarkValidationError("OpenAI total tokens disagree with reported usage")
+        if expected.reasoning > expected.output:
+            raise BenchmarkValidationError("reasoning exceeds reported output")
+    if claimed != asdict(expected):
+        raise BenchmarkValidationError("batch buckets disagree with retained provider usage")
+    return expected
+
+
+def _validate_evidence(row: dict[str, Any], family: ModelFamily) -> Buckets | None:
+    """Check independently retained evidence against the worker's normalized result."""
+    fields = BatchItemResult.__dataclass_fields__
+    if not fields.keys() <= row.keys() or row.keys() - fields.keys() - {
+        "attempt",
+        "raw_dropped",
+        "billing_evidence",
+    }:
+        raise BenchmarkValidationError("invalid batch result fields")
+    status, raw = row["status"], row["raw"]
+    if (
+        status not in ("succeeded", "missing", "errored", "expired", "canceled")
+        or any(type(row[k]) is not bool for k in ("retryable", "unbilled", "refusal"))
+        or type(row.get("raw_dropped", False)) is not bool
+        or (raw is not None and (not isinstance(raw, dict) or row.get("raw_dropped")))
+        or any(
+            row[k] is not None and not isinstance(row[k], str)
+            for k in ("text", "reported_model", "stop_reason")
+        )
+    ):
+        raise BenchmarkValidationError("invalid batch result fields")
+    provider = family.provider
+    if status != "succeeded":
+        if row["refusal"] or any(
+            row[k] is not None for k in ("text", "stop_reason", "reported_model")
+        ):
+            raise BenchmarkValidationError("vote fields on unsuccessful result")
+        # A worker cannot price a failure from its own token counts. Only a retained
+        # OpenAI item line can establish paid usage; it is normalized and matched below.
+        if row["raw_usage"] is not None or row["buckets"] is not None:
+            if (
+                provider != "openai"
+                or status not in ("errored", "canceled", "expired")
+                or raw is None
+                or "scripted_rule" in raw
+                or row["unbilled"]
+                or not row["retryable"]
+            ):
+                raise BenchmarkValidationError(
+                    "unsuccessful result usage needs raw OpenAI evidence"
+                )
+            response = raw.get("response")
+            if not isinstance(response, dict) or not isinstance(response.get("body"), dict):
+                raise BenchmarkValidationError("missing OpenAI item receipt")
+            code = response.get("status_code")
+            if type(code) is not int or not (
+                400 <= code < 600
+                or (
+                    code == 200
+                    and response["body"].get("status")
+                    in ("failed", "canceled", "cancelled", "incomplete", "queued", "in_progress")
+                )
+            ):
+                raise BenchmarkValidationError("invalid OpenAI item receipt status")
+
+    free = row["unbilled"]
+    retry = row["retryable"]
+    if "billing_evidence" in row:
+        evidence = row["billing_evidence"]
+        if (
+            raw is not None
+            or not row.get("raw_dropped")
+            or not free
+            or not retry
+            or not isinstance(evidence, dict)
+            or compact_unbilled_evidence(evidence) != evidence
+        ):
+            raise BenchmarkValidationError("invalid compact billing evidence")
+        raw = evidence
+    if not retry:
+        # A synthetic result for failed input validation. The enclosing state is checked later.
+        if provider != "openai" or status != "errored" or not free or raw is not None:
+            raise BenchmarkValidationError("invalid failed OpenAI batch result")
+    elif free and (status in ("missing", "succeeded") or provider == "google" or raw is None):
+        raise BenchmarkValidationError("undocumented unbilled batch result")
+    if status == "missing" and raw is not None:
+        raise BenchmarkValidationError("unexpected evidence on missing result")
+
+    try:
+        buckets = _verified_buckets(row, provider)
+        if raw is None:
+            return buckets
+        if family.api == "scripted" and "scripted_rule" in raw:
+            rule = raw["scripted_rule"]
+            if not isinstance(rule, dict) or (free and provider != "anthropic"):
+                raise BenchmarkValidationError("invalid scripted batch evidence")
+            # Reuse the scripted worker's transformation without compiling a worker-supplied
+            # regex. The assignment has already selected this single rule.
+            client = ScriptedBatchClient(
+                provider, family.model_id, {"rules": [{**rule, "match": ".*"}]}
+            )
+            expected = client._result(row["item_id"])
+        else:
+            # Use the batch client's own transformations, including raw item identity,
+            # model, stop/refusal and usage. Anthropic's unknown-kind fallback cannot
+            # establish that the result is one of its documented free statuses.
+            if provider == "anthropic" and raw["result"]["type"] != status:
+                raise BenchmarkValidationError("invalid Anthropic result type")
+            if (
+                provider == "openai"
+                and (free or status == "expired")
+                and raw.get("response") is not None
+            ):
+                code = raw["response"]["status_code"]
+                if type(code) is not int or not 400 <= code < 500:
+                    raise BenchmarkValidationError("unbilled OpenAI row with conflicting response")
+            normalize = {
+                "anthropic": anthropic_result,
+                "openai": openai_result,
+                "google": gemini_result,
+            }[provider]
+            expected = normalize(raw)
+        if expected.raw_usage is not None:
+            _validate_token_counts(expected.raw_usage)
+        if any(row[k] != getattr(expected, k) for k in fields if k not in ("buckets", "raw")):
+            raise BenchmarkValidationError("batch row disagrees with provider result")
+        return buckets
+    except BenchmarkValidationError:
+        raise
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise BenchmarkValidationError("malformed batch result evidence") from exc
+
+
+class _GradingJob:
+    """Validate each grading frame before handing evidence to the collector.
+
+    Keep settlement metadata in memory and stream provisional rows to a private file.
+    Only a durably settled unit can publish votes.
+    """
+
+    def __init__(
+        self,
+        job: WorkerJob,
+        ledger: LedgerService | None,
+        on_message: Callable[[WorkerJob, dict[str, Any]], Awaitable[None]],
+    ) -> None:
+        if job.source is None:
+            raise BenchmarkValidationError("grading jobs need a host item source")
+        self.job = job
+        self.source = job.source
+        self._ledger = ledger
+        self.on_message = on_message
+        self.unit: str | None = None
+        self.batch_id: str | None = None
+        self.failures = 0
+        self.assigned: set[str] = set()
+        self.results: dict[str, BatchItemSettle] = {}
+        self.status: dict[str, tuple[str, bool]] = {}
+        self.stage: BinaryIO | None = None
+        self.published_offset = 0
+        self.terminals: deque[dict[str, Any]] = deque()
+
+    @property
+    def ledger(self) -> LedgerService:
+        if self._ledger is None:
+            raise BenchmarkValidationError("free counting cannot use the inference ledger")
+        return self._ledger
+
+    async def _reserve(self) -> dict[str, Any]:
+        if self.unit is not None:
+            raise BenchmarkValidationError("worker reserved twice")
+        if self.failures >= WHOLE_BATCH_FAILURE_LIMIT:
+            self.source.lose(None, "whole_batch_failures")
+            return {"type": "deny"}
+        items = self.source.pending()
+        if not items:
+            return {"type": "no_more_items"}
+        reservation = await self.ledger.reserve_batch(
+            provider=self.job.family.provider,
+            model_id=self.job.family.model_id,
+            items=items,
+            job_id=self.job.job_id,
+        )
+        if reservation is None:
+            self.source.lose(None, "budget_stop")
+            return {"type": "deny"}
+        self.unit, n = reservation
+        wire = self.source.take(self.unit, n)
+        self.assigned = {r["item_id"] for r in wire}
+        self.results.clear()
+        self.status.clear()
+        self.batch_id = None
+        return {"type": "grant", "unit_id": self.unit, "items": wire}
+
+    def _stage_result(self, unit: str, row: dict[str, Any]) -> None:
+        # One row per callback gives the collector a single immutable vote to persist.
+        message = {
+            "type": "batch_results",
+            "unit_id": unit,
+            "provider_batch_id": self.batch_id,
+            "results": [row],
+        }
+        try:
+            frame = encode_frame(message, limit=RESULT_CHUNK_BYTES - 8)
+        except FrameTooLarge:
+            # The host adds the attempt, terminal flag and provider ID after validating raw.
+            if row["raw"] is None:
+                raise
+            drop_batch_raw(row)
+            frame = encode_frame(message, limit=RESULT_CHUNK_BYTES - 8)
+        if self.stage is None:
+            self.stage = tempfile.TemporaryFile()
+            self.published_offset = 0
+        if self.stage.tell() + len(frame) > _MAX_STAGED_BYTES:
+            raise BenchmarkValidationError(f"batch result staging limit exceeded for unit {unit}")
+        self.stage.write(frame)
+
+    def _publications(self) -> Iterator[dict[str, Any]]:
+        # Advance only after the callback returns. On interruption the next iterator starts
+        # at the first unacknowledged notification, even if it was the last row in a file.
+        while self.terminals:
+            yield self.terminals[0]
+            self.terminals.popleft()
+        if self.stage is not None and self.unit is None:
+            self.stage.seek(self.published_offset)
+            while header := self.stage.read(8):
+                size = int.from_bytes(header, "big")
+                yield json.loads(self.stage.read(size))
+                self.published_offset = self.stage.tell()
+            stage, self.stage = self.stage, None
+            stage.close()
+
+    async def _publish(self, *, teardown: bool = False) -> None:
+        failure = None
+        for message in self._publications():
+            try:
+                await self.on_message(self.job, message)
+            except Exception as exc:
+                if not teardown:
+                    raise
+                # Persistent collector errors must surface, but still try the other items.
+                item_id = (
+                    message["results"][0]["item_id"] if "results" in message else message["item_id"]
+                )
+                exc.add_note(f"publishing item {item_id} of unit {message['unit_id']}")
+                if failure is None:
+                    failure = exc
+                else:
+                    _diagnostic(
+                        f"collector also failed for item {item_id} of unit {message['unit_id']}"
+                    )
+        if failure is not None:
+            raise failure
+
+    async def _submit_failure(self, unit: str, message: dict[str, Any]) -> None:
+        outcome = message.get("outcome")
+        paid = outcome in ("connection", "timeout", "server")
+        # Only the terminal-result read path can stop these items after a paid settle.
+        # This flag does not change pricing or the normal submit/poll retry policy.
+        unavailable = message.get("results_unavailable", False)
+        if (
+            not paid
+            and outcome not in ("rejected", "rate_limited")
+            or message.get("buckets") is not None
+            or self.results
+            or (self.batch_id is not None and not paid)
+            or type(unavailable) is not bool
+            or (unavailable and (self.batch_id is None or not paid))
+        ):
+            raise BenchmarkValidationError("invalid batch failure outcome")
+        await self.ledger.settle(unit, outcome=outcome, buckets=None)
+        self.unit = None
+        if paid:
+            self.source.note_paid_no_result(unit)
+        self.failures += int(paid)
+        if unavailable:
+            self.source.give_up(unit, self.source.held(unit), "batch_failed")
+            self.source.complete(unit)
+            return
+        terminal, rejected = [], []
+        for i in self.source.exhausted(unit):
+            if self.source.paid_no_result(i):
+                terminal.append(i)
+            else:
+                rejected.append(i)
+        self.source.give_up(unit, rejected, "submit_rejected")
+        self.source.give_up(unit, terminal, "retries_exhausted")
+        self.source.release(unit)
+        self.source.complete(unit)
+        self.terminals.extend(
+            {
+                "type": "item_terminal",
+                "item_id": i,
+                "attempt": self.source.attempts(i),
+                "reason": "retries_exhausted",
+                "unit_id": unit,
+            }
+            for i in terminal
+        )
+        await self._publish()
+
+    def _result(self, row: dict[str, Any]) -> BatchItemSettle:
+        key = row.get("item_id")
+        if not isinstance(key, str) or key not in self.assigned or key in self.results:
+            raise BenchmarkValidationError("unassigned or duplicate batch result")
+        attempt = self.source.attempts(key)
+        if "attempt" in row and (type(row["attempt"]) is not int or row["attempt"] != attempt):
+            raise BenchmarkValidationError("invalid batch attempt")
+        buckets = _validate_evidence(row, self.job.family)
+        status, retryable, free = row["status"], row["retryable"], row["unbilled"]
+        row["attempt"] = attempt
+        row["terminal"] = (
+            status != "succeeded" and retryable and attempt >= self.source.max_attempts
+        )
+        self.status[key] = (status, retryable)
+        return BatchItemSettle(
+            key,
+            buckets,
+            free,
+            reported_zero=(status != "succeeded" and buckets is not None and buckets.is_empty),
+        )
+
+    async def _settle(self, unit: str, message: dict[str, Any]) -> None:
+        n = message.get("result_count")
+        if (
+            type(n) is not int
+            or n != len(self.results)
+            or self.results.keys() != self.assigned
+            or not isinstance(message.get("batch_state"), str)
+        ):
+            raise BenchmarkValidationError("incomplete batch settlement")
+        state = message["batch_state"]
+        if state not in _BATCH_STATES[self.job.family.provider] or any(
+            (state == "failed") != (not retry) for _, retry in self.status.values()
+        ):
+            raise BenchmarkValidationError("batch state and item outcomes disagree")
+        assert self.stage is not None  # one staged row per assigned item
+        self.stage.flush()
+        await self.ledger.settle_batch(unit, results=list(self.results.values()))
+        self.unit = None
+        self.source.note_paid_no_result(
+            unit,
+            [
+                i
+                for i, (status, _) in self.status.items()
+                if status != "succeeded"
+                and not self.results[i].unbilled
+                and not self.results[i].reported_zero
+            ],
+        )
+        whole = all(status == "missing" for status, _ in self.status.values())
+        self.failures += int(whole)
+        failed = [i for i, (_, retryable) in self.status.items() if not retryable]
+        self.source.give_up(unit, failed, "batch_failed")
+        self.source.release(
+            unit, [i for i, (s, retry) in self.status.items() if s != "succeeded" and retry]
+        )
+        self.source.complete(unit)
+        await self._publish()
+
+    async def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        kind = message.get("type")
+        if kind == "done":
+            if self.unit or self.source.held(None) or self.source.pending():
+                raise BenchmarkValidationError("worker finished with outstanding items")
+            await self.on_message(self.job, {"type": "done"})
+            return None
+        if self.job.task == "items":
+            if kind == "next_item":
+                items = self.source.take(None, 1)
+                return {"type": "item", "item": items[0]} if items else {"type": "no_more_items"}
+            if kind == "counted":
+                if self.source.held(None) != [message.get("item_id")]:
+                    raise BenchmarkValidationError("unassigned counted item")
+                await self.on_message(self.job, message)
+                self.source.complete(None)
+                return None
+            if kind == "heartbeat":
+                await self.on_message(self.job, message)
+                return None
+            raise BenchmarkValidationError("invalid pull worker frame")
+        if kind == "reserve" and message.get("kind") == "batch":
+            return await self._reserve()
+        unit = self.unit
+        if unit is None or message.get("unit_id") != unit:
+            raise BenchmarkValidationError("batch worker does not hold that unit")
+        if kind == "settle":
+            await self._submit_failure(unit, message)
+        elif kind == "submitted":
+            batch_id = message.get("provider_batch_id")
+            if self.batch_id is not None or not isinstance(batch_id, str) or not batch_id:
+                raise BenchmarkValidationError("invalid submitted batch id")
+            self.batch_id = batch_id
+            await self.on_message(self.job, message)
+            return None
+        elif kind == "heartbeat":
+            await self.on_message(self.job, message)
+            return None
+        elif kind == "batch_results" and self.batch_id:
+            encode_frame(message, limit=RESULT_CHUNK_BYTES - 8)
+            rows = message.get("results")
+            if not isinstance(rows, list) or not rows:
+                raise BenchmarkValidationError("empty batch results")
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise BenchmarkValidationError("invalid batch result")
+                result = self._result(row)
+                self.results[result.item_id] = result
+                self._stage_result(unit, row)
+        elif kind == "settle_batch":
+            await self._settle(unit, message)
+        else:
+            raise BenchmarkValidationError("invalid batch worker frame")
+        return {"type": "ack"}
+
+    async def finish(self) -> None:
+        self.source.lose(self.unit, "worker_lost")
+        try:
+            await self._publish(teardown=True)
+        finally:
+            try:
+                if self.stage is not None:
+                    self.stage.close()
+            finally:
+                for entry in self.source.not_run():
+                    await self.on_message(self.job, {"type": "item_not_run", **entry})
+
+
 async def _supervise(
     job: WorkerJob,
     *,
     launcher: Launcher,
-    ledger: LedgerService,
+    ledger: LedgerService | None,
     on_message: Callable[[WorkerJob, dict[str, Any]], Awaitable[None]],
     log_dir: Path,
     cwd: Path,
@@ -306,6 +914,7 @@ async def _supervise(
     aborted: asyncio.Event,
     on_failure: Callable[[KeyLeakError | FrameTooLarge], None],
 ) -> None:
+    grading = _GradingJob(job, ledger, on_message) if job.task != "trajectories" else None
     argv, env = launcher.command(job)
     log_path = log_dir / f"{job.job_id}.stderr.log"
     # On POSIX the TemporaryFile fallback unlinks before returning the descriptor.
@@ -359,6 +968,8 @@ async def _supervise(
                 "system": job.system.raw,
                 "trajectories": list(job.trajectories),
                 "caps": asdict(job.caps),
+                "task": job.task,
+                "payload": job.payload,
             }
             proc.stdin.write(encode_frame(job_frame, where="job frame"))
             await proc.stdin.drain()
@@ -375,7 +986,20 @@ async def _supervise(
                     break
                 kind = message.get("type")
                 reply: dict[str, Any] | None = None
-                if kind == "reserve":
+                if grading is not None and kind != "error":
+                    reply = await grading.handle(message)
+                elif kind in (
+                    "batch_results",
+                    "submitted",
+                    "next_item",
+                    "settle_batch",
+                    "item_terminal",
+                    "item_not_run",
+                    "counted",
+                ) or (kind == "reserve" and message.get("kind") == "batch"):
+                    raise BenchmarkValidationError("grading frame on trajectory worker")
+                elif kind == "reserve":
+                    assert ledger is not None
                     if in_flight is not None:
                         raise BenchmarkValidationError(f"worker {job.job_id} reserved twice")
                     # The job's own provider and model, never the worker's claim.
@@ -394,6 +1018,7 @@ async def _supervise(
                         {"type": "grant", "unit_id": in_flight} if in_flight else {"type": "deny"}
                     )
                 elif kind == "settle":
+                    assert ledger is not None
                     if in_flight is None or message.get("unit_id") != in_flight:
                         raise BenchmarkValidationError(
                             f"worker {job.job_id} settled a unit it does not hold"
@@ -445,19 +1070,24 @@ async def _supervise(
         on_failure(recognized)
         raise
     finally:
-        await finish(
-            _teardown(
-                proc,
-                anchor,
-                log_path,
-                ledger,
-                in_flight,
-                log,
-                partial(launcher.stop_worker, job),
-                on_failure,
-            ),
-            sys.exception(),
-        )
+
+        async def teardown() -> None:
+            try:
+                await _teardown(
+                    proc,
+                    anchor,
+                    log_path,
+                    ledger,
+                    grading.unit if grading else in_flight,
+                    log,
+                    partial(launcher.stop_worker, job),
+                    on_failure,
+                )
+            finally:
+                if grading is not None:
+                    await grading.finish()
+
+        await finish(teardown(), sys.exception())
     if not done and not aborted.is_set():
         for item in job.trajectories:
             if (item["corpus_id"], item["repeat"]) not in reported:
@@ -476,7 +1106,7 @@ async def run_jobs(
     jobs: Sequence[WorkerJob],
     *,
     launcher: Launcher,
-    ledger: LedgerService,
+    ledger: LedgerService | None,
     on_message: Callable[[WorkerJob, dict[str, Any]], Awaitable[None]],
     log_dir: Path,
     cwd: Path,
@@ -484,6 +1114,8 @@ async def run_jobs(
 ) -> None:
     """Run every job in its own worker, in parallel; a harness error kills them all."""
     refuse_host_keys(os.environ)
+    if ledger is None and any(job.task != "items" for job in jobs):
+        raise BenchmarkValidationError("only free item jobs may run without a ledger")
     unsupported = sorted({job.family.id for job in jobs if not launcher.supports(job.family)})
     if unsupported:
         raise BenchmarkValidationError(
@@ -496,7 +1128,7 @@ async def run_jobs(
 
     def recognize(failure: KeyLeakError | FrameTooLarge) -> None:
         nonlocal primary
-        ledger.stop_grants()
+        _stop_grants(ledger)
         aborted.set()
         if primary is None:
             primary = failure

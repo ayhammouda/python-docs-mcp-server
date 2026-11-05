@@ -864,6 +864,17 @@ async def fetch_model_limits(client: ModelClient) -> dict[str, Any] | None:
     return None
 
 
+def single_paid_key(provider: str) -> str:
+    """Read this provider's key only after the live guard and sibling-key check."""
+    own_key_env = PROVIDER_API_KEY_ENV[provider]
+    others = [name for name in PAID_KEY_ENVS if name != own_key_env and os.environ.get(name)]
+    if others:
+        raise BenchmarkValidationError(
+            f"a worker holds at most one paid key: {', '.join(others)} is set beside {own_key_env}"
+        )
+    return os.environ[own_key_env]
+
+
 def make_client(
     family: ModelFamily, *, timeout_s: float, transport: Any | None = None
 ) -> ModelClient:
@@ -903,16 +914,10 @@ def make_client(
             )
         sdk = ollama_sdk(base_url, timeout_s, transport=transport, proxy=egress_proxy(os.environ))
         return OllamaChatClient(sdk, family.model_id)
-    own_key_env = PROVIDER_API_KEY_ENV[provider]
-    others = [name for name in PAID_KEY_ENVS if name != own_key_env and os.environ.get(name)]
-    if others:
-        raise BenchmarkValidationError(
-            f"a worker holds at most one paid key: {', '.join(others)} is set beside {own_key_env}"
-        )
+    key = single_paid_key(provider)
     if family.max_output_tokens is None:
         raise BenchmarkValidationError(f"model family {family.id!r} must set max_output_tokens")
     proxy = egress_proxy(os.environ)
-    key = os.environ[own_key_env]
     if provider == "anthropic":
         sdk = anthropic_sdk(key, timeout_s, transport=transport, proxy=proxy)
         return AnthropicClient(sdk, family.model_id, family.max_output_tokens)

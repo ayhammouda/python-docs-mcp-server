@@ -10,12 +10,16 @@ is booked at twice its bound.
 from __future__ import annotations
 
 import asyncio
+import errno
 import fcntl
 import json
 import os
+import re
+import stat
 import uuid
-from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from copy import deepcopy
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -79,6 +83,7 @@ class ModelPrice:
     provider: str
     tiers: tuple[Tier, ...]
     source_url: str
+    batch_multiplier: Decimal = Decimal(1)
 
 
 @dataclass(frozen=True)
@@ -164,8 +169,17 @@ def _model_price(item: Any, label: str) -> ModelPrice:
                     f"price for {model_id!r}: tiers must be in ascending up_to_input_tokens order"
                 )
         tiers.append(Tier(limit, Rates(*(_rate(raw.get(f), model_id, f) for f in _RATE_FIELDS))))
+    multiplier = _rate(item.get("batch_multiplier", 1), model_id, "batch_multiplier")
+    if not 0 < multiplier <= 1:
+        raise BenchmarkValidationError(
+            f"price for {model_id!r}: batch_multiplier must be in (0, 1]"
+        )
     return ModelPrice(
-        model_id=model_id, provider=provider, tiers=tuple(tiers), source_url=source_url
+        model_id=model_id,
+        provider=provider,
+        tiers=tuple(tiers),
+        source_url=source_url,
+        batch_multiplier=multiplier,
     )
 
 
@@ -230,19 +244,165 @@ def booked_cost(outcome: Outcome, *, bound: Decimal, actual: Decimal | None) -> 
     return 2 * bound  # may have been billed without usage: booked at twice its bound
 
 
+BATCH_LIMITS = {
+    provider: (count, 32 * 1024**2)
+    for provider, count in [("anthropic", 100_000), ("openai", 50_000), ("google", 50_000)]
+}
+
+
+@dataclass(frozen=True)
+class PlannedItem:
+    item_id: str
+    input_bound: int
+    output_bound: int
+    size_bytes: int
+
+    def __post_init__(self) -> None:
+        for value in (self.input_bound, self.output_bound, self.size_bytes):
+            if type(value) is not int or value < 0:
+                raise BenchmarkValidationError("batch bounds must be non-negative integers")
+
+
+@dataclass(frozen=True)
+class BookedItem:
+    item_id: str
+    bound: Decimal
+    actual: Decimal | None
+    unbilled: bool
+    input_bound_exceeded: bool
+
+    def __post_init__(self) -> None:
+        amounts = (self.bound,) if self.actual is None else (self.bound, self.actual)
+        if any(not isinstance(v, Decimal) or not v.is_finite() or v < 0 for v in amounts):
+            raise BenchmarkValidationError("batch costs must be finite, non-negative decimals")
+
+
+@dataclass(frozen=True)
+class BatchItemSettle:
+    item_id: str
+    buckets: Buckets | None
+    unbilled: bool
+    reported_zero: bool = False  # Explicit zero counts verified against a raw provider response.
+
+    def __post_init__(self) -> None:
+        if type(self.unbilled) is not bool:
+            raise BenchmarkValidationError("unbilled must be boolean")
+        if type(self.reported_zero) is not bool or (
+            self.reported_zero
+            and (self.unbilled or self.buckets is None or not self.buckets.is_empty)
+        ):
+            raise BenchmarkValidationError("invalid zero-token receipt")
+
+
+def item_booked(item: BookedItem) -> Decimal:
+    if item.actual is not None:
+        return item.actual
+    return Decimal(0) if item.unbilled else 2 * item.bound
+
+
+def split_batch(
+    costs: Sequence[Decimal],
+    sizes: Sequence[int],
+    *,
+    limit: Decimal,
+    max_items: int,
+    max_bytes: int,
+) -> list[list[int]]:
+    pairs = zip(costs, sizes, strict=True)
+    return list(_groups(pairs, limit=limit, max_items=max_items, max_bytes=max_bytes))
+
+
+def _groups(
+    pairs: Iterable[tuple[Decimal, int]], *, limit: Decimal, max_items: int, max_bytes: int
+) -> Iterator[list[int]]:
+    if (
+        not isinstance(limit, Decimal)
+        or not limit.is_finite()
+        or limit < 0
+        or type(max_items) is not int
+        or max_items < 1
+        or type(max_bytes) is not int
+        or max_bytes < 0
+    ):
+        raise BenchmarkValidationError("invalid batch limits")
+    group: list[int] = []
+    cost, size = Decimal(0), 0
+    for i, (amount, length) in enumerate(pairs):
+        if (
+            not isinstance(amount, Decimal)
+            or not amount.is_finite()
+            or amount < 0
+            or type(length) is not int
+            or length < 0
+        ):
+            raise BenchmarkValidationError(f"batch item at index {i} has invalid cost or size")
+        if group and (
+            len(group) >= max_items or cost + amount > limit or size + length > max_bytes
+        ):
+            yield group
+            group = []
+            cost, size = Decimal(0), 0
+        if amount > limit or length > max_bytes:
+            raise BenchmarkValidationError(f"batch item at index {i} exceeds a batch limit")
+        group.append(i)
+        cost += amount
+        size += length
+    if group:
+        yield group
+
+
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _journal_name(provider: str) -> str:
+    # Historical/custom providers are allowed, but never a path or a dot component.
+    if not isinstance(provider, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", provider):
+        raise BenchmarkValidationError("spend ledger provider must be a safe file component")
+    return f"{provider}.jsonl"
+
+
+def _open_ledger_file(
+    directory: int, name: str, flags: int, *, create: bool = False
+) -> tuple[int, bool]:
+    """Open one direct child, rejecting links and special files before any mutation."""
+    flags |= os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    created = False
+    try:
+        if create:
+            try:
+                fd = os.open(name, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory)
+                created = True
+            except FileExistsError:
+                fd = os.open(name, flags, dir_fd=directory)
+        else:
+            fd = os.open(name, flags, dir_fd=directory)
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.EMLINK, errno.EISDIR, errno.ENOTDIR, errno.ENXIO):
+            raise BenchmarkValidationError(
+                "spend ledger file must be regular with one link"
+            ) from None
+        raise  # Preserve ordinary storage failures; CLI callers sanitize their diagnostics.
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise BenchmarkValidationError("spend ledger file must be regular with one link")
+        return fd, created
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 class Ledger:
     """One JSONL file per provider under ``ledger_dir``, held under an exclusive lock."""
 
-    def __init__(self, ledger_dir: Path, run_id: str, caps: dict[str, Decimal], lock_fd: int):
-        self._dir = ledger_dir
+    def __init__(self, directory_fd: int, run_id: str, caps: dict[str, Decimal], lock_fd: int):
+        self._dir_fd: int | None = directory_fd
         self._run_id = run_id
         self._caps = caps
         self._lock_fd: int | None = lock_fd
         self._events: list[dict[str, Any]] = []
+        self._invocation_ceiling: Decimal | None = None
         self._invocation_start = 0
         self._spent: dict[str, Decimal] = {}
         self._stops: dict[str, str] = {}
@@ -251,46 +411,106 @@ class Ledger:
 
     @classmethod
     def open(
-        cls, ledger_dir: Path, *, run_id: str, caps: Mapping[str, Decimal] = PROVIDER_CAPS
+        cls,
+        ledger_dir: Path,
+        *,
+        run_id: str,
+        caps: Mapping[str, Decimal] = PROVIDER_CAPS,
+        invocation_budget: Decimal | None = None,
     ) -> Ledger:
-        ledger_dir.mkdir(parents=True, exist_ok=True)
-        lock_path = ledger_dir / ".lock"
-        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        for provider in caps:
+            _journal_name(provider)
         try:
+            ledger_dir.mkdir(parents=True, exist_ok=True)
+            directory = os.open(
+                ledger_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+            )
+        except OSError:
+            raise BenchmarkValidationError(
+                "spend ledger directory is a link or unavailable"
+            ) from None
+        fd = None
+        try:
+            fd, _ = _open_ledger_file(directory, ".lock", os.O_RDWR, create=True)
             os.fchmod(fd, 0o600)  # an existing lock file must also be private
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError as exc:
+            except OSError:
                 raise BenchmarkValidationError(
-                    f"spend ledger {lock_path} is locked by another process; one run at a time"
-                ) from exc
-            ledger = cls(ledger_dir, run_id, dict(caps), fd)
+                    "spend ledger .lock is locked by another process; one run at a time"
+                ) from None
+            ledger = cls(directory, run_id, dict(caps), fd)
             ledger._load()
+            if invocation_budget is not None:
+                if not invocation_budget.is_finite() or invocation_budget < 0:
+                    raise BenchmarkValidationError("invalid invocation budget")
+                # Recovery settles before this invocation starts spending.
+                ledger._invocation_ceiling = (
+                    sum(ledger._spent.values(), Decimal(0)) + invocation_budget
+                )
             return ledger
         except BaseException:
-            os.close(fd)  # closing also releases any lock acquired before the interruption
+            try:
+                if fd is not None:
+                    os.close(fd)  # closing also releases any lock acquired before interruption
+            finally:
+                os.close(directory)
             raise
 
     def close(self) -> None:
         fd, self._lock_fd = self._lock_fd, None
-        if fd is not None:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            finally:
-                os.close(fd)
+        directory, self._dir_fd = self._dir_fd, None
+        try:
+            if fd is not None:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(fd)
+        finally:
+            if directory is not None:
+                os.close(directory)
+
+    def _active_directory(self) -> int:
+        if self._lock_fd is None or self._dir_fd is None:
+            raise BenchmarkValidationError("spend ledger is closed")
+        try:
+            held = os.fstat(self._lock_fd)
+            named = os.stat(".lock", dir_fd=self._dir_fd, follow_symlinks=False)
+        except OSError:
+            raise BenchmarkValidationError("spend ledger .lock is unavailable") from None
+        if (
+            not stat.S_ISREG(named.st_mode)
+            or named.st_nlink != 1
+            or (named.st_dev, named.st_ino) != (held.st_dev, held.st_ino)
+        ):
+            raise BenchmarkValidationError("spend ledger .lock changed while open")
+        return self._dir_fd
 
     def _load(self) -> None:
+        directory = self._active_directory()
         pending: dict[str, None] = {}  # ordered set of reserves without a settle
-        for path in sorted(self._dir.glob("*.jsonl")):
-            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        for name in sorted(n for n in os.listdir(directory) if n.endswith(".jsonl")):
+            provider = name.removesuffix(".jsonl")
+            _journal_name(provider)
+            fd, _ = _open_ledger_file(directory, name, os.O_RDONLY)
+            try:
+                with os.fdopen(fd, "r", encoding="utf-8", closefd=False) as file:
+                    text = file.read()
+            finally:
+                os.close(fd)
+            for number, line in enumerate(text.splitlines(), 1):
                 if not line.strip():
                     continue
                 try:
                     event = json.loads(line)
-                except json.JSONDecodeError as exc:
+                except json.JSONDecodeError:
                     raise BenchmarkValidationError(
-                        f"spend ledger {path}:{number} is corrupt"
-                    ) from exc
+                        f"spend ledger journal line {number} is corrupt"
+                    ) from None
+                if not isinstance(event, dict) or event.get("provider") != provider:
+                    raise BenchmarkValidationError(
+                        "spend ledger event provider disagrees with journal"
+                    )
                 self._apply(event)
                 if event["event"] == "reserve":
                     pending[event["unit_id"]] = None
@@ -311,7 +531,9 @@ class Ledger:
         elif kind == "settle":
             self._spent[provider] = self.spent(provider) + Decimal(event["booked"])
             _, bound = self._units[event["unit_id"]]
-            if event["outcome"] == "ok" and Decimal(event["booked"]) > bound:
+            if event.get("overrun") or (
+                event["outcome"] == "ok" and Decimal(event["booked"]) > bound
+            ):
                 # Rebuilt from the settle itself: a crash may have lost the stop event.
                 self._stops[provider] = "overrun"
         elif kind == "stop" and event["reason"] == "overrun":
@@ -322,11 +544,41 @@ class Ledger:
             self._stops.pop(provider, None)
 
     def _append(self, provider: str, fields: dict[str, Any]) -> None:
+        directory = self._active_directory()
+        name = _journal_name(provider)
         event = {"run_id": self._run_id, "provider": provider, "at": _utc_now(), **fields}
-        line = scanned_json_bytes(event, where="spend ledger", sort_keys=True) + b"\n"
-        with (self._dir / f"{provider}.jsonl").open("ab") as file:
-            file.write(line)
+        line = (
+            scanned_json_bytes(event, where="spend ledger", sort_keys=True, allow_nan=False) + b"\n"
+        )
+        fd, created = _open_ledger_file(directory, name, os.O_WRONLY | os.O_APPEND, create=True)
+        try:
+            start = os.lseek(fd, 0, os.SEEK_END)
+            try:
+                if os.write(fd, line) != len(line):
+                    raise OSError("incomplete ledger append")
+                os.fsync(fd)
+                if created or start == 0:
+                    # An earlier failed first append may have left an empty entry.
+                    # Its retry must still make the directory entry durable.
+                    os.fsync(directory)
+            except BaseException as original:
+                # The exclusive ledger lock covers rollback too. A retry sees no partial event.
+                try:
+                    os.ftruncate(fd, start)
+                    os.fsync(fd)
+                except BaseException as rollback:
+                    original.add_note(f"spend ledger rollback failed ({type(rollback).__name__})")
+                raise
+        finally:
+            os.close(fd)
         self._events.append(event)
+
+    def remaining(self, provider: str) -> Decimal:
+        credit = self._caps[provider] - self.spent(provider)
+        if self._invocation_ceiling is None:
+            return credit
+        held = sum(self._units[u][1] for u in self._in_flight.values())
+        return min(credit, self._invocation_ceiling - sum(self._spent.values()) - held)
 
     def spent(self, provider: str) -> Decimal:
         return self._spent.get(provider, Decimal(0))
@@ -337,6 +589,15 @@ class Ledger:
     def _stop(self, provider: str, reason: str) -> None:
         self._stops[provider] = reason
         self._append(provider, {"event": "stop", "reason": reason})
+
+    def _stop_after_overrun(self, provider: str) -> None:
+        # The durable settle already records the overrun, including on replay.
+        # Failure of this redundant marker must not turn success into a retry
+        # or leave the service holding a unit which has already settled.
+        try:
+            self._stop(provider, "overrun")
+        except OSError:
+            pass
 
     def reserve(
         self,
@@ -358,7 +619,7 @@ class Ledger:
             )
         if provider in self._stops:
             return None
-        if self.spent(provider) + bound > cap:
+        if bound > self.remaining(provider):
             self._stop(provider, "cap")
             return None
         unit_id = f"{provider}-{uuid.uuid4().hex}"
@@ -407,20 +668,60 @@ class Ledger:
         self._spent[provider] = self.spent(provider) + booked
         del self._in_flight[provider]
         if outcome == "ok" and booked > bound:
-            self._stop(provider, "overrun")
+            self._stop_after_overrun(provider)
+        return booked
+
+    def settle_batch(self, unit_id: str, *, items: Sequence[BookedItem]) -> Decimal:
+        provider, bound = self._units[unit_id]
+        if self._in_flight.get(provider) != unit_id:
+            raise RuntimeError(f"unit {unit_id} is not in flight")
+        if sum(i.bound for i in items) != bound or len({i.item_id for i in items}) != len(items):
+            raise BenchmarkValidationError("batch settlement disagrees with its reservation")
+        booked = sum((item_booked(i) for i in items), Decimal(0))
+        actual = sum((i.actual for i in items if i.actual is not None), Decimal(0))
+        overrun = any(i.actual is not None and i.actual > i.bound for i in items)
+        self._append(
+            provider,
+            {
+                "event": "settle",
+                "unit_id": unit_id,
+                "outcome": "batch",
+                "booked": str(booked),
+                "actual": str(actual),
+                "overrun": overrun,
+                "input_bound_exceeded": any(i.input_bound_exceeded for i in items),
+                "items": [
+                    {
+                        "item_id": i.item_id,
+                        "booked": str(item_booked(i)),
+                        "status": "ok"
+                        if i.actual is not None
+                        else "unbilled"
+                        if i.unbilled
+                        else "no_usage",
+                    }
+                    for i in items
+                ],
+            },
+        )
+        self._spent[provider] = self.spent(provider) + booked
+        del self._in_flight[provider]
+        if overrun:
+            self._stop_after_overrun(provider)
         return booked
 
     def acknowledge_overrun(self, provider: str) -> None:
         if self._stops.get(provider) == "overrun":
-            del self._stops[provider]
             self._append(provider, {"event": "resume"})
+            del self._stops[provider]
 
     def invocation_events(self) -> list[dict[str, Any]]:
-        """Events written since this open, including recovery of earlier pending units."""
-        return [dict(event) for event in self._events[self._invocation_start :]]
+        """Detached events since this open, including recovery of earlier pending units."""
+        return deepcopy(self._events[self._invocation_start :])
 
     def events(self, run_id: str) -> list[dict[str, Any]]:
-        return [dict(event) for event in self._events if event["run_id"] == run_id]
+        """Return detached event trees; callers cannot mutate the ledger's evidence."""
+        return deepcopy([event for event in self._events if event["run_id"] == run_id])
 
 
 class LedgerService:
@@ -431,12 +732,15 @@ class LedgerService:
         ledger: Ledger,
         prices: Mapping[str, ModelPrice],
         families: Mapping[str, ModelFamily],
+        margins: Mapping[str, Decimal] = PROVIDER_MARGINS,
     ) -> None:  # both keyed by model_id
         self._ledger = ledger
         self._prices = dict(prices)
         self._families = dict(families)
         self._locks: dict[str, asyncio.Lock] = {}
         self._units: dict[str, tuple[str, ModelPrice, int]] = {}
+        self._margins = dict(margins)
+        self._batches: dict[str, dict[str, tuple[PlannedItem, Decimal]]] = {}
         self._unmetered: dict[str, str] = {}  # unit id -> provider
         self._grants_stopped = False
 
@@ -496,20 +800,136 @@ class LedgerService:
         self._units[unit_id] = (provider, price, input_bound)
         return unit_id
 
+    def _clamp(self, model_id: str, item: PlannedItem) -> PlannedItem:
+        family = self._families.get(model_id)
+        if family is None:
+            return item
+        # The worker submits with the family's configured output cap. Keep a
+        # larger planned bound, but never reserve less than the request can use.
+        return replace(
+            item,
+            input_bound=min(item.input_bound, family.max_input_tokens)
+            if family.max_input_tokens is not None
+            else item.input_bound,
+            output_bound=max(item.output_bound, family.max_output_tokens)
+            if family.max_output_tokens is not None
+            else item.output_bound,
+        )
+
+    def item_bound(self, model_id: str, item: PlannedItem) -> Decimal:
+        item = self._clamp(model_id, item)
+        return bound_cost(
+            self._prices[model_id], input_bound=item.input_bound, output_bound=item.output_bound
+        )
+
+    async def reserve_batch(
+        self,
+        *,
+        provider: str,
+        model_id: str,
+        items: Sequence[PlannedItem],
+        job_id: str,
+        kind: str = "batch",
+    ) -> tuple[str, int] | None:
+        if self._grants_stopped:
+            return None
+        if not items:
+            raise ValueError("a batch needs at least one item")
+        price = self._prices.get(model_id)
+        if not job_id or price is None or price.provider != provider:
+            raise BenchmarkValidationError(
+                "batch reservation needs a job and a priced provider/model"
+            )
+        lock = self._locks.setdefault(provider, asyncio.Lock())
+        await lock.acquire()
+        unit = None
+        try:
+            if self._grants_stopped:
+                return None
+            margin = self._margins[provider]
+            limit = min(margin, self._ledger.remaining(provider))
+            first = self.item_bound(model_id, items[0])
+            if first > margin:
+                raise BenchmarkValidationError("first batch item exceeds provider margin")
+            max_items, max_bytes = BATCH_LIMITS[provider]
+            # If the very first item exceeds remaining credit, Ledger.reserve records the cap stop.
+            pairs = ((self.item_bound(model_id, i), i.size_bytes) for i in items)
+            indices = next(
+                _groups(pairs, limit=max(first, limit), max_items=max_items, max_bytes=max_bytes)
+            )
+            selected = {
+                items[i].item_id: (
+                    self._clamp(model_id, items[i]),
+                    self.item_bound(model_id, items[i]),
+                )
+                for i in indices
+            }
+            if len(selected) != len(indices):
+                raise BenchmarkValidationError("duplicate batch item")
+            amount = sum((cost for _, cost in selected.values()), Decimal(0))
+            total_input = sum(item.input_bound for item, _ in selected.values())
+            unit = self._ledger.reserve(
+                provider,
+                model_id=model_id,
+                kind=kind,
+                bound=amount,
+                input_bound=total_input,
+                output_bound=sum(item.output_bound for item, _ in selected.values()),
+                job_id=job_id,
+            )
+            if unit is None:
+                return None
+            self._batches[unit] = selected
+            self._units[unit] = (provider, price, total_input)
+            return unit, len(selected)
+        finally:
+            if unit is None:
+                lock.release()
+
+    async def settle_batch(self, unit_id: str, *, results: Sequence[BatchItemSettle]) -> None:
+        provider, price, _ = self._units[unit_id]
+        planned = self._batches[unit_id]
+        by_id = {r.item_id: r for r in results}
+        if by_id.keys() - planned.keys() or len(results) != len(by_id):
+            raise BenchmarkValidationError("unassigned or duplicate batch result")
+        booked = []
+        for key, (item, bound) in planned.items():
+            result = by_id.get(key)
+            usage = result.buckets if result else None
+            if usage and any(type(v) is not int or v < 0 for v in asdict(usage).values()):
+                raise BenchmarkValidationError("invalid batch usage")
+            actual = (
+                actual_cost(price, usage) * price.batch_multiplier
+                if usage and (not usage.is_empty or (result and result.reported_zero))
+                else None
+            )
+            booked.append(
+                BookedItem(
+                    key,
+                    bound,
+                    actual,
+                    bool(result and result.unbilled),
+                    bool(usage and usage.total_input > item.input_bound),
+                )
+            )
+        self._ledger.settle_batch(unit_id, items=booked)
+        del self._batches[unit_id], self._units[unit_id]
+        self._locks[provider].release()
+
     async def settle(self, unit_id: str, *, outcome: Outcome, buckets: Buckets | None) -> None:
         if (local := self._unmetered.pop(unit_id, None)) is not None:
             self._locks[local].release()
             return
-        provider, price, input_bound = self._units.pop(unit_id)
-        try:
-            if outcome == "ok" and (buckets is None or buckets.is_empty):
-                outcome = "no_usage"
-            self._ledger.settle(
-                unit_id,
-                outcome=outcome,
-                actual=actual_cost(price, buckets) if outcome == "ok" and buckets else None,
-                buckets=buckets,
-                input_bound_exceeded=buckets is not None and buckets.total_input > input_bound,
-            )
-        finally:
-            self._locks[provider].release()
+        provider, price, input_bound = self._units[unit_id]
+        if outcome == "ok" and (buckets is None or buckets.is_empty):
+            outcome = "no_usage"
+        self._ledger.settle(
+            unit_id,
+            outcome=outcome,
+            actual=actual_cost(price, buckets) if outcome == "ok" and buckets else None,
+            buckets=buckets,
+            input_bound_exceeded=buckets is not None and buckets.total_input > input_bound,
+        )
+        self._batches.pop(unit_id, None)
+        del self._units[unit_id]
+        self._locks[provider].release()

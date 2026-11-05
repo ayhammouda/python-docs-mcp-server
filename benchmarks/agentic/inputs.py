@@ -12,25 +12,128 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 from yaml.tokens import ScalarToken
 
+from benchmarks import text_inspection
 from benchmarks.agentic.protocol import (
+    MAX_FRAME_BYTES,
     KeyLeakError,
     assert_no_key_shaped,
     assert_no_key_shaped_json,
+    check_json_text,
 )
 from benchmarks.runner import BenchmarkValidationError, _require_yaml_mapping
 
+# Frozen settings/probe documents need bounded graphs as well as bounded bytes.
+# Count alias references too; merge copies are additional to the lexical graph.
+_MAX_YAML_NODES = 100_000
+_MAX_YAML_DEPTH = 64
+_MAX_YAML_MERGE_PAIRS = 10_000
 
-def _read_bytes(path: Path, name: str, label: str) -> bytes:
+
+def _inspect_text(body: bytes) -> None:
+    text_inspection.inspect_text(
+        body.decode("utf-8", errors="replace"),
+        limit=text_inspection.MAX_FRAME_BYTES, yaml_token_limit=_MAX_YAML_NODES,
+    )
+
+
+class _CapturedLoader(yaml.SafeLoader):
+    def __init__(self, stream: str):
+        super().__init__(stream)
+        self._nodes = 0
+        self._depth = 0
+        self._merge_pairs = 0
+        self._mapping_sizes: dict[Node, tuple[int, int]] = {}
+
+    def compose_node(self, parent: Node | None, index: Any) -> Node | None:
+        self._nodes += 1
+        self._depth += 1
+        try:
+            if self._nodes > _MAX_YAML_NODES or self._depth > _MAX_YAML_DEPTH:
+                raise BenchmarkValidationError("YAML complexity limit exceeded")
+            return super().compose_node(parent, index)
+        finally:
+            self._depth -= 1
+
+    def _mapping_size(self, node: MappingNode, active: set[Node]) -> tuple[int, int]:
+        if node in active or len(active) >= _MAX_YAML_DEPTH:
+            raise BenchmarkValidationError("YAML complexity limit exceeded")
+        if node in self._mapping_sizes:
+            return self._mapping_sizes[node]
+        active.add(node)
+        size = 0
+        depth = 1
+        for key, value in node.value:
+            if key.tag != "tag:yaml.org,2002:merge":
+                size += 1
+                continue
+            sources = value.value if isinstance(value, SequenceNode) else [value]
+            for source in sources:
+                if not isinstance(source, MappingNode):
+                    raise yaml.YAMLError("invalid YAML merge")
+                copied, source_depth = self._mapping_size(source, active)
+                depth = max(depth, source_depth + 1)
+                self._merge_pairs += copied
+                if self._merge_pairs > _MAX_YAML_MERGE_PAIRS or depth > _MAX_YAML_DEPTH:
+                    raise BenchmarkValidationError("YAML complexity limit exceeded")
+                size += copied
+        active.remove(node)
+        self._mapping_sizes[node] = size, depth
+        return size, depth
+
+    def construct_document(self, node: Node) -> Any:
+        # Preflight the shared node graph before SafeConstructor flattens even
+        # one merge. Memoized sizes count repeated merge edges without expanding
+        # them, including copies of pairs later discarded by an override.
+        pending = [node]
+        visited: set[Node] = set()
+        while pending:
+            current = pending.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            if isinstance(current, MappingNode):
+                self._mapping_size(current, set())
+                for key, value in current.value:
+                    pending.extend((key, value))
+            elif isinstance(current, SequenceNode):
+                pending.extend(current.value)
+            elif isinstance(current, ScalarNode):
+                # Inspect scalar contents, not the owning document's typed YAML
+                # syntax. This includes keys and values construction discards.
+                text_inspection.inspect_text(
+                    current.value, limit=text_inspection.MAX_FRAME_BYTES,
+                    yaml_token_limit=_MAX_YAML_NODES,
+                )
+                if current.tag == "tag:yaml.org,2002:binary":
+                    # Decode before duplicate/merge construction drops values.
+                    # Only construct scalars; shared aliases are visited once.
+                    assert_no_key_shaped_json(
+                        self.construct_object(current), where="input YAML scalar",
+                        check_content=_inspect_text,
+                    )
+        return super().construct_document(node)
+
+
+def read_input_bytes(
+    path: Path, name: str, label: str, *, max_bytes: int | None = None
+) -> bytes:
     where = f"input {name}"
     assert_no_key_shaped(str(path), where="input path")
     try:
-        content = path.read_bytes()
+        if max_bytes is None:
+            content = path.read_bytes()
+        else:
+            with path.open("rb") as stream:
+                content = stream.read(max_bytes + 1)
     except FileNotFoundError:
         raise BenchmarkValidationError(f"{label} file does not exist: {path}") from None
     except OSError as exc:
         raise BenchmarkValidationError(f"cannot read {label} file {path}: {exc.strerror}") from None
+    if max_bytes is not None and len(content) > max_bytes:
+        raise BenchmarkValidationError(f"{label} exceeds the artifact size limit")
     assert_no_key_shaped(content, where=where)  # includes comments and discarded values
     return content
 
@@ -43,16 +146,23 @@ class CapturedInput:
 
     @classmethod
     def read(cls, path: Path, name: str, label: str) -> CapturedInput:
-        content = _read_bytes(path, name, label)
+        content = read_input_bytes(path, name, label, max_bytes=MAX_FRAME_BYTES)
+        return cls.from_bytes(content, name, label)
+
+    @classmethod
+    def from_bytes(cls, content: bytes, name: str, label: str) -> CapturedInput:
         where = f"input {name}"
+        if len(content) > MAX_FRAME_BYTES:
+            raise BenchmarkValidationError(f"{label} exceeds the artifact size limit")
+        assert_no_key_shaped(content, where=where)
         try:
             text = content.decode("utf-8")  # same encoding as the path-based loaders
             for token in yaml.scan(text, Loader=yaml.SafeLoader):
                 if isinstance(token, ScalarToken):
                     # Construction can discard a value under a merge or a duplicate key.
                     assert_no_key_shaped(token.value, where=where)
-            data = yaml.safe_load(text)
-        except KeyLeakError:
+            data = yaml.load(text, Loader=_CapturedLoader)
+        except (KeyLeakError, BenchmarkValidationError):
             raise
         except (
             yaml.YAMLError,
@@ -71,10 +181,18 @@ class CapturedInput:
         return cls(name, content, _require_yaml_mapping(data, label))
 
 
-def _json_mapping(content: bytes, label: str) -> dict[str, Any]:
+def json_mapping(
+    content: bytes, label: str, *, inspect_strings: bool = False,
+) -> dict[str, Any]:
+    # Generic evidence readers also carry typed packed calibration transport.
+    # Only declared frozen JSON inputs apply retained-text decoding here; the
+    # archive boundary inspects verified unpacked sources under its own budgets.
+    assert_no_key_shaped(content, where=label)
+    check_content = _inspect_text if inspect_strings else None
+
     def checked_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         # Scan before dict construction discards a duplicate key's earlier value.
-        assert_no_key_shaped_json(pairs, where=label)
+        assert_no_key_shaped_json(pairs, where=label, check_content=check_content)
         return dict(pairs)
 
     try:
@@ -82,9 +200,38 @@ def _json_mapping(content: bytes, label: str) -> dict[str, Any]:
     except KeyLeakError:
         raise
     except (ValueError, TypeError, RecursionError):
+        # Malformed structure can hide a decoded string from the object hook.
+        check_json_text(
+            content.decode("utf-8", errors="replace"), where=label, check_content=check_content,
+        )
         raise BenchmarkValidationError(f"{label} file is not valid JSON") from None
-    assert_no_key_shaped_json(data, where=label)
+    assert_no_key_shaped_json(data, where=label, check_content=check_content)
     return _require_yaml_mapping(data, label)
+
+
+def inspect_input_bytes(content: bytes, *, suffix: str, label: str) -> bytes:
+    """Inspect exact frozen bytes in their declared format, before any writes.
+
+    Raw comments stay covered by the literal scan. Owning YAML/JSON readers
+    validate syntax and inspect decoded strings before duplicate construction.
+    Literal prompts and programmatic mapping/masking text share the inspector.
+    """
+    if len(content) > MAX_FRAME_BYTES:
+        raise BenchmarkValidationError(f"{label} exceeds the artifact size limit")
+    assert_no_key_shaped(content, where=label)
+    if suffix in (".yml", ".yaml"):
+        CapturedInput.from_bytes(content, label, label)
+    elif suffix == ".json":
+        json_mapping(content, label, inspect_strings=True)
+    else:
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            raise BenchmarkValidationError(f"{label} is not valid UTF-8") from None
+        text_inspection.inspect_text(
+            text, limit=text_inspection.MAX_FRAME_BYTES, yaml_token_limit=_MAX_YAML_NODES,
+        )
+    return content
 
 
 @dataclass(frozen=True)
@@ -94,8 +241,8 @@ class CapturedJSON:
 
     @classmethod
     def read(cls, path: Path, label: str) -> CapturedJSON:
-        content = _read_bytes(path, label, label)
-        return cls(content, _json_mapping(content, label))
+        content = read_input_bytes(path, label, label)
+        return cls(content, json_mapping(content, label))
 
 
 def read_json(path: Path, label: str) -> dict[str, Any]:
@@ -103,5 +250,5 @@ def read_json(path: Path, label: str) -> dict[str, Any]:
 
 
 def read_jsonl(path: Path, label: str) -> list[dict[str, Any]]:
-    content = _read_bytes(path, label, label)
-    return [_json_mapping(line, label) for line in content.splitlines() if line]
+    content = read_input_bytes(path, label, label)
+    return [json_mapping(line, label) for line in content.splitlines() if line]

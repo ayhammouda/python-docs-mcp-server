@@ -1,0 +1,95 @@
+# Scripted grading panel for tests: same judge ids and roles as
+# docs/benchmarks/grading/panel.yml, every judge scripted. Panel judges are
+# frozen at effort `low`. `script` is relative to this directory; load_panel
+# makes it absolute.
+schema_version: 1
+judges:
+  haiku:
+    role: panel
+    provider: anthropic
+    model_id: scripted-haiku
+    api: scripted
+    script: judge-haiku.yml
+    effort_levels: [low, medium]
+    effort: low
+    max_input_tokens: 200000
+    max_output_tokens: 16384
+    framing_allowance_tokens: 256
+  luna:
+    role: panel
+    provider: openai
+    model_id: scripted-luna
+    api: scripted
+    script: judge-luna.yml
+    effort_levels: [low, medium]
+    effort: low
+    max_input_tokens: 200000
+    max_output_tokens: 16384
+    framing_allowance_tokens: 256
+  flash-lite:
+    role: panel
+    provider: google
+    model_id: scripted-flash-lite
+    api: scripted
+    script: judge-flash-lite.yml
+    effort_levels: [low, medium]
+    effort: low
+    fallback: flash
+    max_input_tokens: 200000
+    max_output_tokens: 16384
+    framing_allowance_tokens: 256
+  flash:
+    role: panel-fallback
+    provider: google
+    model_id: scripted-flash
+    api: scripted
+    script: judge-flash.yml
+    effort_levels: [low, medium]
+    effort: low
+    max_input_tokens: 200000
+    max_output_tokens: 16384
+    framing_allowance_tokens: 256
+  reference:
+    role: reference
+    provider: anthropic
+    model_id: scripted-reference
+    api: scripted
+    script: judge-reference.yml
+    effort_levels: [high]
+    effort: high
+    max_input_tokens: 200000
+    max_output_tokens: 16384
+    framing_allowance_tokens: 256
+  sonnet:
+    role: generator
+    provider: anthropic
+    model_id: scripted-sonnet
+    api: scripted
+    script: judge-sonnet.yml
+    effort_levels: []
+    effort: null
+    max_input_tokens: 200000
+    max_output_tokens: 16384
+    framing_allowance_tokens: 256
+  sol:
+    role: generator
+    provider: openai
+    model_id: scripted-sol
+    api: scripted
+    script: judge-sol.yml
+    effort_levels: []
+    effort: null
+    max_input_tokens: 200000
+    max_output_tokens: 16384
+    framing_allowance_tokens: 256
+  gemini:
+    role: generator
+    provider: google
+    model_id: scripted-gemini
+    api: scripted
+    script: judge-gemini.yml
+    effort_levels: []
+    effort: null
+    max_input_tokens: 200000
+    max_output_tokens: 16384
+    framing_allowance_tokens: 256

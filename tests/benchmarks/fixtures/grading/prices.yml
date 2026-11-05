@@ -1,0 +1,60 @@
+# Flat round prices for the scripted grading fixtures. Standard rates as in
+# tests/benchmarks/fixtures/agentic/prices.yml; every model is booked at half
+# rate in a batch (batch_multiplier 0.5, as every committed model). No expiry:
+# scripted runs are never live.
+schema_version: 1
+currency: USD
+unit: per_million_tokens
+captured_on: "2026-11-04"
+expires_on: null
+source: tests/benchmarks/fixtures/grading/prices.yml
+
+models:
+  - model_id: scripted-haiku
+    provider: anthropic
+    source_url: https://example.invalid/scripted-fixture
+    batch_multiplier: "0.5"
+    tiers:
+      - {up_to_input_tokens: null, input: "1", cache_write: "1", cached_input: "0.1", output: "10"}
+  - model_id: scripted-reference
+    provider: anthropic
+    source_url: https://example.invalid/scripted-fixture
+    batch_multiplier: "0.5"
+    tiers:
+      - {up_to_input_tokens: null, input: "1", cache_write: "1", cached_input: "0.1", output: "10"}
+  - model_id: scripted-sonnet
+    provider: anthropic
+    source_url: https://example.invalid/scripted-fixture
+    batch_multiplier: "0.5"
+    tiers:
+      - {up_to_input_tokens: null, input: "1", cache_write: "1", cached_input: "0.1", output: "10"}
+  - model_id: scripted-luna
+    provider: openai
+    source_url: https://example.invalid/scripted-fixture
+    batch_multiplier: "0.5"
+    tiers:
+      - {up_to_input_tokens: null, input: "1", cache_write: "1", cached_input: "0.1", output: "10"}
+  - model_id: scripted-sol
+    provider: openai
+    source_url: https://example.invalid/scripted-fixture
+    batch_multiplier: "0.5"
+    tiers:
+      - {up_to_input_tokens: null, input: "1", cache_write: "1", cached_input: "0.1", output: "10"}
+  - model_id: scripted-flash-lite
+    provider: google
+    source_url: https://example.invalid/scripted-fixture
+    batch_multiplier: "0.5"
+    tiers:
+      - {up_to_input_tokens: null, input: "1", cache_write: "1", cached_input: "0.1", output: "10"}
+  - model_id: scripted-flash
+    provider: google
+    source_url: https://example.invalid/scripted-fixture
+    batch_multiplier: "0.5"
+    tiers:
+      - {up_to_input_tokens: null, input: "1", cache_write: "1", cached_input: "0.1", output: "10"}
+  - model_id: scripted-gemini
+    provider: google
+    source_url: https://example.invalid/scripted-fixture
+    batch_multiplier: "0.5"
+    tiers:
+      - {up_to_input_tokens: null, input: "1", cache_write: "1", cached_input: "0.1", output: "10"}

@@ -1,0 +1,106 @@
+# The grading panel, the reference grader and the probe generators
+# (design §9; PR 5 plan Task 1; owner rulings 4, 5 and 8 on #199).
+#
+# Model ids, effort levels and input limits come from
+# docs/research/2026-11-04-grading-batch-apis-and-judge-models.md §E, and for
+# the generators from docs/benchmarks/model-matrix.yml.
+#
+# - Panel judges: one per provider. `effort_levels` is ascending; the tuning
+#   step walks it and stops at the first level that meets G1's per-judge
+#   criteria. `effort` stays null until the efforts PR freezes it, and the
+#   held-out targets refuse to run until then.
+# - `fallback`: Flash-Lite's pre-registered replacement (ruling 5). It shares a
+#   family with the gemini-3.8-flash answer model; the report discloses that.
+# - Every judge: a 16,384-token output cap with thinking inside it (ruling 8),
+#   and a 256-token framing allowance per message.
+# - max_input_tokens: 1,000,000 for the Claude models ("1M"); the OpenAI
+#   models' 1,050,000-token window minus the 16,384-token cap; 1,048,576 for
+#   the Gemini models.
+#
+# Loaded by benchmarks.grading.panel.load_panel().
+schema_version: 1
+judges:
+  haiku:
+    role: panel
+    provider: anthropic
+    model_id: claude-haiku-5-5
+    api: anthropic-messages
+    effort_levels: [low, medium, high]
+    effort: null
+    max_input_tokens: 1000000
+    max_output_tokens: 16384
+    framing_allowance_tokens: 256
+  luna:
+    role: panel
+    provider: openai
+    model_id: gpt-6-luna
+    api: openai-responses
+    effort_levels: [none, low, medium]
+    effort: null
+    max_input_tokens: 1033616
+    max_output_tokens: 16384
+    framing_allowance_tokens: 256
+  flash-lite:
+    role: panel
+    provider: google
+    model_id: gemini-3.1-flash-lite
+    api: gemini-generate-content
+    effort_levels: [minimal, low, medium]
+    effort: null
+    fallback: flash
+    max_input_tokens: 1048576
+    max_output_tokens: 16384
+    framing_allowance_tokens: 256
+  flash:
+    role: panel-fallback
+    provider: google
+    model_id: gemini-3.8-flash
+    api: gemini-generate-content
+    # `minimal` is not supported on Gemini 3.8 Flash (grading note §E).
+    effort_levels: [low, medium, high]
+    effort: null
+    max_input_tokens: 1048576
+    max_output_tokens: 16384
+    framing_allowance_tokens: 256
+  reference:
+    role: reference
+    provider: anthropic
+    model_id: claude-opus-5-5
+    api: anthropic-messages
+    effort_levels: [high]
+    effort: high
+    max_input_tokens: 1000000
+    max_output_tokens: 16384
+    framing_allowance_tokens: 256
+  # Probe generators (ruling 4): the three answer models, each at its provider
+  # default effort. A model from another provider checks each probe.
+  sonnet:
+    role: generator
+    provider: anthropic
+    model_id: claude-sonnet-5-5
+    api: anthropic-messages
+    effort_levels: []
+    effort: null
+    max_input_tokens: 1000000
+    max_output_tokens: 16384
+    framing_allowance_tokens: 256
+  sol:
+    role: generator
+    provider: openai
+    model_id: gpt-6.1-sol
+    api: openai-responses
+    effort_levels: []
+    effort: null
+    max_input_tokens: 1033616
+    max_output_tokens: 16384
+    framing_allowance_tokens: 256
+  gemini:
+    role: generator
+    provider: google
+    model_id: gemini-3.8-flash
+    api: gemini-generate-content
+    effort_levels: []
+    effort: null
+    max_input_tokens: 1048576
+    max_output_tokens: 16384
+    framing_allowance_tokens: 256

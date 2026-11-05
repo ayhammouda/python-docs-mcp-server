@@ -1,0 +1,7 @@
+rules:
+  - match: "^chk--"
+    output: {explanation: The scripted example meets the probe spec., meets_spec: true}
+    usage: {prompt_token_count: 100, candidates_token_count: 2}
+  - match: ".*"
+    output: {probe_text: A scripted probe answer.}
+    usage: {prompt_token_count: 100, candidates_token_count: 2}

@@ -116,6 +116,11 @@ class _Attempt:
     output_bound: int | None
 
 
+def scripted_response(call: dict[str, Any]) -> bool:
+    raw = call.get("raw_response")
+    return isinstance(raw, dict) and "scripted_step" in raw
+
+
 class ReferenceUnits:
     """Every actual call appears once in transcripts and, if metered, in the ledger."""
 
@@ -123,6 +128,22 @@ class ReferenceUnits:
         self.attempts: dict[str, _Attempt] = {}
 
     def add(self, record: dict[str, Any], family: ModelFamily) -> None:
+        execution = record.get("execution")
+        if not isinstance(execution, dict) or any(
+            not isinstance(execution.get(field), str) or not execution[field]
+            for field in ("provider", "model_id", "api")
+        ):
+            raise ValueError(
+                f"reference transcript lacks executed provider/model/API for {family.id}"
+            )
+        if (execution["provider"], execution["model_id"], execution["api"]) != (
+            family.provider,
+            family.model_id,
+            family.api,
+        ):
+            raise ValueError(f"executed client disagrees with the model snapshot for {family.id}")
+        if (record["provider"], record["model_id"]) != (family.provider, family.model_id):
+            raise ValueError(f"transcript disagrees with the model snapshot for {family.id}")
         calls = record["model_calls"]
         if not isinstance(calls, list):
             raise ValueError("reference model calls must be a list")
@@ -138,7 +159,7 @@ class ReferenceUnits:
             raw = call.get("raw_response")
             if raw is not None and not isinstance(raw, dict):
                 raise ValueError("invalid reference response")
-            if family.api != "scripted" and raw is not None and "scripted_step" in raw:
+            if family.api != "scripted" and scripted_response(call):
                 raise ValueError("scripted response contradicts live reference identity")
             attempts = call["attempts"]
             if not isinstance(attempts, list):

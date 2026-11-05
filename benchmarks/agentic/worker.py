@@ -29,6 +29,9 @@ from benchmarks.agentic.bridge import Bridge, SystemSpec, open_bridge, system_sp
 from benchmarks.agentic.cleanup import add_safe_cleanup_cause, settle
 from benchmarks.agentic.ledger import Outcome
 from benchmarks.agentic.protocol import (
+    MAX_RERUNS as MAX_RERUNS,
+)
+from benchmarks.agentic.protocol import (
     WORKER_FRAME_LIMIT_EXIT,
     WORKER_LEAK_REASON,
     KeyLeakError,
@@ -43,7 +46,6 @@ from benchmarks.agentic.types import Buckets, ToolSpec
 from benchmarks.model_matrix import model_family_from_raw
 from benchmarks.runner import BenchmarkValidationError
 
-MAX_RERUNS = 2
 #: The type of the private first frame that carries a live worker's one key (ruling A1).
 BOOTSTRAP = "bootstrap"
 _REDACTED = b"[redacted]"
@@ -327,6 +329,20 @@ async def _run_job(
     caps = Caps(**job["caps"])
     if family.api != "scripted" and not bootstrapped:
         raise BenchmarkValidationError("a live job needs its key bootstrap frame first")
+    host = _HostLedger(channel, reader)
+    task = job.get("task", "trajectories")
+    if task == "items":
+        from benchmarks.agentic.count import run_count_task
+
+        await run_count_task(job, host, channel)
+        return 0
+    if task == "batches":
+        from benchmarks.grading.worker_task import run_batch_task
+
+        await run_batch_task(job, host, channel)
+        return 0
+    if task != "trajectories":
+        raise BenchmarkValidationError(f"unknown worker task {task!r}")
     client = make_client(family, timeout_s=caps.model_call_timeout_s)
     # Model-limit discovery is also an outgoing provider request, before the loop.
     scanned_json_bytes(
@@ -337,7 +353,6 @@ async def _run_job(
     execution = {"provider": client.provider, "model_id": client.model_id, "api": client.api}
     # One free models GET per live worker, outside the ledger (round-2 ruling D10).
     limits = None if family.api == "scripted" else await fetch_model_limits(client)
-    host = _HostLedger(channel, reader)
     queue = deque((item, 1) for item in job["trajectories"])
     seen: set[str] = set()
     stack = AsyncExitStack()

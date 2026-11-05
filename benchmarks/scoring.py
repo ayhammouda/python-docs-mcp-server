@@ -29,6 +29,15 @@ file and writes those scores back as finalized records -- once a record
 carries ``scoring_method: "human"``, a later :func:`score_run` call always
 skips it (a human verdict is never overwritten by the automatic pass).
 
+Agentic runs (``environment.json`` ``mode: "agentic"``) are never graded by a
+human (design §9.3): the LLM panel grades them. :func:`apply_llm_grades` writes
+the panel's grades with ``scoring_method`` ``"llm_panel"`` or
+``"llm_reference"`` and their provenance. The ordinary :func:`score_run` pass
+preserves those records. On ``agentic-score`` replay, only grades supported by
+the current votes are retained. :func:`ingest_adjudication_verdicts` refuses an agentic run.
+An agentic run's pending cells await LLM grading. Their queue identifies the
+transcript by cell without republishing its answer or tool calls.
+
 Grounding: the methodology also asks that an answer which "appears correct
 but lacks evidence from the supplied docs" be flagged and reported
 separately from its score. This module computes a purely structural
@@ -50,6 +59,7 @@ per ``run-summary.json``'s ``correctness_denominator_cells`` /
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Set
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -57,9 +67,17 @@ from typing import Any
 
 import yaml
 
+from benchmarks.agentic.inputs import json_mapping
+from benchmarks.agentic.protocol import assert_no_key_shaped_json, scanned_json_bytes
 from benchmarks.corpus import CorpusQuestion, validate_corpus
 from benchmarks.report import _sha256_of
-from benchmarks.runner import BenchmarkValidationError
+from benchmarks.report_files import (
+    artifact_bytes,
+    artifact_output_dirs,
+    artifact_paths,
+    checked_path,
+)
+from benchmarks.runner import BenchmarkValidationError, _required_safe_id
 
 #: The methodology's closed correctness score vocabulary
 #: (PUBLIC-BENCHMARK-METHODOLOGY.md "Correctness Scoring"). No finalized
@@ -70,6 +88,13 @@ VALID_SCORES = (1.0, 0.5, 0.0)
 #: record already tagged ``SCORING_METHOD_HUMAN``.
 SCORING_METHOD_AUTOMATIC = "automatic"
 SCORING_METHOD_HUMAN = "human"
+#: LLM grades of an agentic run (design §9.1): the panel's majority, or a grade with
+#: at least one field settled by the reference grader.
+SCORING_METHOD_LLM_PANEL = "llm_panel"
+SCORING_METHOD_LLM_REFERENCE = "llm_reference"
+LLM_SCORING_METHODS = frozenset({SCORING_METHOD_LLM_PANEL, SCORING_METHOD_LLM_REFERENCE})
+#: Records the ordinary automatic pass leaves untouched.
+_FINAL_METHODS = LLM_SCORING_METHODS | {SCORING_METHOD_HUMAN}
 
 _SCORING_REQUIRED_FIELDS = ("competitor_id", "corpus_id", "status")
 _TRANSCRIPT_REQUIRED_FIELDS = ("competitor_id", "corpus_id", "status")
@@ -109,7 +134,11 @@ class _AutomaticDecision:
 
 
 def score_run(
-    run_dir: Path, *, corpus_path: Path | None = None, schema_path: Path
+    run_dir: Path,
+    *,
+    corpus_path: Path | None = None,
+    schema_path: Path,
+    current_llm_cells: Set[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Apply the automatic correctness-scoring pass to one run directory.
 
@@ -119,8 +148,11 @@ def score_run(
     :func:`benchmarks.corpus.validate_corpus`). A ``corpus_path`` is only
     accepted when its sha256 matches that snapshot. For each cell:
 
-    - A record already carrying a human verdict (``scoring_method:
-      "human"``) is left untouched.
+    - A record already carrying a human verdict or an LLM grade
+      (``scoring_method`` ``"human"``, ``"llm_panel"`` or ``"llm_reference"``)
+      is left untouched. On agentic replay, ``current_llm_cells`` identifies the
+      cells with a grade supported by the current vote evidence. Previous LLM
+      grades outside that set go through the automatic pass again.
     - A failed cell is re-emitted with its existing ``score: 0.0`` (see
       module docstring; this is a passthrough, not a new decision).
     - A succeeded cell with an empty/blank answer is automatically scored
@@ -141,11 +173,17 @@ def score_run(
 
     Idempotent: re-running after a partial adjudication ingest recomputes
     the same automatic decisions and leaves every human-scored record
-    exactly as ingested.
+    exactly as ingested. Agentic inputs, including preserved legacy records,
+    and the complete output batch are scanned for key shapes before any write.
     """
     paths = ScoringPaths(run_dir)
+    # The grading caller supplies current vote evidence even when no cell was graded.
+    # Keep its confined writer regardless of later edits to the run metadata.
+    agentic = current_llm_cells is not None or _is_agentic(run_dir)
 
-    scoring_records = _load_cell_dir(paths.scoring_dir, _SCORING_REQUIRED_FIELDS, "scoring")
+    scoring_records = _load_cell_dir(
+        paths.scoring_dir, _SCORING_REQUIRED_FIELDS, "scoring", checked=agentic
+    )
     if not scoring_records:
         raise BenchmarkValidationError(
             f"no scoring placeholder files found under {paths.scoring_dir}; run the "
@@ -154,7 +192,7 @@ def score_run(
     corpus_snapshot, corpus_sha256 = _run_corpus(run_dir, corpus_path)
     answer_keys = _load_answer_keys(corpus_snapshot, schema_path)
     transcript_records = _load_cell_dir(
-        paths.transcripts_dir, _TRANSCRIPT_REQUIRED_FIELDS, "transcript"
+        paths.transcripts_dir, _TRANSCRIPT_REQUIRED_FIELDS, "transcript", checked=agentic
     )
 
     finalized: list[dict[str, Any]] = []
@@ -162,19 +200,32 @@ def score_run(
     automatic_decided = 0
     already_human = 0
     queued = 0
+    updates: dict[Path, dict[str, Any]] = {}
+    write_record = updates.__setitem__ if agentic else _write_json
 
     for key in sorted(scoring_records):
         path, record = scoring_records[key]
         competitor_id, corpus_id = key
 
-        if record.get("scoring_method") == SCORING_METHOD_HUMAN:
-            already_human += 1
+        method = record.get("scoring_method")
+        if (
+            method in LLM_SCORING_METHODS
+            and agentic
+            and current_llm_cells is not None
+            and key not in current_llm_cells
+        ):
+            record = dict(record)
+            for field in ("label", "grading", "adjudicator", "scored_at", "grounded"):
+                record.pop(field, None)
+            record["status"] = "placeholder"
+        elif method in _FINAL_METHODS:
+            already_human += method == SCORING_METHOD_HUMAN
             finalized.append(record)
             continue
 
         if record.get("status") == "failed":
             updated = _finalize_failed(record)
-            _write_json(path, updated)
+            write_record(path, updated)
             finalized.append(updated)
             automatic_decided += 1
             continue
@@ -206,24 +257,27 @@ def score_run(
                 reason=decision.reason,
                 grounding_evidence_present=grounding_evidence_present,
             )
-            _write_json(path, updated)
+            write_record(path, updated)
             finalized.append(updated)
             automatic_decided += 1
             continue
 
         pending = _annotate_pending(record, grounding_evidence_present=grounding_evidence_present)
-        _write_json(path, pending)
+        write_record(path, pending)
         finalized.append(pending)
         queued += 1
-        queue_entries.append(_build_queue_entry(pending, answer_keys, paths.transcripts_dir))
+        queue_entries.append(
+            _build_queue_entry(pending, answer_keys, paths.transcripts_dir, agentic=agentic)
+        )
 
-    _write_json(
+    write_record(
         paths.queue_path,
         {"run_dir": str(run_dir), "generated_at": _utc_now(), "cells": queue_entries},
     )
     rollups = _compute_rollups(finalized, answer_keys)
     rollups["corpus_sha256"] = corpus_sha256
-    _write_json(paths.rollups_path, rollups)
+    write_record(paths.rollups_path, rollups)
+    _write_checked_outputs(run_dir, updates)
 
     return {
         "run_dir": str(run_dir),
@@ -270,6 +324,11 @@ def ingest_adjudication_verdicts(
     snapshot's ``corpus_sha256``), so both stay consistent with the latest
     finalized records.
     """
+    if _is_agentic(run_dir):
+        raise BenchmarkValidationError(
+            f"{run_dir} is an agentic run: no human grades an agentic run (design §9.3); "
+            "the LLM panel grades its answers"
+        )
     paths = ScoringPaths(run_dir)
     verdicts = _load_verdicts(verdicts_path)
     corpus_snapshot, corpus_sha256 = _run_corpus(run_dir, corpus_path)
@@ -352,6 +411,100 @@ def ingest_adjudication_verdicts(
         "rollups_path": str(paths.rollups_path),
         "rollups": rollups,
     }
+
+
+def apply_llm_grades(
+    run_dir: Path,
+    grades: Mapping[tuple[str, str], Mapping[str, Any]],
+    *,
+    grounded: Mapping[tuple[str, str], bool],
+    corpus_path: Path | None = None,
+    schema_path: Path,
+) -> dict[str, Any]:
+    """Write LLM grades (design §9.1) and grounding (§9.2), then the queue and rollups.
+
+    ``grades`` maps ``(competitor_id, corpus_id)`` to ``{"score", "label", "method",
+    "adjudicator", "grading"}``. Every grade is checked before any file is written: a
+    score outside ``VALID_SCORES``, a method outside ``LLM_SCORING_METHODS``, an unknown
+    cell or a failed cell is refused. ``grounded`` and ``correct_but_ungrounded`` are
+    written on every other scored cell too. Supplied grades, captured legacy records
+    and all derived JSON are checked for key shapes before any file is changed.
+    """
+    assert_no_key_shaped_json(grades, where="LLM grades")
+    paths = ScoringPaths(run_dir)
+    corpus_snapshot, corpus_sha256 = _run_corpus(run_dir, corpus_path)
+    answer_keys = _load_answer_keys(corpus_snapshot, schema_path)
+    records = _load_cell_dir(paths.scoring_dir, _SCORING_REQUIRED_FIELDS, "scoring", checked=True)
+    for (competitor_id, corpus_id), grade in grades.items():
+        cell = f"{competitor_id}/{corpus_id}"
+        if (competitor_id, corpus_id) not in records:
+            raise BenchmarkValidationError(f"LLM grade for {cell}: no scoring record")
+        if records[(competitor_id, corpus_id)][1].get("status") == "failed":
+            raise BenchmarkValidationError(f"LLM grade for {cell}: a failed cell stays at 0.0")
+        if grade.get("score") not in VALID_SCORES:
+            raise BenchmarkValidationError(
+                f"LLM grade for {cell} has score {grade.get('score')!r}; "
+                f"must be one of {VALID_SCORES}"
+            )
+        if grade.get("method") not in LLM_SCORING_METHODS:
+            raise BenchmarkValidationError(
+                f"LLM grade for {cell} has scoring_method {grade.get('method')!r}; "
+                f"must be one of {sorted(LLM_SCORING_METHODS)}"
+            )
+
+    now = _utc_now()
+    updates: dict[Path, dict[str, Any]] = {}
+    for key, (path, record) in records.items():
+        if key in grades:
+            grade = grades[key]
+            updated = {
+                **record,
+                "status": "scored",
+                "score": float(grade["score"]),
+                "label": grade.get("label"),
+                "requires_manual_scoring": False,
+                "scoring_method": grade["method"],
+                "adjudicator": grade.get("adjudicator"),
+                "grading": grade.get("grading"),
+                "queued_for_adjudication": False,
+                "scored_at": now,
+            }
+        elif record.get("score") is not None:
+            updated = dict(record)
+        else:
+            continue
+        is_grounded = bool(grounded.get(key, False))
+        updated["grounded"] = is_grounded
+        updated["correct_but_ungrounded"] = updated["score"] > 0.0 and not is_grounded
+        updates[path] = updated
+        records[key] = (path, updated)
+
+    finalized = [record for _, record in records.values()]
+    pending = [record for record in finalized if record.get("score") is None]
+    queue_entries = [
+        _build_queue_entry(record, answer_keys, paths.transcripts_dir, agentic=True)
+        for record in pending
+    ]
+    updates[paths.queue_path] = {
+        "run_dir": str(run_dir),
+        "generated_at": now,
+        "cells": queue_entries,
+    }
+    rollups = _compute_rollups(finalized, answer_keys)
+    rollups["corpus_sha256"] = corpus_sha256
+    updates[paths.rollups_path] = rollups
+    _write_checked_outputs(run_dir, updates)
+    return {
+        "run_dir": str(run_dir),
+        "llm_graded_cells": len(grades),
+        "pending_cells": len(pending),
+        "rollups": rollups,
+    }
+
+
+def _is_agentic(run_dir: Path) -> bool:
+    environment = run_dir / "environment.json"
+    return environment.is_file() and _read_json(environment).get("mode") == "agentic"
 
 
 # --- Automatic decision logic -------------------------------------------------
@@ -441,31 +594,49 @@ def _annotate_pending(
 
 
 def _build_queue_entry(
-    record: dict[str, Any], answer_keys: dict[str, CorpusQuestion], transcripts_dir: Path
+    record: dict[str, Any],
+    answer_keys: dict[str, CorpusQuestion],
+    transcripts_dir: Path,
+    *,
+    agentic: bool = False,
 ) -> dict[str, Any]:
     competitor_id = record["competitor_id"]
     corpus_id = record["corpus_id"]
     transcript_path = transcripts_dir / competitor_id / f"{corpus_id}.json"
     answer = ""
     tool_calls: list[dict[str, Any]] | None = None
+    if agentic:
+        checked_path(transcripts_dir.parent, transcript_path)
     if transcript_path.is_file():
-        transcript = _read_json(transcript_path)
+        transcript = (
+            json_mapping(artifact_bytes(transcripts_dir.parent, transcript_path), "transcript")
+            if agentic
+            else _read_json(transcript_path)
+        )
         answer = transcript.get("answer") or ""
         tool_calls = transcript.get("tool_calls")
+    payload = {"answer": answer, "tool_calls": tool_calls}
+    if agentic:
+        # Preserve the evidence check even though only a human queue needs the payload.
+        scanned_json_bytes(payload, where="pending answer", indent=2, sort_keys=True)
+        payload = {"answer": None, "tool_calls": None}
     question = answer_keys.get(corpus_id)
     return {
         "competitor_id": competitor_id,
         "corpus_id": corpus_id,
         "tool_model_key": record.get("tool_model_key") or competitor_id,
         "category": question.category if question is not None else "uncategorized",
-        "answer": answer,
-        "tool_calls": tool_calls,
+        **payload,
         "grounding_evidence_present": bool(record.get("grounding_evidence_present")),
         "answer_key": question.answer_key if question is not None else None,
         "citations": question.citations if question is not None else None,
         "expected_properties": question.expected_properties if question is not None else None,
         "ambiguity_notes": question.ambiguity_notes if question is not None else None,
-        "reason": "non_empty_answer_requires_human_correctness_judgment",
+        "reason": (
+            "non_empty_answer_awaits_llm_grading"
+            if agentic
+            else "non_empty_answer_requires_human_correctness_judgment"
+        ),
     }
 
 
@@ -517,6 +688,12 @@ def _rollup_stats(records: list[dict[str, Any]]) -> dict[str, Any]:
         "correct_but_ungrounded_cells": ungrounded,
         "human_scored_cells": human_scored,
         "automatic_scored_cells": automatic_scored,
+        "llm_panel_scored_cells": sum(
+            1 for record in records if record.get("scoring_method") == SCORING_METHOD_LLM_PANEL
+        ),
+        "llm_reference_scored_cells": sum(
+            1 for record in records if record.get("scoring_method") == SCORING_METHOD_LLM_REFERENCE
+        ),
     }
 
 
@@ -551,9 +728,24 @@ def _load_answer_keys(corpus_path: Path, schema_path: Path) -> dict[str, CorpusQ
 
 
 def _load_cell_dir(
-    base_dir: Path, required_fields: tuple[str, ...], label: str
+    base_dir: Path, required_fields: tuple[str, ...], label: str, *, checked: bool = False
 ) -> dict[tuple[str, str], tuple[Path, dict[str, Any]]]:
     records: dict[tuple[str, str], tuple[Path, dict[str, Any]]] = {}
+    if checked:
+        root = base_dir.parent
+        for cell_file in artifact_paths(root, base_dir, "*/*.json"):
+            data = json_mapping(artifact_bytes(root, cell_file), label)
+            for field in required_fields:
+                if field not in data:
+                    raise BenchmarkValidationError(f"{label} file is missing required {field!r}")
+            key = (
+                _required_safe_id(data, "competitor_id", label),
+                _required_safe_id(data, "corpus_id", label),
+            )
+            if key != (cell_file.parent.name, cell_file.stem):
+                raise BenchmarkValidationError(f"{label} cell coordinates differ from its path")
+            records[key] = (cell_file, data)
+        return records
     if not base_dir.is_dir():
         return records
     for competitor_dir in sorted(p for p in base_dir.iterdir() if p.is_dir()):
@@ -630,6 +822,25 @@ def _read_json(path: Path) -> dict[str, Any]:
 def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _write_checked_outputs(run_dir: Path, updates: Mapping[Path, dict[str, Any]]) -> None:
+    """Scan the complete scoring batch before changing any previous good artifact.
+
+    Keep the exact checked bytes for publication. This prevents a late cell or queue
+    refusal from leaving earlier cells changed; filesystem write failures are separate.
+    """
+    bodies = {
+        path: scanned_json_bytes(record, where="scoring output", indent=2, sort_keys=True) + b"\n"
+        for path, record in updates.items()
+    }
+    if not bodies:
+        return
+    from benchmarks.agentic.egress import write_new
+
+    with artifact_output_dirs(run_dir, bodies) as directories:
+        for path, body in bodies.items():
+            write_new(directories[path.parent], path.name, body, mode=0o644)
 
 
 def _utc_now() -> str:

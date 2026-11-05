@@ -1,8 +1,10 @@
 """Wait for owned work without letting a later interrupt replace the first one."""
 
 import asyncio
+import signal
+import sys
 import traceback
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Coroutine
 from typing import Any
 
 from benchmarks.agentic.protocol import (
@@ -75,3 +77,48 @@ async def finish[T](operation: Awaitable[T], pending: BaseException | None = Non
         return result
     # Outside the handler: raising here must not set the raw error as __context__.
     raise pending
+
+
+async def until_signalled(run: Coroutine[Any, Any, None]) -> None:
+    """Await ``run``; SIGTERM or SIGHUP cancels it, so every worker is torn down as on Ctrl-C.
+
+    Workers run in process groups of their own, so no signal sent to the host's group reaches
+    them: only the host's teardown can end them. An ignored signal stays ignored, a thread
+    that cannot take signals runs without the handlers, and each disposition the handlers
+    replaced is restored afterwards.
+    """
+    task = asyncio.create_task(run)
+    loop = asyncio.get_running_loop()
+    signal_seen = False
+
+    def interrupt(signum: signal.Signals) -> None:
+        nonlocal signal_seen
+        if not signal_seen:
+            signal_seen = True
+            if not task.cancelling():
+                task.cancel(f"signal {signum.name}")
+
+    wanted = [  # an ignored signal stays ignored, as under nohup
+        (signum, previous)
+        for signum in (signal.SIGTERM, signal.SIGHUP)
+        if (previous := signal.getsignal(signum)) is not signal.SIG_IGN
+    ]
+    installed: list[tuple[signal.Signals, Any]] = []  # each with the disposition it replaced
+    try:
+        for signum, previous in wanted:
+            loop.add_signal_handler(signum, interrupt, signum)
+            installed.append((signum, previous))
+    except (RuntimeError, NotImplementedError, ValueError) as exc:
+        # Not the main thread, or a loop without signal support: run without those handlers.
+        skipped = ", ".join(signum.name for signum, _ in wanted[len(installed) :])
+        print(
+            f"agentic run: signal handlers not installed for {skipped} "
+            f"({type(exc).__name__}: {exc}); no teardown on those signals",
+            file=sys.stderr,
+        )
+    try:
+        await task
+    finally:
+        for signum, previous in installed:
+            loop.remove_signal_handler(signum)  # leaves SIG_DFL behind
+            signal.signal(signum, signal.SIG_DFL if previous is None else previous)
