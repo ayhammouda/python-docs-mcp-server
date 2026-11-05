@@ -205,7 +205,8 @@ def test_grading_only_provider_over_remaining_durable_cap(tmp_path, pilot, provi
     assert shown == []
 
 
-def test_acceptable_plan_shows_answering_and_all_grading_providers(tmp_path, pilot):
+def test_acceptable_plan_shows_answering_and_all_grading_providers(tmp_path, pilot, monkeypatch):
+    monkeypatch.delenv("CI", raising=False)
     shown = []
     with pytest.raises(BenchmarkValidationError, match="not confirmed"):
         attempt(tmp_path, pilot, shown)
@@ -453,7 +454,8 @@ def legacy_grading(pilot):
     write(path, invocation)
 
 
-def test_older_honest_archive_keeps_its_financial_estimate(tmp_path, pilot):
+def test_older_honest_archive_keeps_its_financial_estimate(tmp_path, pilot, monkeypatch):
+    monkeypatch.delenv("CI", raising=False)
     legacy_grading(pilot)
     assert reference_grading_rates(pilot) == dict.fromkeys(
         ("anthropic", "openai", "google"), D("0.000060")

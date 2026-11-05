@@ -172,6 +172,7 @@ def hosted_template(tmp_path_factory):
 
 @pytest.fixture
 def hosted_audit(tmp_path, hosted_template, index_db, monkeypatch):
+    monkeypatch.delenv("CI", raising=False)
     out = shutil.copytree(hosted_template, tmp_path / "run")
     # Add the second genuinely distinct version to the local test index.
     conn = get_readwrite_connection(index_db)
