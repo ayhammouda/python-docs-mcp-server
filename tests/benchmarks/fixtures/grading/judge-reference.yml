@@ -1,0 +1,13 @@
+rules:
+  - match: "^audit--"
+    output: {explanation: The cited text supports the key., key_supported: true}
+    usage: {input_tokens: 100, output_tokens: 2}
+  - match: ".*"
+    output:
+      explanation: Both criteria are met.
+      attempted: true
+      p1_met: true
+      p2_met: true
+      contradicts_key: false
+      wrong_version: false
+    usage: {input_tokens: 100, output_tokens: 2}

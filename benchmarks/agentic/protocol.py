@@ -18,6 +18,9 @@ from typing import Any
 from benchmarks.runner import BenchmarkValidationError
 
 MAX_FRAME_BYTES = 64 * 1024 * 1024
+#: Shared host/worker limits for trajectory attempts and result frames.
+MAX_RERUNS = 2
+RESULT_CHUNK_BYTES = MAX_FRAME_BYTES // 4
 WORKER_LEAK_REASON = "worker output failed its credential check"
 # A sent error frame can remain unread after the host loses its reply pipe.
 WORKER_FRAME_LIMIT_EXIT = 4

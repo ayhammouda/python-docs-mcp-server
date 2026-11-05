@@ -842,6 +842,15 @@ def _workspace_inputs(
     if meta.get("inputs") != manifest:
         raise BenchmarkValidationError("workspace metadata differs from its grading input manifest")
     tuning = CapturedInput.read(tuning_path, "tuning", "tuning questions")
+    if meta.get("frozen_tuning") is True:
+        try:
+            body = artifact_bytes(workspace, root / "tuning-questions.yml")
+        except FileNotFoundError:
+            raise BenchmarkValidationError("missing frozen tuning questions") from None
+        frozen_tuning = CapturedInput.from_bytes(body, "tuning", "frozen tuning")
+        if tuning.content != frozen_tuning.content:
+            raise BenchmarkValidationError("workspace frozen tuning questions differ")
+        tuning = frozen_tuning
     # Stage workspaces pin both fields. Earlier pure exports have neither.
     if kind == "held-out" and ("judges" in meta) != ("tuning_sha256" in meta):
         raise BenchmarkValidationError("incomplete held-out workspace metadata")

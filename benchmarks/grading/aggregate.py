@@ -19,7 +19,7 @@ from typing import Any, Literal, cast
 
 from benchmarks.agentic.inputs import json_mapping, read_json
 from benchmarks.agentic.protocol import assert_no_key_shaped_json, scanned_json_bytes
-from benchmarks.agentic.run import OUTPUT_CAP_STOPS
+from benchmarks.agentic.types import OUTPUT_CAP_STOPS
 from benchmarks.grading.batch import (
     _GEMINI_REFUSALS,
     BatchItemResult,

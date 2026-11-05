@@ -12,10 +12,9 @@ import asyncio
 import hashlib
 import os
 import random
-import signal
 import sys
 from collections import Counter
-from collections.abc import Callable, Coroutine, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -34,6 +33,7 @@ from benchmarks.agentic.airgap import (
 )
 from benchmarks.agentic.bridge import SystemSpec, systems_from_mapping
 from benchmarks.agentic.cleanup import add_cleanup_cause
+from benchmarks.agentic.cleanup import until_signalled as _until_signalled
 from benchmarks.agentic.egress import write_egress_summary
 from benchmarks.agentic.host import Launcher, LocalLauncher, WorkerJob, refuse_host_keys, run_jobs
 from benchmarks.agentic.inputs import CapturedInput
@@ -64,6 +64,7 @@ from benchmarks.agentic.protocol import (
     write_json_evidence as _write,
 )
 from benchmarks.agentic.sandbox import ContainerLauncher
+from benchmarks.agentic.types import OUTPUT_CAP_STOPS as OUTPUT_CAP_STOPS
 from benchmarks.agentic.worker import _client_versions
 from benchmarks.model_matrix import (
     _HOSTED_REQUIRED_FIELDS,
@@ -82,10 +83,6 @@ from benchmarks.runner import (
     _scoring_record,
     _utc_now,
 )
-
-#: Answer-turn stop reasons that mean the output cap cut the answer; the pilot's 1% rule
-#: reads their count. A Gemini CONTINUATION stop counts (owner ruling, round 3).
-OUTPUT_CAP_STOPS = frozenset({"max_tokens", "max_output_tokens", "MAX_TOKENS", "CONTINUATION"})
 
 _REPO_ROOT = Path(benchmarks.__file__).resolve().parent.parent
 
@@ -115,51 +112,6 @@ class AgenticConfig:
     dry_run: bool = False
     acknowledge_overrun: tuple[str, ...] = ()
     reference_run: Path | None = None  # a finished pilot run, for the full-run gate
-
-
-async def _until_signalled(run: Coroutine[Any, Any, None]) -> None:
-    """Await ``run``; SIGTERM or SIGHUP cancels it, so every worker is torn down as on Ctrl-C.
-
-    Workers run in process groups of their own, so no signal sent to the host's group reaches
-    them: only the host's teardown can end them. An ignored signal stays ignored, a thread
-    that cannot take signals runs without the handlers, and each disposition the handlers
-    replaced is restored afterwards.
-    """
-    task = asyncio.create_task(run)
-    loop = asyncio.get_running_loop()
-    signal_seen = False
-
-    def interrupt(signum: signal.Signals) -> None:
-        nonlocal signal_seen
-        if not signal_seen:
-            signal_seen = True
-            if not task.cancelling():
-                task.cancel(f"signal {signum.name}")
-
-    wanted = [  # an ignored signal stays ignored, as under nohup
-        (signum, previous)
-        for signum in (signal.SIGTERM, signal.SIGHUP)
-        if (previous := signal.getsignal(signum)) is not signal.SIG_IGN
-    ]
-    installed: list[tuple[signal.Signals, Any]] = []  # each with the disposition it replaced
-    try:
-        for signum, previous in wanted:
-            loop.add_signal_handler(signum, interrupt, signum)
-            installed.append((signum, previous))
-    except (RuntimeError, NotImplementedError, ValueError) as exc:
-        # Not the main thread, or a loop without signal support: run without those handlers.
-        skipped = ", ".join(signum.name for signum, _ in wanted[len(installed) :])
-        print(
-            f"agentic run: signal handlers not installed for {skipped} "
-            f"({type(exc).__name__}: {exc}); no teardown on those signals",
-            file=sys.stderr,
-        )
-    try:
-        await task
-    finally:
-        for signum, previous in installed:
-            loop.remove_signal_handler(signum)  # leaves SIG_DFL behind
-            signal.signal(signum, signal.SIG_DFL if previous is None else previous)
 
 
 def limits_mismatch(reported: Mapping[str, Any] | None, family: ModelFamily) -> list[str]:
@@ -558,6 +510,11 @@ def run_agentic(
         matrix_dir=config.matrix_path.parent,
     )
     rates = reference_rates(config.reference_run) if config.reference_run else None
+    grading_rates = None
+    if config.reference_run and any(f.api != "scripted" and f.provider in caps for f in families):
+        from benchmarks.grading.preflight import reference_grading_rates
+
+        grading_rates = reference_grading_rates(config.reference_run)
     out.mkdir(parents=True, exist_ok=True)
     snapshots = out / "snapshots"
     snapshots.mkdir()
@@ -715,7 +672,7 @@ def run_agentic(
             )
         if any(f.api != "scripted" for f in families):
             # Before any key is read (bootstrap_frame) or any container starts (prepare).
-            plans = provider_plans(jobs, spent_before, caps, rates)
+            plans = provider_plans(jobs, spent_before, caps, rates, grading_rates)
             problems = full_run_gate(plans, jobs, rates)
             if problems:
                 raise BenchmarkValidationError("the full-run gate refused: " + "; ".join(problems))

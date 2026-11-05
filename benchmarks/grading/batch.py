@@ -13,7 +13,7 @@ import io
 import json
 import os
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol, get_args
@@ -28,15 +28,18 @@ from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 
-from benchmarks.adapters.guard import PAID_KEY_ENVS, PROVIDER_API_KEY_ENV, require_live_environment
+from benchmarks.adapters.guard import require_live_environment
 from benchmarks.agentic.clients import (
     _LIVE_APIS,
     GEMINI_BASE_URL,
     _status_error,
     anthropic_sdk,
+    egress_proxy,
     gemini_sdk,
     openai_sdk,
+    single_paid_key,
 )
+from benchmarks.agentic.protocol import FrameTooLarge, scanned_json_bytes
 from benchmarks.agentic.types import Buckets, ErrorKind, ProviderCallError
 from benchmarks.agentic.usage import anthropic_buckets, gemini_buckets, openai_buckets
 from benchmarks.model_matrix import ModelFamily
@@ -86,6 +89,64 @@ class BatchItemResult:
     reported_model: str | None
     unbilled: bool
     retryable: bool = True  # False: not resubmitted in this invocation, never terminal
+
+
+def compact_unbilled_evidence(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """Retain only bounded provider facts that can establish a free error result.
+
+    This is a projection, not a billing decision: the host still normalizes it and
+    checks the assigned identity and every result field. Conflicting OpenAI response
+    codes must not disappear behind a batch_expired error. Never retain error text,
+    scripted regexes or other potentially oversized strings.
+    """
+    if "scripted_rule" in raw:
+        rule = raw["scripted_rule"]
+        if (
+            isinstance(rule, dict)
+            and rule.get("status") in ("errored", "canceled", "expired")
+            and type(rule.get("unbilled", True)) is bool
+        ):
+            return {
+                "scripted_rule": {"status": rule["status"], "unbilled": rule.get("unbilled", True)}
+            }
+        return None
+    item_id = raw.get("custom_id")
+    if not isinstance(item_id, str) or not _ITEM_ID.fullmatch(item_id):
+        return None
+    if "result" in raw:
+        result = raw["result"]
+        if isinstance(result, dict) and result.get("type") in ("errored", "canceled", "expired"):
+            return {"custom_id": item_id, "result": {"type": result["type"]}}
+        return None
+    error, response = raw.get("error"), raw.get("response")
+    if error is not None and not isinstance(error, dict):
+        return None
+    evidence: dict[str, Any] = {"custom_id": item_id}
+    if response is not None:
+        if not isinstance(response, dict):
+            return None
+        body = response.get("body")
+        if body is not None and (not isinstance(body, dict) or body.get("usage") is not None):
+            return None  # A projected 4xx receipt must not erase reported usage.
+        code = response.get("status_code")
+        if type(code) is not int or not 400 <= code < 500:
+            return None
+        evidence["response"] = {"status_code": code}
+    if error is not None and error.get("code") == "batch_expired":
+        evidence["error"] = {"code": "batch_expired"}
+    return evidence if len(evidence) > 1 else None
+
+
+def drop_batch_raw(row: dict[str, Any]) -> None:
+    """Drop oversized raw with provenance, preserving independently checkable free facts."""
+    raw = row["raw"]
+    if row["status"] in ("errored", "canceled", "expired") and row["raw_usage"] is not None:
+        raise FrameTooLarge("cannot drop the provider receipt for an unsuccessful item with usage")
+    if row["unbilled"] is True and row["retryable"] is True and isinstance(raw, dict):
+        evidence = compact_unbilled_evidence(raw)
+        if evidence is not None:
+            row["billing_evidence"] = evidence
+    row.update(raw=None, raw_dropped=True)
 
 
 def _no_result(
@@ -139,6 +200,43 @@ async def _call(awaitable: Any) -> Any:
         if error is None:
             raise
         raise error from exc
+
+
+def check_error_content(exc: BaseException, *, check_content: Callable[[bytes], None]) -> None:
+    """Check provider diagnostics and decoded SDK bodies, never response/auth headers.
+
+    _call and _upload retain their causes. SDK error strings use repr, which can
+    escape a literal credential; the decoded body must be checked as well.
+    """
+    seen: set[int] = set()
+    error: BaseException | None = exc
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        scanned_json_bytes(str(error), where="provider error", check_content=check_content)
+        if isinstance(error, anthropic.APIStatusError | openai.APIStatusError):
+            body = error.body
+        elif isinstance(error, genai_errors.APIError):
+            body = error.details
+        else:
+            body = None
+        scanned_json_bytes(body, where="provider error body", check_content=check_content)
+        error = error.__cause__
+
+
+class BatchUploadError(ProviderCallError):
+    """Input upload failed before batch creation: no inference request was issued."""
+
+    def __init__(self, error: ProviderCallError) -> None:
+        super().__init__(
+            error.kind, str(error), status=error.status, retry_after_s=error.retry_after_s
+        )
+
+
+async def _upload(awaitable: Any) -> Any:
+    try:
+        return await _call(awaitable)
+    except ProviderCallError as exc:
+        raise BatchUploadError(exc) from exc
 
 
 class BatchClient(Protocol):
@@ -369,6 +467,7 @@ class OpenAIBatchClient:
         self.model_id = model_id
         self._max_output_tokens = max_output_tokens
         self._effort = effort
+        self._terminal: dict[str, Any] = {}
 
     def request_params(self) -> dict[str, Any]:
         return {
@@ -408,7 +507,7 @@ class OpenAIBatchClient:
             for r in requests
         ]
         data = "".join(json.dumps(line) + "\n" for line in lines).encode()
-        upload = await _call(
+        upload = await _upload(
             self._sdk.files.create(file=("batch.jsonl", data, "application/jsonl"), purpose="batch")
         )
         batch = await _call(
@@ -420,10 +519,17 @@ class OpenAIBatchClient:
 
     async def poll(self, batch_id: str) -> str | None:
         batch = await _call(self._sdk.batches.retrieve(batch_id))
-        return batch.status if batch.status in _OPENAI_TERMINAL else None
+        if batch.status not in _OPENAI_TERMINAL:
+            return None
+        self._terminal[batch_id] = batch
+        return batch.status
 
     async def results(self, batch_id: str, item_ids: Sequence[str]) -> list[BatchItemResult]:
-        batch = await _call(self._sdk.batches.retrieve(batch_id))
+        batch = self._terminal.get(batch_id)
+        if batch is None:
+            batch = await _call(self._sdk.batches.retrieve(batch_id))
+            if batch.status in _OPENAI_TERMINAL:
+                self._terminal[batch_id] = batch
         if batch.status == "failed":
             return [openai_failed_result(item_id) for item_id in item_ids]
         found: dict[str, BatchItemResult] = {}
@@ -448,6 +554,7 @@ class GeminiBatchClient:
         self.model_id = model_id
         self._max_output_tokens = max_output_tokens
         self._effort = effort
+        self._terminal: dict[str, Any] = {}
 
     def request_params(self) -> dict[str, Any]:
         return {
@@ -494,7 +601,7 @@ class GeminiBatchClient:
         data = "".join(
             json.dumps({"key": r.item_id, "request": self._request(r)}) + "\n" for r in requests
         ).encode()
-        file_name = await _call(self._upload_jsonl(data))
+        file_name = await _upload(self._upload_jsonl(data))
         job = await _call(self._sdk.aio.batches.create(model=self.model_id, src=file_name))
         return job.name
 
@@ -503,11 +610,18 @@ class GeminiBatchClient:
         return str(getattr(job.state, "value", job.state)), job
 
     async def poll(self, batch_id: str) -> str | None:
-        state, _job = await self._state(batch_id)
-        return None if state in GEMINI_RUNNING else state
+        state, job = await self._state(batch_id)
+        if state in GEMINI_RUNNING:
+            return None
+        self._terminal[batch_id] = job
+        return state
 
     async def results(self, batch_id: str, item_ids: Sequence[str]) -> list[BatchItemResult]:
-        _state, job = await self._state(batch_id)
+        job = self._terminal.get(batch_id)
+        if job is None:
+            state, job = await self._state(batch_id)
+            if state not in GEMINI_RUNNING:
+                self._terminal[batch_id] = job
         file_name = job.dest.file_name if job.dest is not None else None
         if not file_name:  # FAILED, CANCELLED or EXPIRED with no results: every item missing
             return [missing(item_id) for item_id in item_ids]
@@ -623,7 +737,7 @@ class ScriptedBatchClient:
 def live_key(family: ModelFamily) -> tuple[str, str]:
     """``(provider, key)`` for a live family: the guard passed, and no second paid key set."""
     provider = _LIVE_APIS.get(family.api or "")
-    if provider is None:
+    if provider not in ("anthropic", "openai", "google"):
         raise BenchmarkValidationError(
             f"model family {family.id!r} uses api {family.api!r}, which has no batch client"
         )
@@ -633,13 +747,7 @@ def live_key(family: ModelFamily) -> tuple[str, str]:
             f"not provider {family.provider!r}"
         )
     require_live_environment(provider)
-    own_key_env = PROVIDER_API_KEY_ENV[provider]
-    others = [name for name in PAID_KEY_ENVS if name != own_key_env and os.environ.get(name)]
-    if others:
-        raise BenchmarkValidationError(
-            f"a worker holds at most one paid key: {', '.join(others)} is set beside {own_key_env}"
-        )
-    return provider, os.environ[own_key_env]
+    return provider, single_paid_key(provider)
 
 
 def scripted_source(family: ModelFamily, label: str) -> dict[str, Any]:
@@ -664,13 +772,12 @@ def make_batch_client(
     provider, key = live_key(family)
     if family.max_output_tokens is None:
         raise BenchmarkValidationError(f"model family {family.id!r} must set max_output_tokens")
-    # shortcut: no egress proxy yet; once PR 4 lands, pass proxy=egress_proxy(os.environ) to
-    # each SDK builder below, as make_client does (PR 5 part 2, Task 3b).
+    proxy = egress_proxy(os.environ)
     if provider == "anthropic":
-        sdk = anthropic_sdk(key, timeout_s, transport=transport)
+        sdk = anthropic_sdk(key, timeout_s, transport=transport, proxy=proxy)
         return AnthropicBatchClient(sdk, family.model_id, family.max_output_tokens, effort)
     if provider == "openai":
-        sdk = openai_sdk(key, timeout_s, transport=transport)
+        sdk = openai_sdk(key, timeout_s, transport=transport, proxy=proxy)
         return OpenAIBatchClient(sdk, family.model_id, family.max_output_tokens, effort)
-    sdk = gemini_sdk(key, timeout_s, transport=transport)
+    sdk = gemini_sdk(key, timeout_s, transport=transport, proxy=proxy)
     return GeminiBatchClient(sdk, family.model_id, family.max_output_tokens, effort)

@@ -7,11 +7,27 @@ No filesystem, worker, inference ledger or report dependencies belong here.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Any
 
-from benchmarks.agentic.count import CountItem
 from benchmarks.agentic.loop import MAX_RETRIES
 from benchmarks.runner import BenchmarkValidationError
+
+
+@dataclass(frozen=True)
+class CountItem:
+    cell: str
+    corpus_id: str
+    tool_model_key: str
+    system: str
+    tools: list[dict[str, Any]] | None
+    messages: list[dict[str, Any]]  # canonical, ids normalized, raw arguments restored
+    calls: list[int]  # message_count of each model call that returned a turn
+    stubbed_tools: list[str]
+    uncounted_calls: int  # calls that returned no turn (a rejected request)
+    raw_argument_calls: int = 0
+    system_prompt_sha256: str = ""
+    tools_sha256: str = ""
 
 
 def is_count_coordinate(value: Any) -> bool:

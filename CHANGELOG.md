@@ -25,14 +25,28 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - The Ollama client for the benchmark's air-gapped arm, with host offline checks
   around every trajectory.
 - The "Air-gapped install" README section.
-- Agentic benchmark grading, first part (development tooling, not part of the
+- Agentic benchmark grading (development tooling, not part of the
   package): the grading criteria, judge prompt, schema, panel, tuning
   questions and probe spec under `docs/benchmarks/`; batch clients for the
   three providers; the probe-suite builder; judge vote records with full
   provenance; Krippendorff's alpha, the G1–G4 gates and the C2/C3 verdicts in
   `python -m benchmarks agentic-score`; normalized token counting per model
   call; and the agentic report. `agentic-grade` and `agentic-count-tokens`
-  follow with the sandbox launcher.
+  share the sandbox launcher and live authorization gate. Scripted end-to-end
+  coverage joins answering, probe workspaces, grading, counting, scoring and
+  report/README generation without provider requests. Judge price snapshots
+  include batch multipliers; `ops/benchmarks/count_tokens_premise_check.py`
+  checks the count endpoint's envelope assumptions before live counting.
+- Grading reserves the standard-rate bound for each batch job and books its
+  actual usage at the batch rate. The full-run budget includes answering and
+  grading costs from the reference pilot.
+- Scoring verifies frozen inputs and runs the registered 10,000 bootstrap draws.
+  G1 checks coverage of 700 held-out slots across 14 probe types. The reference
+  check requires 350 distinct scores. Small scripted runs report their observed
+  accuracy and disclose the coverage shortfall.
+- Token records identify the counter that ran. Scripted counts record the
+  `bytes/4` estimate. Hosted counts record the Anthropic endpoint and model.
+  Resume checks that identity before reusing a count.
 
 ### Changed
 

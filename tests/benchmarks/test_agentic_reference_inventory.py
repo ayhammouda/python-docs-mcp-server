@@ -107,6 +107,11 @@ def _pilot(root, monkeypatch, *, family, seconds=2, discard=False, failed=False,
 
 
 def _gate(root, pilot, monkeypatch, family, error):
+    # These fixtures isolate answering evidence; the full-budget tests exercise the grading reader.
+    monkeypatch.setattr(
+        "benchmarks.grading.preflight.reference_grading_rates",
+        lambda _: {"google": Decimal("0.01")},
+    )
     launcher, docker = _container(root)
     shown = []
     monkeypatch.delenv("CI", raising=False)

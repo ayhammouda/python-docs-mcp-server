@@ -125,7 +125,17 @@ in total. The canonical request user is compact, sorted JSON with `question_id`,
 `version`, `question`, `answer_key`, and `cited_sections`; the system prompt is
 the frozen `key-audit-prompt.md`, and the schema is `key_audit_schema()`. The shared
 `audit_request` function reconstructs it without an index, provider or network.
-This reader support does not implement the pending key-audit worker target.
+The ordinary `agentic-grade --target key-audit` producer uses that same renderer,
+reading the frozen prompt bytes and capturing sections from the supplied docs
+index in read-only mode. It retains each section's URL, version, page, anchor and
+heading. Within the 20,000-character total, short sections stay whole and longer
+sections share the remaining space. The request retains citation order and the
+export contains the exact text sent to the reference. Missing sections or empty
+text fail preparation before the ledger is opened. The full retrieved text is secret-scanned
+before clipping. Normal invocation, settlement and execution receipts apply.
+An existing incompatible item is immutable: rerunning does not upgrade legacy
+items or regenerate their votes. Complete current exports should be produced in
+a fresh run directory when historical evidence is incomplete.
 Legacy inputs without this evidence remain explicitly unverified and ineligible;
 an unsigned but coherent current export can establish internal consistency.
 Captured section text is not independently authenticated against Python's site.

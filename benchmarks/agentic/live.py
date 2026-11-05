@@ -53,6 +53,8 @@ class ProviderPlan:
     spent: Decimal | None  # the money fields are None for an unmetered provider
     cap: Decimal | None
     estimate: Decimal | None  # None without a reference run
+    grading_estimate: Decimal | None = None  # included in estimate when supplied
+    grading_answers: int = 0
 
 
 def reference_rates(run_dir: Path) -> dict[str, ReferenceRate]:
@@ -178,13 +180,19 @@ def provider_plans(
     spent: Mapping[str, Decimal],
     caps: Mapping[str, Decimal],
     rates: Mapping[str, ReferenceRate] | None,
+    grading_rates: Mapping[str, Decimal] | None = None,
 ) -> list[ProviderPlan]:
-    """One plan per provider with live trajectories, sorted by provider."""
+    """Answering plus grading of all planned answers, including judge-only providers."""
     plans = []
     matching = _matching_rates(jobs, rates)
-    for provider, families in sorted(_live_counts(jobs).items()):
+    counts = _live_counts(jobs)
+    answers = sum(len(job.trajectories) for job in jobs)
+    for provider in sorted(counts.keys() | (grading_rates or {}).keys()):
+        families = counts.get(provider, {})
         trajectories = sum(families.values())
         if provider not in caps:  # local and unmetered
+            if grading_rates is not None and provider in grading_rates:
+                raise BenchmarkValidationError(f"grading provider {provider} has no spend cap")
             plans.append(ProviderPlan(provider, trajectories, None, None, None))
             continue
         estimate = None
@@ -192,9 +200,20 @@ def provider_plans(
             estimate = sum(
                 (n * matching[f].usd_per_cell for f, n in families.items()), start=Decimal(0)
             )
+        grading = (
+            None if grading_rates is None else answers * grading_rates.get(provider, Decimal(0))
+        )
+        if estimate is not None and grading is not None:
+            estimate += grading
         plans.append(
             ProviderPlan(
-                provider, trajectories, spent.get(provider, Decimal(0)), caps[provider], estimate
+                provider,
+                trajectories,
+                spent.get(provider, Decimal(0)),
+                caps[provider],
+                estimate,
+                grading,
+                answers if grading is not None else 0,
             )
         )
     return plans
@@ -207,13 +226,15 @@ def full_run_gate(
 ) -> list[str]:
     """Why this live run must not start: cost or time over budget, or no reference run.
 
-    The per-graded-answer term of design §12 comes from PR 5's grading/summary.json.
+    The public entrypoint supplies reconciled grading rates from the pilot artifacts.
     """
     problems = []
     counts = _live_counts(jobs)
     matching = _matching_rates(jobs, rates)
     for plan in plans:
-        if rates is not None and (missing := counts[plan.provider].keys() - matching.keys()):
+        if rates is not None and (
+            missing := counts.get(plan.provider, {}).keys() - matching.keys()
+        ):
             problems.append(
                 f"{plan.provider}: the reference needs measurements from the same model ID "
                 f"and live API for each requested family ({', '.join(sorted(missing))})"
@@ -231,9 +252,15 @@ def full_run_gate(
             continue
         remaining = plan.cap - plan.spent
         if plan.estimate * SAFETY > remaining:
+            breakdown = ""
+            if plan.grading_estimate is not None:
+                breakdown = (
+                    f" (answering ${plan.estimate - plan.grading_estimate} + grading "
+                    f"${plan.grading_estimate} for {plan.grading_answers} planned answers)"
+                )
             problems.append(
                 f"{plan.provider}: the estimate ${plan.estimate} x {SAFETY} = "
-                f"${plan.estimate * SAFETY} is over the ${remaining} left under its cap"
+                f"${plan.estimate * SAFETY} is over the ${remaining} left under its cap{breakdown}"
             )
     for provider_families in counts.values():
         for family_id, trajectories in provider_families.items():
@@ -259,6 +286,11 @@ def confirmation_text(plans: Sequence[ProviderPlan]) -> str:
         if plan.estimate is not None:
             scaled = _dollars(plan.estimate * SAFETY)
             estimate = f"estimate {_dollars(plan.estimate)} (x {SAFETY} = {scaled})"
+            if plan.grading_estimate is not None:
+                estimate += (
+                    f"; answering {_dollars(plan.estimate - plan.grading_estimate)} + "
+                    f"grading {_dollars(plan.grading_estimate)} for {plan.grading_answers} answers"
+                )
         margin = PROVIDER_MARGINS.get(plan.provider)
         lines.append(
             f"{head}; spent ${plan.spent} of cap ${plan.cap}, ${plan.cap - plan.spent} "

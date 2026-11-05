@@ -1,0 +1,10 @@
+rules:
+  - match: ".*"
+    output:
+      explanation: Both criteria are met.
+      attempted: true
+      p1_met: true
+      p2_met: true
+      contradicts_key: false
+      wrong_version: false
+    usage: {prompt_token_count: 100, candidates_token_count: 2}

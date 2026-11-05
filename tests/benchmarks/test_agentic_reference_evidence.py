@@ -234,6 +234,12 @@ def test_legitimate_reference_reaches_authorization_with_measured_estimate(
     launcher, docker = _container(tmp_path)
     shown: list[str] = []
     monkeypatch.delenv("CI", raising=False)
+    # This fixture measures answering. The grading reader is exercised with full pilot artifacts
+    # in test_agentic_full_budget; use a known separate judge cost here.
+    monkeypatch.setattr(
+        "benchmarks.grading.preflight.reference_grading_rates",
+        lambda _: {"google": Decimal("0.01")},
+    )
     with pytest.raises(BenchmarkValidationError, match="not confirmed"):
         run_agentic(
             _live_config(tmp_path, models=("gpt-6.1-sol",), repeats=91, reference_run=pilot),
@@ -658,6 +664,12 @@ def test_produced_hosted_discard_retry_reference_keeps_all_charges(
     launcher, docker = _container(tmp_path)
     shown = []
     monkeypatch.delenv("CI", raising=False)
+    # This fixture measures answering. The grading reader is exercised with full pilot artifacts
+    # in test_agentic_full_budget; use a known separate judge cost here.
+    monkeypatch.setattr(
+        "benchmarks.grading.preflight.reference_grading_rates",
+        lambda _: {"google": Decimal("0.01")},
+    )
     with pytest.raises(BenchmarkValidationError, match="not confirmed"):
         run_agentic(
             _live_config(tmp_path, models=("gpt-6.1-sol",), repeats=1, reference_run=pilot),

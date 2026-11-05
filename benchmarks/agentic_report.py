@@ -1792,11 +1792,14 @@ def _tokens(run: _Run) -> list[str]:
     return [
         "## Normalized tokens",
         "",
-        "Claude Tokens (Normalized Payload), counted after the run with the count model "
-        f"{', '.join(_esc(m) for m in sorted(count_models)) or 'n/a'}. The count-tokens "
-        "endpoint is documented "
-        f"as an estimate. These counts are {NOT_COMPARABLE}. Only python-docs and docs-fetch "
-        "have token rows: the correctness floor injects no documentation.",
+        (
+            "Counts use "
+            + (", ".join(_esc(m) for m in sorted(count_models)) or "an unrecorded method")
+            + ". Scripted counts estimate tokens from UTF-8 length. "
+            + "Anthropic describes its hosted count as an estimate. "
+            + f"These counts are {NOT_COMPARABLE}. Only python-docs and docs-fetch "
+            + "have token rows: the correctness floor injects no documentation."
+        ),
         "",
         *_table(
             ["Model", "System", "Normalized tokens", "Per correct answer", "Docs payload tokens"],

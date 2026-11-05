@@ -41,6 +41,17 @@ add `--live`.
 - This is a recorded departure from design §7.3, which passed keys with `--env-file`
   (#200, ruling A1): Docker stores `-e` and `--env-file` values in the container config.
 
+Grading workers check decoded content and serialized JSON for their own literal key
+and provider key shapes. Settings are checked before requesting a batch reservation;
+items are checked on receipt, before any upload or submission. The host reserves a
+batch unit before delivering its items, so a detected item leak still leaves a held
+unit for conservative teardown settlement. Results are checked before chunking can
+drop raw evidence, and errors before retry decisions. Detection terminates the worker.
+Count workers, including the premise command, check the whole normalized item before
+its first endpoint call, then each envelope and endpoint result or error. Counting
+creates no ledger reservation. SDK authentication headers and private bootstrap
+frames stay outside these content checks.
+
 MCP stdout replies are checked for literal worker credentials and key-shaped strings
 before JSON-RPC parsing, result conversion or tool output-schema validation can drop
 fields. This includes malformed replies, error details, tool listings and handshake
@@ -160,9 +171,22 @@ benchmarks/sandbox/run.sh --models claude-sonnet-5-5,gpt-6.1-sol,gemini-3.8-flas
   --corpus docs/benchmarks/corpus.yml --out <dir> --reference-run <pilot dir> --live
 ```
 
-The full-run gate scales the pilot's cost and time per logical cell (every attempt of a
-cell included) by 1.25. It refuses a provider whose estimate is over its remaining cap and
-a model whose time is over 24 hours. When it refuses, choose fewer repeats or fewer
+Before a hosted full run, grade the pilot's answers and run `agentic-score` (section 12)
+to write `grading/summary.json`. Keep the complete pilot directory: frozen grading
+inputs, answer items, votes, invocation records and ledger events are required alongside
+the answering artifacts. A supplied hosted `--reference-run` requires this evidence even
+when the new run has at most 90 trajectories per provider.
+Invocation filenames must retain their recorded grading run IDs; ledger units and batch
+IDs must be nonblank. Older honest archives without execution receipts remain usable
+for financial estimates when their retained replies, identities and settlements reconcile.
+
+For each provider, the gate adds projected answering cost to projected grading cost for
+**every planned answer**, then multiplies the sum by 1.25 and compares it with the
+remaining durable ledger cap. Judge providers are included even when none of their
+models answer. Confirmation and budget refusals show the answering and grading terms;
+confirmation also shows spent, cap, remaining and the combined estimate. The gate still
+checks each answer model's projected time against its own 24-hour window, including all
+pilot attempts and the 1.25 factor. When it refuses, choose fewer repeats or fewer
 questions before you run, and disclose that choice with the results.
 
 Each scored or discarded transcript records `execution.provider`, `execution.model_id`
@@ -207,6 +231,19 @@ scanned as raw bytes and decoded values before validation can quote them. YAML v
 hidden by aliases or merge overrides and overwritten JSON values are included. Both dry
 and live runs validate an explicit `--reference-run`; a key-shaped value stops the CLI
 with exit 3 before confirmation or any provider call, with no key in the diagnostic.
+Grading rates use reconciled observed provider dollars divided by the pilot's actual
+fully graded answer count, without rounding the projection to the displayed average.
+Missing, pending, scripted, mixed live/scripted, or inconsistent evidence is refused
+before confirmation, key access or worker preparation. Votes must match the pilot's
+rendered answers and their paid batch settlements. A copied summary alone cannot
+authorize a full run. Incomplete grading invocations, unmatched recovery settlements and
+grading with older rendering inputs also require a usable pilot measurement. These
+local files establish consistency; they are not signed provider billing receipts.
+
+Smoke and pilot runs without a reference retain their existing interactive authorization
+and per-unit ledger caps. The separate air-gapped arm keeps its offline checks and
+answer-model time gate; it does not require hosted grading evidence while offline.
+The preflight estimates future grading spend; it does not execute or authorize grading.
 
 ## 9. Artifacts
 
@@ -338,3 +375,166 @@ After cleanup both lists should be empty. A run ID can be reused. If a resource 
 match its full container or network ID, or the exact invocation-specific
 `org.python-docs-mcp.benchmark-resource` label from the cleanup diagnostic, to the
 stopped invocation before removing it by ID.
+
+## 12. Grading workspaces
+
+`uv run --locked python -m benchmarks agentic-grade --help` lists the grading flags.
+Grade an existing answering run with a panel whose efforts have been frozen by tuning:
+
+```bash
+uv run --locked python -m benchmarks agentic-grade --target answers --run-dir <answering dir> \
+  --panel <frozen panel.yml> --probes <probes.yml>
+```
+
+For live judges, this command writes a dry-run plan under `grading/plans/`, with item
+counts, batches, standard-rate reservation bounds and batch-rate estimates. It opens
+no ledger or container. Unfrozen panel efforts are refused, including during planning.
+Scripted judges execute locally; synthetic checks must pass a disposable `--ledger-dir`.
+
+Answering and grading share the durable spend ledger. Its directory must be a real
+directory; `.lock` and every provider `.jsonl` must be regular files with exactly
+one hard link. Symlinks and special files are refused, including links inserted
+after opening. Existing parent aliases (such as macOS `/var`) remain supported.
+Each journal event's provider must match its filename, including legacy histories
+and recovery of pending reservations. Refusal leaves pending spend for a later
+safe reopen; do not discard history to clear an error or reset the caps.
+
+The ledger pins the opened directory through locking, recovery, writes and sync.
+If that directory is renamed during a run, the run continues using the original
+directory and lock. Keep the directory under operator control: the advisory lock
+coordinates cooperating runs; it cannot stop another process with write access
+from altering history or replacing entries during a file operation.
+
+After the pilot's panel and any needed reference grades finish, refresh its scoring
+summary using the same frozen criteria and panel:
+
+```bash
+uv run --locked python -m benchmarks agentic-score --run-dir <pilot dir> \
+  --criteria <criteria.yml> --panel <frozen panel.yml> --g1 <held-out dir>/g1.json
+```
+
+This file-only step writes `grading/summary.json`, including observed provider dollars,
+the graded-answer count and per-provider averages used by the full-run preflight.
+
+For an operator's paid run after merge, add `--launcher container --image <id> --live
+--confirm-max-spend <USD>` and the same `--keys-file` and `--index` options as answering.
+The confirmed amount must cover the plan's total reservation bound. Retries also need
+room in that invocation's allocation and the shared durable provider caps. Live jobs
+refuse under CI and require the interactive authorization before reading keys or
+starting containers. A container invocation without `--live` always plans only.
+
+| Target | Destination | Items |
+|---|---|---|
+| `probe-gen` | `--workspace`, kind `probe-build` | Agent-written slots not already checked successfully |
+| `probe-check` | The same probe-build workspace | Generated probes for `--round` (1–3) |
+| `tuning` | A new workspace, kind `tuning` | Tuning probes, one `--judges` id and `--effort` |
+| `probes` | A new workspace, kind `held-out` | Held-out probes for the frozen panel |
+| `reference-probes` | The same held-out workspace | The reference subset of held-out probes |
+| `answers` | `--run-dir` | Successful, nonempty answers |
+| `reference` | The same answering run | Settlements, suspect answers and the stored G3 sample |
+| `key-audit` | The same answering run, with `--index` | Answer keys and their cited docs sections |
+
+Create a workspace on first use with `--workspace-kind`. Tuning requires `--probes`.
+After `agentic-score --workspace <tuning dir> --step tuning`, create the held-out
+workspace with `--probes` and `--handoff-tuning <tuning dir>/tuning.json` (repeat for
+additional evidence). Frozen efforts must equal the lowest passing tuning efforts.
+New held-out workspaces require source-bearing tuning exports. Creation and every
+grading preflight replay their selected raw attempts with the canonical G1 verifier,
+binding the initial panel settings (apart from the effort being frozen) to the
+selected final models, token bounds and fallback composition. Editing summary
+accuracy, attempts or chosen effort cannot authorize a held-out run. The retained
+`inputs/tuning-questions.yml` contains the real tuning rubric and is checked against
+the workspace's tuning digest; keep the matching tuning input when resuming.
+Creation, explicit selection and resumed preflight use the calibration transport
+reader. It allows 1 GiB per transport, 64 MiB of metadata excluding packed blobs,
+and 2 GiB of expanded source. Individual frozen inputs and source
+members keep their 64 MiB bounds. Typed inspection gives each original source
+string its own decoding budget while retaining exact copied bytes and digests.
+Explicit external file aliases are resolved once before bounded capture. Copied
+workspace handoffs remain confined regular files.
+Use a new tuning workspace for a prompt revision and a new held-out workspace for
+the pre-registered fallback composition (`--judges haiku,luna,flash`). Probe assembly,
+tuning summaries and G1 computation remain the file-only `agentic-score` steps.
+
+Existing archives remain replayable: source exports with sufficient raw replies
+can predate execution receipts. Summary-only historical G1 exports disclose tuning
+attempts as unknown; they cannot bootstrap a new held-out workspace. Do not add
+invented source attempts to upgrade an old summary. These unsigned archives prove
+internal consistency, not provider execution, acceptance or charges. Each real run
+still requires Aymen's own spending confirmation.
+
+Full calibration covers 50 held-out questions across 14 probe types. Each
+of the 700 slots needs a probe or a documented drop under the registered
+drop rules. The reference check requires 25 scores per type, 350 in total.
+A smaller scripted workspace still reports accuracy and coverage. Its G1
+and reference checks remain unevaluable.
+
+Inputs and handoffs are copied and hashed once. An invocation with different frozen
+inputs is refused. Finished votes, including terminal failures, are skipped on rerun;
+unfinished items remain eligible. `reference` waits for a final pass-1 record from
+every panel judge for every answer. `--pass 2` runs test–retest for answers or held-out
+probes while preserving pass 1. Every invocation needs a fresh `--grading-run-id`
+(generated by default), including interrupted or dry invocations.
+
+Grading writes under `<answering dir>/grading/` or the workspace. Votes and item
+inputs remain immutable; `runs/<grading_run_id>.json` discloses spend, withheld records
+and items not run. Container evidence stays in `sandbox/<grading_run_id>/`, preserving
+each invocation and the answering run's original egress, probe and sandbox evidence.
+Exit codes are 0 on success, 2 for validation errors, and 3 for a detected key leak.
+
+## 13. Counting, scoring and reporting
+
+`agentic-count-tokens --run-dir <answering dir>` plans free count calls by default.
+For real counts after merge, add `--launcher container --image <id> --keys-file <path>
+--live`. It uses the same CI refusal and interactive authorization as grading,
+but opens no spend ledger. `--all` recounts every trajectory; the default resumes
+only missing counts or counts from another method. An accepted worker record
+identifies the counter's provider, API and model. A scripted worker records a
+`bytes/4` approximation. A hosted worker records the Anthropic count endpoint
+and model. Legacy records without an execution identity are preserved and
+recounted. Immutable count history and per-invocation evidence stay under
+`grading/`; successful records fill `tokens/`.
+
+After grading and counting, use the file-only commands:
+
+```bash
+uv run --locked python -m benchmarks agentic-score --run-dir <answering dir> \
+  --panel <frozen panel.yml> --criteria <criteria.yml> --g1 <held-out dir>/g1.json
+uv run --locked python -m benchmarks report --run-dir <answering dir>
+```
+
+Scoring verifies the frozen inputs, uses 10,000 bootstrap draws for gates and
+claims, and writes `grading/summary.json` and per-cell scoring provenance. Reporting
+writes `REPORT.md` and `README-SUMMARY.md`; a tier below `Validated` produces no
+public README claim. Missing egress/offline evidence remains not evaluable.
+The offline regression in `tests/benchmarks/test_agentic_grading_e2e.py` exercises
+these entry points with scripted providers and a disposable ledger. It supplies
+`count_family(script=...)` at the test seam; there is no count CLI script flag.
+
+The financial acceptance regression can run without network access, credentials,
+containers or sending signals:
+
+```bash
+uv run --locked --offline pytest -q tests/benchmarks/test_grading_sdk_preflight.py \
+  tests/benchmarks/test_agentic_full_budget.py
+```
+
+The SDK regression runs one answered cell through the ordinary worker, the three
+production batch adapters, `agentic-grade` and `agentic-score`. All SDK traffic uses
+mock transports; launcher/framing and initial authorization are test seams. It
+freezes a test panel's efforts before execution and uses the committed price snapshot.
+The resulting synthetic grading dollars are $0.000135 (Anthropic), $0.0000535
+(OpenAI) and $0.00021375 (Google). The reader reconciles those saved votes,
+invocations and settlements without rewriting them. The full-run gate then scales
+the observed rates to 91 planned answers, includes the answering cost and existing
+durable balances, and receives a declined confirmation. The test checks that the
+pilot evidence and durable journals remain byte-for-byte intact. The financial boundary
+and corruption cases share this mock-transport path, with synthetic flat prices and
+usage that book $0.10 for answering and $0.000060 per grading provider. Every corruption
+starts from a verified portable pilot. A separate scripted pilot tests scripted rejection;
+successful replies for a suspect answer test refusal while its reference grade is missing.
+
+This proves local accounting and artifact compatibility, including unrounded rates
+behind the rounded confirmation display. It is mock evidence, not live spending or
+a provider receipt. It does not verify real authorization, provider acceptance,
+remote batch timing, container isolation, tuned judge quality or a Validated tier.

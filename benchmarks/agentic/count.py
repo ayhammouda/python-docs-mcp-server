@@ -10,32 +10,55 @@ endpoint, after the run, from the stored canonical transcript:
 Tool ids are renamed per turn (``c{turn}_{n}``), a tool name the system never offered
 gets a name-only stub, and a tool call whose raw arguments were not a JSON object is
 counted from its raw text. The endpoint is free, so counting reserves no ledger unit.
+
+``python -m benchmarks agentic-count-tokens --run-dir DIR`` writes a plan. Add
+``--launcher container --image sha256:... --keys-file PATH --live`` to execute,
+after CI refusal and interactive confirmation. ``--index PATH`` selects the docs index;
+``--dry-run`` plans explicitly and ``--all`` recounts even successful records.
+Inputs and result history live under grading/; tokens/ holds the current projection.
+Each container invocation owns grading/sandbox/<count_run_id>/ and never changes
+the answering run's isolation evidence.
 """
 
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import hashlib
 import json
 import math
+import os
+import re
+import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import anthropic
 
 from benchmarks.adapters.claude_tokens import ANTHROPIC_API_VERSION, DEFAULT_COUNT_MODEL
 from benchmarks.adapters.guard import redact_api_keys
-from benchmarks.agentic.clients import anthropic_sdk, tool_arguments
+from benchmarks.agentic import live as live_safety
+from benchmarks.agentic.clients import anthropic_sdk, egress_proxy, tool_arguments
+from benchmarks.agentic.count_evidence import CountItem as CountItem
 from benchmarks.agentic.loop import MAX_RETRIES, RETRYABLE, backoff_s
-from benchmarks.agentic.protocol import KEY_SHAPED
+from benchmarks.agentic.protocol import (
+    KEY_SHAPED,
+    assert_no_key_shaped,
+    assert_no_key_shaped_json,
+    scanned_json_bytes,
+)
 from benchmarks.agentic.schemas import schemas_sha256, to_anthropic
 from benchmarks.agentic.types import ProviderCallError, ToolSpec
-from benchmarks.grading.batch import _call, live_key, scripted_source
+from benchmarks.agentic.worker_ports import TaskChannel, TaskHost
+from benchmarks.grading.batch import _call, check_error_content, live_key, scripted_source
 from benchmarks.model_matrix import METHODOLOGY_TOKEN_LABEL, ModelFamily, model_family_from_raw
 from benchmarks.runner import BenchmarkValidationError
+
+if TYPE_CHECKING:
+    from benchmarks.agentic.host import Launcher
 
 NOTES = (
     "Anthropic count-tokens endpoint, which its docs call an estimate; counted after the run "
@@ -49,22 +72,6 @@ class Envelope:
     system: str
     tools: list[dict[str, Any]] | None  # None: the request omits "tools" (no-docs, no stubs)
     messages: list[dict[str, Any]]
-
-
-@dataclass(frozen=True)
-class CountItem:
-    cell: str
-    corpus_id: str
-    tool_model_key: str
-    system: str
-    tools: list[dict[str, Any]] | None
-    messages: list[dict[str, Any]]  # canonical, ids normalized, raw arguments restored
-    calls: list[int]  # message_count of each model call that returned a turn
-    stubbed_tools: list[str]
-    uncounted_calls: int  # calls that returned no turn (a rejected request)
-    raw_argument_calls: int = 0
-    system_prompt_sha256: str = ""
-    tools_sha256: str = ""
 
 
 def _raw_arguments(provider: str, raw_response: Any) -> list[Any]:
@@ -322,9 +329,10 @@ def make_count_client(
     provider, key = live_key(family)
     if provider != "anthropic":
         raise BenchmarkValidationError("only the Anthropic count-tokens endpoint counts tokens")
-    # shortcut: no egress proxy yet; once PR 4 lands, pass proxy=egress_proxy(os.environ)
-    # as make_client does (PR 5 part 2, Task 9b).
-    return AnthropicCountClient(anthropic_sdk(key, timeout_s, transport=transport), family.model_id)
+    return AnthropicCountClient(
+        anthropic_sdk(key, timeout_s, transport=transport, proxy=egress_proxy(os.environ)),
+        family.model_id,
+    )
 
 
 def _closing(turn: Mapping[str, Any]) -> dict[str, Any]:
@@ -437,3 +445,429 @@ async def count_item(
         "counted_at": _utc_now(),
         "error": error,
     }
+
+
+async def run_count_task(job: dict[str, Any], host: TaskHost, channel: TaskChannel) -> None:
+    """Pull free items; heartbeat after each attempt unless a credential check terminates it."""
+
+    def check(value: object) -> None:
+        scanned_json_bytes(
+            value, where="count provider content", check_content=channel.check_content
+        )
+
+    check(job["family"])
+    family = model_family_from_raw(job["family"])
+    client = make_count_client(family, timeout_s=job["caps"]["model_call_timeout_s"])
+    check(getattr(client, "model_id", family.model_id))
+
+    class HeartbeatClient:
+        _method = _count_method(client)
+
+        async def count(self, envelope: Envelope) -> int:
+            # Check decoded strings too: JSON escaping must not hide a key from the scan.
+            check(_body(envelope))
+            try:
+                tokens = await client.count(envelope)
+            except ProviderCallError as exc:
+                # Detect before count_item can redact, retry, or continue with another item.
+                check_error_content(exc, check_content=channel.check_content)
+                channel.send({"type": "heartbeat"})
+                raise
+            check(tokens)
+            if type(tokens) is not int or tokens < 0:
+                raise BenchmarkValidationError("invalid count endpoint result")
+            channel.send({"type": "heartbeat"})
+            return tokens
+
+    wrapped = HeartbeatClient()
+    while True:
+        reply = await host.request({"type": "next_item"})
+        if reply.get("type") == "no_more_items":
+            break
+        if reply.get("type") != "item":
+            raise BenchmarkValidationError("expected a count item")
+        wire = reply["item"]
+        # Later turns and tool results are available now: refuse the whole item
+        # before even its first (otherwise safe) prefix is sent to the count API.
+        check(wire)
+        if wire.get("kind") == "envelope":
+            record: dict[str, Any] = {"name": wire["name"], "tokens": None, "error": None}
+            try:
+                record["tokens"] = await wrapped.count(Envelope(**wire["envelope"]))
+            except ProviderCallError as exc:
+                record.update(error=_redacted(exc), status=exc.status)
+            frame = {"type": "counted", "item_id": wire["item_id"], **record}
+        elif wire.get("kind") == "trajectory":
+            record = await count_item(wrapped, CountItem(**wire["item"]))
+            frame = {"type": "counted", "item_id": wire["item_id"], "record": record}
+        else:
+            raise BenchmarkValidationError("unknown count item kind")
+        channel.send(frame)
+    channel.send({"type": "done"})
+
+
+def _identifier(value: Any) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,240}", value):
+        raise BenchmarkValidationError("invalid count coordinate")
+    assert_no_key_shaped(value, where="count coordinate")
+    return value
+
+
+def _coordinate(value: Any) -> str:
+    # Import lazily: count_evidence also validates CountItem results from this module.
+    from benchmarks.agentic.count_evidence import is_count_coordinate
+
+    if not is_count_coordinate(value):
+        raise BenchmarkValidationError("invalid count coordinate")
+    assert_no_key_shaped(value, where="count coordinate")
+    return value
+
+
+def _json_bytes(value: object) -> bytes:
+    return scanned_json_bytes(value, where="count evidence", sort_keys=True, indent=2) + b"\n"
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    body = path.read_bytes()
+    assert_no_key_shaped(body, where="count input")
+
+    def checked_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        # A duplicate field must not shadow a decoded, escaped credential.
+        assert_no_key_shaped_json(pairs, where="count input")
+        if len(dict(pairs)) != len(pairs):
+            raise BenchmarkValidationError("duplicate count input fields")
+        return dict(pairs)
+
+    record = json.loads(body, object_pairs_hook=checked_pairs)
+    assert_no_key_shaped_json(record, where="count input")
+    if not isinstance(record, dict):
+        raise BenchmarkValidationError("count evidence must be an object")
+    return record
+
+
+def _publish(path: Path, body: bytes, *, replace: bool = False) -> None:
+    """Publish complete evidence, exclusively unless updating the token projection."""
+    from tempfile import TemporaryDirectory
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(dir=path.parent) as directory:
+        stage = Path(directory) / "record"
+        stage.write_bytes(body)
+        if replace:
+            os.replace(stage, path)
+        else:
+            os.link(stage, path)
+
+
+def _freeze(path: Path, record: object) -> None:
+    body = _json_bytes(record)
+    if path.exists():
+        if path.read_bytes() != body:
+            raise BenchmarkValidationError("immutable count inputs differ")
+    else:
+        _publish(path, body)
+
+
+def _count_inputs(run_dir: Path) -> tuple[dict[str, Any], dict[str, CountItem]]:
+    prompt = (run_dir / "snapshots/system-prompt.txt").read_text(encoding="utf-8")
+    assert_no_key_shaped(prompt, where="count prompt")
+    items: dict[str, CountItem] = {}
+    frozen: dict[str, Any] = {}
+    for path in sorted((run_dir / "scoring").glob("*/*.json")):
+        cell, qid = _coordinate(path.parent.name), _coordinate(path.stem)
+        score = _read_json(path)
+        transcript_path = run_dir / "transcripts" / cell / f"{qid}.json"
+        transcript = _read_json(transcript_path)
+        for record in (score, transcript):
+            if (record.get("competitor_id"), record.get("corpus_id")) != (cell, qid):
+                raise BenchmarkValidationError("count coordinates disagree with answering evidence")
+            if record.get("tool_model_key") != transcript.get("tool_model_key"):
+                raise BenchmarkValidationError("count tool-model coordinate mismatch")
+        system = _coordinate(transcript["system_id"])
+        model = _coordinate(transcript["model_family_id"])
+        repeat = transcript["repeat"]
+        if type(repeat) is not int or repeat < 1 or cell != f"{system}--{model}--r{repeat}":
+            raise BenchmarkValidationError("invalid answering cell coordinate")
+        if transcript.get("status") not in ("succeeded", "failed"):
+            raise BenchmarkValidationError("only scored trajectories may be counted")
+        system_path = run_dir / "systems" / f"{model}--{system}.json"
+        info = _read_json(system_path)
+        item = count_item_from_transcript(
+            transcript, system_prompt=prompt, tools_raw=info["tools_raw"]
+        )
+        for position in item.calls:
+            if (
+                type(position) is not int
+                or not 0 < position < len(item.messages)
+                or item.messages[position]["role"] != "assistant"
+                or item.messages[position - 1]["role"] != "user"
+            ):
+                raise BenchmarkValidationError("invalid count call position")
+        if item.calls != sorted(set(item.calls)):
+            raise BenchmarkValidationError("duplicate or unordered count calls")
+        key = hashlib.sha256(f"{cell}/{qid}".encode()).hexdigest()
+        items[key] = item
+        frozen[key] = {
+            "item": asdict(item),
+            "transcript_sha256": hashlib.sha256(transcript_path.read_bytes()).hexdigest(),
+            "system_sha256": hashlib.sha256(system_path.read_bytes()).hexdigest(),
+        }
+    if not items:
+        raise BenchmarkValidationError("counting requires scored answering cells")
+    return frozen, items
+
+
+def planned_count_calls(item: CountItem) -> int:
+    from benchmarks.agentic.count_evidence import planned_count_calls as planned
+
+    return planned(item)
+
+
+def _assigned_method(family: ModelFamily) -> _CountMethod:
+    if family.provider != "anthropic" or family.api not in ("scripted", "anthropic-messages"):
+        raise BenchmarkValidationError("counting requires the Anthropic count endpoint or a script")
+    return _SCRIPTED_METHOD if family.api == "scripted" else _anthropic_method(family.model_id)
+
+
+def _validate_record(record: Any, item: CountItem, family: ModelFamily) -> None:
+    _validate_count_fields(record, item, _assigned_method(family).record_fields())
+
+
+def _validate_count_fields(record: Any, item: CountItem, method_fields: dict[str, Any]) -> None:
+    from benchmarks.agentic.count_evidence import validate_count_fields
+
+    validate_count_fields(record, item, method_fields)
+
+
+def _previous(
+    run_dir: Path, root: Path, items: Mapping[str, CountItem]
+) -> dict[str, dict[str, Any]]:
+    # Receipts bind every archived result, including unsuccessful reruns, to its bytes.
+    for path in (root / "count-runs").glob("*.json"):
+        summary = _read_json(path)
+        for relative, digest in summary["results"].items():
+            archived = root / "counts" / _identifier(path.stem) / relative
+            # Receipt paths are always two safe coordinates, never worker supplied paths.
+            parts = relative.split("/")
+            if len(parts) != 2 or not parts[1].endswith(".json"):
+                raise BenchmarkValidationError("invalid count receipt coordinate")
+            _coordinate(parts[0])
+            _coordinate(parts[1][:-5])
+            if hashlib.sha256(archived.read_bytes()).hexdigest() != digest:
+                raise BenchmarkValidationError("immutable count result differs")
+    previous = {}
+    for key, item in items.items():
+        path = run_dir / "tokens" / item.cell / f"{item.corpus_id}.json"
+        if not path.exists():
+            continue
+        row = _read_json(path)
+        if row.get("status") == "placeholder":
+            if any(
+                row.get(k) != v
+                for k, v in {
+                    "competitor_id": item.cell,
+                    "corpus_id": item.corpus_id,
+                    "tool_model_key": item.tool_model_key,
+                }.items()
+            ):
+                raise BenchmarkValidationError("placeholder count coordinates differ")
+            continue
+        archived = (
+            root
+            / "counts"
+            / _identifier(row.get("count_run_id"))
+            / item.cell
+            / f"{item.corpus_id}.json"
+        )
+        if archived.read_bytes() != path.read_bytes():
+            raise BenchmarkValidationError("token projection differs from immutable count result")
+        # Historical projections belong to their original invocation. Pre-provenance
+        # rows can be read and recounted, but never satisfy a new assignment.
+        model = row.get("count_model")
+        if not isinstance(model, str) or not model:
+            raise BenchmarkValidationError("missing archived count model")
+        if row.get("execution") == _SCRIPTED_METHOD.record_fields()["execution"]:
+            fields = _SCRIPTED_METHOD.record_fields()
+        else:
+            fields = _anthropic_method(model).record_fields()
+            if "execution" not in row:
+                del fields["execution"]  # validate the original format without upgrading the row
+        _validate_count_fields(row, item, fields)
+        previous[key] = row
+    return previous
+
+
+def run_counting(
+    run_dir: Path,
+    *,
+    live: bool,
+    family: ModelFamily | None = None,
+    launcher: Launcher | None = None,
+    only_missing: bool = True,
+    confirm: Callable[[str], bool] = live_safety.interactive_confirm,
+    dry_run: bool = False,
+    count_run_id: str | None = None,
+) -> dict[str, Any]:
+    """Count scored cells through one isolated worker, with immutable input/result history.
+
+    tokens/ is the current projection. A failed recount never replaces a successful count;
+    every attempt remains under grading/counts/<invocation>/. No ledger is opened.
+    """
+    from benchmarks.agentic.cleanup import until_signalled as _until_signalled
+    from benchmarks.agentic.host import (
+        GRADING_CAPS,
+        GRADING_SYSTEM,
+        ItemSource,
+        LocalLauncher,
+        WorkerJob,
+        refuse_host_keys,
+        run_jobs,
+    )
+    from benchmarks.agentic.ledger import PlannedItem
+
+    refuse_host_keys(os.environ)
+    run_dir = Path(run_dir)
+    family = family or count_family()
+    execution = _assigned_method(family).record_fields()["execution"]
+    ident = _identifier(count_run_id if count_run_id is not None else uuid.uuid4().hex)
+    root = run_dir / "grading"
+    try:
+        if not run_dir.is_dir() or run_dir.is_symlink():
+            raise BenchmarkValidationError("counting requires an answering run directory")
+        root.mkdir(exist_ok=True)
+        fd = os.open(root, os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            for directory in (
+                root,
+                run_dir / "tokens",
+                run_dir / "scoring",
+                run_dir / "systems",
+                run_dir / "transcripts",
+                run_dir / "snapshots",
+            ):
+                for path in [directory, *directory.rglob("*")]:
+                    if path.is_symlink() or (
+                        path.exists() and not (path.is_dir() or path.is_file())
+                    ):
+                        raise BenchmarkValidationError(
+                            "count evidence must be regular files and directories"
+                        )
+            frozen, items = _count_inputs(run_dir)
+            _freeze(root / "count-inputs.json", frozen)
+            previous = _previous(run_dir, root, items)
+            pending = {
+                k: i
+                for k, i in items.items()
+                if not (
+                    only_missing
+                    and k in previous
+                    and previous[k]["status"] == "counted"
+                    and previous[k].get("execution") == execution
+                )
+            }
+            summary: dict[str, Any] = {
+                "count_run_id": ident,
+                "items": len(pending),
+                "count_calls": sum(planned_count_calls(i) for i in pending.values()),
+                "dry_run": dry_run or (family.api != "scripted" and not live),
+                "units": [],
+                "records_written": 0,
+                "not_run": [],
+                "worker_errors": [],
+                "results": {},
+            }
+            claim = root / "count-invocations" / ident
+            claim.parent.mkdir(exist_ok=True)
+            claim.mkdir()  # never reuse an invocation, even if it died before its first result
+            if summary["dry_run"]:
+                _freeze(claim / "plan.json", summary)
+                return summary
+            if family.api != "scripted":
+                if launcher is None or not launcher.supports(family):
+                    raise BenchmarkValidationError("live counting requires the container launcher")
+                live_safety.authorize_live(
+                    f"{summary['count_calls']} planned count calls (before retries); free "
+                    "Anthropic count-tokens endpoint; no ledger unit.",
+                    confirm=confirm,
+                )
+            source = ItemSource(
+                [
+                    (PlannedItem(k, 0, 0, 0), {"kind": "trajectory", "item": asdict(i)})
+                    for k, i in pending.items()
+                ]
+            )
+            job = WorkerJob(
+                "token-counter--grading",
+                family,
+                GRADING_SYSTEM,
+                (),
+                GRADING_CAPS,
+                task="items",
+                source=source,
+            )
+
+            async def collect(job: WorkerJob, message: dict[str, Any]) -> None:
+                kind = message["type"]
+                if kind in ("item_not_run", "worker_error"):
+                    summary["not_run" if kind == "item_not_run" else "worker_errors"].append(
+                        message
+                    )
+                if kind != "counted":
+                    return
+                key = message["item_id"]
+                item = pending[key]
+                record = message["record"]
+                _validate_record(record, item, family)
+                record = {
+                    **record,
+                    "count_run_id": ident,
+                    "input_sha256": hashlib.sha256(_json_bytes(frozen[key])).hexdigest(),
+                }
+                body = _json_bytes(record)
+                relative = f"{item.cell}/{item.corpus_id}.json"
+                _publish(root / "counts" / ident / relative, body)
+                summary["results"][relative] = hashlib.sha256(body).hexdigest()
+                summary["records_written"] += 1
+                summary["count_calls"] += record["count_calls"]
+                if (
+                    record["status"] == "counted"
+                    or previous.get(key, {}).get("status") != "counted"
+                ):
+                    _publish(run_dir / "tokens" / relative, body, replace=True)
+
+            summary.update(status="aborted", started_at=_utc_now(), count_calls=0)
+            try:
+                # Refuse edits made while the plan/authorization was being prepared.
+                if _count_inputs(run_dir)[0] != frozen:
+                    raise BenchmarkValidationError("immutable count inputs differ")
+                if pending:
+                    asyncio.run(
+                        _until_signalled(
+                            run_jobs(
+                                [job],
+                                launcher=launcher or LocalLauncher(),
+                                ledger=None,
+                                on_message=collect,
+                                log_dir=root / "count-logs" / ident,
+                                cwd=Path(__file__).resolve().parents[2],
+                            )
+                        )
+                    )
+                summary["status"] = (
+                    "completed"
+                    if not summary["not_run"] and not summary["worker_errors"]
+                    else "partial"
+                )
+            finally:
+                summary["completed_at"] = _utc_now()
+                _publish(root / "count-runs" / f"{ident}.json", _json_bytes(summary))
+            return summary
+        finally:
+            os.close(fd)
+    except BenchmarkValidationError:
+        raise
+    except (OSError, KeyError, TypeError, ValueError, IndexError, AttributeError) as exc:
+        raise BenchmarkValidationError(
+            f"invalid or unavailable count input ({type(exc).__name__})"
+        ) from exc

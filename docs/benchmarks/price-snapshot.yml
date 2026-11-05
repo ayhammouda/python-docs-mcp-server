@@ -1,8 +1,9 @@
 # Price snapshot for the agentic benchmark's spend ledger.
 #
 # Context: docs/benchmarks/AGENTIC-BENCHMARK-DESIGN.md sections 8 and 12.
-# Every value comes from the research note named in `source`, which quotes
-# the vendor page each `source_url` points at. Rates are USD per million
+# Answering rates come from the October 31 note in `source`. Judge rates and
+# batch discounts come from the November 4 grading note below. Each model
+# cites its vendor page in `source_url`. Rates are USD per million
 # tokens, written as strings so they load as exact decimals.
 #
 # Each tier applies up to `up_to_input_tokens` total input tokens; the last
@@ -24,6 +25,7 @@ source: docs/research/2026-10-31-benchmark-provider-limits.md
 models:
   - model_id: claude-sonnet-5-5
     provider: anthropic
+    batch_multiplier: "0.5"
     source_url: https://platform.claude.com/docs/en/about-claude/pricing
     tiers:
       - up_to_input_tokens: null
@@ -36,6 +38,7 @@ models:
 
   - model_id: gpt-6.1-sol
     provider: openai
+    batch_multiplier: "0.5"
     source_url: https://developers.openai.com/api/docs/pricing
     tiers:
       - up_to_input_tokens: 272000
@@ -54,6 +57,7 @@ models:
 
   - model_id: gemini-3.8-flash
     provider: google
+    batch_multiplier: "0.5"
     source_url: https://ai.google.dev/gemini-api/docs/pricing
     tiers:
       - up_to_input_tokens: null
@@ -63,3 +67,59 @@ models:
         cache_write: "0"
         cached_input: "0.075"
         output: "3.75"
+
+  # Judge rates and batch discounts: docs/research/2026-11-04-grading-batch-apis-and-judge-models.md §§A–E.
+  - model_id: claude-haiku-5-5
+    provider: anthropic
+    source_url: https://platform.claude.com/docs/en/about-claude/pricing
+    batch_multiplier: "0.5"
+    # Pricing page: derived 1-hour writes at 2× input and cache hits at 0.1× input.
+    tiers:
+      - up_to_input_tokens: 100000
+        input: ".10"
+        cache_write: ".20"
+        cached_input: ".01"
+        output: ".50"
+      - up_to_input_tokens: null
+        input: ".50"
+        cache_write: "1.00"
+        cached_input: ".05"
+        output: "2.50"
+
+  - model_id: claude-opus-5-5
+    provider: anthropic
+    source_url: https://platform.claude.com/docs/en/about-claude/pricing
+    batch_multiplier: "0.5"
+    tiers:
+      - up_to_input_tokens: null
+        input: "4"
+        cache_write: "8"
+        cached_input: ".20"
+        output: "20"
+
+  - model_id: gpt-6-luna
+    provider: openai
+    source_url: https://developers.openai.com/api/docs/pricing
+    batch_multiplier: "0.5"
+    tiers:
+      - up_to_input_tokens: 272000
+        input: ".10"
+        cache_write: ".125"
+        cached_input: ".01"
+        output: ".50"
+      - up_to_input_tokens: null
+        input: ".20"
+        cache_write: ".25"
+        cached_input: ".02"
+        output: ".75"
+
+  - model_id: gemini-3.1-flash-lite
+    provider: google
+    source_url: https://ai.google.dev/gemini-api/docs/pricing
+    batch_multiplier: "0.5"
+    tiers:
+      - up_to_input_tokens: null
+        input: ".25"
+        cache_write: "0"
+        cached_input: ".025"
+        output: "1.50"
