@@ -1,7 +1,8 @@
 # Release process
 
 The project owner releases under the 2026-10-30 amendment and, for v0.5.0,
-the 2026-11-04 delegation and the 2026-11-07 handover in
+the 2026-11-04 delegation, the 2026-11-07 handover to Claude Code and the
+later 2026-11-07 handback to Codex in
 `AGENT-EXECUTION-PIPELINE.md`. Release eligibility fails closed. Do not bypass
 or disable checks.
 
