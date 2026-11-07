@@ -7,7 +7,7 @@
 **OpenClaw operating layer:** [`OPENCLAW-FORGE-PROTOCOL.md`](OPENCLAW-FORGE-PROTOCOL.md) was retired on 2026-10-30 and is kept as history; it has no authority.
 
 **Adopted:** 2026-05-29
-**Current authority:** For v0.5.0 read the [2026-11-04 delegation](#amendment-2026-11-04--v050-owner-delegation) together with [Amendment 2026-10-30](#amendment-2026-10-30--ownership-transferred-to-the-claude-code-owner)
+**Current authority:** For v0.5.0 read the [2026-11-07 handover](#amendment-2026-11-07--v050-owner-handover-to-claude-code) and the [2026-11-04 delegation](#amendment-2026-11-04--v050-owner-delegation) together with [Amendment 2026-10-30](#amendment-2026-10-30--ownership-transferred-to-the-claude-code-owner)
 first. It supersedes conflicting historical restrictions and earlier amendments below.
 
 ---
@@ -628,4 +628,28 @@ of the implementation.
 
 Aymen supplies the interactive confirmation for each paid benchmark
 run. The existing spending caps, quality gates and escalation rules apply.
+After v0.5.0 release verification, the 2026-10-30 owner designation applies.
+
+## Amendment 2026-11-07 — v0.5.0 owner handover to Claude Code
+
+On 2026-11-07 Aymen handed the v0.5.0 project owner role from Codex to a
+Claude Code orchestrator session, for the rest of the v0.5.0 benchmark
+delivery through release verification. The scope and gates of the 2026-11-04
+delegation and the 2026-10-30 amendment are unchanged; only the owner identity
+changes. Public owner comments identify “Claude Code — v0.5.0 project owner,
+acting for Aymen”.
+
+Aymen instructed the owner session to run the remaining paid benchmark stages
+autonomously. For v0.5.0 the owner session supplies the interactive
+confirmation for each paid run, within the cumulative shared-ledger caps of
+Anthropic $180, OpenAI $65 and Google $180, inside the 2026-10-30 credit. The
+owner records each run's planned bound and actual ledger spend on issue #63,
+and escalates to Aymen before any run whose bound would exceed the remaining
+cap. For v0.5.0 only, this supersedes the 2026-11-04 sentence that Aymen
+supplies each confirmation.
+
+Codex and Claude Code sessions may still implement on isolated branches or
+review. An implementing session still cannot act as owner for its PR, and all
+three reviewers stay independent of the implementation.
+
 After v0.5.0 release verification, the 2026-10-30 owner designation applies.
