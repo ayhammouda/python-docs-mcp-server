@@ -7,7 +7,7 @@ header:
   criteria_sha256: bf93d3242ba9c50dab21226870471de8f2bc591d41bb0ccde0c3adef6b8a4c7b
   corpus_sha256: 47959b1c3d4d1e56dd7b7c9eb4c745784867185839cc1d803a64de6f939364f8
   tuning_sha256: 65d15cfebaf6bd7c873d130b1db81999c80b4a59a21201e616d95c222c75f8a0
-  spec_sha256: 93347b6542c16c3de7dc4dceeff82694b6208049dbaebe22c4c94efbfaab4dd3
+  spec_sha256: f42b929bcef3285fb80e2e972e1895fad48cad14afe45722e7bb3429636e64f0
   index_sha256: fixture-without-an-index
 probes:
 - id: KEY--SYN-EX-001
