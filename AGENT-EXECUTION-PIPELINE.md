@@ -8,7 +8,7 @@
 
 **Adopted:** 2026-05-29
 **Current authority:** For v0.5.0 read the [2026-11-07 handover](#amendment-2026-11-07--v050-owner-handover-to-claude-code) and the [2026-11-04 delegation](#amendment-2026-11-04--v050-owner-delegation) together with [Amendment 2026-10-30](#amendment-2026-10-30--ownership-transferred-to-the-claude-code-owner)
-first. It supersedes conflicting historical restrictions and earlier amendments below.
+first. Together they supersede conflicting historical restrictions and earlier amendments below.
 
 ---
 
@@ -636,17 +636,27 @@ On 2026-11-07 Aymen handed the v0.5.0 project owner role from Codex to a
 Claude Code orchestrator session, for the rest of the v0.5.0 benchmark
 delivery through release verification. The scope and gates of the 2026-11-04
 delegation and the 2026-10-30 amendment are unchanged; only the owner identity
-changes. Public owner comments identify “Claude Code — v0.5.0 project owner,
-acting for Aymen”.
+and the per-run confirmation described below change. Public owner comments
+identify “Claude Code — v0.5.0 project owner, acting for Aymen”.
 
 Aymen instructed the owner session to run the remaining paid benchmark stages
 autonomously. For v0.5.0 the owner session supplies the interactive
-confirmation for each paid run, within the cumulative shared-ledger caps of
-Anthropic $180, OpenAI $65 and Google $180, inside the 2026-10-30 credit. The
-owner records each run's planned bound and actual ledger spend on issue #63,
-and escalates to Aymen before any run whose bound would exceed the remaining
-cap. For v0.5.0 only, this supersedes the 2026-11-04 sentence that Aymen
-supplies each confirmation.
+confirmation for each paid run, within the durable shared ledger's cumulative
+caps (`PROVIDER_CAPS` in `benchmarks/agentic/ledger.py`) of Anthropic $180,
+OpenAI $65 and Google $180, inside the 2026-10-30 credit. The owner records
+each run's planned bound and actual ledger spend on issue #63, and escalates
+to Aymen before any run whose bound would exceed the remaining cap. For
+v0.5.0 only, this supersedes the 2026-11-04 sentence that Aymen supplies each
+confirmation.
+
+The owner first reads the command's dry plan. It then runs the same
+documented command with `--live` under a pseudo-terminal helper. The helper
+copies the gate's printed text to the run log and answers `yes` only when
+every printed provider line shows a planned bound within its remaining cap,
+and `no` otherwise. The owner never passes a `confirm` override, changes
+`CI`, or edits the gate. Paid runs use the default shared ledger, with no
+`--ledger-dir`, and the owner checks the printed spent figures against the
+running total on issue #63.
 
 Codex and Claude Code sessions may still implement on isolated branches or
 review. An implementing session still cannot act as owner for its PR, and all
