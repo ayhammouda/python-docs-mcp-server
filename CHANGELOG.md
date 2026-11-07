@@ -47,6 +47,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Token records identify the counter that ran. Scripted counts record the
   `bytes/4` estimate. Hosted counts record the Anthropic endpoint and model.
   Resume checks that identity before reusing a count.
+- The assembled grading probe suite, `docs/benchmarks/grading/probes.yml`
+  (development tooling, not part of the package): 696 held-out probes with
+  four documented drops, and 140 tuning probes.
 
 ### Changed
 
