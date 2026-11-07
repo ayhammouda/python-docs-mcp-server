@@ -7,8 +7,8 @@
 **OpenClaw operating layer:** [`OPENCLAW-FORGE-PROTOCOL.md`](OPENCLAW-FORGE-PROTOCOL.md) was retired on 2026-10-30 and is kept as history; it has no authority.
 
 **Adopted:** 2026-05-29
-**Current authority:** For v0.5.0 read the [2026-11-04 delegation](#amendment-2026-11-04--v050-owner-delegation) together with [Amendment 2026-10-30](#amendment-2026-10-30--ownership-transferred-to-the-claude-code-owner)
-first. It supersedes conflicting historical restrictions and earlier amendments below.
+**Current authority:** For v0.5.0 read the [2026-11-07 handover](#amendment-2026-11-07--v050-owner-handover-to-claude-code) and the [2026-11-04 delegation](#amendment-2026-11-04--v050-owner-delegation) together with [Amendment 2026-10-30](#amendment-2026-10-30--ownership-transferred-to-the-claude-code-owner)
+first. Together they supersede conflicting historical restrictions and earlier amendments below.
 
 ---
 
@@ -628,4 +628,58 @@ of the implementation.
 
 Aymen supplies the interactive confirmation for each paid benchmark
 run. The existing spending caps, quality gates and escalation rules apply.
+After v0.5.0 release verification, the 2026-10-30 owner designation applies.
+
+## Amendment 2026-11-07 — v0.5.0 owner handover to Claude Code
+
+On 2026-11-07 Aymen handed the v0.5.0 project owner role from Codex to a
+Claude Code orchestrator session, for the rest of the v0.5.0 benchmark
+delivery through release verification. The scope and gates of the 2026-11-04
+delegation and the 2026-10-30 amendment are unchanged; only the owner identity
+and the per-run confirmation described below change. Public owner comments
+identify “Claude Code — v0.5.0 project owner, acting for Aymen”.
+
+Aymen instructed the owner session to run the remaining paid benchmark stages
+autonomously. For v0.5.0 the owner session supplies the interactive
+confirmation for each paid run, within the durable shared ledger's cumulative
+caps (`PROVIDER_CAPS` in `benchmarks/agentic/ledger.py`) of Anthropic $180,
+OpenAI $65 and Google $180, inside the 2026-10-30 credit. The owner records
+each run's planned bound and actual ledger spend on issue #63, and escalates
+to Aymen before any run whose bound would exceed the remaining cap. For
+v0.5.0 only, this supersedes the 2026-11-04 sentence that Aymen supplies each
+confirmation.
+
+The owner first reads the command's dry plan. It then runs the same
+documented command with the same workload and budget options, adding `--live`,
+a new empty output directory where the command writes one, a fresh grading run
+id where one is given, and, for grading, `--confirm-max-spend` of at least the
+plan's total bound. It runs the command under a pseudo-terminal helper. The
+helper copies the gate's printed text to the run log and answers `yes` only
+when every metered provider line passes its rule, and `no` otherwise:
+
+- a grading prompt (`agentic-grade`): the planned standard-rate bound is
+  within the remaining cap;
+- an answering run with a reference run (`agentic-run`, full run): the
+  `x 1.25` estimate is within the remaining cap;
+- an answering run without a reference run (smoke, pilot): the whole
+  remaining cap counts as the bound, which the ledger enforces by stopping at
+  the cap. Before such a run the owner posts its planned trajectories on
+  issue #63.
+
+The helper also answers `no` when any printed spent figure is below the
+running total recorded on issue #63; the owner then escalates to Aymen.
+Unmetered local lines carry no spend and are skipped. A live command that
+prints no metered line at all (free token counting, the offline arm) is not a
+paid run. The owner confirms it with the same helper, in an explicit free-run
+mode, after reading its dry plan.
+
+This replaces the person at the prompt for v0.5.0 only. The `CI` refusal, the
+TTY check and their tests stay as they are. The owner never replaces the
+`confirm` callable (the test seam), changes `CI`, or edits the gate. Paid runs
+use the default shared ledger, with no `--ledger-dir`.
+
+Codex and Claude Code sessions may still implement on isolated branches or
+review. An implementing session still cannot act as owner for its PR, and all
+three reviewers stay independent of the implementation.
+
 After v0.5.0 release verification, the 2026-10-30 owner designation applies.
