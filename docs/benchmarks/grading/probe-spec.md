@@ -30,7 +30,7 @@ Rewrite the answer key with only the content of criterion 2 removed. Keep criter
 
 ## VER
 
-Rewrite the answer key with its version attribution changed: attribute the behaviour to a different Python version. For a question about a pair of versions, swap the two versions. Keep everything else.
+Rewrite the answer key so that it makes a version error, and keep everything else. For a question about a pair of versions, swap the two versions. For a question about one version, say that the behaviour is new in a Python version later than the question's version, so the probe denies that it holds in the version asked about. The version claim must be false for the version asked about: never name a version, or an "as of" or "starting in" version, under which the statement would still be true there.
 
 ## FACT
 
