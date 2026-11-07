@@ -650,13 +650,33 @@ v0.5.0 only, this supersedes the 2026-11-04 sentence that Aymen supplies each
 confirmation.
 
 The owner first reads the command's dry plan. It then runs the same
-documented command with `--live` under a pseudo-terminal helper. The helper
-copies the gate's printed text to the run log and answers `yes` only when
-every printed provider line shows a planned bound within its remaining cap,
-and `no` otherwise. The owner never passes a `confirm` override, changes
-`CI`, or edits the gate. Paid runs use the default shared ledger, with no
-`--ledger-dir`, and the owner checks the printed spent figures against the
-running total on issue #63.
+documented command with the same workload and budget options, adding `--live`,
+a new empty output directory where the command writes one, a fresh grading run
+id where one is given, and, for grading, `--confirm-max-spend` of at least the
+plan's total bound. It runs the command under a pseudo-terminal helper. The
+helper copies the gate's printed text to the run log and answers `yes` only
+when every metered provider line passes its rule, and `no` otherwise:
+
+- a grading prompt (`agentic-grade`): the planned standard-rate bound is
+  within the remaining cap;
+- an answering run with a reference run (`agentic-run`, full run): the
+  `x 1.25` estimate is within the remaining cap;
+- an answering run without a reference run (smoke, pilot): the whole
+  remaining cap counts as the bound, which the ledger enforces by stopping at
+  the cap. Before such a run the owner posts its planned trajectories on
+  issue #63.
+
+The helper also answers `no` when any printed spent figure is below the
+running total recorded on issue #63; the owner then escalates to Aymen.
+Unmetered local lines carry no spend and are skipped. A live command that
+prints no metered line at all (free token counting, the offline arm) is not a
+paid run. The owner confirms it with the same helper, in an explicit free-run
+mode, after reading its dry plan.
+
+This replaces the person at the prompt for v0.5.0 only. The `CI` refusal, the
+TTY check and their tests stay as they are. The owner never replaces the
+`confirm` callable (the test seam), changes `CI`, or edits the gate. Paid runs
+use the default shared ledger, with no `--ledger-dir`.
 
 Codex and Claude Code sessions may still implement on isolated branches or
 review. An implementing session still cannot act as owner for its PR, and all
