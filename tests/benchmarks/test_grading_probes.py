@@ -12,7 +12,9 @@ from typing import Any
 import pytest
 
 from benchmarks.grading.inputs import (
+    CRITERIA_PATH,
     PROBE_SPEC_PATH,
+    PROBES_PATH,
     TUNING_PATH,
     Criterion,
     GradingQuestion,
@@ -26,6 +28,7 @@ from benchmarks.grading.probes import (
     CODE_BUILT,
     PROBE_SCHEMA,
     PROBE_TYPES,
+    REFERENCE_PER_TYPE,
     Probe,
     ProbeFile,
     assemble,
@@ -287,6 +290,13 @@ def test_probes_sample_fixture_header_matches_its_inputs() -> None:
         expected = expected_grade(probe.type, questions[probe.question_id])
         assert (probe.expected_score, probe.expected_label) == expected
     assert Counter(p.set for p in loaded.probes) == {"held_out": 28, "tuning": 14}
+
+
+def test_committed_probe_suite_matches_the_repo_inputs() -> None:
+    loaded = load_probe_file(PROBES_PATH, criteria_path=CRITERIA_PATH, tuning_path=TUNING_PATH)
+    assert loaded.header["spec_sha256"] == hashlib.sha256(PROBE_SPEC_PATH.read_bytes()).hexdigest()
+    held_out = Counter(p.type for p in loaded.probes if p.set == "held_out")
+    assert all(held_out[t] >= REFERENCE_PER_TYPE for t in PROBE_TYPES), held_out
 
 
 def _held_out(n_per_type: int) -> list[Probe]:
