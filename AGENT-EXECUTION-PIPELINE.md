@@ -7,7 +7,7 @@
 **OpenClaw operating layer:** [`OPENCLAW-FORGE-PROTOCOL.md`](OPENCLAW-FORGE-PROTOCOL.md) was retired on 2026-10-30 and is kept as history; it has no authority.
 
 **Adopted:** 2026-05-29
-**Current authority:** For v0.5.0 read the [2026-11-07 handover](#amendment-2026-11-07--v050-owner-handover-to-claude-code) and the [2026-11-04 delegation](#amendment-2026-11-04--v050-owner-delegation) together with [Amendment 2026-10-30](#amendment-2026-10-30--ownership-transferred-to-the-claude-code-owner)
+**Current authority:** For v0.5.0 read the [2026-11-07 handback to Codex](#amendment-2026-11-07--v050-owner-handback-to-codex), the [2026-11-07 handover](#amendment-2026-11-07--v050-owner-handover-to-claude-code) and the [2026-11-04 delegation](#amendment-2026-11-04--v050-owner-delegation) together with [Amendment 2026-10-30](#amendment-2026-10-30--ownership-transferred-to-the-claude-code-owner)
 first. Together they supersede conflicting historical restrictions and earlier amendments below.
 
 ---
@@ -683,3 +683,14 @@ review. An implementing session still cannot act as owner for its PR, and all
 three reviewers stay independent of the implementation.
 
 After v0.5.0 release verification, the 2026-10-30 owner designation applies.
+
+## Amendment 2026-11-07 — v0.5.0 owner handback to Codex
+
+Later on 2026-11-07, Aymen transferred v0.5.0 ownership from Claude Code back
+to a Codex orchestrating session through release verification. [Owner handback on issue #63](https://github.com/ayhammouda/python-docs-mcp-server/issues/63#issuecomment-6711292935).
+Public owner comments identify “Codex — v0.5.0 project owner, acting for Aymen”.
+
+The Codex owner follows the [earlier handover](#amendment-2026-11-07--v050-owner-handover-to-claude-code)’s paid-run confirmation rules,
+durable ledger caps, spend reporting and escalation rules. Implementer and
+reviewer independence and all merge and release gates still apply. After
+v0.5.0 release verification, the 2026-10-30 owner designation applies.

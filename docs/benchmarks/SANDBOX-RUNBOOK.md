@@ -463,7 +463,7 @@ invented source attempts to upgrade an old summary. These unsigned archives prov
 internal consistency, not provider execution, acceptance or charges. Each real run
 still requires Aymen's own spending confirmation; for v0.5.0 the owner session
 supplies it within the caps, under the
-[2026-11-07 handover](../../AGENT-EXECUTION-PIPELINE.md#amendment-2026-11-07--v050-owner-handover-to-claude-code).
+[v0.5.0 owner handback to Codex](../../AGENT-EXECUTION-PIPELINE.md#amendment-2026-11-07--v050-owner-handback-to-codex).
 
 Full calibration covers 50 held-out questions across 14 probe types. Each
 of the 700 slots needs a probe or a documented drop under the registered

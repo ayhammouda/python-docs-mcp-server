@@ -25,9 +25,9 @@ Vision's authority and transferred project ownership to a Claude Code owner
 session that works for him under his GitHub account. The owner decides the
 roadmap and architecture, triages and replies to issues, repairs CI, upgrades
 dependencies, and merges and releases. No routine human approval is required.
-For v0.5.0, read the 2026-11-04 delegation and the 2026-11-07 handover
-alongside that amendment. Since 2026-11-07 a Claude Code owner session holds
-the owner role through release verification. Vision, its
+For v0.5.0, read the 2026-11-04 delegation and both 2026-11-07 amendments
+alongside that amendment. Under the later handback, a Codex owner session
+holds the role through release verification. Vision, its
 workers, the `pdctl` broker and the Vision GitHub Apps have no authority;
 `ops/vision/` is kept for reference only.
 
