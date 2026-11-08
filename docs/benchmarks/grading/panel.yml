@@ -5,12 +5,12 @@
 # docs/research/2026-11-04-grading-batch-apis-and-judge-models.md §E, and for
 # the generators from docs/benchmarks/model-matrix.yml.
 #
-# - Panel judges: one per provider. `effort_levels` is ascending; the tuning
-#   step walks it and stops at the first level that meets G1's per-judge
-#   criteria. `effort` stays null until the efforts PR freezes it, and the
-#   held-out targets refuse to run until then.
+# - Panel judges: one per provider. Each primary judge's frozen `effort` is
+#   the lowest level in `effort_levels` that met the per-judge criteria on
+#   the tuning probes with the original prompt.
 # - `fallback`: Flash-Lite's pre-registered replacement (ruling 5). It shares a
 #   family with the gemini-3.8-flash answer model; the report discloses that.
+#   Its effort stays null because tuning did not use it.
 # - Every judge: a 16,384-token output cap with thinking inside it (ruling 8),
 #   and a 256-token framing allowance per message.
 # - max_input_tokens: 1,000,000 for the Claude models ("1M"); the OpenAI
@@ -26,7 +26,7 @@ judges:
     model_id: claude-haiku-5-5
     api: anthropic-messages
     effort_levels: [low, medium, high]
-    effort: null
+    effort: low
     max_input_tokens: 1000000
     max_output_tokens: 16384
     framing_allowance_tokens: 256
@@ -36,7 +36,7 @@ judges:
     model_id: gpt-6-luna
     api: openai-responses
     effort_levels: [none, low, medium]
-    effort: null
+    effort: none
     max_input_tokens: 1033616
     max_output_tokens: 16384
     framing_allowance_tokens: 256
@@ -46,7 +46,7 @@ judges:
     model_id: gemini-3.1-flash-lite
     api: gemini-generate-content
     effort_levels: [minimal, low, medium]
-    effort: null
+    effort: low
     fallback: flash
     max_input_tokens: 1048576
     max_output_tokens: 16384
