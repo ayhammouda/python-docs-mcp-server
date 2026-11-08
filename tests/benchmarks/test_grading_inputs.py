@@ -345,7 +345,7 @@ def test_panel_fields_majority_split_and_too_few_votes() -> None:
     assert not panel_fields({"a": yes, "b": yes, "c": None}).needs_reference
 
 
-def test_committed_panel_is_cross_provider_with_unfrozen_efforts() -> None:
+def test_committed_panel_is_cross_provider_with_frozen_efforts() -> None:
     panel = load_panel(PANEL_PATH)
     assert [panel.judges[j].model_id for j in panel.panel] == [
         "claude-haiku-5-5",
@@ -356,7 +356,12 @@ def test_committed_panel_is_cross_provider_with_unfrozen_efforts() -> None:
     ref = panel.judges[panel.reference]
     assert (ref.model_id, ref.effort) == ("claude-opus-5-5", "high")
     assert [panel.judges[j].effort_levels[0] for j in panel.panel] == ["low", "none", "minimal"]
-    assert all(panel.judges[j].effort is None for j in panel.panel)
+    assert {j: panel.judges[j].effort for j in panel.panel} == {
+        "haiku": "low",
+        "luna": "none",
+        "flash-lite": "low",
+    }
+    assert panel.judges["flash"].effort is None
     assert {j.max_output_tokens for j in panel.judges.values()} == {16384}
     assert as_model_family(ref).provider == "anthropic"
     assert composition_key(panel.panel) == "haiku+luna+flash-lite"

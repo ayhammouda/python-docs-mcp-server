@@ -53,6 +53,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
+- Froze the benchmark's primary judge efforts at their lowest passing tuning
+  levels: `haiku=low`, `luna=none`, and `flash-lite=low`.
 - The benchmark's `docs-fetch` and `python-docs` systems reach the network only
   through the run's egress proxy.
 - Benchmark keys reach a worker only as a bootstrap frame on its stdin, never
