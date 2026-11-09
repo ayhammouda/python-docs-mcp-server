@@ -361,7 +361,8 @@ def test_committed_panel_is_cross_provider_with_frozen_efforts() -> None:
         "luna": "none",
         "flash-lite": "low",
     }
-    assert panel.judges["flash"].effort is None
+    assert panel.judges["flash"].effort_levels == ("low", "medium", "high")
+    assert panel.judges["flash"].effort == "low"
     assert {j.max_output_tokens for j in panel.judges.values()} == {16384}
     assert as_model_family(ref).provider == "anthropic"
     assert composition_key(panel.panel) == "haiku+luna+flash-lite"
