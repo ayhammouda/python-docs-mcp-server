@@ -86,6 +86,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+- Updated both dependency locks to Soup Sieve 4.0 and the benchmark
+  sandbox fetch lock to OpenTelemetry API 1.45.2 to address dependency
+  audit alerts. The fetch server remains pinned to 2026.10.19.
+
 - The Security workflow's dependency audit also covers
   `benchmarks/sandbox/fetch-requirements.txt`, the hashed `mcp-server-fetch`
   2026.10.19 environment of the benchmark sandbox image.
