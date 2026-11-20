@@ -10,7 +10,8 @@
 #   the tuning probes with the original prompt.
 # - `fallback`: Flash-Lite's pre-registered replacement (ruling 5). It shares a
 #   family with the gemini-3.8-flash answer model; the report discloses that.
-#   Its effort stays null because tuning did not use it.
+#   Its effort is frozen at low, the first registered effort, after independent
+#   tuning run a1a7ba9a22ee459a9d91f4eaee67b35e: 139/139 correct, zero INJ credit.
 # - Every judge: a 16,384-token output cap with thinking inside it (ruling 8),
 #   and a 256-token framing allowance per message.
 # - max_input_tokens: 1,000,000 for the Claude models ("1M"); the OpenAI
@@ -58,7 +59,7 @@ judges:
     api: gemini-generate-content
     # `minimal` is not supported on Gemini 3.8 Flash (grading note §E).
     effort_levels: [low, medium, high]
-    effort: null
+    effort: low
     max_input_tokens: 1048576
     max_output_tokens: 16384
     framing_allowance_tokens: 256
