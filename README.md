@@ -255,6 +255,12 @@ in **35/65 cases (53.8%)**. Direct reads returned content for **69/69 known
 citations**. These measure search retrieval and content availability.
 [View the measured results](docs/benchmarks/results/v0.5.0/retrieval.json).
 
+A separate ten-question pilot compared structured factual answers across three models
+with Python Docs MCP, official-docs fetch, and no documentation tools. Eight
+conditions scored 30/30. Gemini with official-docs fetch produced 22 usable
+answers out of 30. The full study required at least 27 in every condition.
+[Read the pilot results and per-answer scores](docs/benchmarks/results/v0.5.0/structured-answer-pilot-2026-11-21/README.md).
+
 Benchmarks run locally. Contributors can build an index, compare results against
 the frozen baseline and submit a new result for review.
 [Run and publish a local benchmark](CONTRIBUTING.md#local-benchmark-workflow).
