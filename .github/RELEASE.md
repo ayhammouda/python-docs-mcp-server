@@ -8,8 +8,10 @@ or disable checks.
 
 1. Merge the version/changelog PR after independent current-head verification
    and all required CI. `pyproject.toml`, `uv.lock`, `server.json` and its package
-   entry must agree. CI covers Python 3.12–3.14 on Ubuntu and macOS, the real
-   benchmark corpus, offline full-index regression, and installed-wheel stdio.
+   entry must agree. CI covers ordinary product tests on Python 3.12–3.14 on
+   Ubuntu and macOS, static analysis, security checks and installed-wheel stdio.
+   Full-index installation E2E remains required. Benchmarks run locally and do
+   not gate releases. See the [local benchmark workflow](../CONTRIBUTING.md#local-benchmark-workflow).
    If an update from `main` changed the head, carry verification forward only
    under the amendment's rule: a conflict-free update, green required checks,
    a new record for the new head, and either (a) a rebase whose

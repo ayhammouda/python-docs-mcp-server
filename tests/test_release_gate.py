@@ -56,6 +56,10 @@ def make_state(*pages):
     }
 
 
+def test_release_does_not_require_retired_benchmark_status():
+    assert "Product regression" not in GATE["REQUIRED"]
+
+
 def test_release_eligibility_rejects_incomplete_or_wrong_identity_evidence():
     state = make_state([note(RECORD)])
     checks = state[f"commits/{SHA}/check-runs?per_page=100"]["check_runs"]

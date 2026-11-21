@@ -90,8 +90,9 @@ Each claim has a pass/fail rule fixed before any data is seen (**Call**).
   (**Decided**), each behind the terms gate recorded in the competitor
   template.
 - The fixed-retrieval "mode A" benchmark as a public result. The agentic run
-  replaces it (**Call**). The CI retrieval regression in `benchmarks/regression.py`
-  is unaffected because it calls the services directly.
+  replaces it (**Call**). The local retrieval regression in `benchmarks/regression.py`
+  remains a separate measurement because it calls the services directly.
+  See the [contributor workflow](../../CONTRIBUTING.md#local-benchmark-workflow).
 - Provider-hosted MCP connectors (they cannot reach a local stdio server).
 - CLI-agent comparisons (Claude Code vs Codex CLI vs Gemini CLI).
 - A Python 3.15 post-cutoff slice, a contamination canary, new corpus questions.
@@ -580,7 +581,7 @@ in the `dev` dependency group, pinned in `uv.lock`, so CI's existing
 change.
 
 - Replace the live-provider stubs with real implementations behind the existing
-  `require_live_environment` guard. Keep deterministic mocks so CI runs the
+  `require_live_environment` guard. Keep deterministic mocks so local tests run the
   whole agentic pipeline end to end with no network and no keys.
 - One generic MCP bridge (stdio or Streamable HTTP) serves every system,
   including `docs-fetch`, and replaces the five fixed-flow adapters. Once it
@@ -768,7 +769,7 @@ The pilot decides whether k = 3 is enough (if the C2 interval cannot exclude
 2027-01-01 if possible (Gemini price change).
 
 Suggested PR order (the builder may re-slice): (1) SDK v2 (done, #162); (2) methodology
-amendment, model matrix, this document; (3) harness with mocked end-to-end CI
+amendment, model matrix, this document; (3) harness with mocked end-to-end local
 test; (4) sandbox, proxy, run script, air-gapped runbook; (5) criteria file,
 probe suite, judge panel, reference grader, `scoring.py` provenance, post-hoc
 token counting, report; then G1, the maintainer-run pilot, review, full run,
@@ -777,7 +778,8 @@ grading, and the report PR.
 ## 13. Constraints
 
 - Canonical gate from `AGENTS.md` (ruff, pyright on `src/` and `benchmarks/`,
-  pytest) passes on every PR.
+  local pytest) passes on every PR. All scripted benchmark tests run locally.
+  See the [contributor workflow](../../CONTRIBUTING.md#local-benchmark-workflow).
 - No paid call can happen in CI or tests; the live-phase guard stays.
 - Live runs need maintainer-supplied keys: `ANTHROPIC_API_KEY`,
   `OPENAI_API_KEY` and `GOOGLE_API_KEY` (the name
@@ -791,8 +793,8 @@ grading, and the report PR.
 
 ## 14. Risks
 
-- **Retrieval quality may cap correctness.** The CI retrieval baseline shows
-  8 of 65 exact canonical hits in the top five. Agentic models can recover by
+- **Retrieval quality may cap correctness.** The baseline observed during this
+  study showed 8 of 65 exact canonical hits in the top five. Agentic models can recover by
   calling `get_docs` with better arguments, at a token cost. The report
   publishes whatever happens.
 - **`docs-fetch` may be competitive on C2.** With 5,000-character windows and

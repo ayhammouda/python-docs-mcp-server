@@ -59,7 +59,7 @@ uv sync --locked --dev
 If `uv` is not on your `PATH` after installation, reopen the shell or use
 `python -m uv ...` as a fallback.
 
-Core verification commands:
+Core local verification commands (the default pytest run includes benchmark tests):
 
 ```bash
 uv run --locked ruff check src/ tests/ benchmarks/ ops/ .github/scripts/
@@ -67,12 +67,14 @@ uv run --locked pyright src/ benchmarks/
 uv run --locked pytest --tb=short -q
 ```
 
+All benchmarks run locally. CI and release exclude `tests/benchmarks`.
+For measured results, follow the [local benchmark workflow](CONTRIBUTING.md#local-benchmark-workflow).
+
 Build and inspect a local docs index:
 
 ```bash
 uv run --locked python-docs-mcp-server build-index --versions 3.12,3.13
 uv run --locked python-docs-mcp-server doctor
-uv run --locked python -m benchmarks validate-corpus --corpus docs/benchmarks/corpus.yml --schema docs/benchmarks/corpus.schema.json
 ```
 
 Package smoke check:

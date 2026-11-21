@@ -16,6 +16,22 @@ PROJECT_ROOT = Path(__file__).parent.parent
 SUPPORTED_VERSION_ARGS = "3.10,3.11,3.12,3.13,3.14"
 
 
+@pytest.mark.parametrize(("filename", "job"), [("ci.yml", "test"), ("release.yml", "build")])
+def test_ci_excludes_local_benchmark_suite(filename: str, job: str) -> None:
+    workflow = PROJECT_ROOT / ".github" / "workflows" / filename
+    steps = yaml.safe_load(workflow.read_text())["jobs"][job]["steps"]
+    commands = [s["run"] for s in steps if "pytest" in s.get("run", "")]
+    assert commands
+    assert all(re.search(r"--ignore(?:=|\s+)tests/benchmarks\b", c) for c in commands)
+
+
+def test_full_index_benchmark_runner_is_absent_from_product_quality() -> None:
+    workflow = PROJECT_ROOT / ".github" / "workflows" / "product-quality.yml"
+    jobs = yaml.safe_load(workflow.read_text())["jobs"]
+    assert all("benchmarks.regression" not in s.get("run", "")
+               for job in jobs.values() for s in job.get("steps", []))
+
+
 def test_slow_e2e_workflow_runs_installed_build_index() -> None:
     """Slow E2E workflow should validate installed-package build-index behavior."""
     workflow = PROJECT_ROOT / ".github" / "workflows" / "e2e.yml"

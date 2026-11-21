@@ -19,7 +19,6 @@ REQUIRED = {
     "Dependency audit",
     "Analyze",
     "Installed package smoke",
-    "Product regression",
 }
 # First line of the owner's PR comment that records an independent verification.
 RECORD = re.compile(r"Independent verification: (PASS|FAIL)")

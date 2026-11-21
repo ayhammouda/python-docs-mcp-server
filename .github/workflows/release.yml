@@ -90,10 +90,7 @@ jobs:
         env:
           UV_BUILD_CONSTRAINT: .github/build-constraints.txt
           UV_REQUIRE_HASHES: "1"
-        run: uv run --no-sync pytest --tb=short -q
-
-      - name: Validate frozen benchmark corpus
-        run: uv run --no-sync python -m benchmarks validate-corpus --corpus docs/benchmarks/corpus.yml --schema docs/benchmarks/corpus.schema.json
+        run: uv run --no-sync pytest --ignore=tests/benchmarks --tb=short -q
 
       - name: Validate MCP manifest before publication
         run: |

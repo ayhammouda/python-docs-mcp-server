@@ -233,8 +233,8 @@ args = ["python-docs-mcp-server"]
 
 ## Quality checks
 
-- CI runs `ruff`, `pyright`, and `pytest` on macOS and Linux for Python 3.12
-  and 3.13
+- CI runs `ruff`, `pyright`, and ordinary product tests on macOS and Linux
+  for Python 3.12–3.14
 - subprocess-based stdio and smoke tests cover the MCP protocol pipe
 - packaging tests check the wheel contents and CLI entry points
 - retrieval regression tests cover exact symbol hits, version behavior,
@@ -245,6 +245,19 @@ args = ["python-docs-mcp-server"]
 
 Contributor commands and validation steps live in
 [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+## Local benchmarks
+
+The local v0.5.0 retrieval benchmark covers 50 questions across Python 3.11–3.13
+in 65 version-specific cases. Its five-version index contains 2,684 documents
+for Python 3.10–3.14. Top-five search found an expected canonical page or anchor
+in **35/65 cases (53.8%)**. Direct reads returned content for **69/69 known
+citations**. These measure search retrieval and content availability.
+[View the measured results](docs/benchmarks/results/v0.5.0/retrieval.json).
+
+Benchmarks run locally. Contributors can build an index, compare results against
+the frozen baseline and submit a new result for review.
+[Run and publish a local benchmark](CONTRIBUTING.md#local-benchmark-workflow).
 
 ## Tools
 
