@@ -14,6 +14,7 @@ from importlib.metadata import version
 from pathlib import Path
 
 import pytest
+import yaml
 
 PROJECT_ROOT = Path(__file__).parent.parent
 DIST_NAME = "python-docs-mcp-server"
@@ -67,6 +68,44 @@ class TestWheelContent:
             "schema.sql not found in wheel. Wheel contents:\n"
             + "\n".join(sorted(names))
         )
+
+    def test_installed_schema_survives_nested_uv_run(self, built_wheel, tmp_path):
+        """A nested uv run must not replace the wheel beneath imported modules."""
+        env = {**os.environ, "UV_PROJECT_ENVIRONMENT": str(tmp_path / "installed")}
+        env.pop("VIRTUAL_ENV", None)
+        env.pop("UV_NO_SYNC", None)
+        # Like the workflow, apply test-only flags after installing our built wheel.
+        env.pop("UV_REQUIRE_HASHES", None)
+        uv = _uv_command()
+        executable = "Scripts/python.exe" if os.name == "nt" else "bin/python"
+        python = tmp_path / "installed" / executable
+        for args in (
+            ["sync", "--locked", "--dev", "--no-install-project", "--no-build"],
+            ["pip", "install", "--python", str(python), "--no-deps", str(built_wheel)],
+        ):
+            result = subprocess.run(
+                uv + args, cwd=PROJECT_ROOT, env=env, capture_output=True, text=True,
+            )
+            assert result.returncode == 0, result.stderr
+        workflow = yaml.safe_load((PROJECT_ROOT / ".github/workflows/release.yml").read_text())
+        tests = next(s for s in workflow["jobs"]["build"]["steps"] if s.get("name") == "Run tests")
+        env.update(tests["env"])
+        result = subprocess.run(
+            [str(python), "-c", """
+import sqlite3, subprocess, sys, sysconfig
+from pathlib import Path
+from mcp_server_python_docs.storage import db
+schema = Path(db.__file__).with_name("schema.sql")
+assert schema.is_relative_to(Path(sysconfig.get_path("purelib")))
+before = schema.read_bytes()
+db.bootstrap_schema(sqlite3.connect(":memory:"))
+subprocess.run([*sys.argv[1:], "run", "--locked", "python", "-c", "pass"], check=True)
+assert schema.read_bytes() == before
+db.bootstrap_schema(sqlite3.connect(":memory:"))
+""", *uv],
+            cwd=PROJECT_ROOT, env=env, capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
 
     def test_wheel_metadata_uses_public_distribution_name(self, built_wheel):
         """Wheel metadata must publish under the repo-aligned distribution name."""

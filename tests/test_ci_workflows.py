@@ -216,19 +216,22 @@ def test_release_build_job_never_builds_the_project_with_an_unpinned_backend() -
     assert [c for c in commands if builders.search(c)] == [
         "uv sync --locked --dev --no-install-project --no-build",
         "uv build --build-constraint .github/build-constraints.txt --require-hashes",
-        "uv pip install --no-deps dist/*.whl",
+        'uv pip install --python "$UV_PROJECT_ENVIRONMENT/bin/python" --no-deps dist/*.whl',
     ]
     uv_runs = [c for c in commands if "uv run" in c]
     # a syncing `uv run` rebuilds the project editable with an unpinned backend
     assert uv_runs and all(c.count("uv run") == c.count("uv run --no-sync") for c in uv_runs)
     build = names.index("Build package")
-    assert steps[build + 1]["run"] == "uv pip install --no-deps dist/*.whl"
+    assert steps[build + 1]["run"] == (
+        'uv pip install --python "$UV_PROJECT_ENVIRONMENT/bin/python" --no-deps dist/*.whl'
+    )
     tests = names.index("Run tests")
     assert build < tests
     # tests/test_packaging.py builds a wheel too; pin its backend the same way
     assert steps[tests]["env"] == {
         "UV_BUILD_CONSTRAINT": ".github/build-constraints.txt",
         "UV_REQUIRE_HASHES": "1",
+        "UV_NO_SYNC": "1",
     }
 
 
@@ -238,3 +241,46 @@ def test_security_audit_covers_the_sandbox_fetch_requirements() -> None:
     (step,) = [s for s in job["steps"] if s.get("name") == "Audit dependencies"]
     assert "--requirement requirements-audit.txt" in step["run"]
     assert "--requirement benchmarks/sandbox/fetch-requirements.txt" in step["run"]
+
+
+def test_release_uses_eligible_source_and_explicit_target_tag() -> None:
+    jobs = release_jobs()
+    source = "${{ needs.eligibility.outputs.build-sha }}"
+    tag = "${{ needs.eligibility.outputs.target-tag }}"
+    assert jobs["eligibility"]["outputs"] == {
+        "build-sha": "${{ steps.gate.outputs.build-sha }}",
+        "target-tag": "${{ steps.gate.outputs.target-tag }}",
+    }
+    for name in ("build", "publish-mcp-registry"):
+        job = jobs[name]
+        assert "eligibility" in job["needs"]
+        checkout, = [s for s in job["steps"] if s.get("uses", "").startswith("actions/checkout@")]
+        assert checkout["with"]["ref"] == source
+    assert jobs["build"]["env"]["RELEASE_TAG"] == tag
+    version = next(s for s in jobs["build"]["steps"] if s.get("name", "").startswith("Verify tag"))
+    assert '${RELEASE_TAG#v}' in version["run"]
+    assert 'GITHUB_REF_NAME' not in version["run"]
+    release = jobs["github-release"]
+    assert "eligibility" in release["needs"]
+    assert release["steps"][-1]["with"]["tag_name"] == tag
+
+
+def test_release_bootstraps_installed_wheel_before_product_tests() -> None:
+    build = release_jobs()["build"]
+    assert "UV_PROJECT_ENVIRONMENT" not in build["env"]
+    steps = build["steps"]
+    setup = next(i for i, s in enumerate(steps) if s.get("name") == "Set up Python 3.13")
+    sync = next(i for i, s in enumerate(steps) if "uv sync" in s.get("run", ""))
+    assert setup < sync
+    assert steps[setup]["run"].splitlines() == [
+        "uv python install 3.13",
+        'echo "UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/release-product-venv" >> "$GITHUB_ENV"',
+    ]
+    smoke = next(i for i, s in enumerate(steps) if "db.bootstrap_schema" in s.get("run", ""))
+    tests = next(i for i, s in enumerate(steps) if s.get("name") == "Run tests")
+    assert smoke < tests
+    assert "storage/schema.sql" in steps[smoke]["run"]
+    assert 'sqlite3.connect(":memory:")' in steps[smoke]["run"]
+    assert 'sysconfig.get_path("purelib")' in steps[smoke]["run"]
+    assert "archive.read" in steps[smoke]["run"]
+    assert "--ignore=tests/benchmarks" in steps[tests]["run"]

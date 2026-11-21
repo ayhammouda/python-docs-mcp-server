@@ -17,6 +17,9 @@ jobs:
     name: Release eligibility
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      build-sha: ${{ steps.gate.outputs.build-sha }}
+      target-tag: ${{ steps.gate.outputs.target-tag }}
     permissions:
       contents: read
       checks: read
@@ -27,6 +30,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Require verified main commit
+        id: gate
         env:
           GH_TOKEN: ${{ github.token }}
         run: python .github/scripts/release_gate.py
@@ -36,6 +40,8 @@ jobs:
     runs-on: ubuntu-latest
     name: Build & Test
     timeout-minutes: 180
+    env:
+      RELEASE_TAG: ${{ needs.eligibility.outputs.target-tag }}
     outputs:
       dist-id: ${{ steps.upload-dist.outputs.artifact-id }}
       dist-sha256: ${{ steps.dist-sha256.outputs.dist-sha256 }}
@@ -44,32 +50,35 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          ref: ${{ needs.eligibility.outputs.build-sha }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
 
       - name: Set up Python 3.13
-        run: uv python install 3.13
+        run: |
+          uv python install 3.13
+          echo "UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/release-product-venv" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: uv sync --locked --dev --no-install-project --no-build
 
       - name: Verify tag matches package version
         run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          TAG_VERSION="${RELEASE_TAG#v}"
           PKG_VERSION=$(uv run --no-sync python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
           if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
-            echo "::error::Tag ${GITHUB_REF_NAME} does not match pyproject.toml version ${PKG_VERSION}"
+            echo "::error::Tag ${RELEASE_TAG} does not match pyproject.toml version ${PKG_VERSION}"
             exit 1
           fi
           SERVER_VERSION=$(uv run --no-sync python -c "import json; print(json.load(open('server.json'))['version'])")
           PACKAGE_VERSION=$(uv run --no-sync python -c "import json; print(json.load(open('server.json'))['packages'][0]['version'])")
           if [ "$TAG_VERSION" != "$SERVER_VERSION" ]; then
-            echo "::error::Tag ${GITHUB_REF_NAME} does not match server.json version ${SERVER_VERSION}"
+            echo "::error::Tag ${RELEASE_TAG} does not match server.json version ${SERVER_VERSION}"
             exit 1
           fi
           if [ "$TAG_VERSION" != "$PACKAGE_VERSION" ]; then
-            echo "::error::Tag ${GITHUB_REF_NAME} does not match server.json package version ${PACKAGE_VERSION}"
+            echo "::error::Tag ${RELEASE_TAG} does not match server.json package version ${PACKAGE_VERSION}"
             exit 1
           fi
           echo "Version check passed: ${PKG_VERSION}"
@@ -78,7 +87,30 @@ jobs:
         run: uv build --build-constraint .github/build-constraints.txt --require-hashes
 
       - name: Install the built wheel
-        run: uv pip install --no-deps dist/*.whl
+        run: uv pip install --python "$UV_PROJECT_ENVIRONMENT/bin/python" --no-deps dist/*.whl
+
+      - name: Verify wheel contents and installed database bootstrap
+        run: |
+          uv run --no-sync python - <<'PY'
+          import sqlite3
+          import sysconfig
+          import zipfile
+          from pathlib import Path
+          from mcp_server_python_docs.storage import db
+
+          wheel, = Path("dist").glob("*.whl")
+          installed = Path(db.__file__).resolve().parents[1]
+          assert installed.is_relative_to(Path(sysconfig.get_path("purelib")).resolve()), installed
+          with zipfile.ZipFile(wheel) as archive:
+              for resource in ("storage/schema.sql", "data/synonyms.yaml"):
+                  expected = archive.read(f"mcp_server_python_docs/{resource}")
+                  assert expected and (installed / resource).read_bytes() == expected, resource
+          with sqlite3.connect(":memory:") as conn:
+              db.bootstrap_schema(conn)
+              assert conn.execute("PRAGMA user_version").fetchone()[0] == db.INDEX_FORMAT_VERSION
+              conn.execute("SELECT * FROM sections_fts LIMIT 0")
+          print(f"Verified wheel resources and installed database bootstrap: {installed}")
+          PY
 
       - name: Run linter
         run: uv run --no-sync ruff check src/ tests/ benchmarks/ ops/ .github/scripts/
@@ -90,28 +122,14 @@ jobs:
         env:
           UV_BUILD_CONSTRAINT: .github/build-constraints.txt
           UV_REQUIRE_HASHES: "1"
+          # Inherit into nested uv run calls; the CLI flag alone is not inherited.
+          UV_NO_SYNC: "1"
         run: uv run --no-sync pytest --ignore=tests/benchmarks --tb=short -q
 
       - name: Validate MCP manifest before publication
         run: |
           bash .github/scripts/install_publisher.sh
           "${RUNNER_TEMP}/mcp-publisher" validate server.json
-
-      - name: Verify wheel contents
-        run: |
-          uv run --no-sync python -c "
-          import zipfile, glob, sys
-          wheels = glob.glob('dist/*.whl')
-          if not wheels:
-              print('No wheel found')
-              sys.exit(1)
-          with zipfile.ZipFile(wheels[0]) as zf:
-              names = zf.namelist()
-              if not any('synonyms.yaml' in n for n in names):
-                  print('synonyms.yaml not found in wheel')
-                  sys.exit(1)
-              print('Wheel contents OK')
-          "
 
       - name: Record dist checksums
         id: dist-sha256
@@ -177,7 +195,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
 
   publish-mcp-registry:
-    needs: publish
+    needs: [eligibility, publish]
     runs-on: ubuntu-latest
     name: Publish to MCP Registry
     timeout-minutes: 10
@@ -189,6 +207,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          ref: ${{ needs.eligibility.outputs.build-sha }}
 
       - name: Install verified MCP publisher
         run: bash .github/scripts/install_publisher.sh
@@ -201,6 +220,7 @@ jobs:
 
   github-release:
     needs:
+      - eligibility
       - build
       - publish
       - publish-mcp-registry
@@ -233,5 +253,6 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
+          tag_name: ${{ needs.eligibility.outputs.target-tag }}
           files: dist/*
           generate_release_notes: true
