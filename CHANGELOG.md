@@ -6,6 +6,19 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-11-21
+
+This release ships the existing Python documentation server and the merged
+benchmark tooling, available from a Git checkout. See the
+[public retrieval results](https://github.com/ayhammouda/python-docs-mcp-server/issues/63#issuecomment-7054434383).
+The comparative assistant study remains open on
+[#63](https://github.com/ayhammouda/python-docs-mcp-server/issues/63); this release
+makes no claims from that study.
+
+PyPI wheels and source distributions contain the server software, without
+development research inputs. Use a Git checkout to run research; Git export
+archives omit the assembled grading probe suite.
+
 ### Added
 
 - Agentic benchmark harness (development tooling, not part of the package):

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "python-docs-mcp-server"
-version = "0.4.1"
+version = "0.5.0"
 description = "The canonical Python stdlib oracle for AI coding agents — exact symbols, exact sections, exact versions, offline, always free, always MIT, token-frugal."
 readme = "README.md"
 license = "MIT"
@@ -49,6 +49,10 @@ dev = [
 [project.scripts]
 python-docs-mcp-server = "mcp_server_python_docs.__main__:main"
 mcp-server-python-docs = "mcp_server_python_docs.__main__:main"
+
+# Research tooling and inputs are available from a Git checkout only.
+[tool.hatch.build.targets.sdist]
+only-include = ["src", "README.md", "LICENSE", "pyproject.toml"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcp_server_python_docs"]

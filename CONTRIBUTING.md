@@ -69,6 +69,10 @@ For a local package smoke check:
 uv build
 ```
 
+PyPI wheels and source distributions ship the server software only. To run
+benchmark tooling and research, use a Git checkout; Git export archives omit
+the assembled grading probe suite (`docs/benchmarks/grading/probes.yml`).
+
 For release workflow details, PyPI trusted publishing setup, and the full
 release checklist, see [`.github/RELEASE.md`](.github/RELEASE.md).
 
