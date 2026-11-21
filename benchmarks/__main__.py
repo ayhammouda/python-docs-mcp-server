@@ -216,6 +216,14 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     agentic.add_argument(
+        "--structured-key",
+        type=Path,
+        help=(
+            "Explicit #63 structured study: registered items key, local deterministic scoring; "
+            "runs the frozen pilot, or the full corpus with a verified --reference-run."
+        ),
+    )
+    agentic.add_argument(
         "--acknowledge-overrun",
         action="append",
         default=[],
@@ -403,6 +411,7 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run or (args.launcher == "container" and not args.live),
             acknowledge_overrun=tuple(args.acknowledge_overrun),
             reference_run=args.reference_run,
+            structured_key=args.structured_key,
         )
         try:
             launcher = (

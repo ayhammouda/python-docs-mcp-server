@@ -19,7 +19,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import platformdirs
 
@@ -86,6 +86,9 @@ from benchmarks.runner import (
 
 _REPO_ROOT = Path(benchmarks.__file__).resolve().parent.parent
 
+if TYPE_CHECKING:
+    from benchmarks.agentic.structured_reference import StructuredStudy
+
 
 def default_ledger_dir() -> Path:
     """One durable per-user ledger, so every run's spend counts against the same caps."""
@@ -112,6 +115,7 @@ class AgenticConfig:
     dry_run: bool = False
     acknowledge_overrun: tuple[str, ...] = ()
     reference_run: Path | None = None  # a finished pilot run, for the full-run gate
+    structured_key: Path | None = None  # explicit, registered #63 factual study only
 
 
 def limits_mismatch(reported: Mapping[str, Any] | None, family: ModelFamily) -> list[str]:
@@ -243,9 +247,14 @@ class _Collector:
     """Turns worker messages into the run's artifacts and summary counts."""
 
     def __init__(
-        self, out: Path, questions: Mapping[str, Question], families: Sequence[ModelFamily]
+        self,
+        out: Path,
+        questions: Mapping[str, Question],
+        families: Sequence[ModelFamily],
+        structured: StructuredStudy | None = None,
     ):
         self.out = out
+        self.structured = structured
         self.questions = questions
         self.families = {f.id: _FamilyStats() for f in families}
         self.cells: set[str] = set()
@@ -331,15 +340,15 @@ class _Collector:
         self._write_transcript(
             self.out / "transcripts" / cell / f"{corpus_id}.json", {**record, **ident}, ident
         )
-        _write(
-            self.out / "scoring" / cell / f"{corpus_id}.json",
-            _scoring_record(
-                BenchmarkCell(Competitor(cell, "agentic", {}), question),
-                status=status,
-                tool_model_key=key,
-                error=error,
-            ),
+        scoring = _scoring_record(
+            BenchmarkCell(Competitor(cell, "agentic", {}), question),
+            status=status,
+            tool_model_key=key,
+            error=error,
         )
+        if self.structured is not None:
+            scoring.update(self.structured.score(record, corpus_id))
+        _write(self.out / "scoring" / cell / f"{corpus_id}.json", scoring)
         _write(
             self.out / "tokens" / cell / f"{corpus_id}.json",
             {
@@ -439,7 +448,15 @@ def run_agentic(
     if config.repeats < 1:
         raise BenchmarkValidationError("--repeats must be at least 1")
     corpus = _load_questions(corpus_input.mapping)
-    questions = _select(corpus, config.questions, "corpus question")
+    structured = None
+    selected_questions = config.questions
+    if config.structured_key is not None:
+        from benchmarks.agentic.structured_reference import StructuredStudy
+
+        structured = StructuredStudy.load(config.structured_key, corpus_input)
+        structured.check_options(config, caps, default_ledger_dir())
+        selected_questions = structured.selection(config.questions, full=bool(config.reference_run))
+    questions = _select(corpus, selected_questions, "corpus question")
     matrix = model_matrix_from_mapping(matrix_input.mapping).model_families
     families = (
         _select(matrix, config.models, "model family")
@@ -499,6 +516,8 @@ def run_agentic(
     seed = (
         config.seed
         if config.seed is not None
+        else structured.seed
+        if structured is not None
         else int(hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:8], 16)
     )
     jobs = plan_jobs(
@@ -509,18 +528,32 @@ def run_agentic(
         seed=seed,
         matrix_dir=config.matrix_path.parent,
     )
-    rates = reference_rates(config.reference_run) if config.reference_run else None
+    structured_binding = None
+    if structured is not None:
+        structured_binding = structured.binding(
+            jobs, matrix_input, manifest_input, prices_input, launcher, seed
+        )
+    rates = None
     grading_rates = None
-    if config.reference_run and any(f.api != "scripted" and f.provider in caps for f in families):
-        from benchmarks.grading.preflight import reference_grading_rates
+    if structured is not None and config.reference_run is not None:
+        assert structured_binding is not None
+        rates = structured.verified_rates(config.reference_run, structured_binding)
+        # Only the registered methodology AND reconciled pilot authorize this zero fee.
+        grading_rates = {}
+    elif config.reference_run:
+        rates = reference_rates(config.reference_run)
+        if any(f.api != "scripted" and f.provider in caps for f in families):
+            from benchmarks.grading.preflight import reference_grading_rates
 
-        grading_rates = reference_grading_rates(config.reference_run)
+            grading_rates = reference_grading_rates(config.reference_run)
     out.mkdir(parents=True, exist_ok=True)
     snapshots = out / "snapshots"
     snapshots.mkdir()
     for source in (corpus_input, matrix_input, manifest_input, prices_input):
         (snapshots / source.name).write_bytes(source.content)
     (snapshots / "system-prompt.txt").write_text(SYSTEM_PROMPT, encoding="utf-8")
+    if structured is not None:
+        structured.write_snapshots(snapshots)
     environment = {
         **_environment_metadata(run_id=run_id, dry_run=config.dry_run),
         "mode": "agentic",
@@ -557,11 +590,17 @@ def run_agentic(
         "corpus_ids": [q.id for q in questions],
         "planned_cells": len(planned),
     }
+    if structured is not None:
+        summary["structured"] = {
+            "stage": "full" if config.reference_run else "pilot",
+            "binding": structured_binding,
+            "reference_run": str(config.reference_run) if config.reference_run else None,
+        }
     if config.dry_run:  # never opens the ledger
         return summary
 
     spent_before: dict[str, Decimal] = {}
-    collector = _Collector(out, {q.id: q for q in questions}, families)
+    collector = _Collector(out, {q.id: q for q in questions}, families, structured)
     # The air-gapped arm runs alone (checked above), so either every family is in it or none.
     watch = AirGapWatch(out, offline_checks) if families[0].arm == "air-gapped" else None
 
@@ -656,6 +695,8 @@ def run_agentic(
         ledger = Ledger.open(config.ledger_dir, run_id=run_id, caps=caps)
         for provider in caps:
             spent_before[provider] = ledger.spent(provider)  # after recovery
+        if structured is not None and config.reference_run is not None:
+            structured.check_balances(config.reference_run, spent_before)
         for provider in config.acknowledge_overrun:
             ledger.acknowledge_overrun(provider)
         overrun = sorted({f.provider for f in families if ledger.stopped(f.provider) == "overrun"})

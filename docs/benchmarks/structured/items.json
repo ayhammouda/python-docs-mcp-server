@@ -1,0 +1,502 @@
+[
+  {
+    "id": "EX-001",
+    "question": "In Python 3.13, what does itertools.accumulate(iterable) yield by default, and what does its optional func argument change?",
+    "correct": "It yields running totals using addition; func replaces addition with another binary operation.",
+    "distractors": [
+      "It yields adjacent-pair sums using addition; func replaces addition with another binary operation.",
+      "It yields a single total using addition; func replaces addition with another binary operation.",
+      "It yields running totals using addition; func transforms each input before addition is applied."
+    ]
+  },
+  {
+    "id": "EX-002",
+    "question": "In Python 3.13, what pairs does itertools.pairwise() yield from a finite iterable?",
+    "correct": "Overlapping consecutive pairs, with no pairs when fewer than two input items exist.",
+    "distractors": [
+      "Non-overlapping consecutive pairs, with an unmatched final input item discarded from the output.",
+      "Every pair of distinct positions, with earlier input positions appearing first in each pair.",
+      "Overlapping consecutive pairs, with the final input item paired with the first input item."
+    ]
+  },
+  {
+    "id": "EX-003",
+    "question": "In Python 3.13, how does itertools.groupby(data, key=keyfunc) handle equal keys that appear in separated runs?",
+    "correct": "It produces separate groups; sorting by keyfunc first brings all equal keys together.",
+    "distractors": [
+      "It merges the separated runs; the groups follow the order of each key's first occurrence.",
+      "It sorts the input internally; the groups follow the sorted order of their key values.",
+      "It rejects the separated runs; the iterator raises ValueError when a previous key reappears."
+    ]
+  },
+  {
+    "id": "EX-004",
+    "question": "In Python 3.13, which functools.lru_cache configuration has the same unbounded caching behavior as functools.cache?",
+    "correct": "functools.lru_cache(maxsize=None)",
+    "distractors": [
+      "functools.lru_cache(maxsize=0)",
+      "functools.lru_cache(maxsize=128)",
+      "functools.lru_cache(maxsize=1)"
+    ]
+  },
+  {
+    "id": "EX-005",
+    "question": "In Python 3.13, an instance has a mutable __dict__ and an unread functools.cached_property. With single-threaded access and no attribute reassignment or deletion, what happens on first and later reads?",
+    "correct": "The first read computes and stores the value on the instance; later reads reuse that value.",
+    "distractors": [
+      "The first read computes and stores the value on the class; later reads across instances share it.",
+      "The first read computes the value without storing it; later reads run the getter again each time.",
+      "The first read retrieves a value computed during instance construction; later reads recompute and replace it."
+    ]
+  },
+  {
+    "id": "EX-006",
+    "question": "In Python 3.13, which information does functools.singledispatch use to select a registered implementation of a generic function?",
+    "correct": "The runtime type of the first positional argument.",
+    "distractors": [
+      "The runtime types of all supplied positional arguments.",
+      "The declared return type of the generic function.",
+      "The names of the supplied keyword arguments."
+    ]
+  },
+  {
+    "id": "EX-007",
+    "question": "In Python 3.13, when pathlib.Path.glob('*.txt') finds matches, how are the yielded paths related to the Path on which glob() was called?",
+    "correct": "They include the base Path as a prefix and are absolute if that base is absolute.",
+    "distractors": [
+      "They omit the base Path prefix and contain only relative names within the searched directory.",
+      "They include the base Path as a prefix and are converted to absolute paths before being yielded.",
+      "They omit the base Path prefix and are expressed relative to the current working directory."
+    ]
+  },
+  {
+    "id": "EX-008",
+    "question": "In Python 3.13, what does pathlib.Path.read_text(encoding='utf-8') return after successfully reading a file?",
+    "correct": "A str containing the file's contents decoded using UTF-8.",
+    "distractors": [
+      "A bytes object containing the file's original UTF-8 bytes.",
+      "A list of str objects containing the file's decoded lines.",
+      "A text file object configured to decode reads using UTF-8."
+    ]
+  },
+  {
+    "id": "EX-009",
+    "question": "In Python 3.13, how does pathlib.PurePath.is_relative_to(other) determine whether a path is relative to other?",
+    "correct": "It compares paths lexically, without filesystem access or special resolution of '..' components.",
+    "distractors": [
+      "It compares paths after collapsing '..' components, without accessing the filesystem for either path.",
+      "It compares paths after resolving symbolic links, using the filesystem to identify their targets.",
+      "It compares paths after making both absolute, using the current working directory for relative paths."
+    ]
+  },
+  {
+    "id": "EX-010",
+    "question": "In Python 3.13, what does collections.Counter.total() return when the Counter contains positive, zero, and negative counts?",
+    "correct": "The sum of every stored count, including negative counts.",
+    "distractors": [
+      "The sum of positive counts, excluding zero and negative counts.",
+      "The number of distinct keys, including keys with nonpositive counts.",
+      "The sum of absolute counts, treating negative counts as positive."
+    ]
+  },
+  {
+    "id": "EX-011",
+    "question": "In Python 3.13, how does collections.deque.rotate(n) handle positive and negative n?",
+    "correct": "It changes the deque in place: positive n rotates right and negative n rotates left.",
+    "distractors": [
+      "It changes the deque in place: positive n rotates left and negative n rotates right.",
+      "It returns a new deque: positive n rotates right and negative n rotates left.",
+      "It returns a new deque: positive n rotates left and negative n rotates right."
+    ]
+  },
+  {
+    "id": "EX-012",
+    "question": "In Python 3.13, what does statistics.fmean(data, weights=weights) compute for valid numeric inputs, and how must the input lengths relate?",
+    "correct": "A weighted arithmetic mean as a float; data and weights must have equal lengths.",
+    "distractors": [
+      "A weighted geometric mean as a float; data and weights must have equal lengths.",
+      "A weighted arithmetic mean as a float; shorter weights are repeated to match data.",
+      "A weighted arithmetic mean as a float; excess entries in either input are ignored."
+    ]
+  },
+  {
+    "id": "EX-013",
+    "question": "In Python 3.13, for a nondegenerate statistics.NormalDist instance and 0 < p < 1, what does inv_cdf(p) return?",
+    "correct": "The value x whose cumulative probability P(X <= x) equals p.",
+    "distractors": [
+      "The cumulative probability P(X <= p) at the supplied value p.",
+      "The probability density evaluated at the supplied value p.",
+      "The value x whose upper-tail probability P(X > x) equals p."
+    ]
+  },
+  {
+    "id": "EX-014",
+    "question": "In Python 3.13, a contextlib.ExitStack with block registers cleanup callbacks and then a later setup step raises an exception. Assuming the callbacks succeed, how are they invoked as the block exits?",
+    "correct": "Every registered callback is invoked in reverse registration order.",
+    "distractors": [
+      "Every registered callback is invoked in original registration order.",
+      "Only the most recently registered callback is invoked during unwinding.",
+      "Only the earliest registered callback is invoked during unwinding."
+    ]
+  },
+  {
+    "id": "EX-015",
+    "question": "In Python 3.13, a tempfile.TemporaryDirectory is used in a with statement with default arguments. Assuming filesystem cleanup succeeds, what happens when the block exits?",
+    "correct": "The temporary directory and its contents are removed automatically.",
+    "distractors": [
+      "The contents are removed automatically, but the directory remains available.",
+      "The directory and its contents remain until cleanup() is called explicitly.",
+      "The directory and its contents remain until the Python interpreter exits."
+    ]
+  },
+  {
+    "id": "CO-001",
+    "question": "In Python 3.13, which distinction explains when to use pathlib.PurePath rather than pathlib.Path?",
+    "correct": "PurePath manipulates paths without filesystem I/O; Path also provides concrete filesystem operations.",
+    "distractors": [
+      "PurePath reads existing filesystem entries; Path also provides operations that modify those entries.",
+      "PurePath handles relative filesystem paths; Path also provides operations for absolute filesystem paths.",
+      "PurePath accesses local filesystem entries; Path also provides access to remote entries through URLs."
+    ]
+  },
+  {
+    "id": "CO-002",
+    "question": "In Python 3.13, how does contextlib.suppress(ValueError) handle an ordinary ValueError or TypeError raised inside its with block?",
+    "correct": "It suppresses ValueError and allows TypeError to propagate.",
+    "distractors": [
+      "It suppresses TypeError and allows ValueError to propagate.",
+      "It suppresses both ValueError and TypeError from the block.",
+      "It converts both ValueError and TypeError into RuntimeError."
+    ]
+  },
+  {
+    "id": "CO-003",
+    "question": "In Python 3.13, what happens when decimal.localcontext() is entered without arguments, its active precision is changed, and the with block exits?",
+    "correct": "The block uses a copy of the current context; exit restores the previous context.",
+    "distractors": [
+      "The block uses the current context directly; exit keeps the changed precision in that context.",
+      "The block uses a copy of the current context; exit merges its precision into the previous context.",
+      "The block uses a fresh default context; exit replaces the previous context with that default context."
+    ]
+  },
+  {
+    "id": "CO-004",
+    "question": "In Python 3.13, one asyncio.TaskGroup task raises ValueError while sibling tasks are pending. The siblings cooperate with cancellation and no other failures occur. How does the group exit?",
+    "correct": "It cancels and awaits the siblings, then raises an ExceptionGroup containing the ValueError.",
+    "distractors": [
+      "It awaits the siblings without cancelling them, then raises the original ValueError directly.",
+      "It cancels and awaits the siblings, then raises CancelledError instead of the ValueError.",
+      "It leaves the siblings running independently, then raises an ExceptionGroup containing the ValueError."
+    ]
+  },
+  {
+    "id": "CO-005",
+    "question": "In Python 3.13, how does concurrent.futures.as_completed(fs) order the futures it yields?",
+    "correct": "Already-completed futures come first; remaining futures are yielded as they complete.",
+    "distractors": [
+      "Futures follow their input order; an unfinished earlier future delays later completed futures.",
+      "Futures follow their submission order; a later submission waits for earlier submissions to complete.",
+      "All futures must complete first; they are then yielded from longest to shortest execution time."
+    ]
+  },
+  {
+    "id": "CO-006",
+    "question": "In Python 3.13, how does csv.DictReader interpret a nonempty CSV file when fieldnames is omitted?",
+    "correct": "It uses the first row as dictionary keys and starts yielding data from the second row.",
+    "distractors": [
+      "It uses the first row as dictionary keys and also yields that first row as data.",
+      "It uses zero-based column numbers as dictionary keys and yields every row as data.",
+      "It uses the last row as dictionary keys and yields all preceding rows as data."
+    ]
+  },
+  {
+    "id": "CO-007",
+    "question": "In Python 3.13, which json.loads() keyword accepts a callback that receives each JSON object as an ordered list of key-value pairs, retaining duplicate member names?",
+    "correct": "object_pairs_hook",
+    "distractors": [
+      "object_hook",
+      "parse_constant",
+      "parse_float"
+    ]
+  },
+  {
+    "id": "CO-008",
+    "question": "In Python 3.13, how does shutil.copy2() handle metadata that the platform cannot preserve, assuming the file data can otherwise be copied?",
+    "correct": "It preserves the metadata it can and does not raise solely for unsupported metadata preservation.",
+    "distractors": [
+      "It requires complete metadata preservation and raises an exception if any metadata cannot be copied.",
+      "It copies only file data and leaves metadata preservation entirely to a separate explicit copystat() call.",
+      "It stores unsupported metadata in a companion file and restores it when the destination is opened."
+    ]
+  },
+  {
+    "id": "CO-009",
+    "question": "In Python 3.13, cursor is a sqlite3 cursor and value is the integer 7. Which call binds value to a qmark placeholder in a SQL statement?",
+    "correct": "cursor.execute('SELECT ?', (value,))",
+    "distractors": [
+      "cursor.execute('SELECT ?', value)",
+      "cursor.execute('SELECT ?', {'value': value})",
+      "cursor.execute('SELECT %s', (value,))"
+    ]
+  },
+  {
+    "id": "CO-010",
+    "question": "In Python 3.13, a child logger accepts a record and every ancestor has propagate=True. What changes when the child's propagate flag is changed from True to False?",
+    "correct": "Its own handlers still receive the record; ancestor handlers are no longer offered the record.",
+    "distractors": [
+      "Its own handlers stop receiving the record; ancestor handlers continue to be offered the record.",
+      "Its own handlers and ancestor handlers stop receiving the record; the record is discarded immediately.",
+      "Its own handlers and ancestor handlers still receive the record; only ancestor level checks are skipped."
+    ]
+  },
+  {
+    "id": "XV-001",
+    "question": "Between Python 3.12 and 3.13, what changed in the base64 module's support for Z85 encoding and decoding?",
+    "correct": "3.12 lacks z85encode() and z85decode(); 3.13 adds both functions for Z85 conversions.",
+    "distractors": [
+      "3.12 already has both Z85 functions; 3.13 changes their encoded output from bytes to str.",
+      "3.12 provides Z85 through b85encode() and b85decode(); 3.13 renames those functions to Z85 names.",
+      "3.12 lacks both Z85 functions; 3.13 adds z85encode() but still has no z85decode()."
+    ]
+  },
+  {
+    "id": "XV-002",
+    "question": "Between Python 3.12 and 3.13, what changed in the copy module for creating an object with selected fields replaced?",
+    "correct": "3.12 lacks copy.replace(); 3.13 adds copy.replace(obj, **changes) with support for __replace__().",
+    "distractors": [
+      "3.12 already has copy.replace(); 3.13 changes it to modify the original object in place.",
+      "3.12 lacks field replacement; 3.13 adds keyword field changes directly to copy.copy(obj, **changes).",
+      "3.12 lacks copy.replace(); 3.13 adds copy.replace(obj, **changes) only for mutable mapping objects."
+    ]
+  },
+  {
+    "id": "XV-003",
+    "question": "For newly created dbm databases, what backend-selection change occurred between Python 3.12 and 3.13, assuming the relevant backends are installed?",
+    "correct": "3.13 adds dbm.sqlite3 and prefers it; 3.12 has no dbm.sqlite3 backend.",
+    "distractors": [
+      "3.13 adds dbm.sqlite3 but prefers dbm.gnu; 3.12 has no dbm.sqlite3 backend.",
+      "3.13 removes dbm.sqlite3 and prefers dbm.gnu; 3.12 prefers the dbm.sqlite3 backend.",
+      "3.13 adds dbm.sqlite3 but prefers dbm.dumb; 3.12 has no dbm.sqlite3 backend."
+    ]
+  },
+  {
+    "id": "XV-004",
+    "question": "What deprecation-marking parameter did argparse add in Python 3.13 that was absent in Python 3.12?",
+    "correct": "A deprecated parameter on both add_argument() and the subparsers' add_parser() method.",
+    "distractors": [
+      "A deprecated parameter on add_argument(), with no corresponding parameter on add_parser().",
+      "A deprecated parameter on add_parser(), with no corresponding parameter on add_argument().",
+      "A deprecated parameter on parse_args(), with no corresponding parameter on either registration method."
+    ]
+  },
+  {
+    "id": "XV-005",
+    "question": "Compared with Python 3.12, which pair of verification flags was added to the defaults of ssl.create_default_context() in Python 3.13?",
+    "correct": "VERIFY_X509_PARTIAL_CHAIN and VERIFY_X509_STRICT",
+    "distractors": [
+      "VERIFY_CRL_CHECK_LEAF and VERIFY_X509_STRICT",
+      "VERIFY_X509_PARTIAL_CHAIN and VERIFY_CRL_CHECK_CHAIN",
+      "VERIFY_CRL_CHECK_LEAF and VERIFY_X509_TRUSTED_FIRST"
+    ]
+  },
+  {
+    "id": "XV-006",
+    "question": "Between Python 3.12 and 3.13, what changed about the random module's documented command-line interface for generating random values?",
+    "correct": "3.12 lacks that interface; 3.13 adds it through python -m random.",
+    "distractors": [
+      "3.12 provides it through python -m random; 3.13 removes that interface.",
+      "3.12 provides it through python -m random; 3.13 retains that interface unchanged.",
+      "3.12 lacks that interface; 3.13 adds it through python -m random.cli."
+    ]
+  },
+  {
+    "id": "XV-007",
+    "question": "How did itertools.batched() support for an incomplete final batch change from Python 3.12 to 3.13?",
+    "correct": "3.12 yields it without a strict option; 3.13 still yields it by default but strict=True raises ValueError.",
+    "distractors": [
+      "3.12 yields it without a strict option; 3.13 rejects it by default but strict=False permits the short batch.",
+      "3.12 yields it without a strict option; 3.13 still yields it by default but strict=True silently discards it.",
+      "3.12 rejects it without a strict option; 3.13 yields it by default and strict=True pads it with None."
+    ]
+  },
+  {
+    "id": "XV-008",
+    "question": "What public termination APIs did queue gain in Python 3.13 compared with Python 3.12?",
+    "correct": "3.13 adds Queue.shutdown() and queue.ShutDown; 3.12 provides neither public API.",
+    "distractors": [
+      "3.13 adds Queue.close() and queue.Closed; 3.12 provides neither public API.",
+      "3.13 adds Queue.cancel() and queue.Cancelled; 3.12 provides neither public API.",
+      "3.13 adds Queue.terminate() and queue.Terminated; 3.12 provides neither public API."
+    ]
+  },
+  {
+    "id": "XV-009",
+    "question": "What changed about distutils being bundled in the Python standard library between Python 3.11 and 3.12?",
+    "correct": "It is bundled in 3.11 and removed in 3.12; third-party setuptools may supply a replacement.",
+    "distractors": [
+      "It is bundled in both versions; 3.12 only deprecates it in favor of third-party setuptools.",
+      "It is absent in both versions; third-party setuptools is required for either version to provide it.",
+      "It is bundled in 3.11 and renamed setuptools in 3.12; setuptools becomes a standard-library module."
+    ]
+  },
+  {
+    "id": "XV-010",
+    "question": "For a new environment created by the standard python -m venv command with default options, how did setuptools installation change from Python 3.11 to 3.12?",
+    "correct": "3.11 installs setuptools by default; 3.12 leaves it for separate installation if needed.",
+    "distractors": [
+      "3.11 leaves setuptools for separate installation; 3.12 installs it by default in new environments.",
+      "Both versions install setuptools by default; 3.12 additionally upgrades it from the package index.",
+      "Neither version installs setuptools by default; both require a separate installation if needed."
+    ]
+  },
+  {
+    "id": "XV-011",
+    "question": "What documented SQLite shell interface did the sqlite3 module gain in Python 3.12 compared with Python 3.11?",
+    "correct": "3.12 adds python -m sqlite3; 3.11 lacks that documented module CLI.",
+    "distractors": [
+      "3.12 adds python -m sqlite3.shell; 3.11 lacks that documented module CLI.",
+      "3.12 adds python -m sqlite3.cli; 3.11 lacks that documented module CLI.",
+      "3.12 adds python -m sqlite3.dbapi2; 3.11 lacks that documented module CLI."
+    ]
+  },
+  {
+    "id": "XV-012",
+    "question": "What documented command-line interface for generating UUIDs did Python 3.12 add compared with Python 3.11?",
+    "correct": "3.12 adds python -m uuid; 3.11 lacks that documented module CLI.",
+    "distractors": [
+      "3.12 adds python -m uuid.generate; 3.11 lacks that documented module CLI.",
+      "3.12 adds python -m uuid.cli; 3.11 lacks that documented module CLI.",
+      "3.12 adds python -m uuid.uuid4; 3.11 lacks that documented module CLI."
+    ]
+  },
+  {
+    "id": "XV-013",
+    "question": "Between Python 3.11 and 3.12, which pathlib.Path method was added to traverse a directory tree and yield directory paths, subdirectory names, and filenames?",
+    "correct": "Path.walk() is added in 3.12; it is absent in 3.11.",
+    "distractors": [
+      "Path.iterdir() is added in 3.12; it is absent in 3.11.",
+      "Path.rglob() is added in 3.12; it is absent in 3.11.",
+      "Path.glob() is added in 3.12; it is absent in 3.11."
+    ]
+  },
+  {
+    "id": "XV-014",
+    "question": "How did shutil.rmtree() error-handler arguments change between Python 3.11 and 3.12?",
+    "correct": "3.12 adds onexc with an exception instance as its third callback argument and deprecates onerror's exc_info-tuple form.",
+    "distractors": [
+      "3.12 adds onexc with an exc_info tuple as its third callback argument and deprecates onerror's exception-instance form.",
+      "3.12 retains only onerror and changes its third callback argument from an exc_info tuple to an exception instance.",
+      "3.12 adds onexc with an exception instance as its third callback argument and removes the older onerror parameter."
+    ]
+  },
+  {
+    "id": "XV-015",
+    "question": "Which tempfile.NamedTemporaryFile parameter was added in Python 3.12, absent in Python 3.11, to defer deletion from close() to context-manager exit when delete=True?",
+    "correct": "delete_on_close=False",
+    "distractors": [
+      "delete_on_exit=True",
+      "cleanup_on_close=False",
+      "cleanup_on_exit=True"
+    ]
+  },
+  {
+    "id": "PE-001",
+    "question": "In CPython 3.13, what is the status of free-threaded execution and how is it selected?",
+    "correct": "It is experimental and requires a separate build, such as one configured with --disable-gil.",
+    "distractors": [
+      "It is the standard default build mode, with the GIL enabled only by a runtime flag.",
+      "It is experimental and enabled in the ordinary build by setting PYTHON_GIL=0 at startup.",
+      "It is the standard default build mode, with the GIL automatically restored for single-threaded programs."
+    ]
+  },
+  {
+    "id": "PE-002",
+    "question": "Which trio of typing type-parameter objects gained support for defaults under PEP 696 in Python 3.13?",
+    "correct": "TypeVar, ParamSpec, and TypeVarTuple",
+    "distractors": [
+      "TypeVar, ParamSpecArgs, and TypeVarTuple",
+      "TypeVar, ParamSpec, and ParamSpecKwargs",
+      "ParamSpecArgs, ParamSpec, and TypeVarTuple"
+    ]
+  },
+  {
+    "id": "PE-003",
+    "question": "In Python 3.13, what does applying @warnings.deprecated('Use replacement') with default decorator arguments to a function do? Assume warning filters permit the warning to be shown.",
+    "correct": "It marks uses for static type-checker diagnostics and emits DeprecationWarning when the function is called.",
+    "distractors": [
+      "It marks uses for static type-checker diagnostics and emits DeprecationWarning only when the function is defined.",
+      "It marks uses for static type-checker diagnostics and emits no runtime warning when the function is called.",
+      "It leaves static type-checker behavior unchanged and emits FutureWarning when the function is called."
+    ]
+  },
+  {
+    "id": "PE-004",
+    "question": "In Python 3.13, what does annotating a TypedDict item with typing.ReadOnly mean?",
+    "correct": "Type checkers reject assignment to that item; the annotation adds no runtime immutability enforcement.",
+    "distractors": [
+      "Type checkers permit assignment to that item; the annotation makes runtime assignments raise TypeError.",
+      "Type checkers reject assignment to every item; the annotation makes the entire dictionary read-only at runtime.",
+      "Type checkers permit assignment to that item; the annotation instead prohibits reading it before initialization."
+    ]
+  },
+  {
+    "id": "PE-005",
+    "question": "In Python 3.13, how do typing.TypeIs and typing.TypeGuard differ in which branches of a type-predicate condition can narrow the argument's type?",
+    "correct": "TypeIs can narrow both true and false branches; TypeGuard narrows only the true branch.",
+    "distractors": [
+      "TypeIs narrows only the true branch; TypeGuard can narrow both true and false branches.",
+      "TypeIs narrows only the false branch; TypeGuard narrows only the true branch.",
+      "TypeIs can narrow both true and false branches; TypeGuard narrows only the false branch."
+    ]
+  },
+  {
+    "id": "AP-001",
+    "question": "In Python 3.13, which call directly returns cryptographically strong random bytes encoded as URL-safe Base64 text for a password-reset token?",
+    "correct": "secrets.token_urlsafe(32)",
+    "distractors": [
+      "secrets.token_hex(32)",
+      "secrets.token_bytes(32)",
+      "random.randbytes(32)"
+    ]
+  },
+  {
+    "id": "AP-002",
+    "question": "In Python 3.13, obj has a synchronous close() method but no context-manager methods. Which helper wraps obj so that leaving a with block calls obj.close()?",
+    "correct": "contextlib.closing(obj)",
+    "distractors": [
+      "contextlib.nullcontext(obj)",
+      "contextlib.aclosing(obj)",
+      "contextlib.contextmanager(obj)"
+    ]
+  },
+  {
+    "id": "AP-003",
+    "question": "In Python 3.13, which with-statement header opens an existing file for text reading with explicit UTF-8 decoding and closes it on block exit?",
+    "correct": "with open(path, mode='r', encoding='utf-8') as file:",
+    "distractors": [
+      "with open(path, mode='rb', encoding='utf-8') as file:",
+      "with open(path, mode='w', encoding='utf-8') as file:",
+      "with open(path, mode='r', errors='utf-8') as file:"
+    ]
+  },
+  {
+    "id": "AP-004",
+    "question": "In Python 3.13, parser is a default argparse.ArgumentParser. Which sequence registers --count as an integer option, parses the command line while rejecting unrecognized options, and retains generated --help?",
+    "correct": "parser.add_argument('--count', type=int); parser.parse_args()",
+    "distractors": [
+      "parser.add_argument('--count', type=str); parser.parse_args()",
+      "parser.add_argument('--count', type=int); parser.parse_known_args()",
+      "parser.add_argument('--count', type=int); parser.format_help()"
+    ]
+  },
+  {
+    "id": "AP-005",
+    "question": "In Python 3.13, fileobj is an open, readable, blocking binary file at its beginning, containing 10 million bytes. Which call hashes all its contents with SHA-256 without first loading the whole file into memory and returns a digest object?",
+    "correct": "hashlib.file_digest(fileobj, 'sha256')",
+    "distractors": [
+      "hashlib.sha256(fileobj.read())",
+      "hashlib.sha256(fileobj.read(8192))",
+      "hashlib.new('sha256', fileobj)"
+    ]
+  }
+]
