@@ -166,9 +166,10 @@ the documentation versions; do not infer named-client compatibility.
    returned `next_start_index`. Check no gaps/duplicate anchors and bounded
    response bodies. Retrieve individual sections via
    `get_docs(slug="whatsnew/3.15", version="3.15", anchor=...)`.
-7. Preserve the original 3.11–3.13 frozen regression index and run
-   `uv run --locked python -m benchmarks.regression --index <retained-index> --output regression-results.json`.
-   The new separate 3.15 fixtures do not replace that gate.
+7. Preserve the original 3.11–3.13 frozen regression index and follow the
+   [local benchmark workflow](../CONTRIBUTING.md#local-benchmark-workflow),
+   selecting that retained index with `--index`. The separate 3.15 fixtures
+   do not replace the local baseline comparison.
 
 ## Evidence log
 

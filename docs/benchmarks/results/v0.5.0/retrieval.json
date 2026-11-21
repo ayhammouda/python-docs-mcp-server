@@ -1,0 +1,473 @@
+{
+  "schema_version": 1,
+  "corpus_sha256": "79ac86b444a8a2487fe342223af372bbed8ff6f98bd5faba302ad618da67caa6",
+  "index_versions": [
+    "3.10",
+    "3.11",
+    "3.12",
+    "3.13",
+    "3.14"
+  ],
+  "index_documents": 2684,
+  "cases": {
+    "EX-001/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/itertools.html#itertools.accumulate"
+      ],
+      "seconds": 0.073811
+    },
+    "EX-002/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/itertools.html#itertools.pairwise"
+      ],
+      "seconds": 0.023909
+    },
+    "EX-003/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/itertools.html#itertools.groupby"
+      ],
+      "seconds": 0.023529
+    },
+    "EX-004/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/functools.html#functools.cache"
+      ],
+      "seconds": 0.443841
+    },
+    "EX-005/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/functools.html#functools.cached_property"
+      ],
+      "seconds": 0.021837
+    },
+    "EX-006/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/functools.html#functools.singledispatch"
+      ],
+      "seconds": 0.029584
+    },
+    "EX-007/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/pathlib.html#pathlib.Path.glob"
+      ],
+      "seconds": 0.032119
+    },
+    "EX-008/3.13": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/pathlib.html#pathlib.Path.read_text"
+      ],
+      "seconds": 0.090921
+    },
+    "EX-009/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/pathlib.html#pathlib.PurePath.is_relative_to"
+      ],
+      "seconds": 0.020825
+    },
+    "EX-010/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/collections.html#collections.Counter.total"
+      ],
+      "seconds": 0.017866
+    },
+    "EX-011/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/collections.html#collections.deque.rotate"
+      ],
+      "seconds": 0.021753
+    },
+    "EX-012/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/statistics.html#statistics.fmean"
+      ],
+      "seconds": 0.02787
+    },
+    "EX-013/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/statistics.html#statistics.NormalDist.inv_cdf"
+      ],
+      "seconds": 0.021084
+    },
+    "EX-014/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/contextlib.html#contextlib.ExitStack"
+      ],
+      "seconds": 0.020716
+    },
+    "EX-015/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/tempfile.html#tempfile.TemporaryDirectory"
+      ],
+      "seconds": 0.027951
+    },
+    "CO-001/3.13": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/pathlib.html#concrete-paths",
+        "https://docs.python.org/3.13/library/pathlib.html#pure-paths"
+      ],
+      "seconds": 0.018768
+    },
+    "CO-002/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/contextlib.html#contextlib.suppress"
+      ],
+      "seconds": 0.024699
+    },
+    "CO-003/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/decimal.html#decimal.localcontext"
+      ],
+      "seconds": 0.018851
+    },
+    "CO-004/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/asyncio-task.html#asyncio.TaskGroup"
+      ],
+      "seconds": 0.024273
+    },
+    "CO-005/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/concurrent.futures.html#concurrent.futures.as_completed"
+      ],
+      "seconds": 0.019491
+    },
+    "CO-006/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/csv.html#csv.DictReader"
+      ],
+      "seconds": 0.018374
+    },
+    "CO-007/3.13": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/json.html#json.load"
+      ],
+      "seconds": 0.024549
+    },
+    "CO-008/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/shutil.html#shutil.copy2"
+      ],
+      "seconds": 0.023278
+    },
+    "CO-009/3.13": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/sqlite3.html#how-to-use-placeholders-to-bind-values-in-sql-queries"
+      ],
+      "seconds": 0.008681
+    },
+    "CO-010/3.13": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/logging.html#logging.Logger.propagate"
+      ],
+      "seconds": 0.077111
+    },
+    "XV-001/3.12": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.12/library/base64.html"
+      ],
+      "seconds": 0.011739
+    },
+    "XV-001/3.13": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/whatsnew/3.13.html#base64"
+      ],
+      "seconds": 0.008539
+    },
+    "XV-002/3.12": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.12/library/copy.html"
+      ],
+      "seconds": 0.131983
+    },
+    "XV-002/3.13": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/whatsnew/3.13.html#copy"
+      ],
+      "seconds": 0.111082
+    },
+    "XV-003/3.12": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.12/library/dbm.html"
+      ],
+      "seconds": 0.092723
+    },
+    "XV-003/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/whatsnew/3.13.html#dbm"
+      ],
+      "seconds": 0.086209
+    },
+    "XV-004/3.12": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.12/library/argparse.html"
+      ],
+      "seconds": 0.079606
+    },
+    "XV-004/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/whatsnew/3.13.html#argparse"
+      ],
+      "seconds": 0.072125
+    },
+    "XV-005/3.12": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.12/library/ssl.html"
+      ],
+      "seconds": 0.020324
+    },
+    "XV-005/3.13": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/whatsnew/3.13.html#ssl"
+      ],
+      "seconds": 0.01915
+    },
+    "XV-006/3.12": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.12/library/random.html"
+      ],
+      "seconds": 0.106015
+    },
+    "XV-006/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/whatsnew/3.13.html#random"
+      ],
+      "seconds": 0.102378
+    },
+    "XV-007/3.12": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.12/library/itertools.html#itertools.batched"
+      ],
+      "seconds": 0.020152
+    },
+    "XV-007/3.13": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/whatsnew/3.13.html#itertools"
+      ],
+      "seconds": 0.019477
+    },
+    "XV-008/3.12": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.12/library/queue.html"
+      ],
+      "seconds": 0.01858
+    },
+    "XV-008/3.13": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/whatsnew/3.13.html#queue"
+      ],
+      "seconds": 0.017611
+    },
+    "XV-009/3.11": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.11/library/distutils.html"
+      ],
+      "seconds": 0.00807
+    },
+    "XV-009/3.12": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.12/whatsnew/3.12.html#summary-release-highlights"
+      ],
+      "seconds": 0.00754
+    },
+    "XV-010/3.11": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.11/library/venv.html"
+      ],
+      "seconds": 0.010332
+    },
+    "XV-010/3.12": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.12/whatsnew/3.12.html#summary-release-highlights"
+      ],
+      "seconds": 0.008142
+    },
+    "XV-011/3.11": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.11/library/sqlite3.html"
+      ],
+      "seconds": 0.008825
+    },
+    "XV-011/3.12": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.12/whatsnew/3.12.html#sqlite3"
+      ],
+      "seconds": 0.007478
+    },
+    "XV-012/3.11": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.11/library/uuid.html"
+      ],
+      "seconds": 0.094377
+    },
+    "XV-012/3.12": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.12/whatsnew/3.12.html#uuid"
+      ],
+      "seconds": 0.097576
+    },
+    "XV-013/3.11": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.11/library/pathlib.html"
+      ],
+      "seconds": 0.019143
+    },
+    "XV-013/3.12": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.12/whatsnew/3.12.html#pathlib"
+      ],
+      "seconds": 0.016829
+    },
+    "XV-014/3.11": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.11/library/shutil.html#shutil.rmtree"
+      ],
+      "seconds": 0.02007
+    },
+    "XV-014/3.12": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.12/whatsnew/3.12.html#shutil"
+      ],
+      "seconds": 0.018507
+    },
+    "XV-015/3.11": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.11/library/tempfile.html#tempfile.NamedTemporaryFile"
+      ],
+      "seconds": 0.018774
+    },
+    "XV-015/3.12": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.12/whatsnew/3.12.html#tempfile"
+      ],
+      "seconds": 0.019134
+    },
+    "PE-001/3.13": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/whatsnew/3.13.html#free-threaded-cpython"
+      ],
+      "seconds": 0.013844
+    },
+    "PE-002/3.13": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/typing.html#typing.TypeVar",
+        "https://docs.python.org/3.13/whatsnew/3.13.html#summary-release-highlights"
+      ],
+      "seconds": 0.013177
+    },
+    "PE-003/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/warnings.html#warnings.deprecated",
+        "https://docs.python.org/3.13/whatsnew/3.13.html#warnings"
+      ],
+      "seconds": 0.019404
+    },
+    "PE-004/3.13": {
+      "retrieval_hit_at_5": true,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/typing.html#typing.ReadOnly"
+      ],
+      "seconds": 0.021128
+    },
+    "PE-005/3.13": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/typing.html#typing.TypeIs"
+      ],
+      "seconds": 0.012996
+    },
+    "AP-001/3.13": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/secrets.html#secrets.token_urlsafe"
+      ],
+      "seconds": 0.015432
+    },
+    "AP-002/3.13": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/contextlib.html#contextlib.closing"
+      ],
+      "seconds": 0.016644
+    },
+    "AP-003/3.13": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/functions.html#open",
+        "https://docs.python.org/3.13/library/pathlib.html#pathlib.Path.open"
+      ],
+      "seconds": 0.134021
+    },
+    "AP-004/3.13": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/argparse.html#argparse.ArgumentParser"
+      ],
+      "seconds": 0.087211
+    },
+    "AP-005/3.13": {
+      "retrieval_hit_at_5": false,
+      "resolved_citations": [
+        "https://docs.python.org/3.13/library/hashlib.html#hashlib.file_digest"
+      ],
+      "seconds": 0.015245
+    }
+  }
+}

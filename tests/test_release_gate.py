@@ -56,6 +56,10 @@ def make_state(*pages):
     }
 
 
+def test_release_does_not_require_retired_benchmark_status():
+    assert "Product regression" not in GATE["REQUIRED"]
+
+
 def test_release_eligibility_rejects_incomplete_or_wrong_identity_evidence():
     state = make_state([note(RECORD)])
     checks = state[f"commits/{SHA}/check-runs?per_page=100"]["check_runs"]
@@ -179,3 +183,82 @@ def test_release_eligibility_ignores_an_edited_record_for_another_head():
 def test_release_eligibility_accepts_when_a_newer_pass_follows_a_fail():
     state = make_state([note(FAILED), note(RECORD, created_at=LATER)])
     GATE["require_eligible"](state.__getitem__, SHA, OWNER)
+
+
+def recovery_state():
+    import json
+
+    state = make_state([note(RECORD)])
+    original = json.loads(json.dumps(make_state([note(RECORD)]))
+                          .replace(SHA, GATE["RECOVERY_SHA"])
+                          .replace(HEAD, "e" * 40)
+                          .replace("issues/7/", "issues/8/"))
+    original[f"commits/{GATE['RECOVERY_SHA']}/pulls?per_page=100"][0]["number"] = 8
+    original[f"commits/{GATE['RECOVERY_SHA']}/check-runs?per_page=100"]["check_runs"].append(
+        {"id": 100, "name": "Product regression", "app": {"id": 15368}, "conclusion": "success"}
+    )
+    state.update(original)
+    state["git/ref/tags/v0.5.0-recovery.1"] = {"object": {"type": "commit", "sha": SHA}}
+    state["git/ref/tags/v0.5.0"] = {"object": {"type": "tag", "sha": "f" * 40}}
+    state[f"git/tags/{'f' * 40}"] = {
+        "object": {"type": "commit", "sha": GATE["RECOVERY_SHA"]}
+    }
+    env = {
+        "GITHUB_SHA": SHA, "GITHUB_REF_NAME": "v0.5.0-recovery.1",
+        "GITHUB_REPOSITORY_OWNER": OWNER, "GITHUB_EVENT_NAME": "push",
+        "GITHUB_REF": "refs/tags/v0.5.0-recovery.1", "GITHUB_REF_PROTECTED": "true",
+    }
+    return state, env
+
+
+def test_only_exact_recovery_event_selects_original_release():
+    state, env = recovery_state()
+    target = GATE["release_target"]
+    assert target(state.__getitem__, env) == (GATE["RECOVERY_SHA"], "v0.5.0")
+    for tag in ("v0.5.1", "v0.5.0-recovery.2", "v0.5.0-recovery.1-extra"):
+        assert target(state.__getitem__, {**env, "GITHUB_REF_NAME": tag}) == (SHA, tag)
+
+
+@pytest.mark.parametrize(("key", "value"), [
+    ("GITHUB_EVENT_NAME", "workflow_dispatch"),
+    ("GITHUB_REF", "refs/heads/v0.5.0-recovery.1"),
+    ("GITHUB_REF_PROTECTED", "false"),
+])
+def test_recovery_requires_protected_tag_push(key, value):
+    state, env = recovery_state()
+    with pytest.raises(ValueError, match="protected tag push"):
+        GATE["release_target"](state.__getitem__, {**env, key: value})
+
+
+@pytest.mark.parametrize("tag", ["v0.5.0", "v0.5.0-recovery.1"])
+def test_recovery_rejects_moved_tags(tag):
+    state, env = recovery_state()
+    state[f"git/ref/tags/{tag}"] = {"object": {"type": "commit", "sha": "d" * 40}}
+    with pytest.raises(ValueError, match="tag"):
+        GATE["release_target"](state.__getitem__, env)
+
+
+@pytest.mark.parametrize("original", [False, True])
+@pytest.mark.parametrize("failure", ["main", "checks", "record", "codeql"])
+def test_recovery_rechecks_both_commits(original, failure):
+    state, env = recovery_state()
+    sha, head, pr = (GATE["RECOVERY_SHA"], "e" * 40, 8) if original else (SHA, HEAD, 7)
+    if failure == "main":
+        state[f"compare/{sha}...main"]["status"] = "diverged"
+    elif failure == "checks":
+        # For the original this also exercises its frozen Product regression gate.
+        state[f"commits/{sha}/check-runs?per_page=100"]["check_runs"].pop()
+    elif failure == "record":
+        state[f"issues/{pr}/comments?per_page=100&page=1"][0]["body"] = FAILED.replace(HEAD, head)
+    else:
+        state[f"commits/{head}/check-runs?per_page=100"]["check_runs"][0]["conclusion"] = "failure"
+    with pytest.raises(ValueError):
+        GATE["release_target"](state.__getitem__, env)
+
+
+@pytest.mark.parametrize("kind", ["blob", "tree", "tag"])
+def test_tag_peeling_rejects_non_commit_or_cyclic_objects(kind):
+    state = {"git/ref/tags/v0.5.0": {"object": {"type": kind, "sha": SHA}}}
+    state[f"git/tags/{SHA}"] = state["git/ref/tags/v0.5.0"]
+    with pytest.raises(ValueError, match="exact commit"):
+        GATE["tag_commit"](state.__getitem__, "v0.5.0")

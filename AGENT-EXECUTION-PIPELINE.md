@@ -10,6 +10,15 @@
 **Current authority:** For v0.5.0 read the [2026-11-07 handback to Codex](#amendment-2026-11-07--v050-owner-handback-to-codex), the [2026-11-07 handover](#amendment-2026-11-07--v050-owner-handover-to-claude-code) and the [2026-11-04 delegation](#amendment-2026-11-04--v050-owner-delegation) together with [Amendment 2026-10-30](#amendment-2026-10-30--ownership-transferred-to-the-claude-code-owner)
 first. Together they supersede conflicting historical restrictions and earlier amendments below.
 
+**Local benchmarking policy (2026-11-21):** All benchmarks run locally.
+This supersedes earlier benchmark-in-CI requirements and the `Product regression`
+merge/release check below. The owner handles removal of that ruleset status.
+Other checks and independent review requirements still apply. Dated records remain
+historical. [Owner authorization](https://github.com/ayhammouda/python-docs-mcp-server/issues/63#issuecomment-7068010392).
+
+For commands and reviewed results, follow the
+[local benchmark workflow](CONTRIBUTING.md#local-benchmark-workflow).
+
 ---
 
 ## 1. Operating Principles

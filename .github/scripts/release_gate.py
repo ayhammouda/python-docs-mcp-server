@@ -8,6 +8,11 @@ import json
 import os
 import re
 import urllib.request
+from pathlib import Path
+
+RECOVERY_TAG = "v0.5.0-recovery.1"
+RECOVERY_TARGET = "v0.5.0"
+RECOVERY_SHA = "3a48f832404a11fb18de7d56c27c8e84ba57c2cc"
 
 REQUIRED = {
     "Test (Python 3.12, ubuntu-latest)",
@@ -19,7 +24,6 @@ REQUIRED = {
     "Dependency audit",
     "Analyze",
     "Installed package smoke",
-    "Product regression",
 }
 # First line of the owner's PR comment that records an independent verification.
 RECORD = re.compile(r"Independent verification: (PASS|FAIL)")
@@ -42,7 +46,7 @@ def verdict(comment, owner: str, head: str, merged_at: str) -> str | None:
     return match[1] if match else None
 
 
-def require_eligible(api, sha: str, owner: str) -> None:
+def require_eligible(api, sha: str, owner: str, *, required=None) -> None:
     if not re.fullmatch(r"[0-9a-f]{40}", sha) or not owner:
         raise ValueError("Exact commit and repository owner are required")
     if api(f"compare/{sha}...main")["status"] not in {"ahead", "identical"}:
@@ -80,10 +84,48 @@ def require_eligible(api, sha: str, owner: str) -> None:
         if check["app"]["id"] == 15368:
             latest[check["name"]] = check
     failed = sorted(
-        name for name in REQUIRED if latest.get(name, {}).get("conclusion") != "success"
+        name for name in (REQUIRED if required is None else required)
+        if latest.get(name, {}).get("conclusion") != "success"
     )
     if failed:
         raise ValueError(f"Missing or failing main checks: {', '.join(failed)}")
+
+
+def tag_commit(api, tag: str) -> str:
+    """Peel lightweight or annotated tags, failing closed on malformed chains."""
+    obj = api(f"git/ref/tags/{tag}")["object"]
+    for _ in range(10):
+        if not re.fullmatch(r"[0-9a-f]{40}", obj["sha"]):
+            break
+        if obj["type"] == "commit":
+            return obj["sha"]
+        if obj["type"] != "tag":
+            break
+        obj = api(f"git/tags/{obj['sha']}")["object"]
+    raise ValueError("Tag does not peel to an exact commit")
+
+
+def release_target(api, env) -> tuple[str, str]:
+    """Only the named immutable recovery event may build a different commit."""
+    sha, tag = env["GITHUB_SHA"], env["GITHUB_REF_NAME"]
+    owner = env.get("GITHUB_REPOSITORY_OWNER", "")
+    require_eligible(api, sha, owner)
+    if tag == RECOVERY_TAG:
+        if (
+            env.get("GITHUB_EVENT_NAME") != "push"
+            or env.get("GITHUB_REF") != f"refs/tags/{RECOVERY_TAG}"
+            or env.get("GITHUB_REF_PROTECTED") != "true"
+        ):
+            raise ValueError("Recovery requires the exact protected tag push")
+        if tag_commit(api, RECOVERY_TAG) != sha:
+            raise ValueError("Recovery tag no longer names the event commit")
+        if tag_commit(api, RECOVERY_TARGET) != RECOVERY_SHA:
+            raise ValueError("Original v0.5.0 tag moved")
+        # Recheck the original frozen gate, including its then-required benchmark
+        # status. This does not restore a benchmark gate for new releases.
+        require_eligible(api, RECOVERY_SHA, owner, required=REQUIRED | {"Product regression"})
+        return RECOVERY_SHA, RECOVERY_TARGET
+    return sha, tag
 
 
 def main() -> None:
@@ -102,7 +144,9 @@ def main() -> None:
         with urllib.request.urlopen(request, timeout=30) as response:
             return json.load(response)
 
-    require_eligible(api, os.environ["GITHUB_SHA"], os.environ.get("GITHUB_REPOSITORY_OWNER", ""))
+    sha, tag = release_target(api, os.environ)
+    with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+        output.write(f"build-sha={sha}\ntarget-tag={tag}\n")
     print("Verified main commit, owner verification record and required main checks.")
 
 

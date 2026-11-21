@@ -1,5 +1,8 @@
 # Agentic benchmark sandbox: operator runbook
 
+All benchmarks run locally under the 2026-11-21 policy. For ordinary retrieval
+measurements, follow the [local benchmark workflow](../../CONTRIBUTING.md#local-benchmark-workflow).
+
 How the maintainer runs the agentic benchmark in its sandbox (design §§7.2–7.4, §12, §14).
 Every live call in this runbook is the maintainer's, after PR 4 merges. An implementer never
 runs one. Every `run.sh` command names its models with `--models`.

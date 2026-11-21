@@ -1,6 +1,11 @@
 # Public Benchmark Methodology
 
 **Status:** Accepted (blessed 2026-07-08; see PLAN-2026-07-08-benchmark-plumbing.md Amendment 1)
+
+**Execution policy (2026-11-21):** All benchmarks run locally. This supersedes
+historical plans for benchmark execution in CI. For retrieval measurements and
+publication, follow the [local benchmark workflow](../../CONTRIBUTING.md#local-benchmark-workflow).
+
 Do not publish comparative claims until the harness has produced reproducible
 data from this methodology.
 

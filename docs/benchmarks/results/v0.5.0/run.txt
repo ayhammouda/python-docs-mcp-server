@@ -1,0 +1,5 @@
+Measured: November 21, 2026
+Source: v0.5.0 at 3a48f832404a11fb18de7d56c27c8e84ba57c2cc
+Environment: local macOS ARM64, CPython 3.13.10
+Index SHA256: 69537a695ce0cc3a79e251d1885583e8c121aa0e9ae854bebf012f3ab2550481
+Index hash independently checked on the host.

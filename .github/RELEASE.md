@@ -8,8 +8,10 @@ or disable checks.
 
 1. Merge the version/changelog PR after independent current-head verification
    and all required CI. `pyproject.toml`, `uv.lock`, `server.json` and its package
-   entry must agree. CI covers Python 3.12–3.14 on Ubuntu and macOS, the real
-   benchmark corpus, offline full-index regression, and installed-wheel stdio.
+   entry must agree. CI covers ordinary product tests on Python 3.12–3.14 on
+   Ubuntu and macOS, static analysis, security checks and installed-wheel stdio.
+   Full-index installation E2E remains required. Benchmarks run locally and do
+   not gate releases. See the [local benchmark workflow](../CONTRIBUTING.md#local-benchmark-workflow).
    If an update from `main` changed the head, carry verification forward only
    under the amendment's rule: a conflict-free update, green required checks,
    a new record for the new head, and either (a) a rebase whose
@@ -56,11 +58,16 @@ That file pins `hatchling` and every dependency with SHA-256 hashes, and the bui
 runs `uv build --build-constraint .github/build-constraints.txt --require-hashes`.
 Every project build in the build job uses that file. The job syncs dependencies with
 `uv sync --locked --dev --no-install-project --no-build`, which builds neither the
-project nor any source distribution. It installs the built wheel with
-`uv pip install --no-deps dist/*.whl` and runs every later command with
-`uv run --no-sync`, so nothing re-syncs and rebuilds the project. The tests run
-against that installed wheel, and the test suite's own wheel build gets the same
-constraints through `UV_BUILD_CONSTRAINT` and `UV_REQUIRE_HASHES`.
+project nor any source distribution, in a fresh `UV_PROJECT_ENVIRONMENT` under
+`RUNNER_TEMP`. It installs the built wheel with
+`uv pip install --python "$UV_PROJECT_ENVIRONMENT/bin/python" --no-deps dist/*.whl`
+and runs later commands with `uv run --no-sync`. Product tests also inherit
+`UV_NO_SYNC=1`, protecting the installation from nested `uv run` calls. Before
+tests, the job requires imports from that environment's site-packages, compares
+installed `schema.sql` and `synonyms.yaml` bytes with the wheel, and bootstraps an
+in-memory database including FTS5. No source-tree resource fallback is used.
+The test suite's own wheel build gets the same constraints through
+`UV_BUILD_CONSTRAINT` and `UV_REQUIRE_HASHES`. Benchmark tests remain excluded.
 To update it, run
 `echo hatchling | uv pip compile --generate-hashes --universal --python-version 3.12 --upgrade - -o .github/build-constraints.txt`,
 then
@@ -76,3 +83,40 @@ unchanged, with no bypass actors.
 No routine human reviewer is required. If publication partially fails, record
 which registries succeeded and diagnose the failure; never overwrite a published
 version, move a tag, or claim a release complete from a partial result.
+
+## One-time v0.5.0 recovery
+
+The failed v0.5.0 release spent its tag. It must continue to peel to
+`3a48f832404a11fb18de7d56c27c8e84ba57c2cc`. The original wheel contains
+`storage/schema.sql`: a local reproduction of the benchmark sandbox's nested
+`uv run --locked` replaced the installed wheel with an editable install while
+the parent test process retained its old site-packages imports. The next database
+bootstrap then failed to read the removed schema. Running the same nested command
+with the inherited no-sync guard preserved the wheel and allowed the bootstrap to
+succeed. The sandbox test itself filters its subprocess environment, so excluding
+benchmark tests remains necessary. This repairs the test environment; it does
+not change the v0.5.0 package source.
+
+After independent review, merge of this repair, and green required checks on its
+exact main commit, the owner may create **only** `v0.5.0-recovery.1` on that commit.
+The existing `v*` creation restrictions, immutable-tag rules (no update/delete or
+bypass actors), and `pypi` tag environment must cover this control tag as well as
+`v0.5.0`. Keep those protections; do not move either tag. This implementation does
+not create tags or change repository settings.
+
+Only the exact protected `refs/tags/v0.5.0-recovery.1` push selects recovery. The
+eligibility job checks that its tag still names the event commit and applies the
+normal main ancestry, merged-PR, CodeQL, owner-record and main-check gates. It
+also peels the original tag to the pinned SHA and rechecks that commit's evidence
+under its original frozen gate, including the historical `Product regression`
+success. A missing, changed or failing record/check aborts recovery. Other tag
+pushes retain the ordinary release path; no arbitrary ref or manual artifact
+input is accepted.
+
+The repaired workflow builds and validates the manifest from the **original**
+pinned source commit. Its verified target tag is `v0.5.0`, including the explicit
+GitHub Release `tag_name` and package/manifest version checks. The existing
+full-index E2E, artifact-ID/checksum checks, attestations, Trusted Publishing job,
+`pypi` environment, MCP Registry publication and GitHub Release job remain in the
+path. Provenance identifies the recovery workflow run; the gate identifies the
+original source commit. Confirm all publication results using step 5 above.
