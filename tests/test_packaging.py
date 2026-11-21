@@ -71,7 +71,11 @@ class TestWheelContent:
 
     def test_installed_schema_survives_nested_uv_run(self, built_wheel, tmp_path):
         """A nested uv run must not replace the wheel beneath imported modules."""
-        env = {**os.environ, "UV_PROJECT_ENVIRONMENT": str(tmp_path / "installed")}
+        env = {
+            **os.environ,
+            "UV_PROJECT_ENVIRONMENT": str(tmp_path / "installed"),
+            "UV_OFFLINE": "1",
+        }
         env.pop("VIRTUAL_ENV", None)
         env.pop("UV_NO_SYNC", None)
         # Like the workflow, apply test-only flags after installing our built wheel.
@@ -80,7 +84,7 @@ class TestWheelContent:
         executable = "Scripts/python.exe" if os.name == "nt" else "bin/python"
         python = tmp_path / "installed" / executable
         for args in (
-            ["sync", "--locked", "--dev", "--no-install-project", "--no-build"],
+            ["venv", "--python", sys.executable, str(tmp_path / "installed")],
             ["pip", "install", "--python", str(python), "--no-deps", str(built_wheel)],
         ):
             result = subprocess.run(
@@ -92,16 +96,15 @@ class TestWheelContent:
         env.update(tests["env"])
         result = subprocess.run(
             [str(python), "-c", """
-import sqlite3, subprocess, sys, sysconfig
+import subprocess, sys, sysconfig
+from importlib.resources import files
 from pathlib import Path
-from mcp_server_python_docs.storage import db
-schema = Path(db.__file__).with_name("schema.sql")
-assert schema.is_relative_to(Path(sysconfig.get_path("purelib")))
+schema = Path(files("mcp_server_python_docs.storage").joinpath("schema.sql")).resolve()
+assert schema.is_relative_to(Path(sysconfig.get_path("purelib")).resolve())
 before = schema.read_bytes()
-db.bootstrap_schema(sqlite3.connect(":memory:"))
 subprocess.run([*sys.argv[1:], "run", "--locked", "python", "-c", "pass"], check=True)
+assert Path(files("mcp_server_python_docs.storage").joinpath("schema.sql")).resolve() == schema
 assert schema.read_bytes() == before
-db.bootstrap_schema(sqlite3.connect(":memory:"))
 """, *uv],
             cwd=PROJECT_ROOT, env=env, capture_output=True, text=True,
         )
