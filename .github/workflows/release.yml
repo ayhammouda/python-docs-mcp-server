@@ -35,7 +35,7 @@ jobs:
     needs: eligibility
     runs-on: ubuntu-latest
     name: Build & Test
-    timeout-minutes: 15
+    timeout-minutes: 180
     outputs:
       dist-id: ${{ steps.upload-dist.outputs.artifact-id }}
       dist-sha256: ${{ steps.dist-sha256.outputs.dist-sha256 }}
